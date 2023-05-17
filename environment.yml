@@ -1,0 +1,18 @@
+name: vrAnalysis
+channels:
+  - pytorch
+  - numba
+dependencies:
+  - python
+  - pip
+  - numpy
+  - numba
+  - matplotlib
+  - scikit-learn
+  - h5py=2.10.0
+  - jupyterlab
+  - tqdm
+  - pip:
+    - scipy>=1.4.0
+    - torch>=1.7.1
+    - natsort

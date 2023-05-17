@@ -1,0 +1,193 @@
+import numpy as np
+import scipy as sp
+import numba as nb
+import basicFunctions as bf
+
+# ------------------------------------------------- postprocessing functions for creating spatial maps -----------------------------------------------------
+def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
+    # Produce occupancy map and speed map using numba speed ups
+    # distStep is a two element tuple of integers - the first defines the spatial resolution of the initial measurement, the second defines the spatial filtering and the downsampling factor
+    # First computes the maps with high resolution, then spatially smooths them, then downsamples them
+    print("Lick map should be included in 'getBehaviorMaps' eventually!")
+    if len(distStep)>1:
+        assert len(distStep)==2 and distStep[1]>distStep[0] and isinstance(distStep[0],int) and isinstance(distStep[1],int), "distStep should be a two element tuple of ints increasing in size"
+    else:
+        distStep = (distStep)
+
+    roomLength = vrexp.loadone('trial.roomLength')
+    assert np.unique(roomLength).size==1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
+    roomLength = roomLength[0]
+    numPosition = int(roomLength/distStep[0])
+    distvec = np.linspace(0,roomLength,numPosition+1)
+    distcenter = bf.edge2center(distvec)
+
+    trialStartSample = vrexp.loadone('trial.startBehaveSample')
+    behaveTimeStamps = vrexp.loadone('behave.timeStamps')
+    behavePosition = vrexp.loadone('behave.position')
+
+    behavePositionBin = np.digitize(behavePosition,distvec)-1
+    behaveTrialIdx = vrexp.getBehaveTrialIdx(trialStartSample)
+    withinTrialSample = np.append(np.diff(behaveTrialIdx)==0, True)
+
+    sampleDuration = np.append(np.diff(behaveTimeStamps),0) # time between samples, assume zero time was spent in last sample for each trial
+    behaveSpeed = np.append(np.diff(behavePosition)/sampleDuration[:-1], 0)
+    sampleDurationThresholded = sampleDuration * (behaveSpeed >= speedThreshold) * withinTrialSample
+    behaveSpeedThresholded = behaveSpeed * (behaveSpeed >= speedThreshold) * withinTrialSample
+
+    # Get high resolution occupancy and speed maps 
+    occmap = np.zeros((vrexp.value['numTrials'],numPosition))
+    speedmap = np.zeros((vrexp.value['numTrials'],numPosition))
+    getMaps(sampleDurationThresholded, behaveSpeedThresholded, behaveTrialIdx, behavePositionBin, occmap, speedmap)
+
+    # Figure out the valid range (outside of this range, set the maps to nan, because their values are not meaningful)
+    bpbPerTrial = vrexp.groupBehaveByTrial(behavePositionBin, trialStartSample)
+    firstValidBin = [np.min(bpb) for bpb in bpbPerTrial]
+    lastValidBin = [np.min(bpb) for bpb in bpbPerTrial]
+
+    if len(distStep)==1:
+        # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins)
+        for trial,fvb in enumerate(firstValidBin):
+            occmap[trial,:fvb] = np.nan
+            speedmap[trial,:fvb] = np.nan
+        for trial,lvb in enumerate(lastValidBin):
+            occmap[trial,lvb+1:] = np.nan
+            speedmap[trial,lvb+1:] = np.nan
+
+    else:
+        # Create spatial smoothing kernel 
+        kk = bf.getGaussKernel(distcenter, distStep[1])
+
+        # Smooth maps and correct speed map to be an average across time
+        occmap = sp.ndimage.convolve1d(occmap, kk, axis=1)
+        speedmap = sp.ndimage.convolve1d(speedmap, kk, axis=1)
+        correctMap(occmap, speedmap)
+
+        # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins) -- do this after convolution!
+        for trial,fvb in enumerate(firstValidBin):
+            occmap[trial,:fvb] = np.nan
+            speedmap[trial,:fvb] = np.nan
+        for trial,lvb in enumerate(lastValidBin):
+            occmap[trial,lvb+1:] = np.nan
+            speedmap[trial,lvb+1:] = np.nan            
+
+        dsFactor = int(distStep[1]/distStep[0])
+        occmap = np.mean(np.reshape(occmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
+        speedmap = np.mean(np.reshape(speedmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
+        distvec = np.linspace(0,roomLength,int(numPosition/dsFactor)+1)
+
+    return occmap, speedmap, distvec
+
+def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, speedThreshold=0, standardizeSpks=True, doSmoothing=None):
+    # frameTrialIdx, framePosition, frameSpeed = vrexp.getFrameBehavior()
+    framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distvec)-1, np.nan)
+
+    # Now make spike map using frame position
+    spks = vrexp.loadone('neuron.frame.spks')
+    if standardizeSpks:
+        spks = (spks - np.median(spks,axis=1,keepdims=True)) / np.std(spks,axis=1,keepdims=True)
+    spkmap = np.zeros((vrexp.value['numTrials'],len(distvec)-1,vrexp.value['numROIs']))
+    count = np.zeros((vrexp.value['numTrials'],len(distvec)-1))
+
+    getSpkMap(spks.T, frameTrialIdx, framePositionBin, spkmap, count)
+    spkmap = np.transpose(spkmap,(2,0,1)) # convert to smart indices
+
+    if doSmoothing is not None:
+        kk = bf.getGaussKernel(bf.edge2center(distvec),doSmoothing)
+        idxnan = np.isnan(spkmap)
+        spkmap[idxnan]=0
+        spkmap = bf.convolveToeplitz(spkmap, kk, mode='same')
+        spkmap[idxnan]=np.nan
+
+    return spkmap
+    
+def measureReliability(spkmap, numcv=3, numRepeats=1):
+    """
+    Function to measure spatial reliability of spiking in the spkmap. 
+    spkmap is (numROIs, numTrials, numPositions), trialIdx should be a valid index to the numTrials axis of spkmap.
+    returns:
+    
+    """
+    if np.any(np.isnan(spkmap)): print("spkmap has nans")
+    spkmap = spkmap.transpose(1,2,0)
+    numTrials,numPosition,numROIs = spkmap.shape
+    mse = np.zeros(numROIs)
+    cor = np.zeros(numROIs)
+    for repeat in range(numRepeats):
+        foldIdx = cvFoldSplit(numTrials, numcv)
+        for fold in range(numcv):
+            cTrainTrial = np.concatenate(foldIdx[:fold]+foldIdx[fold+1:])
+            cTestTrial = foldIdx[fold]
+            trainProfile = np.mean(spkmap[cTrainTrial],axis=0)
+            testProfile = np.mean(spkmap[cTestTrial],axis=0)
+            meanTrain = np.mean(trainProfile,axis=0,keepdims=True) # mean across positions for each ROI
+            meanTest = np.mean(testProfile,axis=0,keepdims=True)
+            numerator = np.sum((testProfile-trainProfile)**2,axis=0)
+            denominator = np.sum((testProfile-meanTrain)**2,axis=0)
+            mse += (1 - numerator/denominator)
+            cor += vectorCorrelation(trainProfile, testProfile)
+    mse /= (numcv*numRepeats)
+    cor /= (numcv*numRepeats)
+    return mse,cor
+
+
+# ---------------------------------- numba code for speedups ---------------------------------
+@nb.njit(parallel=True)
+def getMap(valueToSum, trialidx, positionbin, smap):
+    # this is the fastest way to get a single summation map
+    # -- accepts 1d arrays value, trialidx, positionbin of the same size --
+    # -- shape determines the number of trials and position bins (they might not all be represented in trialidx or positionbin, or we could just do np.max()) --
+    # -- each value represents some number to be summed as a function of which trial it was in and which positionbin it was in --
+    for sample in nb.prange(len(valueToSum)):
+        smap[trialidx[sample]][positionbin[sample]] += valueToSum[sample]
+
+@nb.njit(parallel=True)
+def getMaps(valueToSum, valueToAverage, trialidx, positionbin, smap, amap, correctValueToAverage=True):
+    # this is the fastest way to get a summation map and an average map (using summation to correct)
+    # -- smap is computed just as smap is computed in the function getMap() --
+    # -- amap is first computed as smap, but requires correction for the time spent (i.e. it is an average signal rather than an accumulating signal) --
+    # -- after smap and amap are computed, go through each element and divide by to-be-averaged signal (amap[t,p]) by time spent (smap[t,p]) if time spent is greater than 0 --
+    # -- there is a switch for not correcting value to average because sometimes they are computed with a very small spatial resolution and then convolved across spatial position before averaging across time --
+    for sample in nb.prange(len(valueToSum)):
+        smap[trialidx[sample]][positionbin[sample]] += valueToSum[sample]
+        amap[trialidx[sample]][positionbin[sample]] += valueToAverage[sample]
+    if correctValueToAverage:
+        for t in nb.prange(smap.shape[0]):
+            for p in nb.prange(smap.shape[1]):
+                if smap[t,p]>0:
+                    amap[t,p] /= smap[t,p]
+
+@nb.njit(parallel=True)
+def correctMap(smap, amap):
+    # this is the fastest way to correct a summation map (amap) by time spent (smap) if they were computed separately and the summation map should be averaged across time
+    for t in nb.prange(smap.shape[0]):
+        for p in nb.prange(smap.shape[1]):
+            if smap[t,p]>0:
+                amap[t,p] /= smap[t,p]
+
+@nb.njit(parallel=True)
+def behaveToFrame(behavePosition,behaveTrialIdx,idxBehaveToFrame,distBehaveToFrame,distanceCutoff,framePosition,frameTrialIdx,count):
+    for sample in nb.prange(len(behavePosition)):
+        if distBehaveToFrame[sample]<=distanceCutoff:
+            framePosition[idxBehaveToFrame[sample]] += behavePosition[sample]
+            frameTrialIdx[idxBehaveToFrame[sample]] += behaveTrialIdx[sample]
+            count[idxBehaveToFrame[sample]] += 1
+    for sample in nb.prange(len(count)):
+        if count[sample]>0:
+            framePosition[sample] /= count[sample]
+            frameTrialIdx[sample] /= count[sample]
+
+
+@nb.njit(parallel=True)
+def getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap, count):
+    for sample in nb.prange(len(frameTrialIdx)):
+        if not np.isnan(frameTrialIdx[sample]):
+            spkmap[int(frameTrialIdx[sample])][int(framePositionBin[sample])] += spks[sample]
+            count[int(frameTrialIdx[sample])][int(framePositionBin[sample])] += 1
+    for ii in nb.prange(count.shape[0]):
+        for jj in nb.prange(count.shape[1]):
+            if count[ii][jj] > 0:
+                spkmap[ii][jj] /= count[ii][jj]
+                
+
+                
+# ============================================================================================================================================
