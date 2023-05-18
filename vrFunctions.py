@@ -28,12 +28,12 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     behavePositionBin = np.digitize(behavePosition,distvec)-1
     behaveTrialIdx = vrexp.getBehaveTrialIdx(trialStartSample)
     withinTrialSample = np.append(np.diff(behaveTrialIdx)==0, True)
-
+    
     sampleDuration = np.append(np.diff(behaveTimeStamps),0) # time between samples, assume zero time was spent in last sample for each trial
     behaveSpeed = np.append(np.diff(behavePosition)/sampleDuration[:-1], 0)
     sampleDurationThresholded = sampleDuration * (behaveSpeed >= speedThreshold) * withinTrialSample
     behaveSpeedThresholded = behaveSpeed * (behaveSpeed >= speedThreshold) * withinTrialSample
-
+    
     # Get high resolution occupancy and speed maps 
     occmap = np.zeros((vrexp.value['numTrials'],numPosition))
     speedmap = np.zeros((vrexp.value['numTrials'],numPosition))
@@ -42,8 +42,8 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     # Figure out the valid range (outside of this range, set the maps to nan, because their values are not meaningful)
     bpbPerTrial = vrexp.groupBehaveByTrial(behavePositionBin, trialStartSample)
     firstValidBin = [np.min(bpb) for bpb in bpbPerTrial]
-    lastValidBin = [np.min(bpb) for bpb in bpbPerTrial]
-
+    lastValidBin = [np.max(bpb) for bpb in bpbPerTrial]
+    
     if len(distStep)==1:
         # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins)
         for trial,fvb in enumerate(firstValidBin):
@@ -77,7 +77,7 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
 
     return occmap, speedmap, distvec
 
-def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, speedThreshold=0, standardizeSpks=True, doSmoothing=None):
+def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, omap, correctNan=True, speedThreshold=0, useAverage=True, standardizeSpks=True, doSmoothing=None):
     # frameTrialIdx, framePosition, frameSpeed = vrexp.getFrameBehavior()
     framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distvec)-1, np.nan)
 
@@ -88,32 +88,35 @@ def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, speedT
     spkmap = np.zeros((vrexp.value['numTrials'],len(distvec)-1,vrexp.value['numROIs']))
     count = np.zeros((vrexp.value['numTrials'],len(distvec)-1))
 
-    getSpkMap(spks.T, frameTrialIdx, framePositionBin, spkmap, count)
+    getSpkMap(spks.T, frameTrialIdx, framePositionBin, spkmap, count, useAverage=useAverage)
     spkmap = np.transpose(spkmap,(2,0,1)) # convert to smart indices
 
-    if doSmoothing is not None:
+    if doSmoothing:
         kk = bf.getGaussKernel(bf.edge2center(distvec),doSmoothing)
         idxnan = np.isnan(spkmap)
         spkmap[idxnan]=0
         spkmap = bf.convolveToeplitz(spkmap, kk, mode='same')
         spkmap[idxnan]=np.nan
-
-    return spkmap
+    
+    assert omap.shape==spkmap.shape[1:], "occupancy map and spkmap do not have same number of trials and/or spatial bins"
+    spkmap[:,np.isnan(omap)]=np.nan # correct for nans where there is not positional data in omap
+    
+    return spkmap, count
     
 def measureReliability(spkmap, numcv=3, numRepeats=1):
     """
     Function to measure spatial reliability of spiking in the spkmap. 
     spkmap is (numROIs, numTrials, numPositions), trialIdx should be a valid index to the numTrials axis of spkmap.
-    returns:
-    
+    cross-validated estimate of reliability by measuring spatial profile on training trials and predicting test trials 
+    returns two measures of reliability- one compares prediction of estimate based on training profile or training mean, and one based on correlation between train/test 
     """
-    if np.any(np.isnan(spkmap)): print("spkmap has nans")
+    assert not np.any(np.isnan(spkmap)), "spkmap has nans, remove incomplete trials or just measure reliability for valid positions"
     spkmap = spkmap.transpose(1,2,0)
     numTrials,numPosition,numROIs = spkmap.shape
-    mse = np.zeros(numROIs)
-    cor = np.zeros(numROIs)
+    relmse = np.zeros(numROIs)
+    relcor = np.zeros(numROIs)
     for repeat in range(numRepeats):
-        foldIdx = cvFoldSplit(numTrials, numcv)
+        foldIdx = bf.cvFoldSplit(numTrials, numcv)
         for fold in range(numcv):
             cTrainTrial = np.concatenate(foldIdx[:fold]+foldIdx[fold+1:])
             cTestTrial = foldIdx[fold]
@@ -123,11 +126,32 @@ def measureReliability(spkmap, numcv=3, numRepeats=1):
             meanTest = np.mean(testProfile,axis=0,keepdims=True)
             numerator = np.sum((testProfile-trainProfile)**2,axis=0)
             denominator = np.sum((testProfile-meanTrain)**2,axis=0)
-            mse += (1 - numerator/denominator)
-            cor += vectorCorrelation(trainProfile, testProfile)
-    mse /= (numcv*numRepeats)
-    cor /= (numcv*numRepeats)
-    return mse,cor
+            relmse += (1 - numerator/denominator)
+            relcor += bf.vectorCorrelation(trainProfile, testProfile)
+    relmse /= (numcv*numRepeats)
+    relcor /= (numcv*numRepeats)
+    return relmse,relcor
+
+def measureSpatialInformation(omap, spkmap):
+    """
+    measure the spatial information of spiking for each ROI using the formula in this paper:
+    https://proceedings.neurips.cc/paper/1992/file/5dd9db5e033da9c6fb5ba83c7a7ebea9-Paper.pdf
+    information = sum_x (meanRate(x) * log2(meanRate(x)/meanRate) * prob(x) dx)
+    occmap is a (trial x position) occupancy map
+    spkmap is an (ROI x trial x position) map of the average firing rate in each spatial bin
+    omap and spkmap must be nonegative as they represent probability distributions here
+    """
+    assert np.all(omap>=0) and np.all(~np.isnan(omap)), "occupancy map must be nonnegative and not have any nans"
+    assert np.all(spkmap>=0) and np.all(~np.isnan(spkmap)), "spkmap must be nonnegative and not have any nans"
+    probOcc = np.sum(omap,axis=0) / np.sum(omap) # probability of occupying each spatial position (Position,)
+    meanSpkPerPos = np.mean(spkmap,axis=1) # mean spiking in each spatial position (ROI x Position)
+    meanRoi = np.mean(meanSpkPerPos,axis=1,keepdims=True) # mean spiking for each ROI (ROI,)
+    logTerm = meanSpkPerPos / meanRoi # ratio of mean in each position to overall mean 
+    validLog = logTerm > 0 # in mutual information, log2(x)=[log2(x) if x>0 else 0]
+    logTerm[validLog]=np.log2(logTerm[validLog])
+    logTerm[~validLog]=0
+    spInfo = np.sum(meanSpkPerPos * logTerm * probOcc, axis=1)
+    return spInfo
 
 
 # ---------------------------------- numba code for speedups ---------------------------------
@@ -178,16 +202,17 @@ def behaveToFrame(behavePosition,behaveTrialIdx,idxBehaveToFrame,distBehaveToFra
 
 
 @nb.njit(parallel=True)
-def getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap, count):
+def getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap, count, useAverage=True):
     for sample in nb.prange(len(frameTrialIdx)):
         if not np.isnan(frameTrialIdx[sample]):
             spkmap[int(frameTrialIdx[sample])][int(framePositionBin[sample])] += spks[sample]
             count[int(frameTrialIdx[sample])][int(framePositionBin[sample])] += 1
-    for ii in nb.prange(count.shape[0]):
-        for jj in nb.prange(count.shape[1]):
-            if count[ii][jj] > 0:
-                spkmap[ii][jj] /= count[ii][jj]
-                
+    if useAverage:
+        for ii in nb.prange(count.shape[0]):
+            for jj in nb.prange(count.shape[1]):
+                if count[ii][jj] > 0:
+                    spkmap[ii][jj] /= count[ii][jj]
+
 
                 
 # ============================================================================================================================================

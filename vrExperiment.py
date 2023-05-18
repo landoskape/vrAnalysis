@@ -8,6 +8,7 @@ from tqdm import tqdm
 from pathlib import Path 
 import json
 from numpyencoder import NumpyEncoder
+import vrFunctions as vrf
 import basicFunctions as bf
 
 
@@ -106,7 +107,7 @@ class vrExperiment:
         framePosition = np.zeros(self.value['numFrames'])
         frameTrialIdx = np.zeros(self.value['numFrames'])
         count = np.zeros(self.value['numFrames'])
-        behaveToFrame(behavePosition,behaveTrialIdx,idxBehaveToFrame,distBehaveToFrame,1/2/samplingRate,framePosition,frameTrialIdx,count)
+        vrf.behaveToFrame(behavePosition,behaveTrialIdx,idxBehaveToFrame,distBehaveToFrame,1/2/samplingRate,framePosition,frameTrialIdx,count)
         framePosition[count==0]=np.nan
         frameTrialIdx[count==0]=np.nan
         assert np.min(frameTrialIdx[count>0])==0 and np.max(frameTrialIdx[count>0])==self.value['numTrials']-1, "frameTrialIdx doesn't have correct number of trials"
