@@ -98,10 +98,11 @@ def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, omap, 
         spkmap = bf.convolveToeplitz(spkmap, kk, mode='same')
         spkmap[idxnan]=np.nan
     
+    # correct for nans where there is not positional data in omap
     assert omap.shape==spkmap.shape[1:], "occupancy map and spkmap do not have same number of trials and/or spatial bins"
-    spkmap[:,np.isnan(omap)]=np.nan # correct for nans where there is not positional data in omap
+    spkmap[:,np.isnan(omap)]=np.nan 
     
-    return spkmap, count
+    return spkmap
     
 def measureReliability(spkmap, numcv=3, numRepeats=1):
     """
