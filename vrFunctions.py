@@ -12,7 +12,7 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     if len(distStep)>1:
         assert len(distStep)==2 and distStep[1]>distStep[0] and isinstance(distStep[0],int) and isinstance(distStep[1],int), "distStep should be a two element tuple of ints increasing in size"
     else:
-        distStep = (distStep)
+        if not isinstance(distStep, tuple): distStep = (distStep)
 
     roomLength = vrexp.loadone('trial.roomLength')
     assert np.unique(roomLength).size==1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"

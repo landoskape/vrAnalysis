@@ -16,3 +16,4 @@ dependencies:
     - scipy>=1.4.0
     - torch>=1.7.1
     - natsort
+    - numpyencoder
