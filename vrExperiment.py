@@ -520,9 +520,9 @@ class vrExperimentRegistration(vrExperiment):
         except:
             vrFile = scio.loadmat(vrFileName,struct_as_record=False,squeeze_me=True)
             if 'getEnvName' in dir(vrFile['expInfo']): 
-                print(f"Error generated in session: {self.sessionPrint()}. Loadmat fails in this context when the matlab struct contains an anonymous function, in this case 'getEnvName'.")
+                print(f"In session: {self.sessionPrint()}, failed to load vrFile as a simplified_cell due to the 'getEnvName' anonymous function. Continuing with struct_as_record==False and squeeze_me==True")
                 print(f"The problem can be solved by adding a boolean statement to _has_struct(elem) in scipy.io.matlab._mio5.py, make sure (elem.ndim>0) before asking for elem[0]")
-                raise ValueError("Fix your scipy code before continuing")
+                # raise ValueError("Fix your scipy code before continuing")
             else:
                 print(f"Error generated in session: {self.sessionPrint()}. vrFile['expInfo'] does not contain the anonymous function 'getEnvName', so I don't know why it didn't work!")
                 raise ValueError("Inspect the vrFile to understand why this didn't work before continuing")
