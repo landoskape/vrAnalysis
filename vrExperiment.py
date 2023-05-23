@@ -295,13 +295,13 @@ class vrExperimentRegistration(vrExperiment):
         
         expInfo = self.vrFile['expInfo']
         trialInfo = self.vrFile['trialInfo']
-        self.registerValue('numTrials',np.sum(trialInfo['trialIdx']>0))
-        print("Self.value['numTrials'] set by trialInfo['trialIdx']>0, but this might not be right. There might be smarter ways to determine which trials are 'good' trials...")
+        self.registerValue('numTrials',np.sum(trialInfo.trialIdx>0))
+        print("Self.value['numTrials'] set by trialInfo.trialIdx>0, but this might not be right. There might be smarter ways to determine which trials are 'good' trials...")
         
         # trialInfo contains sparse matrices of size (maxTrials, maxSamples), where numTrials<maxTrials and numSamples<maxSamples
-        nzindex = self.createIndex(self.convertDense(trialInfo['time']))
-        timeStamps = self.getVRData(self.convertDense(trialInfo['time']),nzindex)
-        roomPosition = self.getVRData(self.convertDense(trialInfo['roomPosition']),nzindex)
+        nzindex = self.createIndex(self.convertDense(trialInfo.time))
+        timeStamps = self.getVRData(self.convertDense(trialInfo.time),nzindex)
+        roomPosition = self.getVRData(self.convertDense(trialInfo.roomPosition),nzindex)
         
         # oneData with behave prefix is a (numBehavioralSamples, ) shaped array conveying information about the state of VR  
         numTimeStamps = np.array([len(t) for t in timeStamps]) # list of number of behavioral timestamps in each trial 
@@ -315,17 +315,17 @@ class vrExperimentRegistration(vrExperiment):
 
         # oneData with trial prefix is a (numTrials,) shaped array conveying information about the state on each trial
         trialStartFrame = np.array([0,*np.cumsum(numTimeStamps)[:-1]]).astype(np.int64)
-        trialEnvironmentIndex = self.convertDense(trialInfo['vrEnvIdx']).astype(np.int16) if 'vrEnvIdx' in trialInfo.keys() else -1*np.ones(self.value['numTrials'],dtype=np.int16)
-        trialRoomLength = expInfo['roomLength'][:self.value['numTrials']]
-        trialMovementGain = expInfo['mvmtGain'][:self.value['numTrials']]
-        trialRewardPosition = self.convertDense(trialInfo['rewardPosition'])
-        trialRewardTolerance = self.convertDense(trialInfo['rewardTolerance'])
-        trialRewardAvailability = self.convertDense(trialInfo['rewardAvailable']).astype(np.bool_)
-        rewardDelivery = self.convertDense(trialInfo['rewardDeliveryFrame']).astype(np.int64)-1 # get reward delivery frame (frame within trial) first (will be -1 if no reward delivered)
+        trialEnvironmentIndex = self.convertDense(trialInfo.vrEnvIdx).astype(np.int16) if 'vrEnvIdx' in trialInfo._fieldnames else -1*np.ones(self.value['numTrials'],dtype=np.int16)
+        trialRoomLength = expInfo.roomLength[:self.value['numTrials']]
+        trialMovementGain = expInfo.mvmtGain[:self.value['numTrials']]
+        trialRewardPosition = self.convertDense(trialInfo.rewardPosition)
+        trialRewardTolerance = self.convertDense(trialInfo.rewardTolerance)
+        trialRewardAvailability = self.convertDense(trialInfo.rewardAvailable).astype(np.bool_)
+        rewardDelivery = self.convertDense(trialInfo.rewardDeliveryFrame).astype(np.int64)-1 # get reward delivery frame (frame within trial) first (will be -1 if no reward delivered)
         # adjust frame count to behave arrays
         trialRewardDelivery = np.array([rewardDelivery + np.sum(numTimeStamps[:trialIdx]) if rewardDelivery>=0 else rewardDelivery for (trialIdx, rewardDelivery) in enumerate(rewardDelivery)]) 
-        trialActiveLicking = self.convertDense(trialInfo['activeLicking']).astype(np.bool_)
-        trialActiveStopping = self.convertDense(trialInfo['activeStopping']).astype(np.bool_)
+        trialActiveLicking = self.convertDense(trialInfo.activeLicking).astype(np.bool_)
+        trialActiveStopping = self.convertDense(trialInfo.activeStopping).astype(np.bool_)
         
         # Check shapes and sizes
         assert trialEnvironmentIndex.ndim==1 and len(trialEnvironmentIndex)==self.value['numTrials'], "trialEnvironmentIndex is not a (numTrials,) shaped array!"
@@ -333,7 +333,7 @@ class vrExperimentRegistration(vrExperiment):
                 trialRewardAvailability.shape == trialRewardDelivery.shape == trialActiveLicking.shape == trialActiveStopping.shape, "trial oneData arrays do not have the same shape!"
         
         # oneData with lick prefix is a (numLicks,) shaped array containing information about each lick during VR behavior
-        licks = self.getVRData(self.convertDense(trialInfo['lick']),nzindex)
+        licks = self.getVRData(self.convertDense(trialInfo.lick),nzindex)
         lickFrames = [np.nonzero(licks)[0] for licks in licks]
         lickCounts = np.concatenate([licks[lickFrames] for (licks,lickFrames) in zip(licks,lickFrames)])
         lickTrials = np.concatenate([tidx*np.ones_like(lickFrames) for (tidx,lickFrames) in enumerate(lickFrames)])
@@ -515,22 +515,10 @@ class vrExperimentRegistration(vrExperiment):
     # -------------------------------------- methods for handling vrBehavior data produced by vrControl ------------------------------------------------------------
     def loadBehaviorStructure(self):
         vrFileName = self.sessionPath() / f"{self.dateString}_{self.session}_{self.mouseName}_VRBehavior_trial.mat" # vrBehavior output file name
-        try:
-            vrFile = scio.loadmat(vrFileName,simplify_cells=True) #,simplify_cells=True) # load matlab structure
-        except:
-            vrFile = scio.loadmat(vrFileName,struct_as_record=False,squeeze_me=True)
-            if 'getEnvName' in dir(vrFile['expInfo']): 
-                print(f"In session: {self.sessionPrint()}, failed to load vrFile as a simplified_cell due to the 'getEnvName' anonymous function. Continuing with struct_as_record==False and squeeze_me==True")
-                print(f"The problem can be solved by adding a boolean statement to _has_struct(elem) in scipy.io.matlab._mio5.py, make sure (elem.ndim>0) before asking for elem[0]")
-                # raise ValueError("Fix your scipy code before continuing")
-            else:
-                print(f"Error generated in session: {self.sessionPrint()}. vrFile['expInfo'] does not contain the anonymous function 'getEnvName', so I don't know why it didn't work!")
-                raise ValueError("Inspect the vrFile to understand why this didn't work before continuing")
-        
+        vrFile = scio.loadmat(vrFileName,struct_as_record=False,squeeze_me=True)
         if 'rigInfo' not in vrFile.keys():
             print(f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2!")
             vrFile['rigInfo'] = {'computerName':'ZINKO','rotEncPos':'left','rotEncSign':-1,'wheelToVR':4000,'wheelRadius':9.75,'rotaryRange':32} # save dictionary with default B2 settings
-            
         return vrFile
     
     def convertDense(self, data):
