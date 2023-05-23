@@ -8,7 +8,6 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     # Produce occupancy map and speed map using numba speed ups
     # distStep is a two element tuple of integers - the first defines the spatial resolution of the initial measurement, the second defines the spatial filtering and the downsampling factor
     # First computes the maps with high resolution, then spatially smooths them, then downsamples them
-    print("Lick map should be included in 'getBehaviorMaps' eventually!")
     if len(distStep)>1:
         assert len(distStep)==2 and distStep[1]>distStep[0] and isinstance(distStep[0],int) and isinstance(distStep[1],int), "distStep should be a two element tuple of ints increasing in size"
     else:
@@ -24,9 +23,12 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     trialStartSample = vrexp.loadone('trial.startBehaveSample')
     behaveTimeStamps = vrexp.loadone('behave.timeStamps')
     behavePosition = vrexp.loadone('behave.position')
+    lickSamples = vrexp.loadone('lick.behavesample') # list of behave sample for each lick
 
-    behavePositionBin = np.digitize(behavePosition,distvec)-1
-    behaveTrialIdx = vrexp.getBehaveTrialIdx(trialStartSample)
+    behavePositionBin = np.digitize(behavePosition,distvec)-1 # index of position bin for each sample
+    lickPositionBin = behavePositionBin[lickSamples] # index of position bin for each lick
+    behaveTrialIdx = vrexp.getBehaveTrialIdx(trialStartSample) # array of trial index for each sample
+    lickTrialIdx = behaveTrialIdx[lickSamples] # trial index of each lick
     withinTrialSample = np.append(np.diff(behaveTrialIdx)==0, True)
     
     sampleDuration = np.append(np.diff(behaveTimeStamps),0) # time between samples, assume zero time was spent in last sample for each trial
@@ -37,7 +39,9 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     # Get high resolution occupancy and speed maps 
     occmap = np.zeros((vrexp.value['numTrials'],numPosition))
     speedmap = np.zeros((vrexp.value['numTrials'],numPosition))
+    lickmap = np.zeros((vrexp.value['numTrials'],numPosition))
     getMaps(sampleDurationThresholded, behaveSpeedThresholded, behaveTrialIdx, behavePositionBin, occmap, speedmap)
+    getMap(np.ones_like(lickSamples), lickTrialIdx, lickPositionBin, lickmap)
 
     # Figure out the valid range (outside of this range, set the maps to nan, because their values are not meaningful)
     bpbPerTrial = vrexp.groupBehaveByTrial(behavePositionBin, trialStartSample)
@@ -49,17 +53,19 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
         for trial,fvb in enumerate(firstValidBin):
             occmap[trial,:fvb] = np.nan
             speedmap[trial,:fvb] = np.nan
+            lickmap[trial,:fvb] = np.nan
         for trial,lvb in enumerate(lastValidBin):
             occmap[trial,lvb+1:] = np.nan
             speedmap[trial,lvb+1:] = np.nan
+            lickmap[trial,lvb+1:] = np.nan
 
     else:
         # Create spatial smoothing kernel 
         kk = bf.getGaussKernel(distcenter, distStep[1])
 
-        # Smooth maps and correct speed map to be an average across time
-        occmap = sp.ndimage.convolve1d(occmap, kk, axis=1)
-        speedmap = sp.ndimage.convolve1d(speedmap, kk, axis=1)
+        # Smooth maps and correct speed map to be an average across time (don't smooth out licks, we're going to sum not average)
+        occmap = bf.convolveToeplitz(occmap, kk, axis=1)
+        speedmap = bf.convolveToeplitz(speedmap, kk, axis=1)
         correctMap(occmap, speedmap)
 
         # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins) -- do this after convolution!
@@ -73,9 +79,10 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
         dsFactor = int(distStep[1]/distStep[0])
         occmap = np.mean(np.reshape(occmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
         speedmap = np.mean(np.reshape(speedmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
+        lickmap = np.sum(np.reshape(lickmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2) # sum licks for each position (don't take average)
         distvec = np.linspace(0,roomLength,int(numPosition/dsFactor)+1)
 
-    return occmap, speedmap, distvec
+    return occmap, speedmap, lickmap, distvec
 
 def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, omap, correctNan=True, speedThreshold=0, useAverage=True, standardizeSpks=True, doSmoothing=None):
     # frameTrialIdx, framePosition, frameSpeed = vrexp.getFrameBehavior()

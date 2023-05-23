@@ -346,6 +346,7 @@ class vrExperimentRegistration(vrExperiment):
 
             assert len(lickBehaveSample)==np.sum(lickCounts), "the number of licks counted by vrBehavior is not equal to the length of the lickBehaveSample vector!"
             assert lickBehaveSample.ndim==1, "lickBehaveIndex is not a 1-d array!"
+            assert 0<=np.max(lickBehaveSample)<=len(behaveTimeStamps), "lickBehaveSample contains index outside range of possible indices for behaveTimeStamps"
         else:
             # No licks found -- create empty array
             lickBehaveSample = np.array([],dtype=np.uint8)
@@ -372,6 +373,8 @@ class vrExperimentRegistration(vrExperiment):
         
         # Save lick onedata
         self.saveone(lickBehaveSample, 'lick.behavesample')
+        
+        # Confirm that vrBehavior has been processed
         self.preprocessing.append('vrBehavior')
         
     
