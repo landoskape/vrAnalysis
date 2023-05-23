@@ -91,15 +91,18 @@ def fivePointDer(signal,h,axis=-1,returnIndex=False):
     if returnIndex: return fpd, slice(2*h,N-2*h) # index of central points for each computation
     return fpd
 
-def convolveToeplitz(data, kk, mode='same'):
-    # convolve data on final axis using a toeplitz matrix of kk
-    # equivalent to np.convolve(data,kk,mode=mode) for each array in data
+def convolveToeplitz(data, kk, axis=-1, mode='same'):
+    # convolve data on requested axis (default:-1) using a toeplitz matrix of kk
+    # equivalent to np.convolve(data,kk,mode=mode) for each array on requested axis in data
+    assert -1 <= axis <= data.ndim, "requested axis does not exist"
+    data = np.moveaxis(data, axis, -1) # move target axis
     dataShape = data.shape
     convMat = sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T
     dataReshape = np.reshape(data, (-1, dataShape[-1]))
     output = dataReshape @ convMat
     newDataShape = (*dataShape[:-1],convMat.shape[1])
-    return np.reshape(output, newDataShape) # reshape back to shape of data (accounting for potential change in length on final axis)
+    output = np.reshape(output, newDataShape)
+    return np.moveaxis(output, -1, axis)
 
 def edge2center(edges):
     assert isinstance(edges, np.ndarray) and edges.ndim==1, "edges must be a 1-d numpy array"
