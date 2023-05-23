@@ -70,9 +70,10 @@ class vrExperiment:
         self.loadBuffer[fileName] = var
         np.save(self.onePath() / fileName, var)
 
-    def loadone(self,*names):
+    def loadone(self,*names,force=False):
+        # load one data from vrexp object. if available in loadBuffer, will grab it from there. force=True performs automatic reload, even if already in buffer
         fileName = self.oneFilename(*names)
-        if fileName in self.loadBuffer.keys():
+        if not force and fileName in self.loadBuffer.keys():
             return self.loadBuffer[fileName]
         else:
             oneVar = np.load(self.onePath() / fileName)
