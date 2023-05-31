@@ -91,6 +91,24 @@ def fivePointDer(signal,h,axis=-1,returnIndex=False):
     if returnIndex: return fpd, slice(2*h,N-2*h) # index of central points for each computation
     return fpd
 
+def phaseCorrelation(staticImage,shiftedImage,eps=0,window=None):
+    # phaseCorrelation computes the phase correlation between the two inputs
+    # the result is the fftshifted correlation map describing the phase-specific overlap after shifting "shiftedImage"
+    # softens ringing with eps when provided
+    # if provided, window should be a 1-d or 2-d window function (if 1-d, uses the outer product of itself)
+    assert staticImage.shape[-2:]==shiftedImage.shape[-2:], "images must have same shape in last two dimensions"
+    assert not (staticImage.ndim==3 and shiftedImage.ndim==3), "can do multiple comparisons, but only one of the static or shifted image can be 3-dimensional"
+    if window is not None:
+        if window.ndim==1: window = np.outer(window,window)
+        assert window.shape==staticImage.shape[-2:], "window must have same shape as images"
+        staticImage = window * staticImage
+        shiftedImage = window * shiftedImage
+    fftStatic = np.fft.fft2(staticImage)
+    fftShiftedConjugate = np.conjugate(np.fft.fft2(shiftedImage))
+    R = fftStatic * fftShiftedConjugate
+    R /= (eps+np.absolute(R))
+    return np.fft.fftshift(np.fft.ifft2(R).real, axes=(-2,-1))
+
 def convolveToeplitz(data, kk, axis=-1, mode='same'):
     # convolve data on requested axis (default:-1) using a toeplitz matrix of kk
     # equivalent to np.convolve(data,kk,mode=mode) for each array on requested axis in data
@@ -110,6 +128,7 @@ def edge2center(edges):
 
 def digitizeEqual(data, mn, mx, nbins):
     # digitizeEqual returns the bin of each element from data within each equally spaced bin between mn,mx
+    # (it's like np.digitize but faster and only works with equal bins)
     binidx = (data-mn)/(mx-mn)*float(nbins)
     binidx[binidx<0]=0
     binidx[binidx>nbins-1]=nbins-1
