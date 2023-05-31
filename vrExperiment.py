@@ -629,7 +629,7 @@ class redCellProcessing(vrExperiment):
         self.umPerPixel = 1 # store this for generating correct axes and measuring distances
         self.loadReferenceAndMasks() # prepare reference images and ROI mask data
         
-        
+    # -- initialization functions --
     def loadReferenceAndMasks(self):
         # load reference images
         ops = self.loadS2P('ops')
@@ -653,17 +653,20 @@ class redCellProcessing(vrExperiment):
         self.yDistRef = self.createCenteredAxis(self.ly, self.umPerPixel)
         self.xDistRef = self.createCenteredAxis(self.lx, self.umPerPixel)
     
+    # -- classification functions --
     def croppedPhaseCorrelation(self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x:np.hamming(x.shape[-1])):
         """
-        This returns the cropped phase correlation of each mask with the reference image.
+        This returns the phase correlation of each (cropped) mask with the (cropped) reference image.
         The default parameters (width=40um, eps=1e6, and a hamming window function) were tested on a few sessions and is purely subjective. 
         I recommend that if you use this function to determine which of your cells are red, you do manual curation and potentially update some of these parameters. 
         """
-        refStack = self.centeredReferenceStack(planeIdx=planeIdx,width=width)
-        maskStack = self.centeredMaskStack(planeIdx=planeIdx,width=width)
-        window = winFunc(refStack) # create window function
-        pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack,maskStack)])
+        refStack = self.centeredReferenceStack(planeIdx=planeIdx,width=width) # get stack of reference image centered on each ROI
+        maskStack = self.centeredMaskStack(planeIdx=planeIdx,width=width) # get stack of mask value centered on each ROI
+        window = winFunc(refStack) # create a window function
+        pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack,maskStack)]) # measure phase correlation 
         return refStack, maskStack, pxcStack
+        
+        
         
     def createCenteredAxis(self, numElements, scale=1):
         return scale*(np.arange(numElements)-(numElements-1)/2)
@@ -699,15 +702,7 @@ class redCellProcessing(vrExperiment):
                 xUse = (np.maximum(xc-numPixels,0),np.minimum(xc+numPixels+1,self.lx))
                 yMissing = (-np.minimum(yc-numPixels,0),-np.minimum(self.ly - (yc+numPixels+1),0))
                 xMissing = (-np.minimum(xc-numPixels,0),-np.minimum(self.lx - (xc+numPixels+1),0))
-
-                refYSlice = slice(yUse[0],yUse[1])
-                refXSlice = slice(xUse[0],xUse[1])
-                cRef = self.reference[plane][refYSlice].T[refXSlice].T
-                
-                stackYSlice = np.arange(yMissing[0],2*numPixels+1-yMissing[1])
-                stackXSlice = np.arange(xMissing[0],2*numPixels+1-xMissing[1])
-                stackXIndex,stackYIndex = np.meshgrid(stackXSlice,stackYSlice)
-                refStack[-1][idx,stackYIndex,stackXIndex] = cRef
+                refStack[-1][idx,yMissing[0]:2*numPixels+1-yMissing[1],xMissing[0]:2*numPixels+1-xMissing[1]] = self.reference[plane][yUse[0]:yUse[1],xUse[0]:xUse[1]]
         return np.concatenate(refStack,axis=0)
     
     def centeredMaskStack(self,planeIdx=None,width=15):
@@ -742,4 +737,5 @@ class redCellProcessing(vrExperiment):
                 cRoiIdx = idxRoiInPlane[roi]
                 roiMaskVolume[-1][roi,self.ypix[cRoiIdx],self.xpix[cRoiIdx]]=self.lam[cRoiIdx]
         return np.stack(roiMaskVolume)    
+    
     
