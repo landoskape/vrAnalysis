@@ -671,8 +671,9 @@ class redCellProcessing(vrExperiment):
         pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack,maskStack)]) # measure phase correlation 
         return refStack, maskStack, pxcStack
         
-    def computeDot(self, planeIdx=None):
+    def computeDot(self, planeIdx=None, lowcut=25, highcut=511, order=5, fs=1024):
         # start with this:
+        
         #filteredReference = bf.butterworthbpf(self.reference[planeIdx],lowcut,highcut,order=order,fs=fs)
         
         # from Matlab: redDot = (vRoiMask' * vFiltRef) ./ sqrt(sum(vRoiMask.^2,1)') / sqrt(sum(vFiltRef.^2)); % normalized dot product
