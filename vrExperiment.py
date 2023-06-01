@@ -629,7 +629,9 @@ class redCellProcessing(vrExperiment):
         self.umPerPixel = 1 # store this for generating correct axes and measuring distances
         self.loadReferenceAndMasks() # prepare reference images and ROI mask data
         
+    # ------------------------------
     # -- initialization functions --
+    # ------------------------------
     def loadReferenceAndMasks(self):
         # load reference images
         ops = self.loadS2P('ops')
@@ -653,7 +655,10 @@ class redCellProcessing(vrExperiment):
         self.yDistRef = self.createCenteredAxis(self.ly, self.umPerPixel)
         self.xDistRef = self.createCenteredAxis(self.lx, self.umPerPixel)
     
+    
+    # ------------------------------
     # -- classification functions --
+    # ------------------------------
     def croppedPhaseCorrelation(self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x:np.hamming(x.shape[-1])):
         """
         This returns the phase correlation of each (cropped) mask with the (cropped) reference image.
@@ -666,8 +671,16 @@ class redCellProcessing(vrExperiment):
         pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack,maskStack)]) # measure phase correlation 
         return refStack, maskStack, pxcStack
         
+    def computeDot(self, planeIdx=None):
+        # start with this:
+        #filteredReference = bf.butterworthbpf(self.reference[planeIdx],lowcut,highcut,order=order,fs=fs)
         
+        # from Matlab: redDot = (vRoiMask' * vFiltRef) ./ sqrt(sum(vRoiMask.^2,1)') / sqrt(sum(vFiltRef.^2)); % normalized dot product
+        return None
         
+    # --------------------------
+    # -- supporting functions --
+    # --------------------------
     def createCenteredAxis(self, numElements, scale=1):
         return scale*(np.arange(numElements)-(numElements-1)/2)
     

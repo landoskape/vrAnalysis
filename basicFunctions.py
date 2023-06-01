@@ -91,6 +91,39 @@ def fivePointDer(signal,h,axis=-1,returnIndex=False):
     if returnIndex: return fpd, slice(2*h,N-2*h) # index of central points for each computation
     return fpd
 
+def butterworthbpf(image, lowcut, highcut, order=1, fs=None):
+    """
+    2D butterworth filter in frequency domain
+    Maps the butterworth transfer function onto a 2D frequency grid corresponding to the fftshifted output out np.fft.fft2
+    If fs is None, then assumes that lowcut and highcut are in units of halfcycles/sample, just like scipy.signal.
+    """
+    assert highcut > lowcut, "highcut frequency should be greater than lowcut frequency"
+    assert lowcut >= 0, "frequencies must be nonnegative"
+    
+    # comment a little better -- and specify precisely what lowcut and highcut mean here, (with respect to pixel frequency)
+    ny,nx = image.shape[-2:]
+    ndfty,ndftx = 2*ny+1, 2*nx+1
+    
+    # establish frequency grid for ffts
+    if fs is None: fs=2 # as in scipy, this assumes the frequencies scale from 0 to 1, where 1 is the nyquist frequency
+    yfreq = np.fft.fftshift(np.fft.fftfreq(ndfty,1/fs)) # dft frequencies along x axis (second axis)
+    xfreq = np.fft.fftshift(np.fft.fftfreq(ndftx,1/fs)) # dft frequencies along y axis (first axis)
+    assert (highcut<=np.max(xfreq)) and (highcut<=np.max(yfreq)), "highcut is beyond frequencies estimatble from the request FFT"
+    freq = np.sqrt(yfreq.reshape(-1,1)**2 + xfreq.reshape(1,-1)**2) # 2-D dft frequencies corresponds to fftshifted fft2 output
+    
+    # create bandpass filter
+    gain = lambda freq,cutoff,order : 1/(1+(freq/cutoff)**(2*order)) # gain of butterworth filter
+    lowpass = gain(freq,lowcut,order) # establish lowpass filter gain
+    highpass = gain(freq,highcut,order) # establish highpass filter gain
+    bandpass = lowpass * (1-highpass) # bandpass filter gain in 2D corresponding to fftshifted fft2 output
+    
+    # measure fourier transform with extra points to ensure symmetric frequency spacing and good coverage
+    fftImage = np.fft.fftshift(np.fft.fft2(image, (ndfty,ndftx)), axes=(-2,-1))
+    
+    # filter image, shift back, take the real part
+    filteredImage = np.fft.ifft2(np.fft.ifftshift(bandpass * fftImage, axes=(-2,-1)))[:ny,:nx].real
+    return filteredImage, fftImage, bandpass, xfreq, yfreq # output everything for debugging
+
 def phaseCorrelation(staticImage,shiftedImage,eps=0,window=None):
     # phaseCorrelation computes the phase correlation between the two inputs
     # the result is the fftshifted correlation map describing the phase-specific overlap after shifting "shiftedImage"
