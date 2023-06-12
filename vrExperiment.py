@@ -671,14 +671,21 @@ class redCellProcessing(vrExperiment):
         pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack,maskStack)]) # measure phase correlation 
         return refStack, maskStack, pxcStack
         
-    def computeDot(self, planeIdx=None, lowcut=25, highcut=511, order=5, fs=1024):
-        # start with this:
+    def computeDot(self, planeIdx=None, lowcut=12, highcut=250, order=3, fs=512):
+        if planeIdx is None: planeIdx = np.arange(self.numPlanes)
+        if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
         
-        #filteredReference = bf.butterworthbpf(self.reference[planeIdx],lowcut,highcut,order=order,fs=fs)
+        dotProd = []
+        for plane in planeIdx:
+            cRoiIdx = np.where(self.roiPlaneIdx==plane)[0] # index of ROIs in this plane
+            bwReference = bf.butterworthbpf(self.reference[plane], lowcut, highcut, order=order, fs=fs) # filtered reference image
+            bwReference /= np.linalg.norm(bwReference) # adjust to norm for straightforward cosine angle
+            # compute normalized dot product for each ROI 
+            dotProd.append(np.array([bwReference[self.ypix[roi],self.xpix[roi]]@self.lam[roi]/np.linalg.norm(self.lam[roi]) for roi in cRoiIdx]))
         
-        # from Matlab: redDot = (vRoiMask' * vFiltRef) ./ sqrt(sum(vRoiMask.^2,1)') / sqrt(sum(vFiltRef.^2)); % normalized dot product
-        return None
-        
+        return np.concatenate(dotProd)
+    
+    
     # --------------------------
     # -- supporting functions --
     # --------------------------
@@ -704,7 +711,7 @@ class redCellProcessing(vrExperiment):
         # return stack of reference images centered on each ROI (+/- width um around ROI centroid)
         # if planeIdx is none, then returns across all planes
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
-        if isinstance(planeIdx,int): planeIdx=(planeIdx,) # make planeIdx iterable
+        if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
         numPixels = int(np.round(width / self.umPerPixel)) # numPixels to each side around the centroid
         refStack = []
         for plane in planeIdx:
@@ -723,7 +730,7 @@ class redCellProcessing(vrExperiment):
         # return stack of ROI Masks centered on each ROI (+/- width um around ROI centroid)
         # if planeIdx is none, then returns across all planes
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
-        if isinstance(planeIdx,int): planeIdx=(planeIdx,) # make planeIdx iterable
+        if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
         numPixels = int(np.round(width / self.umPerPixel)) # numPixels to each side around the centroid
         maskStack = []
         for plane in planeIdx:
@@ -741,7 +748,7 @@ class redCellProcessing(vrExperiment):
     
     def computeVolume(self,planeIdx=None):
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
-        if isinstance(planeIdx,int): planeIdx=(planeIdx,) # make it iterable
+        if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make it iterable
         assert all([0<=plane<self.numPlanes for plane in planeIdx]), f"in session: {self.sessionPrint()}, there are only {self.numPlanes} planes!"
         roiMaskVolume = []
         for plane in planeIdx:
@@ -750,6 +757,6 @@ class redCellProcessing(vrExperiment):
             for roi in range(self.value['roiPerPlane'][plane]):
                 cRoiIdx = idxRoiInPlane[roi]
                 roiMaskVolume[-1][roi,self.ypix[cRoiIdx],self.xpix[cRoiIdx]]=self.lam[cRoiIdx]
-        return np.stack(roiMaskVolume)    
+        return np.concatenate(roiMaskVolume,axis=0)    
     
     
