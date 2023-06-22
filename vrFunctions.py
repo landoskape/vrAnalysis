@@ -13,17 +13,17 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     else:
         if not isinstance(distStep, tuple): distStep = (distStep)
 
-    roomLength = vrexp.loadone('trial.roomLength')
+    roomLength = vrexp.loadone('trials.roomLength')
     assert np.unique(roomLength).size==1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
     roomLength = roomLength[0]
     numPosition = int(roomLength/distStep[0])
     distvec = np.linspace(0,roomLength,numPosition+1)
     distcenter = bf.edge2center(distvec)
-
-    trialStartSample = vrexp.loadone('trial.startBehaveSample')
-    behaveTimeStamps = vrexp.loadone('behave.timeStamps')
-    behavePosition = vrexp.loadone('behave.position')
-    lickSamples = vrexp.loadone('lick.behavesample') # list of behave sample for each lick
+    
+    trialStartSample = vrexp.loadone('trials.positionTracking')
+    behaveTimeStamps = vrexp.loadone('positionTracking.times')
+    behavePosition = vrexp.loadone('positionTracking.position')
+    lickSamples = vrexp.loadone('licksTracking.positionTracking') # list of behave sample for each lick
 
     behavePositionBin = np.digitize(behavePosition,distvec)-1 # index of position bin for each sample
     lickPositionBin = behavePositionBin[lickSamples] # index of position bin for each lick
@@ -89,7 +89,7 @@ def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, omap, 
     framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distvec)-1, np.nan)
 
     # Now make spike map using frame position
-    spks = vrexp.loadone('neuron.frame.spks')
+    spks = vrexp.loadone('mpci.roiActivityDeconvolved').T
     if standardizeSpks:
         spks = (spks - np.median(spks,axis=1,keepdims=True)) / np.std(spks,axis=1,keepdims=True)
     spkmap = np.zeros((vrexp.value['numTrials'],len(distvec)-1,vrexp.value['numROIs']))

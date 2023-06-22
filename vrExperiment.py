@@ -101,7 +101,7 @@ class vrExperiment:
 
     def oneFilename(self,*names):
         # create one filename given an arbitrary length list of names
-        return '.'.join([name.lower() for name in names])+'.npy'
+        return '.'.join(names)+'.npy'
     
     def clearBuffer(self,*names):
         # clear loadBuffer for data management
@@ -115,8 +115,8 @@ class vrExperiment:
     def loadfcorr(self,meanAdjusted=True,loadFromOne=True):
         # corrected fluorescence requires a special loading function because it isn't saved directly
         if loadFromOne:
-            F = self.loadone('neuron','frame','F')
-            Fneu = self.loadone('neuron','frame','Fneu')
+            F = self.loadone('mpci.roiActivityF').T
+            Fneu = self.loadone('mpci.roiNeuropilActivityF').T
         else:
             F = self.loadS2P('F')
             Fneu = self.loadS2P('Fneu')
@@ -154,17 +154,18 @@ class vrExperiment:
     # ---------------------------------------- postprocessing functions for translating behavior to imaging time frame -----------------------------------------------------
     def getFrameBehavior(self):
         # convert behavioral data to a timescale that is aligned with imaging data
-        trialStartSample = self.loadone('trial.startBehaveSample') # behavioral sample that each trial starts on
-        behavePosition = self.loadone('behave.position') # virtual position of each behavioral sample 
+        trialStartSample = self.loadone('trials.positionTracking') # behavioral sample that each trial starts on
+        behaveTimes = self.loadone('positionTracking.times') # time of each positionTracking sample
+        behavePosition = self.loadone('positionTracking.position') # virtual position of each behavioral sample 
         behaveTrialIdx = self.getBehaveTrialIdx(trialStartSample) # trial index of each behavioral sample
 
-        frameTimeStamps = self.loadone('timeline.timestamps')[self.loadone('frame.timelinesample')] # timestamps for each imaging frame
+        frameTimeStamps = self.loadone('mpci.times') # timestamps for each imaging frame
         samplingRate = 1/np.median(np.diff(frameTimeStamps)) # median sampling rate (can use self.value['samplingDeviationMedianPercentError'] to determine if this is smart)
         
         # behave timestamps has higher temporal resolution than frame timestamps, so we need to average over behavioral frames
-        idxBehaveToFrame = self.loadone('behave.idx2framesample') # frame index associated with each behavioral frame
-        distBehaveToFrame = self.loadone('behave.dist2framesample') # temporal difference between imaging frame and behavioral frame
-
+        idxBehaveToFrame = self.loadone('positionTracking.mpci') # mpci frame index associated with each behavioral frame
+        distBehaveToFrame = frameTimeStamps[idxBehaveToFrame] - behaveTimes
+        
         # get behavioral variables associated with each imaging frame (preallocate, then use special behaveToFrame numba function)
         framePosition = np.zeros(self.value['numFrames']) 
         frameTrialIdx = np.zeros(self.value['numFrames'])
@@ -332,13 +333,13 @@ class vrExperimentRegistration(vrExperiment):
         # Check shapes of timeline arrays
         assert timestamps.ndim==1, "timelineTimestamps is not a 1-d array!"
         assert timestamps.shape == rotaryPosition.shape, "timeline timestamps and rotary position arrays do not have the same shape!"
-            
+        
         # Save timeline oneData
-        self.saveone(timestamps, 'timeline.timestamps')
-        self.saveone(rotaryPosition, 'timeline.rotaryposition')
-        self.saveone(lickSamples, 'lick.timelinesample')
-        self.saveone(rewardSamples, 'reward.timelinesample')
-        self.saveone(timestamps[startTrialIndex], 'trial.starttimes')
+        self.saveone(timestamps, 'wheelPosition.times')
+        self.saveone(rotaryPosition, 'wheelPosition.position')
+        self.saveone(timestamps[lickSamples], 'licks.times')
+        self.saveone(timestamps[rewardSamples], 'rewards.times')
+        self.saveone(timestamps[startTrialIndex], 'trials.startTimes')
         self.preprocessing.append('timeline')
                 
     
@@ -404,27 +405,27 @@ class vrExperimentRegistration(vrExperiment):
             lickBehaveSample = np.array([],dtype=np.uint8)
         
         # Align behavioral timestamp data to timeline -- shift each trials timestamps so that they start at the time of the first photodiode flip (which is reliably detected)
-        trialStartOffsets = behaveTimeStamps[trialStartFrame] - self.loadone('trial.starttimes') # get offset
+        trialStartOffsets = behaveTimeStamps[trialStartFrame] - self.loadone('trials.startTimes') # get offset
         behaveTimeStamps = np.concatenate([bts - trialStartOffsets[tidx] for (tidx,bts) in enumerate(self.groupBehaveByTrial(behaveTimeStamps,trialStartFrame))])
-            
+        
         # Save behave onedata
-        self.saveone(behaveTimeStamps, 'behave.timestamps')
-        self.saveone(behavePosition,'behave.position')
+        self.saveone(behaveTimeStamps, 'positionTracking.times')
+        self.saveone(behavePosition, 'positionTracking.position')
         
         # Save trial onedata
-        self.saveone(trialStartFrame,'trial.startbehavesample')
-        self.saveone(trialEnvironmentIndex,'trial.environmentindex')
-        self.saveone(trialRoomLength, 'trial.roomlength')
-        self.saveone(trialMovementGain, 'trial.movementgain')
-        self.saveone(trialRewardPosition, 'trial.rewardposition')
-        self.saveone(trialRewardTolerance, 'trial.rewardtolerance')
-        self.saveone(trialRewardAvailability, 'trial.rewardavailability')
-        self.saveone(trialRewardDelivery, 'trial.rewardbehavesample')
-        self.saveone(trialActiveLicking, 'trial.activelicking')
-        self.saveone(trialActiveStopping, 'trial.activestopping')
+        self.saveone(trialStartFrame,'trials.positionTracking')
+        self.saveone(trialEnvironmentIndex,'trials.environmentIndex')
+        self.saveone(trialRoomLength, 'trials.roomlength')
+        self.saveone(trialMovementGain, 'trials.movementGain')
+        self.saveone(trialRewardPosition, 'trials.rewardPosition')
+        self.saveone(trialRewardTolerance, 'trials.rewardZoneHalfwidth')
+        self.saveone(trialRewardAvailability, 'trials.rewardAvailability')
+        self.saveone(trialRewardDelivery, 'trials.rewardPositionTracking')
+        self.saveone(trialActiveLicking, 'trials.activeLicking')
+        self.saveone(trialActiveStopping, 'trials.activeStopping')
         
         # Save lick onedata
-        self.saveone(lickBehaveSample, 'lick.behavesample')
+        self.saveone(lickBehaveSample, 'licksTracking.positionTracking')
         
         # Confirm that vrBehavior has been processed
         self.preprocessing.append('vrBehavior')
@@ -459,19 +460,21 @@ class vrExperimentRegistration(vrExperiment):
         self.registerValue('numFrames',np.min(self.value['framePerPlane'])) # number of frames to use when retrieving imaging data (might be overwritten to something smaller if timeline handled improperly)
         
         # Get timeline sample corresponding to each imaging volume
-        timelineTimestamps = self.loadone('timeline.timestamps')
+        timelineTimestamps = self.loadone('wheelPosition.times')
         changeFrames = np.append(0, np.diff(np.ceil(self.getTimelineVar('neuralFrames')/len(self.value['planeIDs']))))==1
         frameSamples = np.where(changeFrames)[0] # TTLs for each volume (increments by 1 for each plane)
         frame2time = timelineTimestamps[frameSamples] # get timelineTimestamps of each imaging volume
 
         # Handle mismatch between number of imaging frames saved by scanImage (and propagated through suite2p), and between timeline's measurement of the scanImage frame counter
-        if len(frameSamples)!=self.value['numFrames']:
-            if len(frameSamples)-1==self.value['numFrames']:
-                # If frameSamples had one more frame, just trim it and assume everything is fine. This happens when a new volume was started but not finished, so does not required communication to user.
+        if len(frame2time)!=self.value['numFrames']:
+            if len(frame2time)-1==self.value['numFrames']:
+                # If frame2time had one more frame, just trim it and assume everything is fine. This happens when a new volume was started but not finished, so does not required communication to user.
                 frameSamples = frameSamples[:-1]
-            elif len(frameSamples)-2==self.value['numFrames']:
-                print("frameSamples had 2 more than suite2p output. This happens sometimes. I don't like it. I think it's because scanimage sends a TTL before starting the frame")
+                frame2time = frame2time[:-1]
+            elif len(frame2time)-2==self.value['numFrames']:
+                print("frame2time had 2 more than suite2p output. This happens sometimes. I don't like it. I think it's because scanimage sends a TTL before starting the frame")
                 frameSamples = frameSamples[:-2]
+                frame2time = frame2time[:-2]
             else:
                 # If frameSamples has too few frames, it's possible that the scanImage signal to timeline was broken but scanImage still continued normally. 
                 numMissing = self.value['numFrames'] - len(frameSamples) # measure number of missing frames
@@ -497,7 +500,7 @@ class vrExperimentRegistration(vrExperiment):
         self.registerValue('samplingDeviationMaximumPercentError',np.exp(np.max(np.abs(np.log(np.diff(frame2time)/np.median(np.diff(frame2time)))))))
         
         # compute translation mapping from behave frames to imaging frames
-        idxBehaveToFrame,distBehaveToFrame = bf.nearestpoint(self.loadone('behave.timestamps'), frame2time)
+        idxBehaveToFrame,distBehaveToFrame = bf.nearestpoint(self.loadone('positionTracking.times'), frame2time)
 
         # recompute deconvolution if requested
         if self.opts['oasis']:
@@ -512,18 +515,18 @@ class vrExperimentRegistration(vrExperiment):
             spks = self.loadS2P('spks')
         
         # save onedata (no assertions needed, loadS2P() handles shape checks and this function already handled any mismatch between frameSamples and suite2p output
-        self.saveone(frameSamples, 'frame.timelinesample')
-        self.saveone(self.loadS2P('F'), 'neuron.frame.f')
-        self.saveone(self.loadS2P('Fneu'), 'neuron.frame.fneu')
-        self.saveone(spks, 'neuron.frame.spks')
+        self.saveone(frame2time, 'mpci.times')
+        self.saveone(self.loadS2P('F').T, 'mpci.roiActivityF')
+        self.saveone(self.loadS2P('Fneu').T, 'mpci.roiNeuropilActivityF')
+        self.saveone(spks.T, 'mpci.roiActivityDeconvolved')
         if 'redcell' in self.value['available']:
-            self.saveone(self.loadS2P('redcell'), 'neuron.redcell')
-        self.saveone(self.loadS2P('iscell'), 'neuron.iscell')
-        self.saveone(self.getPlaneIdx(), 'neuron.planeidx')
-        self.saveone(idxBehaveToFrame.astype(int), 'behave.idx2framesample')
-        self.saveone(distBehaveToFrame, 'behave.dist2framesample')
+            self.saveone(self.loadS2P('redcell'), 'mpciROIs.redCell')
+        self.saveone(self.loadS2P('iscell'), 'mpciROIs.isCell')
+        self.saveone(self.getPlaneIdx(), 'mpciROIs.planeIndex')
+        print("Convert mpciROIs.planeIndex to mpciROIs.stackPosition, with [X,Y,Z(planeIndex)] coordinate for each ROI!")
+        self.saveone(idxBehaveToFrame.astype(int), 'positionTracking.mpci')
         self.preprocessing.append('imaging')
-        
+    
     
     def processFacecam(self):
         print("Facecam preprocessing has not been coded yet!")
@@ -644,10 +647,10 @@ class redCellProcessing(vrExperiment):
         self.lam = [s['lam'] for s in stat]
         self.ypix = [s['ypix'] for s in stat]
         self.xpix = [s['xpix'] for s in stat]
-        self.roiPlaneIdx = self.loadone('neuron.planeidx')
+        self.roiPlaneIdx = self.loadone('mpciROIs.planeIndex')
         
         # load S2P red cell value
-        self.redS2P = self.loadone('neuron.redcell')[:,1] # (preloaded, will never change in this function)
+        self.redS2P = self.loadone('mpciROIs.redCell')[:,1] # (preloaded, will never change in this function)
         
         # create supporting variables for mapping locations and axes
         self.yBaseRef = np.arange(self.ly)
