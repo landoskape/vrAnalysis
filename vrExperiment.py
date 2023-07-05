@@ -272,6 +272,7 @@ class vrExperimentRegistration(vrExperiment):
         self.processBehavior()
         self.processImaging()
         self.processFacecam()
+        self.processBehavior2Imaging()
    
     # --------------------------------------------------------------- preprocessing methods ------------------------------------------------------------
     def processTimeline(self):
@@ -499,9 +500,6 @@ class vrExperimentRegistration(vrExperiment):
         self.registerValue('samplingDeviationMedianPercentError',np.exp(np.mean(np.abs(np.log(np.diff(frame2time)/np.median(np.diff(frame2time)))))))
         self.registerValue('samplingDeviationMaximumPercentError',np.exp(np.max(np.abs(np.log(np.diff(frame2time)/np.median(np.diff(frame2time)))))))
         
-        # compute translation mapping from behave frames to imaging frames
-        idxBehaveToFrame,distBehaveToFrame = bf.nearestpoint(self.loadone('positionTracking.times'), frame2time)
-
         # recompute deconvolution if requested
         if self.opts['oasis']:
             g = np.exp(-1/self.opts['tau']/self.opts['fs'])
@@ -524,13 +522,17 @@ class vrExperimentRegistration(vrExperiment):
         self.saveone(self.loadS2P('iscell'), 'mpciROIs.isCell')
         self.saveone(self.getPlaneIdx(), 'mpciROIs.planeIndex')
         print("Convert mpciROIs.planeIndex to mpciROIs.stackPosition, with [X,Y,Z(planeIndex)] coordinate for each ROI!")
-        self.saveone(idxBehaveToFrame.astype(int), 'positionTracking.mpci')
         self.preprocessing.append('imaging')
     
     
     def processFacecam(self):
         print("Facecam preprocessing has not been coded yet!")
     
+    def processBehavior2Imaging(self):
+        # compute translation mapping from behave frames to imaging frames
+        idxBehaveToFrame,distBehaveToFrame = bf.nearestpoint(self.loadone('positionTracking.times'), self.loadone('mpci.times'))
+        self.saveone(idxBehaveToFrame.astype(int), 'positionTracking.mpci')
+        
     
     def processRedCells(self):
         if 'redcell' not in self.value['available']:
@@ -672,23 +674,47 @@ class redCellProcessing(vrExperiment):
         maskStack = self.centeredMaskStack(planeIdx=planeIdx,width=width) # get stack of mask value centered on each ROI
         window = winFunc(refStack) # create a window function
         pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack,maskStack)]) # measure phase correlation 
-        return refStack, maskStack, pxcStack
-        
+        pxcCenterPixel = int((pxcStack.shape[2]-1)/2)
+        return refStack, maskStack, pxcStack, pxcStack[:,pxcCenterPixel,pxcCenterPixel]
+    
     def computeDot(self, planeIdx=None, lowcut=12, highcut=250, order=3, fs=512):
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
         
         dotProd = []
         for plane in planeIdx:
+            t = time.time()
             cRoiIdx = np.where(self.roiPlaneIdx==plane)[0] # index of ROIs in this plane
             bwReference = bf.butterworthbpf(self.reference[plane], lowcut, highcut, order=order, fs=fs) # filtered reference image
             bwReference /= np.linalg.norm(bwReference) # adjust to norm for straightforward cosine angle
             # compute normalized dot product for each ROI 
             dotProd.append(np.array([bwReference[self.ypix[roi],self.xpix[roi]]@self.lam[roi]/np.linalg.norm(self.lam[roi]) for roi in cRoiIdx]))
-        
+            
         return np.concatenate(dotProd)
     
-    
+    def computeCorr(self, planeIdx=None, width=20, lowcut=12, highcut=250, order=3, fs=512):
+        if planeIdx is None: planeIdx = np.arange(self.numPlanes)
+        if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        
+        corrCoef = []
+        for plane in planeIdx:
+            numROIs = self.value['roiPerPlane'][plane]
+            cRoiIdx = np.where(self.roiPlaneIdx==plane)[0] # index of ROIs in this plane
+            cRefStack = np.reshape(self.centeredReferenceStack(planeIdx=plane,width=width,fill=np.nan,filtPrms=(lowcut,highcut,order,fs)),(numROIs,-1))
+            cMaskStack = np.reshape(self.centeredMaskStack(planeIdx=plane,width=width,fill=0),(numROIs,-1))
+            cMaskStack[np.isnan(cRefStack)]=np.nan
+            
+            # Measure mean and standard deviation (and number of non-nan datapoints)
+            uRef = np.nanmean(cRefStack,axis=1,keepdims=True)
+            uMask = np.nanmean(cMaskStack,axis=1,keepdims=True)
+            sRef = np.nanstd(cRefStack,axis=1)
+            sMask = np.nanstd(cMaskStack,axis=1)
+            N = np.sum(~np.isnan(cRefStack),axis=1)
+            # compute correlation coefficient and add to storage variable
+            corrCoef.append(np.nansum((cRefStack - uRef) * (cMaskStack - uMask), axis=1) / N / sRef / sMask)
+        
+        return np.concatenate(corrCoef)
+        
     # --------------------------
     # -- supporting functions --
     # --------------------------
@@ -710,44 +736,60 @@ class redCellProcessing(vrExperiment):
             xc = int(np.median(self.xpix[idx]))
         return yc,xc
     
-    def centeredReferenceStack(self,planeIdx=None,width=15):
+    def getRoiRange(self,idx):
+        # get range of x and y pixels for a particular ROI
+        yr = np.ptp(self.ypix[idx])
+        xr = np.ptp(self.xpix[idx])
+        return yr,xr
+    
+    def getRoiInPlaneIdx(self,idx): 
+        # return index of ROI within it's own plane
+        planeIdx = self.roiPlaneIdx[idx]
+        return idx - np.sum(self.roiPlaneIdx<planeIdx)
+    
+    def centeredReferenceStack(self,planeIdx=None,width=15,fill=0.,filtPrms=None):
         # return stack of reference images centered on each ROI (+/- width um around ROI centroid)
         # if planeIdx is none, then returns across all planes
+        # fill determines what value to use as the background (should either be 0 or nan...)
+        # if filterPrms=None, then just returns centered reference stack. otherwise, filterPrms requires a tuple of 4 parameters which define a butterworth filter
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
         numPixels = int(np.round(width / self.umPerPixel)) # numPixels to each side around the centroid
         refStack = []
         for plane in planeIdx:
+            cReference = self.reference[plane]
+            if filtPrms is not None: cReference = bf.butterworthbpf(cReference, filtPrms[0], filtPrms[1], order=filtPrms[2], fs=filtPrms[3]) # filtered reference image
             idxRoiInPlane = np.where(self.roiPlaneIdx==plane)[0]
-            refStack.append(np.zeros((len(idxRoiInPlane), 2*numPixels+1, 2*numPixels+1)))
+            refStack.append(np.full((len(idxRoiInPlane), 2*numPixels+1, 2*numPixels+1),fill))
             for idx,idxRoi in enumerate(idxRoiInPlane):
                 yc,xc = self.getRoiCentroid(idxRoi,mode='median')
                 yUse = (np.maximum(yc-numPixels,0),np.minimum(yc+numPixels+1,self.ly))
                 xUse = (np.maximum(xc-numPixels,0),np.minimum(xc+numPixels+1,self.lx))
                 yMissing = (-np.minimum(yc-numPixels,0),-np.minimum(self.ly - (yc+numPixels+1),0))
                 xMissing = (-np.minimum(xc-numPixels,0),-np.minimum(self.lx - (xc+numPixels+1),0))
-                refStack[-1][idx,yMissing[0]:2*numPixels+1-yMissing[1],xMissing[0]:2*numPixels+1-xMissing[1]] = self.reference[plane][yUse[0]:yUse[1],xUse[0]:xUse[1]]
-        return np.concatenate(refStack,axis=0)
+                refStack[-1][idx,yMissing[0]:2*numPixels+1-yMissing[1],xMissing[0]:2*numPixels+1-xMissing[1]] = cReference[yUse[0]:yUse[1],xUse[0]:xUse[1]]
+        return np.concatenate(refStack,axis=0).astype(np.float32)
     
-    def centeredMaskStack(self,planeIdx=None,width=15):
+    def centeredMaskStack(self,planeIdx=None,width=15,fill=0.):
         # return stack of ROI Masks centered on each ROI (+/- width um around ROI centroid)
         # if planeIdx is none, then returns across all planes
+        # fill determines what value to use as the background (should either be 0 or nan)
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
         numPixels = int(np.round(width / self.umPerPixel)) # numPixels to each side around the centroid
         maskStack = []
         for plane in planeIdx:
             idxRoiInPlane = np.where(self.roiPlaneIdx==plane)[0]
-            maskStack.append(np.zeros((len(idxRoiInPlane), 2*numPixels+1, 2*numPixels+1)))
+            maskStack.append(np.full((len(idxRoiInPlane), 2*numPixels+1, 2*numPixels+1),fill))
             for idx,idxRoi in enumerate(idxRoiInPlane):
                 yc,xc = self.getRoiCentroid(idxRoi,mode='median')
                 # centered y&x pixels of ROI
-                cyidx = self.ypix[idx] - yc + numPixels
-                cxidx = self.xpix[idx] - xc + numPixels
+                cyidx = self.ypix[idxRoi] - yc + numPixels
+                cxidx = self.xpix[idxRoi] - xc + numPixels
                 # index of pixels still within width of stack
                 idxUsePoints = (cyidx>=0) & (cyidx<2*numPixels+1) & (cxidx>=0) & (cxidx<2*numPixels+1)
-                maskStack[-1][idx,cyidx[idxUsePoints],cxidx[idxUsePoints]]=self.lam[idx][idxUsePoints]
-        return np.concatenate(maskStack,axis=0)
+                maskStack[-1][idx,cyidx[idxUsePoints],cxidx[idxUsePoints]]=self.lam[idxRoi][idxUsePoints]
+        return np.concatenate(maskStack,axis=0).astype(np.float32)
     
     def computeVolume(self,planeIdx=None):
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
