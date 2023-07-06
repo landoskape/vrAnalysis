@@ -797,7 +797,7 @@ class redCellProcessing(vrExperiment):
         assert all([0<=plane<self.numPlanes for plane in planeIdx]), f"in session: {self.sessionPrint()}, there are only {self.numPlanes} planes!"
         roiMaskVolume = []
         for plane in planeIdx:
-            roiMaskVolume.append(np.zeros((self.value['roiPerPlane'][plane],self.lx,self.ly)))
+            roiMaskVolume.append(np.zeros((self.value['roiPerPlane'][plane],self.ly,self.lx)))
             idxRoiInPlane = np.where(self.roiPlaneIdx==plane)[0]
             for roi in range(self.value['roiPerPlane'][plane]):
                 cRoiIdx = idxRoiInPlane[roi]

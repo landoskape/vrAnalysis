@@ -23,12 +23,8 @@ class redSelectionGUI:
         self.planeProcessed = [False]*self.numPlanes
         
         self.refImage = [None]*self.numPlanes
-        self.maskStack = [None]*self.numPlanes
+        self.idxRoi = [None]*self.numPlanes
         self.features = [None]*self.numPlanes
-        # self.redS2P = [self.redCell.redS2P[self.redCell.roiPlaneIdx==planeIdx] for planeIdx in range(self.numPlanes)]
-        # self.redDot = [None]*self.numPlanes
-        # self.redCorr = [None]*self.numPlanes
-        # self.redPxc = [None]*self.numPlanes
         self.hvalues = [None]*self.numPlanes
         self.hvalred = [None]*self.numPlanes
         self.hedges = [None]*self.numPlanes
@@ -36,10 +32,12 @@ class redSelectionGUI:
         self.numFeatures = len(self.featureNames)
         
         # process initial plane
-        self.roiIdx = np.full(self.roiPerPlane[self.planeIdx], True) # start with all as red... 
+        self.controlCellToggle = False # If true, then self.maskImage() will display control cells rather than red cells
+        self.redIdx = np.full(self.roiPerPlane[self.planeIdx], True) # start with all as red... 
         self.processPlane(self.planeIdx) # compute reference / maskVolume / featureArrays for plane 
         
         # open napari viewer and associated GUI features
+        self.maskVisibility = 0 # 0 means show maskImage, 1 means show maskLabels, 2 means turn off both
         self.initializeNapariViewer()
         
         
@@ -47,11 +45,18 @@ class redSelectionGUI:
     def initializeNapariViewer(self):
         # generate napari viewer
         self.viewer = napari.Viewer()
-        self.reference = self.viewer.add_image(self.refImage[self.planeIdx], name='reference', blending='additive')
-        self.masks = self.viewer.add_image(self.maskImage(), name='masks', blending='additive', colormap='red')
+        self.reference = self.viewer.add_image(self.refImage[self.planeIdx], name='reference', blending='additive', opacity=0.6)
+        self.masks = self.viewer.add_image(self.maskImage(), name='masksImage', blending='additive', colormap='red', visible=self.maskVisibility==0)
+        self.labels = self.viewer.add_labels(self.maskLabels(), name='maskLabels', blending='additive', visible=self.maskVisibility==1)
         
-        # create feature widget
+        # create feature and button widget
         self.featureWindow = pg.GraphicsLayoutWidget()
+        
+        # create components of the feature window (the top row is a sequence of histograms, the bottom row is some buttons and edit fields etc.)
+        self.plotArea = pg.GraphicsLayout()
+        self.buttonArea = pg.GraphicsLayout()
+        self.featureWindow.addItem(self.plotArea,row=0,col=0)
+        self.featureWindow.addItem(self.buttonArea,row=1,col=0)
         
         # start by making a specific layout for the histograms of the features
         self.histLayout = pg.GraphicsLayout()
@@ -62,35 +67,89 @@ class redSelectionGUI:
             self.histGraphs[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[self.planeIdx][feature]), height=self.hvalues[self.planeIdx][feature], width=barWidth)
             self.histReds[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[self.planeIdx][feature]), height=self.hvalred[self.planeIdx][feature], width=barWidth, brush='r')
         
-        # add bargraphs to featureWindow
+        # add bargraphs to plotArea
         self.histPlots = [None]*self.numFeatures
         for feature in range(self.numFeatures):
-            self.histPlots[feature] = self.featureWindow.addPlot(row=0,col=feature,enableMouse=False,title=self.featureNames[feature])
+            self.histPlots[feature] = self.plotArea.addPlot(row=0,col=feature,title=self.featureNames[feature])
+            self.histPlots[feature].setMouseEnabled(x=False)
             self.histPlots[feature].addItem(self.histGraphs[feature])
             self.histPlots[feature].addItem(self.histReds[feature])
+        
+        # create cutoffLines (vertical infinite lines) for determining the range within feature values that qualify as red
+        def updateCutoffFinished(event, feature):
+            cutoffValues = [self.cutoffLines[feature][0].pos()[0], self.cutoffLines[feature][1].pos()[0]]
+            self.featureCutoffs[feature][0] = min(cutoffValues)
+            self.featureCutoffs[feature][1] = max(cutoffValues)
+            self.updateRedIdx()
+            
+        self.featureRange = [None]*self.numFeatures
+        self.featureCutoffs = [None]*self.numFeatures
+        self.cutoffLines = [None]*self.numFeatures
+        for feature in range(self.numFeatures):
+            self.featureRange[feature] = [np.min(self.features[self.planeIdx][feature]), np.max(self.features[self.planeIdx][feature])]
+            self.featureCutoffs[feature] = [np.min(self.features[self.planeIdx][feature]), np.max(self.features[self.planeIdx][feature])]
+            self.cutoffLines[feature] = [None]*2 # one for minimum, one for maximum
+            for ii in range(2):
+                self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureRange[feature][ii], movable=True)
+                self.cutoffLines[feature][ii].setBounds(self.featureRange[feature])
+                self.cutoffLines[feature][ii].sigPositionChangeFinished.connect(functools.partial(updateCutoffFinished, feature=feature))
+                self.histPlots[feature].addItem(self.cutoffLines[feature][ii])
+           
+        # once cutoff lines are established, reset redIdx to prevent silly behavior
+        self.updateRedIdx()
+        
+        # -- now add buttons --
+        def saveROIs(event):
+            print('save ROIs callback is not functional yet!')
+            
+        self.saveButton = QPushButton('button',text='save red selection')
+        self.saveButton.clicked.connect(saveROIs)
+        self.saveButtonProxy = QGraphicsProxyWidget()
+        self.saveButtonProxy.setWidget(self.saveButton)
+        
+        self.buttonArea.addItem(self.saveButtonProxy, row=0, col=0)
+        
+        # editFieldProxy = QGraphicsProxyWidget()
+        # editField = QLineEdit()
+        # editField.setText('0')
+        # editFieldProxy.setWidget(editField)
         
         # add feature plots to napari window
         self.dockWindow = self.viewer.window.add_dock_widget(self.featureWindow, name='ROI Features', area='bottom')
         
-        # create some keystrokes for the viewer (currently the hello1 is just an example of how to do it...)
-        def hello1(viewer):
-            print('helloworld')
-            x = np.random.randint(0,100)
-            self.viewer.status = f'hello {x}'
-            yield
-            self.viewer.status = 'goodbye'
+        # create some keystrokes for the viewer (currently the hello1 is just an example of how to do it...)                    
+        def toggleCellsToView(viewer):
+            # changes whether to plot control or red cells (maybe add a textbox and update it so as to not depend on looking at the print outputs...)
+            self.controlCellToggle = not(self.controlCellToggle)
+            nameOfCell = {True: 'Control', False: 'Red'}
+            print(f'plotting {nameOfCell[self.controlCellToggle]} cells...')
+            self.masks.data = self.maskImage()
+            self.labels.data = self.maskLabels()
+        
+        def updateMaskVisibility(viewer):
+            # print(self.maskVisibility)
+            self.maskVisibility = np.mod(self.maskVisibility+1,3)
+            self.masks.visible = self.maskVisibility==0
+            self.labels.visible = self.maskVisibility==1
             
-        self.viewer.bind_key('r', hello1, overwrite=True) 
+        self.viewer.bind_key('t', toggleCellsToView, overwrite=True)
+        self.viewer.bind_key('v', updateMaskVisibility, overwrite=True)
         
+        # currently doing nothing, but I think I will toggle GUI settings based on the visibility of the masks
+        def printVisibility(event):
+            #print(self.masks.visible)
+            return None
         
+        self.masks.events.visible.connect(printVisibility)
+        self.labels.events.visible.connect(printVisibility)
         
         
     def processPlane(self, planeIdx, forceProcess=False):
-        if forceProcess or not self.planeProcessed[planeIdx]:
+        if forceProcess or not(self.planeProcessed[planeIdx]):
             t = time.time()
             print(f"Processing plane {planeIdx} for session {self.redCell.sessionPrint()}...")
             self.refImage[planeIdx] = self.redCell.reference[planeIdx]
-            self.maskStack[planeIdx] = self.redCell.computeVolume(planeIdx=planeIdx).transpose(1,2,0)
+            self.idxRoi[planeIdx] = np.where(self.redCell.roiPlaneIdx==planeIdx)[0]
             self.features[planeIdx] = [None]*self.numFeatures
             self.features[planeIdx][0] = self.redCell.redS2P[self.redCell.roiPlaneIdx==planeIdx]
             self.features[planeIdx][1] = self.redCell.computeDot(planeIdx=planeIdx)
@@ -102,57 +161,50 @@ class redSelectionGUI:
             
             for feature in range(self.numFeatures):
                 self.hvalues[planeIdx][feature], self.hedges[planeIdx][feature] = np.histogram(self.features[planeIdx][feature], bins=self.numBins)
-                self.hvalred[planeIdx][feature], self.hedges[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.roiIdx], bins=self.numBins)
+                self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx], bins=self.hedges[planeIdx][feature])[0]
                 
             self.planeProcessed[planeIdx] = True
             print(f"Finished in {time.time()-t} seconds.")
-   
-    def maskImage(self):
-        return np.sum(self.maskStack[self.planeIdx] * self.roiIdx, axis=2)
     
+    
+    def maskLabels(self):
+        useRedIdx = self.redIdx if not(self.controlCellToggle) else ~self.redIdx
+        labelData = np.zeros((self.redCell.ly,self.redCell.lx),dtype=int)
+        for idx,roi in enumerate(self.idxRoi[self.planeIdx]):
+            if useRedIdx[idx]:
+                labelData[self.redCell.ypix[roi],self.redCell.xpix[roi]] = idx
+        return labelData
+    
+    def maskImage(self):
+        useRedIdx = self.redIdx if not(self.controlCellToggle) else ~self.redIdx
+        imageData = np.zeros((self.redCell.ly,self.redCell.lx))
+        for idx,roi in enumerate(self.idxRoi[self.planeIdx]):
+            if useRedIdx[idx]:
+                imageData[self.redCell.ypix[roi],self.redCell.xpix[roi]] = self.redCell.lam[roi]
+        return imageData
+        
+    def updateRedIdx(self):
+        self.redIdx = np.full(self.roiPerPlane[self.planeIdx], True) # start with all as red... 
+        for feature in range(self.numFeatures):
+            self.redIdx &= self.features[self.planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
+            self.redIdx &= self.features[self.planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
+        
+        # now that the redIdx has been updated, regenerate histograms
+        for feature in range(self.numFeatures):
+            self.hvalred[self.planeIdx][feature] = np.histogram(self.features[self.planeIdx][feature][self.redIdx], bins=self.hedges[self.planeIdx][feature])[0]
+            self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
+        
+        # finally, recompute redMask image
+        self.masks.data = self.maskImage()
+        self.labels.data = self.maskLabels()
+        
+        # ----------------
+        # and that's it...
+        # ----------------
+        
+        
+        
     def extras(self):
-        # Create barplots for each feature
-#         histCenters, histValues, histRange = [],[],[]
-#         for feature in features: 
-#             # make histogram of each feature
-#             cHist,cEdges = np.histogram(feature,bins=50)
-#             histRange.append((cEdges[0],cEdges[-1])) # min/max of histogram for each feature
-#             histCenters.append(bf.edge2center(cEdges)) # center of histogram bin for each feature
-#             histValues.append(cHist) # histogram value for each bin for each feature
-#         featureHistograms = [pg.BarGraphItem(x=histCenter,height=histValue,width=histCenter[1]-histCenter[0]) for histCenter,histValue in zip(histCenters,histValues)]
-#         featRedHistograms = [pg.BarGraphItem(x=histCenter,height=histValue/2,width=histCenter[1]-histCenter[0],brush='r') for histCenter,histValue in zip(histCenters,histValues)]
-
-#         # Create a graphics layout with bar graph plots for the features
-#         featureLayout = pg.GraphicsLayout()
-#         window.addItem(featureLayout, row=2, col=0)
-#         featurePlots = [featureLayout.addPlot(row=0,col=feature,enableMouse=False,title=featureTitles[feature]) for feature in range(numFeatures)]
-#         for featurePlot in featurePlots: featurePlot.setMouseEnabled(x=False, y=False)
-#         #featurePlots = [featureLayout.addViewBox(row=0,col=feature) for feature in range(numFeatures)]
-#         for featureHistogram,featurePlot in zip(featureHistograms, featurePlots): featurePlot.addItem(featureHistogram)
-#         # for featureHistogram,featurePlot in zip(featRedHistograms, featurePlots): featurePlot.addItem(featureHistogram)
-
-#         # Create vertical lines indicating the value of the currently presented cell
-#         currentValueROI = [pg.InfiniteLine(pos=features[feature][0],angle=90,movable=False,pen=pg.mkPen(width=0.5)) for feature in range(numFeatures)]
-#         for fplot,cv in zip(featurePlots,currentValueROI): fplot.addItem(cv)
-        
-        
-        
-        
-#         histPlot = window.addPlot(title="cutoff",row=0,col=0)
-#         histPlot.addLegend()
-#         histPlot.setRange(xRange=xRange,yRange=(0,1.1*np.max(histCurve)), update=False)
-#         histPlot.setMouseEnabled(x=False, y=False)
-#         cutoffLine = histPlot.plot()
-#         cutoffLine.setData(np.arange(ND), histCurve) # create profile of cell masks along x axis 
-#         cutoffVal1 = pg.InfiniteLine(pos=0,movable=True)
-#         cutoffVal1.setBounds(xRange)
-#         cutoffVal1.sigPositionChanged.connect(updateCutoff)
-#         histPlot.addItem(cutoffVal1)
-#         cutoffVal2 = pg.InfiniteLine(pos=ND-1,movable=True)
-#         cutoffVal2.setBounds(xRange)
-#         cutoffVal2.sigPositionChanged.connect(updateCutoff)
-#         histPlot.addItem(cutoffVal2)
-
 #         # try push buttons
 #         def helloFromPush(event):
 #             reference.data = np.random.normal(0,1,(ND,ND))
