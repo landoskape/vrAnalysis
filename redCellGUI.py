@@ -1,53 +1,60 @@
+# Standard modules
 import time
 import functools 
 import numpy as np
 import scipy as sp
-import napari
 from scipy import ndimage as ndi
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+
+# GUI-related modules
+import napari
 import pyqtgraph as pg
-import basicFunctions as bf
 from PyQt5 import QtGui, QtCore, QtWidgets
 from PyQt5.QtWidgets import QGraphicsProxyWidget, QSlider, QPushButton, QVBoxLayout, QLabel, QLineEdit, QShortcut
 from PyQt5.QtGui import QKeySequence
+
+# Special vrExperiment modules
 import vrExperiment
 import basicFunctions as bf
 
 class redSelectionGUI:
-    def __init__(self, redCellObj, planeIdx=0, numBins=50):
+    def __init__(self, redCellObj, numBins=50):
         assert type(redCellObj)==vrExperiment.redCellProcessing, "redCellObj must be an instance of the redCellProcessing class inherited from vrExperiment"
         self.redCell = redCellObj
         self.numPlanes = self.redCell.numPlanes
         self.roiPerPlane = self.redCell.value['roiPerPlane']
         self.numBins = numBins
-        self.planeIdx = planeIdx # keep track of which plane to observe
-        self.planeProcessed = [False]*self.numPlanes
+        self.planeIdx = 0 # keep track of which plane to observe
         
         self.refImage = [None]*self.numPlanes
         self.idxRoi = [None]*self.numPlanes
+        self.featureNames = ['S2P','dot()','corr()','phase-corr']
+        self.numFeatures = len(self.featureNames)
         self.features = [None]*self.numPlanes
         self.hvalues = [None]*self.numPlanes
         self.hvalred = [None]*self.numPlanes
-        self.hedges = [None]*self.numPlanes
-        self.featureNames = ['S2P','dot(ref,mask)','corr(ref,mask)','phase-correlation']
-        self.numFeatures = len(self.featureNames)
+        self.hedges = [None]*self.numFeatures
         
         # process initial plane
         self.controlCellToggle = False # If true, then self.maskImage() will display control cells rather than red cells
-        self.redIdx = np.full(self.roiPerPlane[self.planeIdx], True) # start with all as red... 
-        self.processPlane(self.planeIdx) # compute reference / maskVolume / featureArrays for plane 
+        self.redIdx = [np.full(self.roiPerPlane[planeIdx], True) for planeIdx in range(self.numPlanes)] # start with all as red... 
+        self.processPlanes() # compute reference / maskVolume / featureArrays for each plane 
         
         # open napari viewer and associated GUI features
-        self.maskVisibility = 0 # 0 means show maskImage, 1 means show maskLabels, 2 means turn off both
+        self.showMaskImage = True # if true, will show mask image, if false, will show mask labels
+        self.maskVisibility = True # if true, will show either mask image or label, otherwise will not show either!
+        self.colorState = 0 # indicates which color to display maskLabels (0:random, 1-4:color by feature)
         self.initializeNapariViewer()
-        
         
         
     def initializeNapariViewer(self):
         # generate napari viewer
         self.viewer = napari.Viewer()
-        self.reference = self.viewer.add_image(self.refImage[self.planeIdx], name='reference', blending='additive', opacity=0.6)
-        self.masks = self.viewer.add_image(self.maskImage(), name='masksImage', blending='additive', colormap='red', visible=self.maskVisibility==0)
-        self.labels = self.viewer.add_labels(self.maskLabels(), name='maskLabels', blending='additive', visible=self.maskVisibility==1)
+        self.reference = self.viewer.add_image(np.stack(self.redCell.reference), name='reference', blending='additive', opacity=0.6)
+        self.masks = self.viewer.add_image(self.maskImage(), name='masksImage', blending='additive', colormap='red', visible=self.showMaskImage)
+        self.labels = self.viewer.add_labels(self.maskLabels(), name='maskLabels', blending='additive', visible=not(self.showMaskImage))
+        self.viewer.dims.current_step = (self.planeIdx, self.viewer.dims.current_step[1], self.viewer.dims.current_step[2])#[0] = self.planeIdx
         
         # create feature and button widget
         self.featureWindow = pg.GraphicsLayoutWidget()
@@ -63,9 +70,9 @@ class redSelectionGUI:
         self.histGraphs = [None]*self.numFeatures
         self.histReds = [None]*self.numFeatures
         for feature in range(self.numFeatures):
-            barWidth = np.diff(self.hedges[self.planeIdx][feature][:2])
-            self.histGraphs[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[self.planeIdx][feature]), height=self.hvalues[self.planeIdx][feature], width=barWidth)
-            self.histReds[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[self.planeIdx][feature]), height=self.hvalred[self.planeIdx][feature], width=barWidth, brush='r')
+            barWidth = np.diff(self.hedges[feature][:2])
+            self.histGraphs[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[feature]), height=self.hvalues[self.planeIdx][feature], width=barWidth)
+            self.histReds[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[feature]), height=self.hvalred[self.planeIdx][feature], width=barWidth, brush='r')
         
         # add bargraphs to plotArea
         self.histPlots = [None]*self.numFeatures
@@ -86,7 +93,7 @@ class redSelectionGUI:
         self.featureCutoffs = [None]*self.numFeatures
         self.cutoffLines = [None]*self.numFeatures
         for feature in range(self.numFeatures):
-            self.featureRange[feature] = [np.min(self.features[self.planeIdx][feature]), np.max(self.features[self.planeIdx][feature])]
+            self.featureRange[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
             self.featureCutoffs[feature] = [np.min(self.features[self.planeIdx][feature]), np.max(self.features[self.planeIdx][feature])]
             self.cutoffLines[feature] = [None]*2 # one for minimum, one for maximum
             for ii in range(2):
@@ -102,13 +109,41 @@ class redSelectionGUI:
         def saveROIs(event):
             print('save ROIs callback is not functional yet!')
             
+        # create save button 
         self.saveButton = QPushButton('button',text='save red selection')
         self.saveButton.clicked.connect(saveROIs)
         self.saveButtonProxy = QGraphicsProxyWidget()
         self.saveButtonProxy.setWidget(self.saveButton)
+            
+        # create color buttons - 1 for random + 4(1 for each feature)
+        def manageColorButtons(checked, buttonIdx):
+            if not(checked) and buttonIdx==self.colorState: checked=True # prevent user from turning off one of the color options...
+            self.colorState=buttonIdx # update colorstate
+            for cbidx in range(len(self.colorButtons)):
+                self.colorButtons[cbidx].setChecked(cbidx==self.colorState)
+                # Since I can't figure out QPalette (e.g. don't want to), just add tildes to make it obvious which is selected
+                if cbidx==self.colorState: self.colorButtons[cbidx].setText('~~~'+colorButtonNames[cbidx]+'~~~')
+                else: self.colorButtons[cbidx].setText(colorButtonNames[cbidx])
+            self.updateLabelColors()
+                  
+        colorButtonNames = ['random',*self.featureNames]
+        self.colorButtons = [QPushButton(text=cbname) for cbname in colorButtonNames]
+        self.colorButtonProxies = [QGraphicsProxyWidget() for _ in range(len(self.colorButtons))]
+        for cbidx in range(len(self.colorButtons)):
+            self.colorButtons[cbidx].setCheckable(True) # make it a toggle (if the 'toggle' input doesn't already...)
+            self.colorButtons[cbidx].setChecked(cbidx==0) # only check the first one
+            self.colorButtons[cbidx].clicked.connect(functools.partial(manageColorButtons, buttonIdx=cbidx))
+            self.colorButtonProxies[cbidx].setWidget(self.colorButtons[cbidx])
+            # these are pretty weird # self.colorButtons[cbidx].setStyleSheet("QPushButton:checked { font: bold;  }")#border-width: 2px; border-color: beige;}")
         
+        # Use manageColorButtons callback to finish preparing and stylizing all the color buttons
+        manageColorButtons(True, self.colorState)
+            
+        # add button proxies to buttonArea
         self.buttonArea.addItem(self.saveButtonProxy, row=0, col=0)
-        
+        for cbidx in range(len(self.colorButtonProxies)):
+            self.buttonArea.addItem(self.colorButtonProxies[cbidx],row=0,col=1+cbidx)
+            
         # editFieldProxy = QGraphicsProxyWidget()
         # editField = QLineEdit()
         # editField.setText('0')
@@ -121,31 +156,58 @@ class redSelectionGUI:
         def toggleCellsToView(viewer):
             # changes whether to plot control or red cells (maybe add a textbox and update it so as to not depend on looking at the print outputs...)
             self.controlCellToggle = not(self.controlCellToggle)
-            nameOfCell = {True: 'Control', False: 'Red'}
-            print(f'plotting {nameOfCell[self.controlCellToggle]} cells...')
+            nameOfCell = {True: 'Control', False: 'Red'}[self.controlCellToggle]
+            print(f'plotting {nameOfCell} cells...')
             self.masks.data = self.maskImage()
             self.labels.data = self.maskLabels()
         
+        def switchImageLabel(viewer):
+            self.showMaskImage = not(self.showMaskImage)
+            self.updateVisibility()
+            
         def updateMaskVisibility(viewer):
-            # print(self.maskVisibility)
-            self.maskVisibility = np.mod(self.maskVisibility+1,3)
-            self.masks.visible = self.maskVisibility==0
-            self.labels.visible = self.maskVisibility==1
+            self.maskVisibility = not(self.maskVisibility)
+            self.updateVisibility()
+        
+        def nextColorState(viewer):
+            manageColorButtons(True, np.mod(self.colorState+1, 5))
             
         self.viewer.bind_key('t', toggleCellsToView, overwrite=True)
+        self.viewer.bind_key('s', switchImageLabel, overwrite=True)
         self.viewer.bind_key('v', updateMaskVisibility, overwrite=True)
+        self.viewer.bind_key('c', nextColorState, overwrite=True)
         
-        # currently doing nothing, but I think I will toggle GUI settings based on the visibility of the masks
-        def printVisibility(event):
-            #print(self.masks.visible)
-            return None
+        # add callback for dimension slider
+        def updatePlaneIdx(event):
+            self.planeIdx = event.source.current_step[0]
+            self.updateFeaturePlots()
+            
+        self.viewer.dims.events.connect(updatePlaneIdx)
+    
+    def updateVisibility(self):
+        self.masks.visible = self.showMaskImage and self.maskVisibility
+        self.labels.visible = not(self.showMaskImage) and self.maskVisibility
+
+    def updateFeaturePlots(self):
+        for feature in range(self.numFeatures):
+            self.histGraphs[feature].setOpts(height=self.hvalues[self.planeIdx][feature])
+            self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
+    
+    def updateLabelColors(self):
+        if self.colorState==0:
+            # then use random colors -- what I encoded here is the default 
+            colormap = dict(zip([0,None],[np.array([0.,0.,0.,0.],dtype=np.single),np.array([0.,0.,0.,1.],dtype=np.single)]))
+        else:
+            # good colormaps: ['plasma', 'autumn', 'spring', 'summer', 'winter', 'hot']
+            norm = mpl.colors.Normalize(vmin=self.featureRange[self.colorState-1][0], vmax=self.featureRange[self.colorState-1][1])
+            colors = plt.colormaps['plasma'](norm(np.concatenate([feat[self.colorState-1] for feat in self.features])))
+            colormap = dict(zip(np.concatenate(self.idxRoi)+1, colors))
+            colormap[0] = np.array([0.,0.,0.,0.],dtype=np.single) # add transparent background
+        # Update colors of the labels
+        self.labels.color = colormap
         
-        self.masks.events.visible.connect(printVisibility)
-        self.labels.events.visible.connect(printVisibility)
-        
-        
-    def processPlane(self, planeIdx, forceProcess=False):
-        if forceProcess or not(self.planeProcessed[planeIdx]):
+    def processPlanes(self):
+        for planeIdx in range(self.numPlanes):
             t = time.time()
             print(f"Processing plane {planeIdx} for session {self.redCell.sessionPrint()}...")
             self.refImage[planeIdx] = self.redCell.reference[planeIdx]
@@ -157,70 +219,59 @@ class redSelectionGUI:
             self.features[planeIdx][3] = self.redCell.croppedPhaseCorrelation(planeIdx=planeIdx)[3]
             self.hvalues[planeIdx] = [None]*self.numFeatures
             self.hvalred[planeIdx] = [None]*self.numFeatures
-            self.hedges[planeIdx] = [None]*self.numFeatures
-            
-            for feature in range(self.numFeatures):
-                self.hvalues[planeIdx][feature], self.hedges[planeIdx][feature] = np.histogram(self.features[planeIdx][feature], bins=self.numBins)
-                self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx], bins=self.hedges[planeIdx][feature])[0]
-                
-            self.planeProcessed[planeIdx] = True
             print(f"Finished in {time.time()-t} seconds.")
-    
+        
+        # use the same edges across planes
+        for feature in range(self.numFeatures):
+            featureAcrossPlanes = np.concatenate([featureData[feature] for featureData in self.features]) 
+            self.hedges[feature] = np.histogram(featureAcrossPlanes, bins=self.numBins)[1]
+                
+        for planeIdx in range(self.numPlanes):
+            for feature in range(self.numFeatures):
+                self.hvalues[planeIdx][feature] = np.histogram(self.features[planeIdx][feature], bins=self.hedges[feature])[0]
+                self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx[planeIdx]], bins=self.hedges[feature])[0]
+                
     
     def maskLabels(self):
-        useRedIdx = self.redIdx if not(self.controlCellToggle) else ~self.redIdx
-        labelData = np.zeros((self.redCell.ly,self.redCell.lx),dtype=int)
-        for idx,roi in enumerate(self.idxRoi[self.planeIdx]):
-            if useRedIdx[idx]:
-                labelData[self.redCell.ypix[roi],self.redCell.xpix[roi]] = idx
+        labelData = np.zeros((self.numPlanes,self.redCell.ly,self.redCell.lx), dtype=int)
+        for planeIdx in range(self.numPlanes):
+            useRedIdx = self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx]
+            for idx,roi in enumerate(self.idxRoi[planeIdx]):
+                if useRedIdx[idx]:
+                    labelData[planeIdx,self.redCell.ypix[roi],self.redCell.xpix[roi]] = roi+1 # 0 is transparent for a labels layer in napari, so 1 index the ROIs!
         return labelData
     
     def maskImage(self):
-        useRedIdx = self.redIdx if not(self.controlCellToggle) else ~self.redIdx
-        imageData = np.zeros((self.redCell.ly,self.redCell.lx))
-        for idx,roi in enumerate(self.idxRoi[self.planeIdx]):
-            if useRedIdx[idx]:
-                imageData[self.redCell.ypix[roi],self.redCell.xpix[roi]] = self.redCell.lam[roi]
+        imageData = np.zeros((self.numPlanes,self.redCell.ly,self.redCell.lx))
+        for planeIdx in range(self.numPlanes):
+            useRedIdx = self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx]
+            for idx,roi in enumerate(self.idxRoi[planeIdx]):
+                if useRedIdx[idx]:
+                    imageData[planeIdx,self.redCell.ypix[roi],self.redCell.xpix[roi]] = self.redCell.lam[roi]
         return imageData
         
     def updateRedIdx(self):
-        self.redIdx = np.full(self.roiPerPlane[self.planeIdx], True) # start with all as red... 
-        for feature in range(self.numFeatures):
-            self.redIdx &= self.features[self.planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
-            self.redIdx &= self.features[self.planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
-        
+        for planeIdx in range(self.numPlanes):
+            self.redIdx[planeIdx] = np.full(self.roiPerPlane[planeIdx], True) # start with all as red... 
+            for feature in range(self.numFeatures):
+                self.redIdx[planeIdx] &= self.features[planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
+                self.redIdx[planeIdx] &= self.features[planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
+
         # now that the redIdx has been updated, regenerate histograms
         for feature in range(self.numFeatures):
-            self.hvalred[self.planeIdx][feature] = np.histogram(self.features[self.planeIdx][feature][self.redIdx], bins=self.hedges[self.planeIdx][feature])[0]
+            self.hvalred[self.planeIdx][feature] = np.histogram(self.features[self.planeIdx][feature][self.redIdx[self.planeIdx]], bins=self.hedges[feature])[0]
             self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
-        
+
         # finally, recompute redMask image
         self.masks.data = self.maskImage()
         self.labels.data = self.maskLabels()
+        
         
         # ----------------
         # and that's it...
         # ----------------
         
         
-        
-    def extras(self):
-#         # try push buttons
-#         def helloFromPush(event):
-#             reference.data = np.random.normal(0,1,(ND,ND))
-#             print('hello from push')
-
-#         buttonProxy = QGraphicsProxyWidget()
-#         button = QPushButton('button')
-#         button.setDefault(True)
-#         button.setCheckable(True)
-#         button.setChecked(True)
-#         button.clicked.connect(helloFromPush)
-#         buttonProxy.setWidget(button)
-#         window.addItem(buttonProxy,row=1,col=0)    
-
-#         dockWidget = viewer.window.add_dock_widget(window, name='cutoffSelection', area='bottom')
-        return None
     
 
 def napariWithSlider(ND=512,NC=50,cellWidth=2):
