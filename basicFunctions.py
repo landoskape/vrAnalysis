@@ -150,6 +150,7 @@ def phaseCorrelation(staticImage,shiftedImage,eps=0,window=None):
     # the result is the fftshifted correlation map describing the phase-specific overlap after shifting "shiftedImage"
     # softens ringing with eps when provided
     # if provided, window should be a 1-d or 2-d window function (if 1-d, uses the outer product of itself)
+    # -- note -- I tried an ndim phase correlation (where both static and shifted images are 3-d), and it's slower than just doing the 2d version in a loop...
     assert staticImage.shape[-2:]==shiftedImage.shape[-2:], "images must have same shape in last two dimensions"
     assert not (staticImage.ndim==3 and shiftedImage.ndim==3), "can do multiple comparisons, but only one of the static or shifted image can be 3-dimensional"
     if window is not None:

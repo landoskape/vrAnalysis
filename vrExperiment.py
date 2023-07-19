@@ -236,6 +236,7 @@ class vrExperimentRegistration(vrExperiment):
         opts['imaging'] = True # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
         opts['oasis'] = True # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
         opts['moveRawData'] = False # whether or not to move raw data files to 'rawData'
+        opts['redCellProcessing'] = True # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
         # Imaging options -- these options are standard values for imaging, tau & fs directly affect preprocessing when OASIS is turned on (and deconvolution is recomputed)
         opts['neuropilCoefficient'] = 0.7 # for manual neuropil estimation
         opts['isCellThreshold'] = -1 # only process ROIs exceeding probCell > isCellThreshold
@@ -271,6 +272,7 @@ class vrExperimentRegistration(vrExperiment):
         self.processTimeline()
         self.processBehavior()
         self.processImaging()
+        self.processRedCells()
         self.processFacecam()
         self.processBehavior2Imaging()
    
@@ -518,7 +520,7 @@ class vrExperimentRegistration(vrExperiment):
         self.saveone(self.loadS2P('Fneu').T, 'mpci.roiNeuropilActivityF')
         self.saveone(spks.T, 'mpci.roiActivityDeconvolved')
         if 'redcell' in self.value['available']:
-            self.saveone(self.loadS2P('redcell'), 'mpciROIs.redCell')
+            self.saveone(self.loadS2P('redcell')[:,1], 'mpciROIs.redS2P')
         self.saveone(self.loadS2P('iscell'), 'mpciROIs.isCell')
         self.saveone(self.getPlaneIdx(), 'mpciROIs.planeIndex')
         print("Convert mpciROIs.planeIndex to mpciROIs.stackPosition, with [X,Y,Z(planeIndex)] coordinate for each ROI!")
@@ -533,23 +535,38 @@ class vrExperimentRegistration(vrExperiment):
         idxBehaveToFrame,distBehaveToFrame = bf.nearestpoint(self.loadone('positionTracking.times'), self.loadone('mpci.times'))
         self.saveone(idxBehaveToFrame.astype(int), 'positionTracking.mpci')
         
-    
     def processRedCells(self):
+        if not(self.opts['imaging']) or not(self.opts['redCellProcessing']): return # if not requested, skip function 
+        # if imaging was processed and redCellProcessing was requested, then try to preprocess red cell features
         if 'redcell' not in self.value['available']:
-            print(f"In session {self.sessionPrint()}, 'redcell' is not an available suite2p output. This code assumes that means there is no data on the red channel")
+            print(f"In session {self.sessionPrint()}, 'redcell' is not an available suite2p output, although 'redCellProcessing' was requested.")
             return 
-        print("Red cell processing has not been coded yet!")
-        # Note: the code for this is in the redDeveloper GUI file. I need: 
-        # 1. suite2p red cell output
-        # 2. dot product between masks and filtered reference image
-        # 3. pearson correlation (including surround pixels) between masks and filtered reference image
-        # 4. central phase correlation bin (probably using cropped phase correlation estimates for faster code)
-        # --
-        # Then, I need to produce these maps for many cells in many sessions, label them, and create a GUI for updating them manually...
-        # To begin with, I think I'll just use high thresholds and assume they mostly work...
-        # -- 
-        return None
-    
+        
+        # create redCell objects
+        redCell = redCellProcessing(self) 
+        
+        # compute red-features
+        dotParameters={'lowcut':12, 'highcut':250, 'order':3, 'fs':512}
+        corrParameters={'width':20,'lowcut':12, 'highcut':250, 'order':3, 'fs':512}
+        phaseParameters={'width':40,'eps':1e6,'winFunc':'hamming'}
+        
+        print(f"Computing red cell features... (usually takes 10-20 seconds)")
+        dotProduct = redCell.computeDot(planeIdx=None, **dotParameters) # compute dot-product for all ROIs
+        corrCoeff = redCell.computeCorr(planeIdx=None, **corrParameters) # compute cross-correlation for all ROIs 
+        phaseCorr = redCell.croppedPhaseCorrelation(planeIdx=None, **phaseParameters)[3] # compute central value of phase-correlation for all ROIs
+        
+        # initialize annotations
+        self.saveone(np.full(self.value['numROIs'], False), 'mpciROIs.redCellIdx')
+        self.saveone(np.full((2,self.value['numROIs']), False), 'mpciROIs.redCellManualAssignments')
+        
+        # save oneData
+        self.saveone(dotProduct, 'mpciROIs.redDotProduct')
+        self.saveone(corrCoeff, 'mpciROIs.redPearson')
+        self.saveone(phaseCorr, 'mpciROIs.redPhaseCorrelation')
+        self.saveone(np.array(dotParameters), 'parametersRedDotProduct.keyValuePairs')
+        self.saveone(np.array(corrParameters), 'parametersRedPearson.keyValuePairs')
+        self.saveone(np.array(phaseParameters), 'parametersRedPhaseCorrelation.keyValuePairs')
+        
     
     # -------------------------------------- methods for handling timeline data produced by rigbox ------------------------------------------------------------
     def loadTimelineStructure(self): 
@@ -652,7 +669,7 @@ class redCellProcessing(vrExperiment):
         self.roiPlaneIdx = self.loadone('mpciROIs.planeIndex')
         
         # load S2P red cell value
-        self.redS2P = self.loadone('mpciROIs.redCell')[:,1] # (preloaded, will never change in this function)
+        self.redS2P = self.loadone('mpciROIs.redS2P') # (preloaded, will never change in this function)
         
         # create supporting variables for mapping locations and axes
         self.yBaseRef = np.arange(self.ly)
@@ -664,12 +681,54 @@ class redCellProcessing(vrExperiment):
     # ------------------------------
     # -- classification functions --
     # ------------------------------
+    def computeFeatures(self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x: np.hamming(x.shape[-1]), lowcut=12, highcut=250, order=3, fs=512):
+        """
+        This function computes all features related to red cell detection in (hopefully) an optimized manner, such that loading the redSelectionGUI is fast and efficient.
+        There's some shortcuts that must be done, including:
+        - pre-filtering reference images before computing phase-correlation
+        """
+        if planeIdx is None: planeIdx = np.arange(self.numPlanes)
+        if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        
+        # start with filtered reference stack (by inspection, the phase correlation is minimally dependent on pre-filtering, and we like these filtering parameters anyway!!!)
+        print("Creating centered reference images...")
+        refStackNans = self.centeredReferenceStack(planeIdx=planeIdx, width=width, fill=np.nan, filtPrms=(lowcut,highcut,order,fs)) # stack of ref images centered on each ROI
+        refStack = np.copy(refStackNans)
+        refStack[np.isnan(refStack)]=0
+        maskStack = self.centeredMaskStack(planeIdx=planeIdx, width=width) # stack of mask value centered on each ROI
+        
+        print("Computing phase correlation for each ROI...")
+        window = winFunc(refStack)
+        pxcStack = np.stack([bf.phaseCorrelation(ref,mask,eps=eps,window=window) for (ref,mask) in zip(refStack, maskStack)]) # measure phase correlation
+        pxcCenterPixel = int((pxcStack.shape[2]-1)/2)
+        pxcValues = pxcStack[:,pxcCenterPixel,pxcCenterPixel]
+        
+        # next, compute the dot product between the filtered reference and masks
+        refNorm = np.linalg.norm(refStack, axis=(1,2)) # compute the norm of each centered reference image
+        maskNorm = np.linalg.norm(maskStack, axis=(1,2)) 
+        dotProd = np.sum(refStack * maskStack, axis=(1,2))/refNorm/maskNorm # compute the dot product for each ROI
+        
+        # next, compute the correlation coefficients
+        refStackNans = np.reshape(refStackNans,(refStackNans.shape[0],-1))
+        maskStack = np.reshape(maskStack,(maskStack.shape[0],-1))
+        maskStack[np.isnan(refStackNans)]=np.nan # remove the border areas from the masks stack (they are nan in the refStackNans array)
+        uRef = np.nanmean(refStackNans,axis=1,keepdims=True)
+        uMask = np.nanmean(maskStack,axis=1,keepdims=True)
+        sRef = np.nanstd(refStackNans,axis=1)
+        sMask = np.nanstd(maskStack,axis=1)
+        N = np.sum(~np.isnan(refStackNans),axis=1)
+        corrCoef = np.nansum((refStackNans-uRef)*(maskStack-uMask),axis=1)/N/sRef/sMask
+        
+        # And return
+        return dotProd, corrCoef, pxcValues
+    
     def croppedPhaseCorrelation(self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x:np.hamming(x.shape[-1])):
         """
         This returns the phase correlation of each (cropped) mask with the (cropped) reference image.
         The default parameters (width=40um, eps=1e6, and a hamming window function) were tested on a few sessions and is purely subjective. 
         I recommend that if you use this function to determine which of your cells are red, you do manual curation and potentially update some of these parameters. 
         """
+        if winFunc=='hamming': winFunc = lambda x : np.hamming(x.shape[-1])
         refStack = self.centeredReferenceStack(planeIdx=planeIdx,width=width) # get stack of reference image centered on each ROI
         maskStack = self.centeredMaskStack(planeIdx=planeIdx,width=width) # get stack of mask value centered on each ROI
         window = winFunc(refStack) # create a window function
