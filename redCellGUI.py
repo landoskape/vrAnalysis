@@ -30,7 +30,7 @@ class redSelectionGUI:
         
         self.refImage = [None]*self.numPlanes
         self.idxRoi = [None]*self.numPlanes
-        self.featureNames = ['RedS2P','RedDotProduct','RedPearson','RedPhaseCorr']
+        self.featureNames = ['S2P','dotProduct','pearson','phaseCorrelation']
         self.numFeatures = len(self.featureNames)
         self.features = [None]*self.numPlanes
         self.hvalues = [None]*self.numPlanes
@@ -48,6 +48,7 @@ class redSelectionGUI:
         self.showMaskImage = True # if true, will show mask image, if false, will show mask labels
         self.maskVisibility = True # if true, will show either mask image or label, otherwise will not show either!
         self.useManualLabel = True # if true, then will apply manual labels after using features to compute redIdx
+        self.onlyManualLabels = False # if true, only show manual labels of selected category...
         self.colorState = 0 # indicates which color to display maskLabels (0:random, 1-4:color by feature)
         self.idxColormap = 0 # which colormap to use for pseudo coloring the masks
         self.listColormaps = ['plasma', 'autumn', 'spring', 'summer', 'winter', 'hot']
@@ -94,26 +95,28 @@ class redSelectionGUI:
             self.featureCutoffs[feature][0] = min(cutoffValues)
             self.featureCutoffs[feature][1] = max(cutoffValues)
             self.updateRedIdx()
-            
+        
         self.featureRange = [None]*self.numFeatures
         self.featureCutoffs = [None]*self.numFeatures
         self.cutoffLines = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             self.featureRange[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
             self.featureCutoffs[feature] = [np.min(self.features[self.planeIdx][feature]), np.max(self.features[self.planeIdx][feature])]
+            # check if feature cutoffs have been created and stored already, if so, use them
+            if self.oneNameFeatureCutoffs(self.featureNames[feature]) in self.redCell.printSavedOne():
+                self.featureCutoffs[feature] = self.redCell.loadone(self.oneNameFeatureCutoffs(self.featureNames[feature]))
             self.cutoffLines[feature] = [None]*2 # one for minimum, one for maximum
             for ii in range(2):
-                self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureRange[feature][ii], movable=True)
+                self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureCutoffs[feature][ii], movable=True)
                 self.cutoffLines[feature][ii].setBounds(self.featureRange[feature])
                 self.cutoffLines[feature][ii].sigPositionChangeFinished.connect(functools.partial(updateCutoffFinished, feature=feature))
                 self.histPlots[feature].addItem(self.cutoffLines[feature][ii])
-           
+                
         # once cutoff lines are established, reset redIdx to prevent silly behavior
         self.updateRedIdx()
         
         # -- now add buttons --
         def saveROIs(event):
-            print("save ROIs callback saves the red idx and the manual labels as one data, but doesn't save the feature cutoff parameters!")
             self.saveSelection()
             
         # create save button 
@@ -147,6 +150,32 @@ class redSelectionGUI:
         self.useManualLabelProxy = QGraphicsProxyWidget()
         self.useManualLabelProxy.setWidget(self.useManualLabelButton)
         
+        # add button to clear all manual labels
+        def clearManualLabels(event):
+            modifiers = QtWidgets.QApplication.keyboardModifiers()
+            if modifiers==QtCore.Qt.ControlModifier:
+                for plane in range(self.numPlanes): self.manualLabelActive[plane][:] = False
+                self.regenerateMaskData()
+            else:
+                print('clearing manual labels requires a control click')
+                
+        self.clearManualLabelButton = QPushButton(text='clear manual labels')
+        self.clearManualLabelButton.clicked.connect(clearManualLabels)
+        self.clearManualLabelProxy = QGraphicsProxyWidget()
+        self.clearManualLabelProxy.setWidget(self.clearManualLabelButton)
+        
+        # add show manual labels only button
+        def showManualLabels(event):
+            self.onlyManualLabels = not(self.onlyManualLabels)
+            if self.onlyManualLabels: self.useManualLabel = True 
+            self.showManualLabelButton.setText('only manual labels' if self.onlyManualLabels else 'all labels')
+            self.regenerateMaskData()
+            
+        self.showManualLabelButton = QPushButton(text='all labels')
+        self.showManualLabelButton.clicked.connect(showManualLabels)
+        self.showManualLabelProxy = QGraphicsProxyWidget()
+        self.showManualLabelProxy.setWidget(self.showManualLabelButton)
+        
         # add colormap selection button 
         def nextColorState(event):
             self.colorState = np.mod(self.colorState+1, len(self.colorButtonNames))
@@ -174,8 +203,10 @@ class redSelectionGUI:
         self.buttonArea.addItem(self.saveButtonProxy, row=0, col=0)
         self.buttonArea.addItem(self.toggleCellButtonProxy, row=0, col=1)
         self.buttonArea.addItem(self.useManualLabelProxy, row=0, col=2)
-        self.buttonArea.addItem(self.colorButtonProxy, row=0, col=3)
-        self.buttonArea.addItem(self.colormapSelectionProxy, row=0, col=4)
+        self.buttonArea.addItem(self.showManualLabelProxy, row=0, col=3)
+        self.buttonArea.addItem(self.clearManualLabelProxy, row=0, col=4)
+        self.buttonArea.addItem(self.colorButtonProxy, row=0, col=5)
+        self.buttonArea.addItem(self.colormapSelectionProxy, row=0, col=6)
         
         # add feature plots to napari window
         self.dockWindow = self.viewer.window.add_dock_widget(self.featureWindow, name='ROI Features', area='bottom')
@@ -209,14 +240,17 @@ class redSelectionGUI:
             if labelIdx==0:
                 self.viewer.status = "double-click on background, no ROI identity toggled"
             else:
-                if 'Control' in event.modifiers:
-                    print('add manual only view selection for control double click so user can only remove a manual label if it is specifically displayed as a manual layer!')
-                    self.viewer.status = f"if it's activated, then this action (ctl-doubleClick) would have removed a manual label on roi:{labelIdx-1}"
+                roiIdx = labelIdx-1
+                inPlaneIdx = np.where(self.idxRoi[planeIdx]==(roiIdx))[0][0]
+                if 'Control' in event.modifiers: 
+                    if self.onlyManualLabels:
+                        self.manualLabelActive[planeIdx][inPlaneIdx] = False
+                        self.viewer.status = f"you just removed the manual label from roi: {roiIdx}"
+                    else:
+                        self.viewer.status = f"you can only remove a label if you are only looking at manualLabels!"
                 else:
                     # manual annotation: if plotting control cells, then annotate as red (1), if plotting red cells, annotate as control (0)
                     newLabel = copy(self.controlCellToggle) 
-                    roiIdx = labelIdx-1
-                    inPlaneIdx = np.where(self.idxRoi[planeIdx]==(roiIdx))[0][0]
                     self.manualLabel[planeIdx][inPlaneIdx] = newLabel
                     self.manualLabelActive[planeIdx][inPlaneIdx] = True
                     self.viewer.status = f"you just labeled roi: {roiIdx} with the identity: {newLabel}"
@@ -306,7 +340,12 @@ class redSelectionGUI:
     
     def idxMasksToPlot(self, planeIdx):
         # standard function for determining which masks to plot for each plane
-        plotIdx = np.copy(self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx])
+        if self.onlyManualLabels:
+            # if only showing manual labels, initialize plot index as all false, then update as usual
+            plotIdx = np.full(self.redIdx[planeIdx].shape, False)
+        else:
+            # if showing all labels, then initialize plotIdx with whatever is currently passing the feature rules
+            plotIdx = np.copy(self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx])
         if self.useManualLabel:
             plotIdx[self.manualLabelActive[planeIdx]] = (self.manualLabel[planeIdx][self.manualLabelActive[planeIdx]]!=self.controlCellToggle)
         return plotIdx
@@ -317,10 +356,13 @@ class redSelectionGUI:
             for feature in range(self.numFeatures):
                 self.redIdx[planeIdx] &= self.features[planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
                 self.redIdx[planeIdx] &= self.features[planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
-
+        
+        for planeIdx in range(self.numPlanes):
+            for feature in range(self.numFeatures):
+                self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx[planeIdx]], bins=self.hedges[feature])[0]
+                
         # now that the redIdx has been updated, regenerate histograms
         for feature in range(self.numFeatures):
-            self.hvalred[self.planeIdx][feature] = np.histogram(self.features[self.planeIdx][feature][self.redIdx[self.planeIdx]], bins=self.hedges[feature])[0]
             self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
             
         self.regenerateMaskData()
@@ -330,21 +372,33 @@ class redSelectionGUI:
         self.labels.data = self.maskLabels()
         
     def saveSelection(self):
-        print("save ROIs callback saves the red idx and the manual labels as one data, but doesn't save the feature cutoff parameters!")
         fullRedIdx = np.concatenate(self.redIdx)
         fullManualLabels = np.stack((np.concatenate(self.manualLabel),np.concatenate(self.manualLabelActive)))
-        fullFeatureCutoffs = np.array(self.featureCutoffs) # this is a (4x2) array 
         self.redCell.saveone(fullRedIdx, 'mpciROIs.redCellIdx')
         self.redCell.saveone(fullManualLabels, 'mpciROIs.redCellManualAssignments')
         for idx,name in enumerate(self.featureNames):
-            oneName = 'parameters'+name+'.featureCutoffValues'
-            self.redCell.saveone(self.featureCutoffs[idx], oneName)
-        
+            self.redCell.saveone(self.featureCutoffs[idx], self.oneNameFeatureCutoffs(name))
+    
+    def oneNameFeatureCutoffs(self, name):
+        return 'parameters'+'Red'+name[0].upper()+name[1:]+'.minMaxCutoff'
+    
         # ----------------
         # and that's it...
         # ----------------
-
-
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
 # converting uiPlottingFunctions.scrollMatchedImages into a redSelection GUI made to be similar to the same named function in Matlab
 def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=True, preserveScale=True):
     # supporting class for storing and updating the ROI displayed in redCellViewer()
