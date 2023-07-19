@@ -1,4 +1,5 @@
 # Standard modules
+from copy import copy
 import time
 import functools 
 import numpy as np
@@ -29,7 +30,7 @@ class redSelectionGUI:
         
         self.refImage = [None]*self.numPlanes
         self.idxRoi = [None]*self.numPlanes
-        self.featureNames = ['S2P','dot()','corr()','phase-corr']
+        self.featureNames = ['RedS2P','RedDotProduct','RedPearson','RedPhaseCorr']
         self.numFeatures = len(self.featureNames)
         self.features = [None]*self.numPlanes
         self.hvalues = [None]*self.numPlanes
@@ -39,12 +40,17 @@ class redSelectionGUI:
         # process initial plane
         self.controlCellToggle = False # If true, then self.maskImage() will display control cells rather than red cells
         self.redIdx = [np.full(self.roiPerPlane[planeIdx], True) for planeIdx in range(self.numPlanes)] # start with all as red... 
+        self.manualLabel = [None]*self.numPlanes 
+        self.manualLabelActive = [None]*self.numPlanes
         self.processPlanes() # compute reference / maskVolume / featureArrays for each plane 
         
         # open napari viewer and associated GUI features
         self.showMaskImage = True # if true, will show mask image, if false, will show mask labels
         self.maskVisibility = True # if true, will show either mask image or label, otherwise will not show either!
+        self.useManualLabel = True # if true, then will apply manual labels after using features to compute redIdx
         self.colorState = 0 # indicates which color to display maskLabels (0:random, 1-4:color by feature)
+        self.idxColormap = 0 # which colormap to use for pseudo coloring the masks
+        self.listColormaps = ['plasma', 'autumn', 'spring', 'summer', 'winter', 'hot']
         self.initializeNapariViewer()
         
         
@@ -107,59 +113,72 @@ class redSelectionGUI:
         
         # -- now add buttons --
         def saveROIs(event):
-            print('save ROIs callback is not functional yet!')
+            print("save ROIs callback saves the red idx and the manual labels as one data, but doesn't save the feature cutoff parameters!")
+            self.saveSelection()
             
         # create save button 
         self.saveButton = QPushButton('button',text='save red selection')
         self.saveButton.clicked.connect(saveROIs)
         self.saveButtonProxy = QGraphicsProxyWidget()
         self.saveButtonProxy.setWidget(self.saveButton)
-            
-        # create color buttons - 1 for random + 4(1 for each feature)
-        def manageColorButtons(checked, buttonIdx):
-            if not(checked) and buttonIdx==self.colorState: checked=True # prevent user from turning off one of the color options...
-            self.colorState=buttonIdx # update colorstate
-            for cbidx in range(len(self.colorButtons)):
-                self.colorButtons[cbidx].setChecked(cbidx==self.colorState)
-                # Since I can't figure out QPalette (e.g. don't want to), just add tildes to make it obvious which is selected
-                if cbidx==self.colorState: self.colorButtons[cbidx].setText('~~~'+colorButtonNames[cbidx]+'~~~')
-                else: self.colorButtons[cbidx].setText(colorButtonNames[cbidx])
-            self.updateLabelColors()
-                  
-        colorButtonNames = ['random',*self.featureNames]
-        self.colorButtons = [QPushButton(text=cbname) for cbname in colorButtonNames]
-        self.colorButtonProxies = [QGraphicsProxyWidget() for _ in range(len(self.colorButtons))]
-        for cbidx in range(len(self.colorButtons)):
-            self.colorButtons[cbidx].setCheckable(True) # make it a toggle (if the 'toggle' input doesn't already...)
-            self.colorButtons[cbidx].setChecked(cbidx==0) # only check the first one
-            self.colorButtons[cbidx].clicked.connect(functools.partial(manageColorButtons, buttonIdx=cbidx))
-            self.colorButtonProxies[cbidx].setWidget(self.colorButtons[cbidx])
-            # these are pretty weird # self.colorButtons[cbidx].setStyleSheet("QPushButton:checked { font: bold;  }")#border-width: 2px; border-color: beige;}")
         
-        # Use manageColorButtons callback to finish preparing and stylizing all the color buttons
-        manageColorButtons(True, self.colorState)
+        # add toggle control/red cell button
+        def toggleCellsToView(inputArgument):
+            # changes whether to plot control or red cells (maybe add a textbox and update it so as to not depend on looking at the print outputs...)
+            self.controlCellToggle = not(self.controlCellToggle)
+            self.toggleCellButton.setText('control cells' if self.controlCellToggle else 'red cells')
+            self.masks.data = self.maskImage()
+            self.labels.data = self.maskLabels()
+        
+        self.toggleCellButton = QPushButton(text='control cells' if self.controlCellToggle else 'red cells')
+        self.toggleCellButton.clicked.connect(toggleCellsToView)
+        self.toggleCellButtonProxy = QGraphicsProxyWidget()
+        self.toggleCellButtonProxy.setWidget(self.toggleCellButton)
+        
+        # add button to toggle whether to include manual labels in mask plot
+        def useManualLabel(event):
+            self.useManualLabel = not(self.useManualLabel)
+            self.useManualLabelButton.setText('using manual labels' if self.useManualLabel else 'ignoring manual labels')
+            # replot masks with new setting activated
+            self.regenerateMaskData()
             
-        # add button proxies to buttonArea
+        self.useManualLabelButton = QPushButton(text='using manual labels' if self.useManualLabel else 'ignoring manual labels')
+        self.useManualLabelButton.clicked.connect(useManualLabel)
+        self.useManualLabelProxy = QGraphicsProxyWidget()
+        self.useManualLabelProxy.setWidget(self.useManualLabelButton)
+        
+        # add colormap selection button 
+        def nextColorState(event):
+            self.colorState = np.mod(self.colorState+1, len(self.colorButtonNames))
+            self.colorButton.setText(self.colorButtonNames[self.colorState])
+            self.updateLabelColors()
+            
+        self.colorButtonNames = ['random',*self.featureNames]
+        self.colorButton = QPushButton(text=self.colorButtonNames[self.colorState])
+        self.colorButton.setCheckable(False)
+        self.colorButton.clicked.connect(nextColorState)
+        self.colorButtonProxy = QGraphicsProxyWidget()
+        self.colorButtonProxy.setWidget(self.colorButton)
+        
+        # add colormap selection button 
+        def nextColormap(event):
+            self.idxColormap = np.mod(self.idxColormap+1, len(self.listColormaps))
+            self.colormapSelection.setText(self.listColormaps[self.idxColormap])
+            self.updateLabelColors()
+            
+        self.colormapSelection = QPushButton(text=self.listColormaps[self.idxColormap])
+        self.colormapSelection.clicked.connect(nextColormap)
+        self.colormapSelectionProxy = QGraphicsProxyWidget()
+        self.colormapSelectionProxy.setWidget(self.colormapSelection)
+                                             
         self.buttonArea.addItem(self.saveButtonProxy, row=0, col=0)
-        for cbidx in range(len(self.colorButtonProxies)):
-            self.buttonArea.addItem(self.colorButtonProxies[cbidx],row=0,col=1+cbidx)
-            
-        # editFieldProxy = QGraphicsProxyWidget()
-        # editField = QLineEdit()
-        # editField.setText('0')
-        # editFieldProxy.setWidget(editField)
+        self.buttonArea.addItem(self.toggleCellButtonProxy, row=0, col=1)
+        self.buttonArea.addItem(self.useManualLabelProxy, row=0, col=2)
+        self.buttonArea.addItem(self.colorButtonProxy, row=0, col=3)
+        self.buttonArea.addItem(self.colormapSelectionProxy, row=0, col=4)
         
         # add feature plots to napari window
         self.dockWindow = self.viewer.window.add_dock_widget(self.featureWindow, name='ROI Features', area='bottom')
-        
-        # create some keystrokes for the viewer (currently the hello1 is just an example of how to do it...)                    
-        def toggleCellsToView(viewer):
-            # changes whether to plot control or red cells (maybe add a textbox and update it so as to not depend on looking at the print outputs...)
-            self.controlCellToggle = not(self.controlCellToggle)
-            nameOfCell = {True: 'Control', False: 'Red'}[self.controlCellToggle]
-            print(f'plotting {nameOfCell} cells...')
-            self.masks.data = self.maskImage()
-            self.labels.data = self.maskLabels()
         
         def switchImageLabel(viewer):
             self.showMaskImage = not(self.showMaskImage)
@@ -168,26 +187,54 @@ class redSelectionGUI:
         def updateMaskVisibility(viewer):
             self.maskVisibility = not(self.maskVisibility)
             self.updateVisibility()
-        
-        def nextColorState(viewer):
-            manageColorButtons(True, np.mod(self.colorState+1, 5))
             
         self.viewer.bind_key('t', toggleCellsToView, overwrite=True)
         self.viewer.bind_key('s', switchImageLabel, overwrite=True)
         self.viewer.bind_key('v', updateMaskVisibility, overwrite=True)
         self.viewer.bind_key('c', nextColorState, overwrite=True)
+        self.viewer.bind_key('a', nextColormap, overwrite=True)
+        
+        def doubleClickLabel(layer, event):
+            # if not looking at labels, then don't allow manual selection (it would be random!)
+            if not(self.labels.visible): 
+                self.viewer.status = "can only manually select cells when the labels are visible!"
+                return 
+            # if not looking at manual annotations, don't allow manual selection...
+            if not(self.useManualLabel):
+                self.viewer.status = "can only manually select cells when the manual labels are being used!"
+                return 
+            
+            planeIdx, yidx, xidx = [int(pos) for pos in event.position]
+            labelIdx = self.labels.data[planeIdx, yidx, xidx]
+            if labelIdx==0:
+                self.viewer.status = "double-click on background, no ROI identity toggled"
+            else:
+                if 'Control' in event.modifiers:
+                    print('add manual only view selection for control double click so user can only remove a manual label if it is specifically displayed as a manual layer!')
+                    self.viewer.status = f"if it's activated, then this action (ctl-doubleClick) would have removed a manual label on roi:{labelIdx-1}"
+                else:
+                    # manual annotation: if plotting control cells, then annotate as red (1), if plotting red cells, annotate as control (0)
+                    newLabel = copy(self.controlCellToggle) 
+                    roiIdx = labelIdx-1
+                    inPlaneIdx = np.where(self.idxRoi[planeIdx]==(roiIdx))[0][0]
+                    self.manualLabel[planeIdx][inPlaneIdx] = newLabel
+                    self.manualLabelActive[planeIdx][inPlaneIdx] = True
+                    self.viewer.status = f"you just labeled roi: {roiIdx} with the identity: {newLabel}"
+                self.regenerateMaskData()
+                
+        self.labels.mouse_double_click_callbacks.append(doubleClickLabel)
         
         # add callback for dimension slider
         def updatePlaneIdx(event):
             self.planeIdx = event.source.current_step[0]
             self.updateFeaturePlots()
-            
+        
         self.viewer.dims.events.connect(updatePlaneIdx)
-    
+        
     def updateVisibility(self):
         self.masks.visible = self.showMaskImage and self.maskVisibility
         self.labels.visible = not(self.showMaskImage) and self.maskVisibility
-
+        
     def updateFeaturePlots(self):
         for feature in range(self.numFeatures):
             self.histGraphs[feature].setOpts(height=self.hvalues[self.planeIdx][feature])
@@ -198,29 +245,33 @@ class redSelectionGUI:
             # then use random colors -- what I encoded here is the default 
             colormap = dict(zip([0,None],[np.array([0.,0.,0.,0.],dtype=np.single),np.array([0.,0.,0.,1.],dtype=np.single)]))
         else:
-            # good colormaps: ['plasma', 'autumn', 'spring', 'summer', 'winter', 'hot']
+            # good colormaps: 
             norm = mpl.colors.Normalize(vmin=self.featureRange[self.colorState-1][0], vmax=self.featureRange[self.colorState-1][1])
-            colors = plt.colormaps['plasma'](norm(np.concatenate([feat[self.colorState-1] for feat in self.features])))
+            colors = plt.colormaps[self.listColormaps[self.idxColormap]](norm(np.concatenate([feat[self.colorState-1] for feat in self.features])))
             colormap = dict(zip(np.concatenate(self.idxRoi)+1, colors))
             colormap[0] = np.array([0.,0.,0.,0.],dtype=np.single) # add transparent background
         # Update colors of the labels
         self.labels.color = colormap
         
     def processPlanes(self):
+        redS2P = self.redCell.loadone('mpciROIs.redS2P')
+        redDot = self.redCell.loadone('mpciROIs.redDotProduct')
+        redCorr = self.redCell.loadone('mpciROIs.redPearson')
+        redPhase = self.redCell.loadone('mpciROIs.redPhaseCorrelation')
+        manualLabels = self.redCell.loadone('mpciROIs.redCellManualAssignments')
         for planeIdx in range(self.numPlanes):
-            t = time.time()
-            print(f"Processing plane {planeIdx} for session {self.redCell.sessionPrint()}...")
             self.refImage[planeIdx] = self.redCell.reference[planeIdx]
             self.idxRoi[planeIdx] = np.where(self.redCell.roiPlaneIdx==planeIdx)[0]
+            self.manualLabel[planeIdx] = manualLabels[0][self.redCell.roiPlaneIdx==planeIdx]
+            self.manualLabelActive[planeIdx] = manualLabels[1][self.redCell.roiPlaneIdx==planeIdx]
             self.features[planeIdx] = [None]*self.numFeatures
-            self.features[planeIdx][0] = self.redCell.redS2P[self.redCell.roiPlaneIdx==planeIdx]
-            self.features[planeIdx][1] = self.redCell.computeDot(planeIdx=planeIdx)
-            self.features[planeIdx][2] = self.redCell.computeCorr(planeIdx=planeIdx)
-            self.features[planeIdx][3] = self.redCell.croppedPhaseCorrelation(planeIdx=planeIdx)[3]
+            self.features[planeIdx][0] = redS2P[self.redCell.roiPlaneIdx==planeIdx]
+            self.features[planeIdx][1] = redDot[self.redCell.roiPlaneIdx==planeIdx]
+            self.features[planeIdx][2] = redCorr[self.redCell.roiPlaneIdx==planeIdx]
+            self.features[planeIdx][3] = redPhase[self.redCell.roiPlaneIdx==planeIdx]
             self.hvalues[planeIdx] = [None]*self.numFeatures
             self.hvalred[planeIdx] = [None]*self.numFeatures
-            print(f"Finished in {time.time()-t} seconds.")
-        
+            
         # use the same edges across planes
         for feature in range(self.numFeatures):
             featureAcrossPlanes = np.concatenate([featureData[feature] for featureData in self.features]) 
@@ -231,25 +282,35 @@ class redSelectionGUI:
                 self.hvalues[planeIdx][feature] = np.histogram(self.features[planeIdx][feature], bins=self.hedges[feature])[0]
                 self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx[planeIdx]], bins=self.hedges[feature])[0]
                 
-    
     def maskLabels(self):
+        # note that labelData handles indices in a complicated way so that it's easy to interface with Napari. Key points:
+        # 1. ROIs are assigned an index that is unique across all ROIs independent of plane (the first ROI in plane 1 isn't ROI 0, it's 1 + the number of ROIs in plane 0)
+        # 2. ROI indices are incremented by 1 when they are added to the "label" layer of the napari viewer. This is because the label layer uses "0" to indicate "no label"
+        # 3. ROIs are only presented if they are True in "self.idxMasksToPlot", which is a boolean array of size (numROIsPerPlane,). (Hence the enumerated for loop...)
         labelData = np.zeros((self.numPlanes,self.redCell.ly,self.redCell.lx), dtype=int)
         for planeIdx in range(self.numPlanes):
-            useRedIdx = self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx]
+            plotIdx = self.idxMasksToPlot(planeIdx)
             for idx,roi in enumerate(self.idxRoi[planeIdx]):
-                if useRedIdx[idx]:
+                if plotIdx[idx]:
                     labelData[planeIdx,self.redCell.ypix[roi],self.redCell.xpix[roi]] = roi+1 # 0 is transparent for a labels layer in napari, so 1 index the ROIs!
         return labelData
     
     def maskImage(self):
         imageData = np.zeros((self.numPlanes,self.redCell.ly,self.redCell.lx))
         for planeIdx in range(self.numPlanes):
-            useRedIdx = self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx]
+            plotIdx = self.idxMasksToPlot(planeIdx)
             for idx,roi in enumerate(self.idxRoi[planeIdx]):
-                if useRedIdx[idx]:
+                if plotIdx[idx]:
                     imageData[planeIdx,self.redCell.ypix[roi],self.redCell.xpix[roi]] = self.redCell.lam[roi]
         return imageData
-        
+    
+    def idxMasksToPlot(self, planeIdx):
+        # standard function for determining which masks to plot for each plane
+        plotIdx = np.copy(self.redIdx[planeIdx] if not(self.controlCellToggle) else ~self.redIdx[planeIdx])
+        if self.useManualLabel:
+            plotIdx[self.manualLabelActive[planeIdx]] = (self.manualLabel[planeIdx][self.manualLabelActive[planeIdx]]!=self.controlCellToggle)
+        return plotIdx
+    
     def updateRedIdx(self):
         for planeIdx in range(self.numPlanes):
             self.redIdx[planeIdx] = np.full(self.roiPerPlane[planeIdx], True) # start with all as red... 
@@ -261,89 +322,27 @@ class redSelectionGUI:
         for feature in range(self.numFeatures):
             self.hvalred[self.planeIdx][feature] = np.histogram(self.features[self.planeIdx][feature][self.redIdx[self.planeIdx]], bins=self.hedges[feature])[0]
             self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
-
-        # finally, recompute redMask image
+            
+        self.regenerateMaskData()
+    
+    def regenerateMaskData(self):
         self.masks.data = self.maskImage()
         self.labels.data = self.maskLabels()
         
+    def saveSelection(self):
+        print("save ROIs callback saves the red idx and the manual labels as one data, but doesn't save the feature cutoff parameters!")
+        fullRedIdx = np.concatenate(self.redIdx)
+        fullManualLabels = np.stack((np.concatenate(self.manualLabel),np.concatenate(self.manualLabelActive)))
+        fullFeatureCutoffs = np.array(self.featureCutoffs) # this is a (4x2) array 
+        self.redCell.saveone(fullRedIdx, 'mpciROIs.redCellIdx')
+        self.redCell.saveone(fullManualLabels, 'mpciROIs.redCellManualAssignments')
+        for idx,name in enumerate(self.featureNames):
+            oneName = 'parameters'+name+'.featureCutoffValues'
+            self.redCell.saveone(self.featureCutoffs[idx], oneName)
         
         # ----------------
         # and that's it...
         # ----------------
-        
-        
-    
-
-def napariWithSlider(ND=512,NC=50,cellWidth=2):
-    refImage = np.random.normal(0,1,(ND,ND))
-    xCellLocations = np.random.randint(0,ND,NC)
-    yCellLocations = np.random.randint(0,ND,NC)
-    cellGrid = np.zeros((ND,ND,NC))
-    cellGrid[yCellLocations,xCellLocations,np.arange(NC)] = 1
-    cellMask = ndi.gaussian_filter(cellGrid, (cellWidth, cellWidth, 0))
-
-    def convertToImage(cellMask, cellIdx):
-        return np.sum(cellMask * cellIdx, axis=2)
-
-    def updateCutoff(event):
-        cutoffValues = (cutoffVal1.pos()[0], cutoffVal2.pos()[0])
-        minCutoff = min(cutoffValues)
-        maxCutoff = max(cutoffValues)
-        masks.data = convertToImage(cellMask, (xCellLocations>=minCutoff) & (xCellLocations<maxCutoff))
-
-    viewer = napari.Viewer()
-    reference = viewer.add_image(refImage, name='reference', blending='additive')
-    masks = viewer.add_image(convertToImage(cellMask, np.full(NC,True)), name='masks', blending='additive', colormap='red') 
-    reference.metadata['count']=1
-
-    histCurve = np.sum(convertToImage(cellMask, np.full(NC,True)),axis=0)
-    xRange = (0,ND-1)
-    window = pg.GraphicsLayoutWidget(title='hello world')
-    histPlot = window.addPlot(title="cutoff",row=0,col=0)
-    histPlot.addLegend()
-    histPlot.setRange(xRange=xRange,yRange=(0,1.1*np.max(histCurve)), update=False)
-    histPlot.setMouseEnabled(x=False, y=False)
-    cutoffLine = histPlot.plot()
-    cutoffLine.setData(np.arange(ND), histCurve) # create profile of cell masks along x axis 
-    cutoffVal1 = pg.InfiniteLine(pos=0,movable=True)
-    cutoffVal1.setBounds(xRange)
-    cutoffVal1.sigPositionChanged.connect(updateCutoff)
-    histPlot.addItem(cutoffVal1)
-    cutoffVal2 = pg.InfiniteLine(pos=ND-1,movable=True)
-    cutoffVal2.setBounds(xRange)
-    cutoffVal2.sigPositionChanged.connect(updateCutoff)
-    histPlot.addItem(cutoffVal2)
-
-    # try push buttons
-    def helloFromPush(event):
-        reference.data = np.random.normal(0,1,(ND,ND))
-        print('hello from push')
-
-    buttonProxy = QGraphicsProxyWidget()
-    button = QPushButton('button')
-    button.setDefault(True)
-    button.setCheckable(True)
-    button.setChecked(True)
-    button.clicked.connect(helloFromPush)
-    buttonProxy.setWidget(button)
-    window.addItem(buttonProxy,row=1,col=0)    
-
-    dockWidget = viewer.window.add_dock_widget(window, name='cutoffSelection', area='bottom')
-
-    @viewer.bind_key('r')
-    def hello1(viewer):
-        x = np.random.randint(0,100)
-        viewer.status = f'hello {x}'
-        yield
-        viewer.status = 'goodbye'
-
-    @reference.mouse_drag_callbacks.append
-    def update_layer(layer, event):
-        reference.metadata['count']+=1
-        print(reference.metadata['count'])
-        #layer.data = np.random.normal(0,reference.metadata['count'],layer.data.shape)
-
-    return viewer, reference
 
 
 # converting uiPlottingFunctions.scrollMatchedImages into a redSelection GUI made to be similar to the same named function in Matlab
@@ -654,420 +653,3 @@ def redSelectionAmorphous(stacks, features, enableMouse=False, lockAspect=1, inf
     return window
 
 
-
-
-
-
-# ------------------------------------------------------------------------------------------
-# -- I copied everything from testingNapari.py below because it'll probably be useful!
-# ------------------------------------------------------------------------------------------
-
-def testHistSlider(cutoff=0):
-    ND = 512
-    def genBackground(ND,cutoff=0):
-        background = np.repeat(np.arange(ND).reshape(1,-1),ND,axis=0)
-        return background * (np.arange(ND)>=cutoff)
-    window = pg.GraphicsLayoutWidget()
-    view = window.addViewBox(title='shadeLeftToRight',row=0,col=0)
-    cutoffPlot = window.Plot(title='cutoffValue',row=1,col=0)
-    
-    view.addItem(genBackground(ND,cutoff=cutoff))
-    cutoffLine = cutoffPlot.plot()
-    cutoffLine.addData(np.arange(ND),np.arange(ND))
-    
-    return window,view,cutoffPlot
-
-
-def napariWithSlider(ND=512,NC=50,cellWidth=2):
-    refImage = np.random.normal(0,1,(ND,ND))
-    xCellLocations = np.random.randint(0,ND,NC)
-    yCellLocations = np.random.randint(0,ND,NC)
-    cellGrid = np.zeros((ND,ND,NC))
-    cellGrid[yCellLocations,xCellLocations,np.arange(NC)] = 1
-    cellMask = ndi.gaussian_filter(cellGrid, (cellWidth, cellWidth, 0))
-    
-    def convertToImage(cellMask, cellIdx):
-        return np.sum(cellMask * cellIdx, axis=2)
-    
-    def updateCutoff(event):
-        cutoffValues = (cutoffVal1.pos()[0], cutoffVal2.pos()[0])
-        minCutoff = min(cutoffValues)
-        maxCutoff = max(cutoffValues)
-        masks.data = convertToImage(cellMask, (xCellLocations>=minCutoff) & (xCellLocations<maxCutoff))
-        
-    viewer = napari.Viewer()
-    reference = viewer.add_image(refImage, name='reference', blending='additive')
-    masks = viewer.add_image(convertToImage(cellMask, np.full(NC,True)), name='masks', blending='additive', colormap='red') 
-    reference.metadata['count']=1
-    
-    histCurve = np.sum(convertToImage(cellMask, np.full(NC,True)),axis=0)
-    xRange = (0,ND-1)
-    window = pg.GraphicsLayoutWidget(title='hello world')
-    histPlot = window.addPlot(title="cutoff",row=0,col=0)
-    histPlot.addLegend()
-    histPlot.setRange(xRange=xRange,yRange=(0,1.1*np.max(histCurve)), update=False)
-    histPlot.setMouseEnabled(x=False, y=False)
-    cutoffLine = histPlot.plot()
-    cutoffLine.setData(np.arange(ND), histCurve) # create profile of cell masks along x axis 
-    cutoffVal1 = pg.InfiniteLine(pos=0,movable=True)
-    cutoffVal1.setBounds(xRange)
-    cutoffVal1.sigPositionChanged.connect(updateCutoff)
-    histPlot.addItem(cutoffVal1)
-    cutoffVal2 = pg.InfiniteLine(pos=ND-1,movable=True)
-    cutoffVal2.setBounds(xRange)
-    cutoffVal2.sigPositionChanged.connect(updateCutoff)
-    histPlot.addItem(cutoffVal2)
-    
-    # try push buttons
-    def helloFromPush(event):
-        reference.data = np.random.normal(0,1,(ND,ND))
-        print('hello from push')
-        
-    buttonProxy = QGraphicsProxyWidget()
-    button = QPushButton('button')
-    button.setDefault(True)
-    button.setCheckable(True)
-    button.setChecked(True)
-    button.clicked.connect(helloFromPush)
-    buttonProxy.setWidget(button)
-    window.addItem(buttonProxy,row=1,col=0)    
-        
-    dockWidget = viewer.window.add_dock_widget(window, name='cutoffSelection', area='bottom')
-    
-    @viewer.bind_key('r')
-    def hello1(viewer):
-        x = np.random.randint(0,100)
-        viewer.status = f'hello {x}'
-        yield
-        viewer.status = 'goodbye'
-
-    @reference.mouse_drag_callbacks.append
-    def update_layer(layer, event):
-        reference.metadata['count']+=1
-        print(reference.metadata['count'])
-        #layer.data = np.random.normal(0,reference.metadata['count'],layer.data.shape)
-    
-    return viewer, reference
-
-
-class locPlot(object):
-    def __init__(self, ND=500, NC=50, cellWidth=10):
-        self.left = 10
-        self.top = 10
-        self.title = 'hello world'
-        self.width = 320
-        self.height = 200
-        
-        self.refImage = np.random.normal(0,1,(ND,ND))
-        self.cellLocations = np.random.randint(0,ND,(2,NC))
-        self.cellGrid = np.zeros((NC,ND,ND))
-        self.cellGrid[np.arange(NC),self.cellLocations[0],self.cellLocations[1]] = 1
-        self.cellMask = ndi.gaussian_filter(self.cellGrid, (0, cellWidth, cellWidth))
-        self.tt = np.arange(ND)
-        
-        self.win = pg.GraphicsLayoutWidget(title=self.title) # create a window
-        self.plots = [None] * 2
-        self.plots[0] = self.win.addPlot(title="left plot", row=0, col=0)
-        self.plots[1] = self.win.addPlot(title="right plot", row=0, col=1)
-        
-        self.idxPlot = [None] * 2
-        for i in range(2):
-            self.idxPlot[i] = self.plots[i].plot()
-            #self.idxPlot[i].setShadowPen(pg.mkPen((255,255,255), width=2, cosmetic=True))
-        
-        self.plot(0)
-        self.win.show()
-        
-        
-    def plot(self, idx):
-        xv = np.zeros_like(self.tt)
-        yv = np.zeros_like(self.tt)
-        xv[self.cellLocations[0,idx]]=1
-        yv[self.cellLocations[1,idx]]=1
-        self.idxPlot[0].setData(self.tt, xv)
-        self.idxPlot[1].setData(self.tt, yv)
-
-def testLocationPlot():
-    viewer = napari.Viewer()
-
-    lp = locPlot()
-        
-    reference = viewer.add_image(lp.refImage, name='reference', blending='additive')
-    masks = viewer.add_image(lp.cellMask, name='masks', blending='additive', colormap='red') 
-    
-    def update_slider(event):
-        idx = event.source.current_step[0]
-        lp.plot(idx)
-        viewer.status = f"Idx: {idx}"
-        
-    @viewer.bind_key('q')
-    def exit(viewer):
-        lp.win.close()
-        viewer.close()
-
-    viewer.dims.events.connect(update_slider)
-        
-    return viewer
-
-def napariTest():
-    blobs = data.binary_blobs(length=128, volume_fraction=0.1, n_dim=3)
-    viewer = napari.view_image(blobs.astype(float), name='blobs')
-    labeled = ndi.label(blobs)[0]
-    viewer.add_labels(labeled, name='blob ID')
-    return viewer
-
-
-def basicNapari(ND=500,NC=50,cellWidth=10):
-    refImage = np.random.normal(0,1,(ND,ND))
-    cellLocations = np.random.randint(0,ND,(2,NC))
-    cellGrid = np.zeros((NC,ND,ND))
-    cellGrid[np.arange(NC),cellLocations[0],cellLocations[1]] = 1
-    cellMask = ndi.gaussian_filter(cellGrid, (0, cellWidth, cellWidth))
-    
-    viewer = napari.Viewer()
-    reference = viewer.add_image(refImage, name='reference', blending='additive')
-    masks = viewer.add_image(cellMask, name='masks', blending='additive', colormap='red') 
-
-    widg_dict = {}
-    widg_dict['plot_widget1'] = pg.PlotWidget()
-    widg_dict['plot_widget1'].addLegend()
-    widg_dict['xline1'] = widg_dict['plot_widget1'].plot([0],[0],pen='b',name='xval')
-    widg_dict['yline1'] = widg_dict['plot_widget1'].plot([0],[0],pen='r',name='yval') 
-    
-    widg_dict['plot_widget2'] = pg.PlotWidget()
-    widg_dict['plot_widget2'].addLegend()
-    widg_dict['xline2'] = widg_dict['plot_widget2'].plot([0],[0],pen='b',name='xval')
-    widg_dict['yline2'] = widg_dict['plot_widget2'].plot([0],[0],pen='r',name='yval') 
-    
-    widg_dict['dock_widget1'] = viewer.window.add_dock_widget(widg_dict['plot_widget1'], name='plot', area='bottom')
-    widg_dict['dock_widget2'] = viewer.window.add_dock_widget(widg_dict['plot_widget2'], name='plot', area='bottom')
-    
-    
-    def plotNewLines(idx):
-        tt = np.arange(ND)
-        xv = np.zeros_like(tt)
-        yv = np.zeros_like(tt)
-        xv[cellLocations[0,idx]]=1
-        yv[cellLocations[1,idx]]=1
-        widg_dict['xline1'].setData(tt,xv)
-        widg_dict['yline1'].setData(tt,yv)
-        widg_dict['xline2'].setData(tt,xv)
-        widg_dict['yline2'].setData(tt,yv)
-    
-    @viewer.bind_key('r')
-    def hello1(viewer):
-        x = np.random.randint(0,10)
-        viewer.status = f'hello {x}'
-        yield
-        viewer.status = 'goodbye'
-
-    def update_slider(event):
-        idx = event.source.current_step[0]
-        plotNewLines(idx)
-        viewer.status = f"Idx: {idx}"
-        
-#     def helloWorld():
-#         x = np.random.randint(0,1000)
-#         viewer.status = f"Hello! {x}"
-        
-    plotNewLines(0)
-    
-    viewer.dims.events.connect(update_slider)
-    # viewer.dims.events.connect(helloWorld)
-
-    return viewer
-
-#     @cell_layer.mouse_drag_callbacks.append
-#     def on_click(cell_labels, event):
-#         value = cell_labels.get_value(
-#             position=event.position,
-#             view_direction=event.view_direction,
-#             dims_displayed=event.dims_displayed,
-#             world=True)
-#         print(value)
-#         if value is not None and value > 0:
-#             cell_idx = value - 1
-#             if event.button == 1:
-#                 update_plot(widg_dict, cell_idx)
-#             # if event.button == 2:
-#             #     mark_cell(
-#             #         cell_idx, 0, outputs['iscell'], cell_layer, not_cell_layer)
-
-#     @not_cell_layer.mouse_drag_callbacks.append
-#     def on_click(not_cell_labels, event):
-#         value = not_cell_labels.get_value(
-#             position=event.position,
-#             view_direction=event.view_direction,
-#             dims_displayed=event.dims_displayed,
-#             world=True)
-#         print('Not cell,', value)
-#         if value is not None and value > 0:
-#             cell_idx = value - 1
-#             if event.button == 1:
-#                 update_plot(widg_dict, cell_idx)
-#             # if event.button == 2:
-#             #     mark_cell(
-#             #         cell_idx, 1, outputs['iscell'], cell_layer, not_cell_layer)
-
-#     return v
-
-
-
-# def create_napari_ui(outputs, lam_thresh=0.3, title='3D Viewer', use_patch_coords=False, scale=(15,4,4), theme='dark', extra_cells=None, extra_cells_names=None, vmap_limits=None,
-#                      extra_images = None, extra_images_names = None, cell_label_name='cells', vmap_name='corr map', use_filtered_iscell=True):
-#     if use_patch_coords:
-#         vmap = outputs['vmap_patch']
-#     else: 
-#         vmap = outputs['vmap']
-#     if use_filtered_iscell and 'iscell_filtered' in outputs.keys():
-#         iscell = outputs['iscell_filtered']
-#     else:
-#         iscell = outputs['iscell']
-#     if len(iscell.shape) > 1:
-#         iscell = iscell[:,0]
-#     cell_labels = make_cell_label_vol(outputs['stats'], iscell, vmap.shape,
-#                                          lam_thresh=lam_thresh, use_patch_coords=use_patch_coords)
-#     not_cell_labels = make_cell_label_vol(outputs['stats'], 1-iscell, vmap.shape,
-#                                              lam_thresh=lam_thresh, use_patch_coords=use_patch_coords)
-#     v = napari.view_image(
-#         vmap, title=title, name=vmap_name, opacity=1.0, scale=scale, contrast_limits=vmap_limits)
-#     if extra_images is not None:
-#         for i, extra_image in enumerate(extra_images):
-#             v.add_image(
-#                 extra_image, name=extra_images_names[i], opacity=1.0, scale=scale)
-
-#     if 'im3d' in outputs.keys():
-#         v.add_image(outputs['im3d'], name='Image', scale=scale)
-#     cell_layer = v.add_labels(cell_labels, name=cell_label_name, opacity=0.5, scale=scale)
-
-#     if extra_cells is not None:
-#         for i, extra_cell in enumerate(extra_cells):
-#             extra_cell_labels = make_cell_label_vol(extra_cell, n.ones(len(extra_cell)), vmap.shape,
-#                                                     lam_thresh=lam_thresh, use_patch_coords=use_patch_coords)
-#             v.add_labels(extra_cell_labels,
-#                          name=extra_cells_names[i], scale=scale, opacity=0.5)
-
-#     not_cell_layer = v.add_labels(
-#         not_cell_labels, name='not-' +cell_label_name, opacity=0.5, scale=scale)
-    
-#     if 'F' in outputs.keys():
-#         if outputs['F'].shape[0] != len(iscell):
-#             assert outputs['F'].shape[0] == iscell.sum()
-#             trace_idxs = n.cumsum(iscell) - 1
-#         else:
-#             trace_idxs = n.arange(len(iscell))
-
-#     v.theme = theme
-#     widg_dict = {}
-#     widg_dict['plot_widget'] = pg.PlotWidget()
-#     widg_dict['plot_widget'].addLegend()
-#     widg_dict['f_line'] = widg_dict['plot_widget'].plot(
-#         [0], [0], pen='b', name='F')
-#     widg_dict['fneu_line'] = widg_dict['plot_widget'].plot(
-#         [0], [0], pen='r', name='Npil')
-#     widg_dict['spks_line'] = widg_dict['plot_widget'].plot(
-#         [0], [0], pen='w', name='Deconv')
-#     widg_dict['dock_widget'] = v.window.add_dock_widget(
-#         widg_dict['plot_widget'], name='activity', area='bottom')
-
-
-
-#     def get_traces(cell_idx):
-#         trace_idx = trace_idxs[cell_idx]
-#         fx = outputs['F'][trace_idx]
-#         fn = outputs['Fneu'][trace_idx]
-#         ss = outputs['spks'][trace_idx]
-#         return outputs['ts'], fx, fn, ss
-
-#     def update_plot(widg_dict, cell_idx):
-#         ts, fx, fn, ss = get_traces(cell_idx)
-#         widg_dict['f_line'].setData(ts, fx)
-#         widg_dict['fneu_line'].setData(ts, fn)
-#         widg_dict['spks_line'].setData(ts, ss)
-
-#     @cell_layer.mouse_drag_callbacks.append
-#     def on_click(cell_labels, event):
-#         value = cell_labels.get_value(
-#             position=event.position,
-#             view_direction=event.view_direction,
-#             dims_displayed=event.dims_displayed,
-#             world=True)
-#         print(value)
-#         if value is not None and value > 0:
-#             cell_idx = value - 1
-#             if event.button == 1:
-#                 update_plot(widg_dict, cell_idx)
-#             # if event.button == 2:
-#             #     mark_cell(
-#             #         cell_idx, 0, outputs['iscell'], cell_layer, not_cell_layer)
-
-#     @not_cell_layer.mouse_drag_callbacks.append
-#     def on_click(not_cell_labels, event):
-#         value = not_cell_labels.get_value(
-#             position=event.position,
-#             view_direction=event.view_direction,
-#             dims_displayed=event.dims_displayed,
-#             world=True)
-#         print('Not cell,', value)
-#         if value is not None and value > 0:
-#             cell_idx = value - 1
-#             if event.button == 1:
-#                 update_plot(widg_dict, cell_idx)
-#             # if event.button == 2:
-#             #     mark_cell(
-#             #         cell_idx, 1, outputs['iscell'], cell_layer, not_cell_layer)
-
-#     return v
-
-
-def testHistSlider(ND=512,minCutoff=0,maxCutoff=None):
-    # generate image and a cutoff control with infinite lines that are draggable and update which part of the image are shown
-    maxCutoff = ND
-    def genBackground(ND,minCutoff=0,maxCutoff=maxCutoff):
-        background = np.repeat(np.arange(ND).reshape(1,-1),ND,axis=0)
-        return (background * (minCutoff<=np.arange(ND)) * (np.arange(ND)<maxCutoff)).T
-    
-    def mouseClickEvent(event):
-        if event.button()==1 and cutoffPlot.sceneBoundingRect().contains(event.scenePos()):
-            mouse_point = cutoffPlot.vb.mapSceneToView(event.scenePos())
-            print(f"X:{mouse_point.x()}, Y:{mouse_point.y()}")
-            selectionPoint.setData([mouse_point.x()],[mouse_point.y()])
-            
-    def viewClickEvent(event):
-        if event.button()==1 and view.sceneBoundingRect().contains(event.scenePos()):
-            print('hello world')
-            
-    def checkLineEvents(event):
-        cutoffValues = (cutVal1.pos()[0], cutVal2.pos()[0])
-        minCutoff = min(cutoffValues)
-        maxCutoff = max(cutoffValues)
-        img.setImage(genBackground(ND,minCutoff=minCutoff,maxCutoff=maxCutoff))
-        img.setLevels([0,ND], update=False)
-    
-    xRange = (0,ND)
-    yRange = (0,ND)
-    window = pg.GraphicsLayoutWidget()
-    view = window.addViewBox(row=0,col=0,enableMouse=False)
-    cutoffPlot = window.addPlot(title='cutoffValue',row=1,col=0)
-    cutoffPlot.setRange(xRange=xRange,yRange=yRange)
-    cutoffPlot.setMouseEnabled(x=False, y=False)
-    cutoffPlot.scene().sigMouseClicked.connect(mouseClickEvent)
-    view.scene().sigMouseClicked.connect(viewClickEvent)
-    
-    img = pg.ImageItem(image=genBackground(ND,minCutoff=minCutoff,maxCutoff=maxCutoff))
-    img.setLevels([0,ND], update=False)
-    
-    view.addItem(img)
-    cutoffLine = cutoffPlot.plot()
-    cutoffLine.setData(np.arange(ND),np.arange(ND))
-    cutVal1 = pg.InfiniteLine(pos=0,movable=True)
-    cutVal1.setBounds(xRange)
-    cutVal1.sigPositionChanged.connect(checkLineEvents)
-    cutoffPlot.addItem(cutVal1)
-    cutVal2 = pg.InfiniteLine(pos=ND-1,movable=True)
-    cutVal2.setBounds(xRange)
-    cutVal2.sigPositionChanged.connect(checkLineEvents)
-    cutoffPlot.addItem(cutVal2)
-    
-    window.show()
-    return window,view,cutoffPlot,cutVal1
