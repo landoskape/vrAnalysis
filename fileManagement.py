@@ -21,7 +21,15 @@ def getCopyString(mouseName, datestr='', session='', server=serverPath(), toClip
         tkManager.clipboard_append(cmdPromptCommand)
         tkManager.destroy()
     print(cmdPromptCommand)
-    
+
+def s2pTargets(mouseName, dateString='', session='', server=serverPath()):
+    sourceString = Path(serverPath() / mouseName / dateString / session)
+    targetString = Path(localDataPath() / mouseName / dateString / session)
+    print(sourceString)
+    print(targetString)
+
+def checkSessionFiles(mouseName, fileIdentifier):
+    return None
 
 
 
