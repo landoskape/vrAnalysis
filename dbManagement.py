@@ -74,16 +74,13 @@ class vrDatabase:
             cursor.close()
             conn.close()
             
-    def fieldNames(self):
-        with self.openCursor() as cursor:
-            fieldNames = [col.column_name for col in cursor.columns(table=self.tableName)]
-        return fieldNames
-            
     def tableData(self):
         with self.openCursor() as cursor:
+            fieldNames = [col.column_name for col in cursor.columns(table=self.tableName)]
             cursor.execute(f"SELECT * FROM {self.tableName}")
             tableElements = cursor.fetchall()
-        return tableElements
+            
+        return fieldNames, tableElements
     
     def getTable(self, ignoreScratched=True, **kwConditions):
         """getTable retrieves and filters data from the table in self.tableName with optional filtering conditions. 
@@ -103,8 +100,7 @@ class vrDatabase:
             df = vrdb.getTable(ignoreScratched=False, imaging=True, sessionQC=False)
         """
         
-        fieldNames = self.fieldNames()
-        tableData = self.tableData()
+        fieldNames, tableData = self.tableData()
         df = pd.DataFrame.from_records(tableData, columns=fieldNames)
         if ignoreScratched: df = df[df['sessionQC']]
         if kwConditions:
