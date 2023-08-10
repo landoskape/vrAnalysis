@@ -217,21 +217,6 @@ class vrExperiment(vrSession):
         trialIndex = self.getBehaveTrialIdx(trialStartFrame)
         return [data[trialIndex==tidx] for tidx in range(len(trialStartFrame))]
 
-    
-class vrExperimentDatabase(vrExperiment):
-    """
-    The vrExperimentDatabase object is a preprocessing-like object used specifically to interact with the database. 
-    It has minimal features and is mostly just here as a pointer (at the moment).
-    """
-    def __init__(self,mouseName,dateString,session,**userOpts):
-        # -- initialize vrExperiment parameters --
-        self.mouseName = mouseName
-        self.dateString = dateString
-        self.session = session
-        if not self.sessionPath().exists(): raise ValueError(f"Session directory does not exist for {self.sessionPrint()}")
-        
-        
-        
         
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -284,10 +269,6 @@ class vrExperimentRegistration(vrExperiment):
         self.loadBuffer = {} # initialize this upon creation for efficient loading throughout preprocessing
         self.value = {} # initialize this dictionary to save important values (e.g. number of trials)
         
-        # load these files for raw behavioral data
-        self.tlFile = self.loadTimelineStructure()
-        self.vrFile = self.loadBehaviorStructure()
-        
         if not self.onePath().exists(): self.onePath().mkdir(parents=True)
         if not self.rawDataPath().exists(): self.rawDataPath().mkdir(parents=True)
         
@@ -301,6 +282,10 @@ class vrExperimentRegistration(vrExperiment):
    
     # --------------------------------------------------------------- preprocessing methods ------------------------------------------------------------
     def processTimeline(self):
+        # load these files for raw behavioral & timeline data
+        self.tlFile = self.loadTimelineStructure()
+        self.vrFile = self.loadBehaviorStructure()
+        
         # get time stamps, photodiode, trial start and end times, room position, lick times, trial idx, visual data visible
         mpepStartTimes = []
         for (mt,me) in zip(self.tlFile['mpepUDPTimes'],self.tlFile['mpepUDPEvents']):
@@ -510,7 +495,9 @@ class vrExperimentRegistration(vrExperiment):
                     raise ValueError("Cannot fix mismatches when suite2p data is missing!")
                 # It's possible that the scanImage signal to timeline was broken but scanImage still continued normally. 
                 if numMissing > 1: print(f"In session {self.sessionPrint()}, more than one frameSamples sample was missing. Consider using tiff timelineTimestamps to reproduce accurately.") 
-                print(f"In session {self.sessionPrint()}, frameSamples has {len(frameSamples)} elements, but {self.value['numFrames']} frames were saved by suite2p. Will extend frameSamples using the typical sampling rate and nearestpoint algorithm.")
+                print((f"In session {self.sessionPrint()}, frameSamples has {len(frameSamples)} elements, but {self.value['numFrames']} frames were saved by suite2p. "
+                       "Will extend frameSamples using the typical sampling rate and nearestpoint algorithm."
+                      ))
                 # If frame2time difference vector is consistent within 1%, then use mean (which is a little more accurate), otherwise use median
                 frame2time = timelineTimestamps[frameSamples]
                 medianFramePeriod = np.median(np.diff(frame2time)) # measure median sample period
@@ -531,7 +518,7 @@ class vrExperimentRegistration(vrExperiment):
             fcorr = self.getfcorr()
             spks = []
             for fc in tqdm(fcorr):
-                spks.append(deconvolve(fc,g=(g,),penalty=1)[1])
+                spks.append(deconvolve(fc, g=(g,), penalty=1)[1])
             spks = np.stack(spks)
             assert spks.shape == self.loadS2P('spks').shape, f"In session {self.sessionPrint()}, oasis was run and did not produce the same shaped array as suite2p spks..."
         else:
@@ -573,7 +560,7 @@ class vrExperimentRegistration(vrExperiment):
         corrParameters={'width':20,'lowcut':12, 'highcut':250, 'order':3, 'fs':512}
         phaseParameters={'width':40,'eps':1e6,'winFunc':'hamming'}
         
-        print(f"Computing red cell features... (usually takes 10-20 seconds)")
+        print(f"Computing red cell features for {self.sessionPrint()}... (usually takes 10-20 seconds)")
         dotProduct = redCell.computeDot(planeIdx=None, **dotParameters) # compute dot-product for all ROIs
         corrCoeff = redCell.computeCorr(planeIdx=None, **corrParameters) # compute cross-correlation for all ROIs 
         phaseCorr = redCell.croppedPhaseCorrelation(planeIdx=None, **phaseParameters)[3] # compute central value of phase-correlation for all ROIs
