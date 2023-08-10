@@ -5,21 +5,114 @@ from pandasgui import show
 import vrExperiment as vre
 import fileManagement as fm
 
-def vrDatabasePath(dbName):
-    dbdict = {
-        'vrDatabase':r'C:\Users\andrew\Documents\localData\vrDatabaseManagement\vrDatabase.accdb'
-    }
-    if dbName not in dbdict.keys(): raise ValueError(f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}")
-    return dbdict[dbName]
+def vrDatabaseMetadata(dbName):
+    """
+    Retrieve metadata for a specified database.
+
+    This function retrieves metadata for a specified database from the `dbdict` dictionary.
+    The `dbdict` dictionary contains the database paths, names, and primary table name.
+
+    Parameters
+    ----------
+    dbName : str
+        The name of the database for which to retrieve metadata.
+
+    Returns
+    -------
+    dict
+        A dictionary containing metadata for the specified database.
+        It has three keys: 'dbPath', 'dbName', and 'tableName'.
+
+    Raises
+    ------
+    ValueError
+        If the provided `dbName` is not recognized as a valid database name.
+
+    Example
+    -------
+    >>> metadata = vrDatabaseMetadata('vrDatabase')
+    >>> print(metadata['dbPath'])
+    'C:\\Users\\andrew\\Documents\\localData\\vrDatabaseManagement\\vrDatabase.accdb'
+    >>> print(metadata['dbName'])
+    'vrDatabase'
+
+    Notes
+    -----
+    - The `dbdict` dictionary contains metadata for recognized databases.
+    - Edit this function to specify the path, database, and primary table on your computer. 
+    """
     
+    dbdict = {
+        'vrDatabase': {
+            'dbPath': r'C:\Users\andrew\Documents\localData\vrDatabaseManagement\vrDatabase.accdb',
+            'dbName': 'vrDatabase',
+            'tableName': 'sessiondb'
+        }
+    }
+    if dbName not in dbdict.keys():
+        raise ValueError(f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}")
+    return dbdict[dbName]
 
 class vrDatabase:
-    def __init__(self):
-        self.tableName = 'sessiondb'
-        self.dbName = 'vrDatabase'
-        self.dbpath = vrDatabasePath(self.dbName)
+    def __init__(self, dbName='vrDatabase'):
+        """
+        Initialize a new vrDatabase instance.
+
+        This constructor initializes a new instance of the vrDatabase class. It sets the default
+        values for the table name, database name, and database path. It is built to work with 
+        the Microsoft Access application; however, a few small changes can make it compatible with
+        other SQL-based database systems. 
+
+        Parameters
+        ----------
+        dbName : str, optional
+            The name of the database to access. Default is 'vrDatabase'.
+            
+        Example
+        -------
+        >>> vrdb = vrDatabase()
+        >>> print(vrdb.tableName)
+        'sessiondb'
+        >>> print(vrdb.dbName)
+        'vrDatabase'
+
+        Notes
+        -----
+        - This constructor uses a supporting function called vrDatabaseMetadata to get database metadata based on the dbName provided.
+        - If you are using this on a new system, then you should edit your path, database name, and default table in that function. 
+        """
+        
+        metadata = vrDatabasePath(dbName)
+        self.dbPath = metadata['dbPath']
+        self.dbName = metadata['dbName']
+        self.tableName = metadata['tableName']
         
     def connect(self):
+        """
+        Connect to the Microsoft Access database.
+
+        This method establishes a connection to the Microsoft Access database using the provided
+        database path and returns the connection object.
+
+        Returns
+        -------
+        pyodbc.Connection
+            A connection object representing the connection to the database.
+
+        Example
+        -------
+        >>> vrdb = vrDatabase()
+        >>> connection = vrdb.connect()
+        >>> cursor = connection.cursor()
+        >>> cursor.execute(f"SELECT * FROM {vrdb.tableName}")
+        >>> rows = cursor.fetchall()
+
+        Notes
+        -----
+        - The connection string uses the Microsoft Access Driver.
+        - The database path is obtained from the `dbpath` attribute.
+        """
+        
         connString = (
             r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
             fr"DBQ={self.dbpath};"
@@ -75,6 +168,31 @@ class vrDatabase:
             conn.close()
             
     def tableData(self):
+        """
+        Retrieve data and field names from the specified table.
+
+        This method retrieves the field names and table elements from the table specified
+        in the `vrDatabase` instance.
+
+        Returns
+        -------
+        tuple
+            A tuple containing two elements:
+            - A list of strings representing the field names of the table.
+            - A list of tuples representing the data rows of the table.
+
+        Example
+        -------
+        Retrieve field names and data elements from the table:
+
+        >>> fieldNames, tableData = self.tableData()
+        >>> print(fieldNames)
+        ['column1', 'column2', ...]
+        >>> print(tableData)
+        [(value1, value2, ...), (value1, value2, ...), ...]
+        
+        """
+        
         with self.openCursor() as cursor:
             fieldNames = [col.column_name for col in cursor.columns(table=self.tableName)]
             cursor.execute(f"SELECT * FROM {self.tableName}")
@@ -83,21 +201,31 @@ class vrDatabase:
         return fieldNames, tableElements
     
     def getTable(self, ignoreScratched=True, **kwConditions):
-        """getTable retrieves and filters data from the table in self.tableName with optional filtering conditions. 
+        """
+        Retrieve data from table in database and return as dataframe with optional filtering. 
         
-        By default, getTable ignores sessions that are "scratched" meaning their sessionQC value is set to False.
+        This method retrieves all data from the primary table in the database specified in vrDatabase
+        instance. It filters the data to ignore bad sessions (i.e. where sessionQC=False), and can 
+        optionally filter based on additional conditions. 
         
-        :param ignoreScratched: Whether to ignore scratched sessions. Defaults to True.
-        :type ignoreScratched: bool
-        :param kwConditions: Additional filtering conditions as keyword arguments.
-                             Each key in the condition should match a column name in the table.
-        :type kwConditions: key=value pairs
-        :return: A pandas DataFrame containing the retrieved and filtered data.
-        :rtype: pandas.DataFrame
-
-        Example usage:
-        ::
-            df = vrdb.getTable(ignoreScratched=False, imaging=True, sessionQC=False)
+        Parameters
+        ----------
+        ignoreScratched : bool, optional
+            Whether to ignore "scratched" sessions. Default is True.
+            Scratched sessions are ones where sessionQC=False
+        **kwConditions : dict
+            Additional filtering conditions as keyword arguments.
+            Each condition should match a column name in the table.    
+        
+        Returns
+        -------
+        df : pandas dataframe
+            A dataframe containing the filtered data from the primary database table.  
+            
+        Example
+        -------
+        >>> vrdb = YourDatabaseClass()
+        >>> df = vrdb.getTable(ignoreScratched=False, imaging=True)
         """
         
         fieldNames, tableData = self.tableData()
