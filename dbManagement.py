@@ -28,6 +28,36 @@ class vrDatabase:
     
     @contextmanager
     def openCursor(self, commitChanges=False):
+        """
+        Context manager to open a database cursor and manage connections.
+
+        This context manager provides a convenient way to open a cursor to the database,
+        perform database operations, and manage connections. It also allows you to
+        commit changes if needed.
+
+        Parameters
+        ----------
+        commitChanges : bool, optional
+            Whether to commit changes to the database. Default is False.
+        
+        Yields
+        ------
+        pyodbc.Cursor
+            A database cursor for executing SQL queries.
+
+        Raises
+        ------
+        Exception
+            If an error occurs while connecting to the database.
+
+        Example
+        -------
+        Use the context manager to perform database operations:
+
+        >>> with self.openCursor(commitChanges=True) as cursor:
+        ...     cursor.execute("SELECT * FROM your_table")
+
+        """
         try:
             # Attempt to open a cursor to the database
             conn = self.connect()
