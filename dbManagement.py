@@ -55,13 +55,35 @@ class vrDatabase:
             tableElements = cursor.fetchall()
         return tableElements
     
-    def getTable(self, ignoreScratched=True):
+    def getTable(self, ignoreScratched=True, **kwConditions):
+        """getTable retrieves and filters data from the table in self.tableName with optional filtering conditions. 
+        
+        By default, getTable ignores sessions that are "scratched" meaning their sessionQC value is set to False.
+        
+        :param ignoreScratched: Whether to ignore scratched sessions. Defaults to True.
+        :type ignoreScratched: bool
+        :param kwConditions: Additional filtering conditions as keyword arguments.
+                             Each key in the condition should match a column name in the table.
+        :type kwConditions: key=value pairs
+        :return: A pandas DataFrame containing the retrieved and filtered data.
+        :rtype: pandas.DataFrame
+
+        Example usage:
+        ::
+            df = vrdb.getTable(ignoreScratched=False, imaging=True, sessionQC=False)
+        """
+        
         fieldNames = self.fieldNames()
         tableData = self.tableData()
         df = pd.DataFrame.from_records(tableData, columns=fieldNames)
-        if ignoreScratched: df = df[df['session QC']]
-        return df 
-        
+        if ignoreScratched: df = df[df['sessionQC']]
+        if kwConditions:
+            for key in kwConditions.keys(): 
+                assert key in fieldNames, f"{key} is not a column name in {self.tableName}"
+            query = " & ".join([f"`{key}`=={val}" for key, val in kwConditions.items()])
+            df = df.query(query)
+        return df
+    
     def showTable(self, table=None):
         show(self.getTable() if table is None else table)
     
@@ -71,7 +93,7 @@ class vrDatabase:
     
     def needsS2P(self):
         df = self.getTable()
-        return df[(df['Imaging']==True) & (df['suite2p']==False)]
+        return df[(df['imaging']==True) & (df['suite2p']==False)]
     
     def printRequiresS2P(self, printTargets=True):
         need = self.needsS2P()
@@ -86,12 +108,12 @@ class vrDatabase:
         df = self.getTable()
         
         # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
-        check_s2pDone = df[(df['Imaging']==True) & (df['suite2p']==True)]
+        check_s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
         checked_notDone = check_s2pDone.apply(lambda row: not(self.vrSession(row).suite2pPath().exists()), axis=1)
         notActuallyDone = check_s2pDone[checked_notDone]
         
         # return dataframe of sessions with imaging where suite2p was done, even though the database thinks it wasn't
-        check_s2pNeed = df[(df['Imaging']==True) & (df['suite2p']==False)]
+        check_s2pNeed = df[(df['imaging']==True) & (df['suite2p']==False)]
         checked_notNeed = check_s2pNeed.apply(lambda row: self.vrSession(row).suite2pPath().exists(), axis=1)
         notActuallyNeed = check_s2pNeed[checked_notNeed]
         
@@ -102,14 +124,14 @@ class vrDatabase:
         # If withDatabaseUpdate==True, then correct the database
         if withDatabaseUpdate: 
             for idx, row in notActuallyDone.iterrows():
-                cUID = row['Unique Session ID']
-                updateStatement = f"UPDATE {self.tableName} SET suite2p = False WHERE [Unique Session ID] = {cUID};"
+                cUID = row['uSessionID']
+                updateStatement = f"UPDATE {self.tableName} SET suite2p = False WHERE uSessionID = {cUID};"
                 with self.openCursor(commitChanges=True) as cursor:
                     cursor.execute(updateStatement)
                     
             for idx, row in notActuallyNeed.iterrows():
-                cUID = row['Unique Session ID']
-                updateStatement = f"UPDATE {self.tableName} SET suite2p = True WHERE [Unique Session ID] = {cUID};"
+                cUID = row['uSessionID']
+                updateStatement = f"UPDATE {self.tableName} SET suite2p = True WHERE uSessionID = {cUID};"
                 with self.openCursor(commitChanges=True) as cursor:
                     cursor.execute(updateStatement)
                     
@@ -118,26 +140,26 @@ class vrDatabase:
     
     def checkSessionScratch(self, withDatabaseUpdate=False):
         for idx, row in self.getTable().iterrows():
-            if (row['session QC']==False) and (row['session scratch justification'] is None): 
-                print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there's no justification. Correcting session QC")
+            if (row['sessionQC']==False) and (row['session scratch justification'] is None): 
+                print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there's no justification. Correcting sessionQC")
                 if withDatabaseUpdate:
-                    cUID = row['Unique Session ID']
-                    updateStatement = f"UPDATE {self.tableName} set [session QC] = True WHERE [Unique Session ID] = {cUID}"
+                    cUID = row['uSessionID']
+                    updateStatement = f"UPDATE {self.tableName} set sessionQC = True WHERE uSessionID = {cUID}"
                     with self.openCursor(commitChanges=True) as cursor:
                         cursor.execute(updateStatement)
 
-            if (row['session QC']==True) and (row['session scratch justification'] is not None): 
-                print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a session scratch justification. Correcting session QC")
+            if (row['sessionQC']==True) and (row['session scratch justification'] is not None): 
+                print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a session scratch justification. Correcting sessionQC")
                 if withDatabaseUpdate:
-                    cUID = row['Unique Session ID']
-                    updateStatement = f"UPDATE {self.tableName} set [session QC] = False WHERE [Unique Session ID] = {cUID}"
+                    cUID = row['uSessionID']
+                    updateStatement = f"UPDATE {self.tableName} set sessionQC = False WHERE uSessionID = {cUID}"
                     with self.openCursor(commitChanges=True) as cursor:
                         cursor.execute(updateStatement)
 
     def sessionName(self, row):
-        mouseName = row['Mouse Name']
-        sessionDate = row['Session Date'].strftime('%Y-%m-%d')
-        sessionID = str(row['Session ID'])
+        mouseName = row['mouseName']
+        sessionDate = row['sessionDate'].strftime('%Y-%m-%d')
+        sessionID = str(row['sessionID'])
         return mouseName, sessionDate, sessionID
 
     def vrSession(self, row):
@@ -167,9 +189,9 @@ class vrDatabase:
         
         dfToRegister = self.needsRegistration()
         for idx, row in dfToRegister.iterrows():
-            cUID = row['Unique Session ID']
-            opts['imaging']=row['Imaging']
-            opts['facecam']=row['Face Camera']
+            cUID = row['uSessionID']
+            opts['imaging']=row['imaging']
+            opts['facecam']=row['faceCamera']
             vrExpReg = self.vrRegistration(row, opts)
             try: 
                 print(f"Performing vrExperiment preprocessing for session: {vrExpReg.sessionPrint()}")
