@@ -17,14 +17,13 @@ class vrDatabase:
         self.tableName = 'sessiondb'
         self.dbName = 'vrDatabase'
         self.dbpath = vrDatabasePath(self.dbName)
-        self.readOnly = readOnly
-    
-    def connect(self, readOnly=True):
+        
+    def connect(self):
         connString = (
             r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
             fr"DBQ={self.dbpath};"
         )
-        return pyodbc.connect(connString, readonly=readOnly)
+        return pyodbc.connect(connString)
     
     @contextmanager
     def openCursor(self, commitChanges=False):
@@ -35,7 +34,7 @@ class vrDatabase:
             yield cursor
         except Exception as ex:
             print(f"An exception occurred while trying to connect to {self.dbName}!")
-            raise e
+            raise ex
         else:
             # if no exception was raised, commit changes
             if commitChanges: conn.commit()
