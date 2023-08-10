@@ -1,4 +1,5 @@
 import pyodbc
+from datetime import datetime
 from contextlib import contextmanager
 import pandas as pd
 from pandasgui import show
@@ -53,6 +54,7 @@ def vrDatabaseMetadata(dbName):
         raise ValueError(f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}")
     return dbdict[dbName]
 
+
 class vrDatabase:
     def __init__(self, dbName='vrDatabase'):
         """
@@ -89,31 +91,8 @@ class vrDatabase:
         
     def connect(self):
         """
-        Connect to the Microsoft Access database.
-
-        This method establishes a connection to the Microsoft Access database using the provided
-        database path and returns the connection object.
-
-        Returns
-        -------
-        pyodbc.Connection
-            A connection object representing the connection to the database.
-
-        Example
-        -------
-        >>> vrdb = vrDatabase()
-        >>> connection = vrdb.connect()
-        >>> cursor = connection.cursor()
-        >>> cursor.execute(f"SELECT * FROM {vrdb.tableName}")
-        >>> rows = cursor.fetchall()
-
-        Notes
-        -----
-        - The connection string uses the Microsoft Access Driver.
-        - The database path is obtained from the `dbpath` attribute.
-        - This is usually used within the openCursor() method, which is equipped with a context manager. 
+        Connect to the Microsoft Access database defined from the vrDatabaseMetadata function.
         """
-        
         connString = (
             r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
             fr"DBQ={self.dbPath};"
@@ -167,7 +146,23 @@ class vrDatabase:
             # Always close the cursor and connection
             cursor.close()
             conn.close()
-            
+    
+    # == vrExperiment related methods ==
+    def sessionName(self, row):
+        mouseName = row['mouseName']
+        sessionDate = row['sessionDate'].strftime('%Y-%m-%d')
+        sessionID = str(row['sessionID'])
+        return mouseName, sessionDate, sessionID
+
+    def vrSession(self, row):
+        mouseName, sessionDate, sessionID = self.sessionName(row)
+        return vre.vrSession(mouseName, sessionDate, sessionID)
+    
+    def vrRegistration(self, row):
+        mouseName, sessionDate, sessionID = self.sessionName(row)
+        return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID)
+        
+    # == retrieve table data ==
     def tableData(self):
         """
         Retrieve data and field names from the specified table.
@@ -181,17 +176,6 @@ class vrDatabase:
             A tuple containing two elements:
             - A list of strings representing the field names of the table.
             - A list of tuples representing the data rows of the table.
-
-        Example
-        -------
-        Retrieve field names and data elements from the table:
-
-        >>> fieldNames, tableData = self.tableData()
-        >>> print(fieldNames)
-        ['column1', 'column2', ...]
-        >>> print(tableData)
-        [(value1, value2, ...), (value1, value2, ...), ...]
-        
         """
         
         with self.openCursor() as cursor:
@@ -217,6 +201,8 @@ class vrDatabase:
         **kwConditions : dict
             Additional filtering conditions as keyword arguments.
             Each condition should match a column name in the table.    
+            Note: this is limited in the sense that empty data can't be identified with key:None.
+            (using the pd.isnull() is a valid work around, but needs to be coded outside of getTable())
         
         Returns
         -------
@@ -239,9 +225,11 @@ class vrDatabase:
             df = df.query(query)
         return df
     
+    # == visualization ==
     def showTable(self, table=None):
         show(self.getTable() if table is None else table)
     
+    # == helper functions for figuring out what needs work ==
     def needsRegistration(self): 
         df = self.getTable()
         return df[df['vrRegistration']==False]
@@ -258,80 +246,8 @@ class vrDatabase:
                 mouseName, sessionDate, sessionID = self.sessionName(row)
                 fm.s2pTargets(mouseName, sessionDate, sessionID)
                 print("")
-
-    def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
-        df = self.getTable()
-        
-        # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
-        check_s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
-        checked_notDone = check_s2pDone.apply(lambda row: not(self.vrSession(row).suite2pPath().exists()), axis=1)
-        notActuallyDone = check_s2pDone[checked_notDone]
-        
-        # return dataframe of sessions with imaging where suite2p was done, even though the database thinks it wasn't
-        check_s2pNeed = df[(df['imaging']==True) & (df['suite2p']==False)]
-        checked_notNeed = check_s2pNeed.apply(lambda row: self.vrSession(row).suite2pPath().exists(), axis=1)
-        notActuallyNeed = check_s2pNeed[checked_notNeed]
-        
-        # Print database errors to workspace
-        for idx, row in notActuallyDone.iterrows(): print(f"Database said suite2p has been ran, but it actually hasn't: {self.vrSession(row).sessionPrint()}")
-        for idx, row in notActuallyNeed.iterrows(): print(f"Database said suite2p didn't run, but it already did: {self.vrSession(row).sessionPrint()}")
-        
-        # If withDatabaseUpdate==True, then correct the database
-        if withDatabaseUpdate: 
-            for idx, row in notActuallyDone.iterrows():
-                with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(self.createUpdateStatement('suite2p',False,row['uSessionID']))
-                    
-            for idx, row in notActuallyNeed.iterrows():
-                with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(self.createUpdateStatement('suite2p',True,row['uSessionID']))
-                    
-        # If returnCheck is requested, return True if any records were invalid
-        if returnCheck: return checked_notDone.any() or checked_notNeed.any()
-    
-    def checkSessionScratch(self, withDatabaseUpdate=False):
-        df = self.getTable(ignoreScratched=False)
-        good_withJustification = df[(df['sessionQC']==True) & (~pd.isnull(df['scratchJustification']))]
-        bad_noJustification = df[(df['sessionQC']==False) & (pd.isnull(df['scratchJustification']))]
-        
-        goodToBad_UID = good_withJustification['uSessionID'].tolist()
-        badToGood_UID = bad_noJustification['uSessionID'].tolist()
-        for idx, row in good_withJustification.iterrows():
-            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
-        for idx, row in bad_noJustification.iterrows():
-            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
-        
-        if withDatabaseUpdate:
-            with self.openCursor(commitChanges=True) as cursor: 
-                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([False]*len(goodToBad_UID),goodToBad_UID))
-                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([True]*len(badToGood_UID),badToGood_UID))
-
-    def sessionName(self, row):
-        mouseName = row['mouseName']
-        sessionDate = row['sessionDate'].strftime('%Y-%m-%d')
-        sessionID = str(row['sessionID'])
-        return mouseName, sessionDate, sessionID
-
-    def vrSession(self, row):
-        mouseName, sessionDate, sessionID = self.sessionName(row)
-        return vre.vrSession(mouseName, sessionDate, sessionID)
-    
-    def vrRegistration(self, row):
-        mouseName, sessionDate, sessionID = self.sessionName(row)
-        return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID)
-    
-    def add_suite2pDate(self):
-        df = self.getTable()
-        s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
-        for idx, row in s2pDone.iterrows():
-            vrs = self.vrSession(row)
-            
-    def addRow(self):
-        raise ValueError("Not coded yet!")
-        #updateStatement = f"insert into T 
-        #INSERT INTO Customers (CustomerName, ContactName, Address, City, PostalCode, Country)
-        #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
-        
+      
+    # == methods for adding records and updating information to the database ==
     def createUpdateStatement(self, field, val, uid):
         """to update a single field with a value for a particular session defined by the uSessionID
         
@@ -351,8 +267,15 @@ class vrDatabase:
         >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
         """
         return f"UPDATE {self.tableName} set {field} = ? where uSessionID = ?"
+    
+    def addRecord(self):
+        raise ValueError("Not coded yet!")
+        #updateStatement = f"insert into T 
+        #INSERT INTO Customers (CustomerName, ContactName, Address, City, PostalCode, Country)
+        #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
         
-    def registerSession(self, **userOpts):
+    # == operating vrExperiment pipeline ==
+    def registerSessions(self, **userOpts):
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
@@ -390,8 +313,79 @@ class vrDatabase:
             finally: 
                 del vrExpReg
                     
+
+class vrDatabaseGrossUpdate(vrDatabase):
+    def __init__(self, dbName='vrDatabase'):
+        super().__init__(dbName=dbName)
     
+    def add_suite2pDate(self):
+        df = self.getTable()
+        s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
+        uids = s2pDone['uSessionID'].tolist()
+        s2pCreationDate = []
+        s2pCreationTime = []
+        for idx, row in s2pDone.iterrows():
+            vrs = self.vrSession(row) # create vrSession to point to session folder
+            cDateTime = datetime.fromtimestamp(vrs.suite2pPath().stat().st_ctime)
+            s2pCreationDate.append(cDateTime.date()) # get suite2p path creation date
+            s2pCreationTime.append(cDateTime.time()) # get suite2p path creation time
+            
+        # return s2pCreationDate
+        with self.openCursor(commitChanges=True) as cursor:
+            cursor.executemany(self.createUpdateManyStatement('suite2pDate'),zip(s2pCreationDate, uids))
+            cursor.executemany(self.createUpdateManyStatement('suite2pTime'),zip(s2pCreationTime, uids))
+    
+    def checkSessionScratch(self, withDatabaseUpdate=False):
+        df = self.getTable(ignoreScratched=False)
+        good_withJustification = df[(df['sessionQC']==True) & (~pd.isnull(df['scratchJustification']))]
+        bad_noJustification = df[(df['sessionQC']==False) & (pd.isnull(df['scratchJustification']))]
         
+        goodToBad_UID = good_withJustification['uSessionID'].tolist()
+        badToGood_UID = bad_noJustification['uSessionID'].tolist()
+        for idx, row in good_withJustification.iterrows():
+            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
+        for idx, row in bad_noJustification.iterrows():
+            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
+        
+        if withDatabaseUpdate:
+            with self.openCursor(commitChanges=True) as cursor: 
+                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([False]*len(goodToBad_UID),goodToBad_UID))
+                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([True]*len(badToGood_UID),badToGood_UID))
+    
+    def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
+        df = self.getTable()
+        
+        # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
+        check_s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
+        checked_notDone = check_s2pDone.apply(lambda row: not(self.vrSession(row).suite2pPath().exists()), axis=1)
+        notActuallyDone = check_s2pDone[checked_notDone]
+        
+        # return dataframe of sessions with imaging where suite2p was done, even though the database thinks it wasn't
+        check_s2pNeed = df[(df['imaging']==True) & (df['suite2p']==False)]
+        checked_notNeed = check_s2pNeed.apply(lambda row: self.vrSession(row).suite2pPath().exists(), axis=1)
+        notActuallyNeed = check_s2pNeed[checked_notNeed]
+        
+        # Print database errors to workspace
+        for idx, row in notActuallyDone.iterrows(): print(f"Database said suite2p has been ran, but it actually hasn't: {self.vrSession(row).sessionPrint()}")
+        for idx, row in notActuallyNeed.iterrows(): print(f"Database said suite2p didn't run, but it already did: {self.vrSession(row).sessionPrint()}")
+        
+        # If withDatabaseUpdate==True, then correct the database
+        if withDatabaseUpdate: 
+            for idx, row in notActuallyDone.iterrows():
+                with self.openCursor(commitChanges=True) as cursor:
+                    cursor.execute(self.createUpdateStatement('suite2p',False,row['uSessionID']))
+                    
+            for idx, row in notActuallyNeed.iterrows():
+                with self.openCursor(commitChanges=True) as cursor:
+                    cursor.execute(self.createUpdateStatement('suite2p',True,row['uSessionID']))
+                    
+        # If returnCheck is requested, return True if any records were invalid
+        if returnCheck: return checked_notDone.any() or checked_notNeed.any()
+    
+
+    
+    
+
 # def checkSessionFiles(mouseName, fileIdentifier, onlyTrue=True):
 #     dataPath = fm.localDataPath()
 #     sessionPaths = glob(str(dataPath / mouseName) + '/*')
