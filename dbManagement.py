@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import pandas as pd
 from pandasgui import show
 import vrExperiment as vre
+import fileManagement as fm
 
 def vrDatabasePath(dbName):
     dbdict = {
@@ -54,10 +55,12 @@ class vrDatabase:
             tableElements = cursor.fetchall()
         return tableElements
     
-    def getTable(self):
+    def getTable(self, ignoreScratched=True):
         fieldNames = self.fieldNames()
         tableData = self.tableData()
-        return pd.DataFrame.from_records(tableData, columns=fieldNames)
+        df = pd.DataFrame.from_records(tableData, columns=fieldNames)
+        if ignoreScratched: df = df[df['session QC']]
+        return df 
         
     def showTable(self, table=None):
         show(self.getTable() if table is None else table)
@@ -70,10 +73,14 @@ class vrDatabase:
         df = self.getTable()
         return df[(df['Imaging']==True) & (df['suite2p']==False)]
     
-    def printRequiresS2P(self):
+    def printRequiresS2P(self, printTargets=True):
         need = self.needsS2P()
         for idx, row in need.iterrows():
             print(f"Database indicates that suite2p has not been run: {self.vrSession(row).sessionPrint()}")
+            if printTargets:
+                mouseName, sessionDate, sessionID = self.sessionName(row)
+                fm.s2pTargets(mouseName, sessionDate, sessionID)
+                print("")
 
     def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
         df = self.getTable()
@@ -97,7 +104,7 @@ class vrDatabase:
             for idx, row in notActuallyDone.iterrows():
                 cUID = row['Unique Session ID']
                 updateStatement = f"UPDATE {self.tableName} SET suite2p = False WHERE [Unique Session ID] = {cUID};"
-                with self.openCursorCommit(commitChanges=True) as cursor:
+                with self.openCursor(commitChanges=True) as cursor:
                     cursor.execute(updateStatement)
                     
             for idx, row in notActuallyNeed.iterrows():
@@ -109,6 +116,24 @@ class vrDatabase:
         # If returnCheck is requested, return True if any records were invalid
         if returnCheck: return checked_notDone.any() or checked_notNeed.any()
     
+    def checkSessionScratch(self, withDatabaseUpdate=False):
+        for idx, row in self.getTable().iterrows():
+            if (row['session QC']==False) and (row['session scratch justification'] is None): 
+                print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there's no justification. Correcting session QC")
+                if withDatabaseUpdate:
+                    cUID = row['Unique Session ID']
+                    updateStatement = f"UPDATE {self.tableName} set [session QC] = True WHERE [Unique Session ID] = {cUID}"
+                    with self.openCursor(commitChanges=True) as cursor:
+                        cursor.execute(updateStatement)
+
+            if (row['session QC']==True) and (row['session scratch justification'] is not None): 
+                print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a session scratch justification. Correcting session QC")
+                if withDatabaseUpdate:
+                    cUID = row['Unique Session ID']
+                    updateStatement = f"UPDATE {self.tableName} set [session QC] = False WHERE [Unique Session ID] = {cUID}"
+                    with self.openCursor(commitChanges=True) as cursor:
+                        cursor.execute(updateStatement)
+
     def sessionName(self, row):
         mouseName = row['Mouse Name']
         sessionDate = row['Session Date'].strftime('%Y-%m-%d')
