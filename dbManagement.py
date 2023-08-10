@@ -82,7 +82,7 @@ class vrDatabase:
         - If you are using this on a new system, then you should edit your path, database name, and default table in that function. 
         """
         
-        metadata = vrDatabasePath(dbName)
+        metadata = vrDatabaseMetadata(dbName)
         self.dbPath = metadata['dbPath']
         self.dbName = metadata['dbName']
         self.tableName = metadata['tableName']
@@ -111,11 +111,12 @@ class vrDatabase:
         -----
         - The connection string uses the Microsoft Access Driver.
         - The database path is obtained from the `dbpath` attribute.
+        - This is usually used within the openCursor() method, which is equipped with a context manager. 
         """
         
         connString = (
             r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
-            fr"DBQ={self.dbpath};"
+            fr"DBQ={self.dbPath};"
         )
         return pyodbc.connect(connString)
     
@@ -278,37 +279,32 @@ class vrDatabase:
         # If withDatabaseUpdate==True, then correct the database
         if withDatabaseUpdate: 
             for idx, row in notActuallyDone.iterrows():
-                cUID = row['uSessionID']
-                updateStatement = f"UPDATE {self.tableName} SET suite2p = False WHERE uSessionID = {cUID};"
                 with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(updateStatement)
+                    cursor.execute(self.createUpdateStatement('suite2p',False,row['uSessionID']))
                     
             for idx, row in notActuallyNeed.iterrows():
-                cUID = row['uSessionID']
-                updateStatement = f"UPDATE {self.tableName} SET suite2p = True WHERE uSessionID = {cUID};"
                 with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(updateStatement)
+                    cursor.execute(self.createUpdateStatement('suite2p',True,row['uSessionID']))
                     
         # If returnCheck is requested, return True if any records were invalid
         if returnCheck: return checked_notDone.any() or checked_notNeed.any()
     
     def checkSessionScratch(self, withDatabaseUpdate=False):
-        for idx, row in self.getTable().iterrows():
-            if (row['sessionQC']==False) and (row['session scratch justification'] is None): 
-                print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there's no justification. Correcting sessionQC")
-                if withDatabaseUpdate:
-                    cUID = row['uSessionID']
-                    updateStatement = f"UPDATE {self.tableName} set sessionQC = True WHERE uSessionID = {cUID}"
-                    with self.openCursor(commitChanges=True) as cursor:
-                        cursor.execute(updateStatement)
-
-            if (row['sessionQC']==True) and (row['session scratch justification'] is not None): 
-                print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a session scratch justification. Correcting sessionQC")
-                if withDatabaseUpdate:
-                    cUID = row['uSessionID']
-                    updateStatement = f"UPDATE {self.tableName} set sessionQC = False WHERE uSessionID = {cUID}"
-                    with self.openCursor(commitChanges=True) as cursor:
-                        cursor.execute(updateStatement)
+        df = self.getTable(ignoreScratched=False)
+        good_withJustification = df[(df['sessionQC']==True) & (~pd.isnull(df['scratchJustification']))]
+        bad_noJustification = df[(df['sessionQC']==False) & (pd.isnull(df['scratchJustification']))]
+        
+        goodToBad_UID = good_withJustification['uSessionID'].tolist()
+        badToGood_UID = bad_noJustification['uSessionID'].tolist()
+        for idx, row in good_withJustification.iterrows():
+            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
+        for idx, row in bad_noJustification.iterrows():
+            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
+        
+        if withDatabaseUpdate:
+            with self.openCursor(commitChanges=True) as cursor: 
+                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([False]*len(goodToBad_UID),goodToBad_UID))
+                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([True]*len(badToGood_UID),badToGood_UID))
 
     def sessionName(self, row):
         mouseName = row['mouseName']
@@ -324,10 +320,44 @@ class vrDatabase:
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID)
     
+    def add_suite2pDate(self):
+        df = self.getTable()
+        s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
+        for idx, row in s2pDone.iterrows():
+            vrs = self.vrSession(row)
+            
+    def addRow(self):
+        raise ValueError("Not coded yet!")
+        #updateStatement = f"insert into T 
+        #INSERT INTO Customers (CustomerName, ContactName, Address, City, PostalCode, Country)
+        #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
+        
+    def createUpdateStatement(self, field, val, uid):
+        """to update a single field with a value for a particular session defined by the uSessionID
+        
+        Example
+        -------
+        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>>     cursor.execute(self.createUpdateManyStatement(<field>, <val>, <uid>))
+        """
+        return f"UPDATE {self.tableName} set {field} = {val} WHERE uSessionID = {uid}"
+    
+    def createUpdateManyStatement(self, field):
+        """to update a single field many times where the value for each uSessionID is provided as a list to cursor.executemany()
+        
+        Example
+        -------
+        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
+        """
+        return f"UPDATE {self.tableName} set {field} = ? where uSessionID = ?"
+        
     def registerSession(self, **userOpts):
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
+        raise ValueError("Need to add registration date to database!!!")
+        
         opts = {}
         opts['vrBehaviorVersion'] = 1 # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
         opts['facecam'] = False # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
@@ -335,6 +365,7 @@ class vrDatabase:
         opts['oasis'] = True # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
         opts['moveRawData'] = False # whether or not to move raw data files to 'rawData'
         opts['redCellProcessing'] = True # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
+        opts['clearOne'] = True # clear previous oneData.... yikes, big move dude!
         
         assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
         opts.update(userOpts) # Update default opts with user requests
@@ -343,7 +374,6 @@ class vrDatabase:
         
         dfToRegister = self.needsRegistration()
         for idx, row in dfToRegister.iterrows():
-            cUID = row['uSessionID']
             opts['imaging']=row['imaging']
             opts['facecam']=row['faceCamera']
             vrExpReg = self.vrRegistration(row, opts)
@@ -355,13 +385,12 @@ class vrDatabase:
                 print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}")
                 print(f"Exception: {ex}")
             else:
-                updateStatement = f"UPDATE {self.tableName} SET vrRegistration = True WHERE [Unique Session ID] = {cUID};"
                 with self.openCursor(commitChanges=True) as cursor: 
-                    cursor.execute(updateStatement)
+                    cursor.execute(self.createUpdateStatement('vrRegistration',True,row['uSessionID']))
             finally: 
                 del vrExpReg
                     
-            
+    
         
 # def checkSessionFiles(mouseName, fileIdentifier, onlyTrue=True):
 #     dataPath = fm.localDataPath()
