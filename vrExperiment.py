@@ -1,12 +1,12 @@
 # inclusions
-import numpy as np
-import scipy as sp
-import numba as nb
-import scipy.io as scio
+import json
 import time
 from tqdm import tqdm
 from pathlib import Path 
-import json
+import numpy as np
+import scipy as sp
+import scipy.io as scio
+import numba as nb
 from numpyencoder import NumpyEncoder
 import vrFunctions as vrf
 import basicFunctions as bf
@@ -38,14 +38,19 @@ class vrSession:
     def rawDataPath(self): return self.sessionPath()/'rawDataPath'
     def suite2pPath(self): return self.sessionPath()/'suite2p'
     
+    def getSavedOne(self):
+        return self.onePath().glob('*.npy')
+    
     def printSavedOne(self):
         # Return all names of one variables stored in this experiment's directory
-        return [name.stem for name in self.onePath().glob('*.npy')] 
+        return [name.stem for name in self.getSavedOne()] 
     
     def sessionPrint(self): 
         # useful function for generating string of session name for useful feedback to user 
         return f"{self.mouseName}/{self.dateString}/{self.session}"   
     
+        
+        
         
 class vrExperiment(vrSession):
     """
@@ -159,6 +164,21 @@ class vrExperiment(vrSession):
         # produce np array of plane ID associated with each ROI (assuming that the data e.g. spks will be concatenated across planes) 
         return np.concatenate([np.repeat(planeIDs,roiPerPlane) for (planeIDs,roiPerPlane) in zip(self.value['planeIDs'],self.value['roiPerPlane'])]).astype(np.uint8)
     
+    def getRoiStackPosition(self, mode='weightedmean'):
+        planeIdx = self.getPlaneIdx()
+        stat = self.loadS2P('stat')
+        lam = [s['lam'] for s in stat]
+        ypix = [s['ypix'] for s in stat]
+        xpix = [s['xpix'] for s in stat]
+        if mode=='weightedmean':
+            yc = np.array([np.sum(l*y)/np.sum(l) for l,y in zip(lam,ypix)])
+            xc = np.array([np.sum(l*x)/np.sum(l) for l,x in zip(lam,xpix)])
+        elif mode=='median':
+            yc = np.array([np.median(y) for y in ypix])
+            xc = np.array([np.median(x) for x in xpix])
+        stackPosition = np.stack((xc,yc,planeIdx)).T
+        return stackPosition
+    
     
     # ---------------------------------------- postprocessing functions for translating behavior to imaging time frame -----------------------------------------------------
     def getFrameBehavior(self):
@@ -245,6 +265,7 @@ class vrExperimentRegistration(vrExperiment):
         opts['oasis'] = True # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
         opts['moveRawData'] = False # whether or not to move raw data files to 'rawData'
         opts['redCellProcessing'] = True # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
+        opts['clearOne']=False # whether or not to clear previously stored oneData (even if it wouldn't be overwritten by this registration)
         # Imaging options -- these options are standard values for imaging, tau & fs directly affect preprocessing when OASIS is turned on (and deconvolution is recomputed)
         opts['neuropilCoefficient'] = 0.7 # for manual neuropil estimation
         opts['isCellThreshold'] = -1 # only process ROIs exceeding probCell > isCellThreshold
@@ -273,6 +294,7 @@ class vrExperimentRegistration(vrExperiment):
         if not self.rawDataPath().exists(): self.rawDataPath().mkdir(parents=True)
         
     def doPreprocessing(self):
+        self.clearOneData()
         self.processTimeline()
         self.processBehavior()
         self.processImaging()
@@ -281,6 +303,12 @@ class vrExperimentRegistration(vrExperiment):
         self.processBehavior2Imaging()
    
     # --------------------------------------------------------------- preprocessing methods ------------------------------------------------------------
+    def clearOneData(self):
+        if not(self.opts['clearOne']): return
+        oneFiles = vrexp.getSavedOne()
+        for file in oneFiles: 
+            file.unlink()
+        
     def processTimeline(self):
         # load these files for raw behavioral & timeline data
         self.tlFile = self.loadTimelineStructure()
@@ -532,10 +560,8 @@ class vrExperimentRegistration(vrExperiment):
         if 'redcell' in self.value['available']:
             self.saveone(self.loadS2P('redcell')[:,1], 'mpciROIs.redS2P')
         self.saveone(self.loadS2P('iscell'), 'mpciROIs.isCell')
-        self.saveone(self.getPlaneIdx(), 'mpciROIs.planeIndex')
-        print("Convert mpciROIs.planeIndex to mpciROIs.stackPosition, with [X,Y,Z(planeIndex)] coordinate for each ROI!")
+        self.saveone(self.getRoiStackPosition(), 'mpciROIs.stackPosition')
         self.preprocessing.append('imaging')
-    
     
     def processFacecam(self):
         print("Facecam preprocessing has not been coded yet!")
@@ -676,7 +702,7 @@ class redCellProcessing(vrExperiment):
         self.lam = [s['lam'] for s in stat]
         self.ypix = [s['ypix'] for s in stat]
         self.xpix = [s['xpix'] for s in stat]
-        self.roiPlaneIdx = self.loadone('mpciROIs.planeIndex')
+        self.roiPlaneIdx = self.loadone('mpciROIs.stackPosition')[:,2]
         
         # load S2P red cell value
         self.redS2P = self.loadone('mpciROIs.redS2P') # (preloaded, will never change in this function)
