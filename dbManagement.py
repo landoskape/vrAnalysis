@@ -158,9 +158,9 @@ class vrDatabase:
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return vre.vrSession(mouseName, sessionDate, sessionID)
     
-    def vrRegistration(self, row):
+    def vrRegistration(self, row, **opts):
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID)
+        return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID, **opts)
         
     # == retrieve table data ==
     def tableData(self):
@@ -234,6 +234,23 @@ class vrDatabase:
         df = self.getTable()
         return df[df['vrRegistration']==False]
     
+    def updateSuite2pDateTime(self):
+        df = self.getTable()
+        s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
+        uids = s2pDone['uSessionID'].tolist()
+        s2pCreationDate = []
+        for idx, row in s2pDone.iterrows():
+            vrs = self.vrSession(row) # create vrSession to point to session folder
+            cLatestMod = 0
+            for p in vrs.suite2pPath().rglob("*"):
+                cLatestMod = max(p.stat().st_mtime, cLatestMod)
+            cDateTime = datetime.fromtimestamp(cLatestMod)
+            s2pCreationDate.append(cDateTime) # get suite2p path creation date
+            
+        # return s2pCreationDate
+        with self.openCursor(commitChanges=True) as cursor:
+            cursor.executemany(self.createUpdateManyStatement('suite2pDate'),zip(s2pCreationDate, uids))
+            
     def needsS2P(self):
         df = self.getTable()
         return df[(df['imaging']==True) & (df['suite2p']==False)]
@@ -248,15 +265,15 @@ class vrDatabase:
                 print("")
       
     # == methods for adding records and updating information to the database ==
-    def createUpdateStatement(self, field, val, uid):
+    def createUpdateStatement(self, field, uid):
         """to update a single field with a value for a particular session defined by the uSessionID
         
         Example
         -------
         >>> with self.openCursor(commitChanges=True) as cursor:
-        >>>     cursor.execute(self.createUpdateManyStatement(<field>, <val>, <uid>))
+        >>>     cursor.execute(self.createUpdateManyStatement(<field>, <uid>), <val>)
         """
-        return f"UPDATE {self.tableName} set {field} = {val} WHERE uSessionID = {uid}"
+        return f"UPDATE {self.tableName} set {field} = ? WHERE uSessionID = {uid}"
     
     def createUpdateManyStatement(self, field):
         """to update a single field many times where the value for each uSessionID is provided as a list to cursor.executemany()
@@ -279,13 +296,11 @@ class vrDatabase:
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
-        raise ValueError("Need to add registration date to database!!!")
-        
         opts = {}
         opts['vrBehaviorVersion'] = 1 # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
         opts['facecam'] = False # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
         opts['imaging'] = True # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
-        opts['oasis'] = True # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
+        opts['oasis'] = False # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
         opts['moveRawData'] = False # whether or not to move raw data files to 'rawData'
         opts['redCellProcessing'] = True # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
         opts['clearOne'] = True # clear previous oneData.... yikes, big move dude!
@@ -297,19 +312,23 @@ class vrDatabase:
         
         dfToRegister = self.needsRegistration()
         for idx, row in dfToRegister.iterrows():
+            print('')
             opts['imaging']=row['imaging']
             opts['facecam']=row['faceCamera']
-            vrExpReg = self.vrRegistration(row, opts)
+            vrExpReg = self.vrRegistration(row, **opts)
             try: 
                 print(f"Performing vrExperiment preprocessing for session: {vrExpReg.sessionPrint()}")
                 vrExpReg.doPreprocessing()
+                print(f"Saving params...")
                 vrExpReg.saveParams()
             except Exception as ex:
                 print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}")
                 print(f"Exception: {ex}")
             else:
                 with self.openCursor(commitChanges=True) as cursor: 
-                    cursor.execute(self.createUpdateStatement('vrRegistration',True,row['uSessionID']))
+                    # Tell the database that vrRegistration was performed and the time of processing
+                    cursor.execute(self.createUpdateStatement('vrRegistration',row['uSessionID']),True)
+                    cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),datetime.now())
             finally: 
                 del vrExpReg
                     
@@ -317,23 +336,6 @@ class vrDatabase:
 class vrDatabaseGrossUpdate(vrDatabase):
     def __init__(self, dbName='vrDatabase'):
         super().__init__(dbName=dbName)
-    
-    def add_suite2pDate(self):
-        df = self.getTable()
-        s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
-        uids = s2pDone['uSessionID'].tolist()
-        s2pCreationDate = []
-        s2pCreationTime = []
-        for idx, row in s2pDone.iterrows():
-            vrs = self.vrSession(row) # create vrSession to point to session folder
-            cDateTime = datetime.fromtimestamp(vrs.suite2pPath().stat().st_ctime)
-            s2pCreationDate.append(cDateTime.date()) # get suite2p path creation date
-            s2pCreationTime.append(cDateTime.time()) # get suite2p path creation time
-            
-        # return s2pCreationDate
-        with self.openCursor(commitChanges=True) as cursor:
-            cursor.executemany(self.createUpdateManyStatement('suite2pDate'),zip(s2pCreationDate, uids))
-            cursor.executemany(self.createUpdateManyStatement('suite2pTime'),zip(s2pCreationTime, uids))
     
     def checkSessionScratch(self, withDatabaseUpdate=False):
         df = self.getTable(ignoreScratched=False)
@@ -373,11 +375,11 @@ class vrDatabaseGrossUpdate(vrDatabase):
         if withDatabaseUpdate: 
             for idx, row in notActuallyDone.iterrows():
                 with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(self.createUpdateStatement('suite2p',False,row['uSessionID']))
+                    cursor.execute(self.createUpdateStatement('suite2p',row['uSessionID']),False)
                     
             for idx, row in notActuallyNeed.iterrows():
                 with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(self.createUpdateStatement('suite2p',True,row['uSessionID']))
+                    cursor.execute(self.createUpdateStatement('suite2p',row['uSessionID']),True)
                     
         # If returnCheck is requested, return True if any records were invalid
         if returnCheck: return checked_notDone.any() or checked_notNeed.any()
