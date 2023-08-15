@@ -2,7 +2,6 @@ import pyodbc
 from datetime import datetime
 from contextlib import contextmanager
 import pandas as pd
-from pandasgui import show
 import vrExperiment as vre
 import fileManagement as fm
 
@@ -251,18 +250,24 @@ class vrDatabase:
         with self.openCursor(commitChanges=True) as cursor:
             cursor.executemany(self.createUpdateManyStatement('suite2pDate'),zip(s2pCreationDate, uids))
             
-    def needsS2P(self):
+    def needsS2P(self, needsQC=False):
         df = self.getTable()
-        return df[(df['imaging']==True) & (df['suite2p']==False)]
+        if needsQC:
+            return df[(df['imaging']==True) & (df['suite2p']==True) & (df['suite2pQC']==False)]
+        else:
+            return df[(df['imaging']==True) & (df['suite2p']==False)]
     
-    def printRequiresS2P(self, printTargets=True):
-        need = self.needsS2P()
+    def printRequiresS2P(self, printTargets=True, needsQC=False):
+        need = self.needsS2P(needsQC=needsQC)
         for idx, row in need.iterrows():
-            print(f"Database indicates that suite2p has not been run: {self.vrSession(row).sessionPrint()}")
-            if printTargets:
-                mouseName, sessionDate, sessionID = self.sessionName(row)
-                fm.s2pTargets(mouseName, sessionDate, sessionID)
-                print("")
+            if needsQC:
+                print(f"Database indicates that suite2p has been run but not QC'd: {self.vrSession(row).sessionPrint()}")
+            else:                
+                print(f"Database indicates that suite2p has not been run: {self.vrSession(row).sessionPrint()}")
+                if printTargets:
+                    mouseName, sessionDate, sessionID = self.sessionName(row)
+                    fm.s2pTargets(mouseName, sessionDate, sessionID)
+                    print("")
       
     # == methods for adding records and updating information to the database ==
     def createUpdateStatement(self, field, uid):
@@ -292,7 +297,7 @@ class vrDatabase:
         #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
         
     # == operating vrExperiment pipeline ==
-    def registerSessions(self, **userOpts):
+    def registerSessions(self, maxSessions=float('inf'), **userOpts):
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
@@ -310,8 +315,11 @@ class vrDatabase:
         
         print("In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!") 
         
+        countSessions = 0
         dfToRegister = self.needsRegistration()
         for idx, row in dfToRegister.iterrows():
+            if countSessions > maxSessions: return
+            countSessions += 1
             print('')
             opts['imaging']=row['imaging']
             opts['facecam']=row['faceCamera']
@@ -329,6 +337,36 @@ class vrDatabase:
                     # Tell the database that vrRegistration was performed and the time of processing
                     cursor.execute(self.createUpdateStatement('vrRegistration',row['uSessionID']),True)
                     cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),datetime.now())
+            finally: 
+                del vrExpReg
+                
+    # == operating vrExperiment pipeline ==
+    def clearOneData(self, **userOpts):
+        opts = {}
+        opts['clearOne'] = True # clear previous oneData.... yikes, big move dude!
+        
+        assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
+        opts.update(userOpts) # Update default opts with user requests
+        
+        print("In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!") 
+        
+        dfToRegister = self.needsRegistration()
+        for idx, row in dfToRegister.iterrows():
+            print('')
+            vrExpReg = self.vrRegistration(row, **opts)
+            try: 
+                print(f"Removing oneData for session: {vrExpReg.sessionPrint()}")
+                vrExpReg.clearOneData()
+                vrExpReg.preprocessing = []
+                vrExpReg.saveParams()
+            except Exception as ex:
+                print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}")
+                print(f"Exception: {ex}")
+            else:
+                with self.openCursor(commitChanges=True) as cursor: 
+                    # Tell the database that vrRegistration was performed and the time of processing
+                    cursor.execute(self.createUpdateStatement('vrRegistration',row['uSessionID']),None)
+                    cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),None)
             finally: 
                 del vrExpReg
                     
