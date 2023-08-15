@@ -315,6 +315,7 @@ class vrExperimentRegistration(vrExperiment):
         oneFiles = self.getSavedOne()
         for file in oneFiles: 
             file.unlink()
+        print('cleared')
         
     def processTimeline(self):
         # load these files for raw behavioral & timeline data
@@ -574,6 +575,9 @@ class vrExperimentRegistration(vrExperiment):
         print("Facecam preprocessing has not been coded yet!")
     
     def processBehavior2Imaging(self):
+        if not self.opts['imaging']:
+            print(f"In session {self.sessionPrint()}, imaging setting set to False in opts['imaging']. Skipping behavior2imaging processing.")
+            return None
         # compute translation mapping from behave frames to imaging frames
         idxBehaveToFrame,distBehaveToFrame = bf.nearestpoint(self.loadone('positionTracking.times'), self.loadone('mpci.times'))
         self.saveone(idxBehaveToFrame.astype(int), 'positionTracking.mpci')
