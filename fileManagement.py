@@ -1,6 +1,6 @@
 from pathlib import Path
-import pandas as pd
-import pyarrow as pa
+# import pandas as pd
+# import pyarrow as pa
 from tkinter import Tk
 
 def codePath():
@@ -15,7 +15,7 @@ def serverPath():
 def getCopyString(mouseName, datestr='', session='', server=serverPath(), toClipboard=True):
     sourceString = Path(server / mouseName / datestr / session)
     targetString = Path(localDataPath() / mouseName / datestr / session)
-    cmdPromptCommand = f"robocopy {sourceString} {targetString} /s /xf *.tif"
+    cmdPromptCommand = f"robocopy {sourceString} {targetString} /s /xf *.tif *.mj2" 
     if toClipboard:
         tkManager = Tk()
         tkManager.clipboard_append(cmdPromptCommand)
