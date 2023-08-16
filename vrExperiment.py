@@ -45,6 +45,16 @@ class vrSession:
         # Return all names of one variables stored in this experiment's directory
         return [name.stem for name in self.getSavedOne()] 
     
+    def clearOneData(self, oneFileNames=None):
+        # clears any oneData in session folder
+        # oneFileNames is an optional list of files to clear, otherwise it will clear all of them
+        oneFiles = self.getSavedOne()
+        if oneFileNames: 
+            oneFiles = [file for file in oneFiles if file.stem in oneFileNames]
+        for file in oneFiles: 
+            file.unlink()
+        print(f"Cleared oneData from session: {self.sessionPrint()}")
+        
     def sessionPrint(self): 
         # useful function for generating string of session name for useful feedback to user 
         return f"{self.mouseName}/{self.dateString}/{self.session}"   
@@ -149,20 +159,41 @@ class vrExperiment(vrSession):
     def loadS2P(self,varName,concatenate=True,checkVariables=True):
         # load S2P variable from suite2p folders 
         assert varName in self.value['available'], f"{varName} is not available in the suite2p folders for {self.sessionPrint()}"
-        if varName=='ops': concatenate=False 
-        var = []
-        for planeIdx,planeName in enumerate(self.value['planeNames']):
-            cvar = np.load(self.suite2pPath()/planeName/f"{varName}.npy",allow_pickle=True)
-            if checkVariables:
-                if self.isRoiVar(cvar): # everything except ops should have the same number of ROIs (in axis=0) 
-                    assert cvar.shape[0]==self.value['roiPerPlane'][planeIdx], f"{self.sessionPrint}:{self.planeNames[planeIdx]}:{varName} has a different number of ROIs than registered"
-                if self.isFrameVar(cvar): # everything except ops, stat, redcell, and iscell should have the same number of frames
-                    assert cvar.shape[1]==self.value['framePerPlane'][planeIdx], f"{self.sessionPrint}:{self.planeNames[planeIdx]}:{varName} has a different number of frames than registered"
-            if varName=='ops': cvar = cvar.item() # get dictionary from numpy array
-            var.append(cvar)
+        if varName=='ops': 
+            concatenate=False
+            checkVariables=False
+            
+        var = [np.load(self.suite2pPath()/planeName/f"{varName}.npy",allow_pickle=True) for planeName in self.value['planeNames']]
+        if varName=='ops':
+            var = [cvar.item() for cvar in var]
+            return var
+        
+        if checkVariables:
+            # if check variables is on, then we check the variables for their shapes
+            # checkVariables should be "off" for initial registration! (see standard usage in "processImaging")
+            # if checkVariables is on ~and~ self.opts['filterCells']==True, then this part will filter by "iscell"
+            
+            # first check if ROI variable (if #rows>0)
+            isRoiVars = [self.isRoiVar(cvar) for cvar in var]
+            assert all(isRoiVars) or not(any(isRoiVars)), f"For {varName}, the suite2p files from planes {[idx for idx,roivar in enumerate(isRoiVars) if roivar]} registered as ROI vars but not the others!"
+            isFrameVars = [self.isFrameVar(cvar) for cvar in var]
+            assert all(isFrameVars) or not(any(isFrameVars)), f"For {varName}, the suite2p files from planes {[idx for idx,roivar in enumerate(isRoiVars) if roivar]} registered as frame vars but not the others!"
+            if all(isRoiVars) and self.opts['filterCells']: 
+                # filter each var by whether or not the ROI passes criterion
+                iscell = self.loadS2P('iscell',concatenate=False,checkVariables=False) # get iscell.npy
+                var = [cvar[ic[:,0].astype(bool)] for cvar, ic in zip(var, iscell)]
+            if all(isRoiVars): 
+                validShapes = [cvar.shape[0]==self.value['roiPerPlane'][planeIdx] for planeIdx,cvar in enumerate(var)]
+                assert all(validShapes), f"{self.sessionPrint()}:{varName} has a different number of ROIs than registered in planes: {[pidx for pidx,vs in enumerate(validShapes) if not(vs)]}."
+            if all(isFrameVars):
+                validShapes = [cvar.shape[1]==self.value['framePerPlane'][planeIdx] for planeIdx,cvar in enumerate(var)]
+                assert all(validShapes), f"{self.sessionPrint()}:{varName} has a different number of frames than registered in planes: {[pidx for pidx,vs in enumerate(validShapes) if not(vs)]}."
+        
         if concatenate: 
+            # if concatenation is requested, then concatenate each plane across the ROIs axis so we have just one ndarray of shape: (allROIs, allFrames)
             if self.isFrameVar(var[0]): var = [v[:,:self.value['numFrames']] for v in var] # trim if necesary so each plane has the same number of frames
             var = np.concatenate(var,axis=0)
+            
         return var
     
     # shorthands -- note that these require some assumptions about suite2p variables to be met
@@ -276,6 +307,7 @@ class vrExperimentRegistration(vrExperiment):
         opts['redCellProcessing'] = True # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
         opts['clearOne']=False # whether or not to clear previously stored oneData (even if it wouldn't be overwritten by this registration)
         # Imaging options -- these options are standard values for imaging, tau & fs directly affect preprocessing when OASIS is turned on (and deconvolution is recomputed)
+        opts['filterCells'] = True # whether or not to filter cells based on the "iscell.npy" file from suite2p
         opts['neuropilCoefficient'] = 0.7 # for manual neuropil estimation
         opts['tau'] = 1.5 # GCaMP time constant
         opts['fs'] = 6 # sampling rate (per volume if multiplane)
@@ -301,7 +333,7 @@ class vrExperimentRegistration(vrExperiment):
         if not self.rawDataPath().exists(): self.rawDataPath().mkdir(parents=True)
         
     def doPreprocessing(self):
-        self.clearOneData()
+        if self.opts['clearOne']: self.clearOneData()
         self.processTimeline()
         self.processBehavior()
         self.processImaging()
@@ -309,14 +341,7 @@ class vrExperimentRegistration(vrExperiment):
         self.processFacecam()
         self.processBehavior2Imaging()
    
-    # --------------------------------------------------------------- preprocessing methods ------------------------------------------------------------
-    def clearOneData(self):
-        if not(self.opts['clearOne']): return
-        oneFiles = self.getSavedOne()
-        for file in oneFiles: 
-            file.unlink()
-        print('cleared')
-        
+    # --------------------------------------------------------------- preprocessing methods ------------------------------------------------------------        
     def processTimeline(self):
         # load these files for raw behavioral & timeline data
         self.tlFile = self.loadTimelineStructure()
@@ -499,8 +524,16 @@ class vrExperimentRegistration(vrExperiment):
         self.registerValue('available',commonNPYs) # a list of npy files available in each plane folder
         required = ['stat', 'ops', 'F', 'Fneu', 'iscell'] # required variables (anything else is either optional or can be computed independently)
         if not self.opts['oasis']: required.append('spks') # add deconvolved spikes to required variable if we aren't recomputing it here
-        for varName in required: assert varName in self.value['available'], f"{self.sessionPrint()} is missing {varName} in at least one suite2p folder!" 
-        self.registerValue('roiPerPlane',[iscell.shape[0] for iscell in self.loadS2P('iscell',concatenate=False,checkVariables=False)]) # get number of ROIs in each plane
+        for varName in required: assert varName in self.value['available'], f"{self.sessionPrint()} is missing {varName} in at least one suite2p folder!"
+        
+        # measure the number of ROIs per plane with or without the filter
+        iscell = self.loadS2P('iscell', concatenate=False, checkVariables=False)
+        if self.opts['filterCells']:
+            roiPerPlane = [sum(ic[:,0].astype(bool)) for ic in iscell]
+        else:
+            roiPerPlane = [ic.shape[0] for ic in iscell]
+            
+        self.registerValue('roiPerPlane',roiPerPlane) # get number of ROIs in each plane
         self.registerValue('framePerPlane',[F.shape[1] for F in self.loadS2P('F',concatenate=False,checkVariables=False)]) # get number of frames in each plane (might be different!)
         assert np.max(self.value['framePerPlane'])-np.min(self.value['framePerPlane'])<=1, f"The frame count in {self.sessionPrint()} varies by more than 1 frame! ({self.value['framePerPlane']})"
         self.registerValue('numROIs',np.sum(self.value['roiPerPlane'])) # number of ROIs in session
