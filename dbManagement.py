@@ -1,9 +1,17 @@
+import traceback
 import pyodbc
+from IPython.display import Markdown, display
 from datetime import datetime
 from contextlib import contextmanager
 import pandas as pd
+# from pandasgui import show
 import vrExperiment as vre
 import fileManagement as fm
+import basicFunctions as bf
+
+def errorPrint(text):
+    # supporting function for printing error messages but continuing
+    display(Markdown(f'<font color=red>{text}</font>'))
 
 def vrDatabaseMetadata(dbName):
     """
@@ -297,7 +305,7 @@ class vrDatabase:
         #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
         
     # == operating vrExperiment pipeline ==
-    def registerSessions(self, maxSessions=float('inf'), **userOpts):
+    def registerSessions(self, maxData=10e9, **userOpts):
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
@@ -316,10 +324,12 @@ class vrDatabase:
         print("In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!") 
         
         countSessions = 0
+        totalOneData = 0.0
         dfToRegister = self.needsRegistration()
-        for idx, row in dfToRegister.iterrows():
-            if countSessions > maxSessions: return
-            countSessions += 1
+        for idx, (_, row) in enumerate(dfToRegister.iterrows()):
+            if totalOneData > maxData: 
+                print(f"\nMax data limit reached. Total processed: {bf.readableBytes(totalOneData)}. Limit: {bf.readableBytes(maxData)}")
+                return
             print('')
             opts['imaging']=row['imaging']
             opts['facecam']=row['faceCamera']
@@ -330,13 +340,21 @@ class vrDatabase:
                 print(f"Saving params...")
                 vrExpReg.saveParams()
             except Exception as ex:
-                print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}")
-                print(f"Exception: {ex}")
+                print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
+                vrExpReg.clearOneData()
+                errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
+                errorPrint(f"Exception: {ex}")
             else:
                 with self.openCursor(commitChanges=True) as cursor: 
                     # Tell the database that vrRegistration was performed and the time of processing
                     cursor.execute(self.createUpdateStatement('vrRegistration',row['uSessionID']),True)
                     cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),datetime.now())
+                countSessions += 1 # count successful sessions
+                totalOneData += sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()]) # accumulate oneData
+                estimateRemaining = len(dfToRegister) - idx
+                print(f"Accumulated oneData registered: {bf.readableBytes(totalOneData)}. "
+                      f"Averaging: {bf.readableBytes(totalOneData/countSessions)} / session. "
+                      f"Estimate remaining: {bf.readableBytes(totalOneData/countSessions*estimateRemaining)}")
             finally: 
                 del vrExpReg
                 
@@ -369,29 +387,7 @@ class vrDatabase:
                     cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),None)
             finally: 
                 del vrExpReg
-                    
-
-class vrDatabaseGrossUpdate(vrDatabase):
-    def __init__(self, dbName='vrDatabase'):
-        super().__init__(dbName=dbName)
-    
-    def checkSessionScratch(self, withDatabaseUpdate=False):
-        df = self.getTable(ignoreScratched=False)
-        good_withJustification = df[(df['sessionQC']==True) & (~pd.isnull(df['scratchJustification']))]
-        bad_noJustification = df[(df['sessionQC']==False) & (pd.isnull(df['scratchJustification']))]
-        
-        goodToBad_UID = good_withJustification['uSessionID'].tolist()
-        badToGood_UID = bad_noJustification['uSessionID'].tolist()
-        for idx, row in good_withJustification.iterrows():
-            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
-        for idx, row in bad_noJustification.iterrows():
-            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
-        
-        if withDatabaseUpdate:
-            with self.openCursor(commitChanges=True) as cursor: 
-                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([False]*len(goodToBad_UID),goodToBad_UID))
-                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([True]*len(badToGood_UID),badToGood_UID))
-    
+                
     def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
         df = self.getTable()
         
@@ -421,6 +417,30 @@ class vrDatabaseGrossUpdate(vrDatabase):
                     
         # If returnCheck is requested, return True if any records were invalid
         if returnCheck: return checked_notDone.any() or checked_notNeed.any()
+                    
+
+class vrDatabaseGrossUpdate(vrDatabase):
+    def __init__(self, dbName='vrDatabase'):
+        super().__init__(dbName=dbName)
+    
+    def checkSessionScratch(self, withDatabaseUpdate=False):
+        df = self.getTable(ignoreScratched=False)
+        good_withJustification = df[(df['sessionQC']==True) & (~pd.isnull(df['scratchJustification']))]
+        bad_noJustification = df[(df['sessionQC']==False) & (pd.isnull(df['scratchJustification']))]
+        
+        goodToBad_UID = good_withJustification['uSessionID'].tolist()
+        badToGood_UID = bad_noJustification['uSessionID'].tolist()
+        for idx, row in good_withJustification.iterrows():
+            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
+        for idx, row in bad_noJustification.iterrows():
+            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
+        
+        if withDatabaseUpdate:
+            with self.openCursor(commitChanges=True) as cursor: 
+                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([False]*len(goodToBad_UID),goodToBad_UID))
+                cursor.executemany(self.createUpdateManyStatement('sessionQC'),zip([True]*len(badToGood_UID),badToGood_UID))
+    
+    
     
 
     
