@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import scipy as sp
 
@@ -212,5 +213,11 @@ def cvFoldSplit(numSamples, numFold):
     return foldIdx
 
 
-
+def readableBytes(numBytes):
+    if numBytes==0: return "0B"
+    sizeUnits = ("B", "KB", "MB", "GB", "TB")
+    sizeIndex = int(math.floor(math.log(numBytes, 1024)))
+    sizeBytes = math.pow(1024, sizeIndex)
+    readableSize = round(numBytes/sizeBytes, 3)
+    return f"{readableSize} {sizeUnits[sizeIndex]}"
 
