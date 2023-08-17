@@ -340,6 +340,9 @@ class vrDatabase:
                 print(f"Saving params...")
                 vrExpReg.saveParams()
             except Exception as ex:
+                with self.openCursor(commitChanges=True) as cursor: 
+                    cursor.execute(self.createUpdateStatement('vrRegistrationError',row['uSessionID']), True)
+                    cursor.execute(self.createUpdateStatement('vrRegistrationException',row['uSessionID']), str(ex))
                 print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
                 vrExpReg.clearOneData()
                 errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
@@ -348,6 +351,8 @@ class vrDatabase:
                 with self.openCursor(commitChanges=True) as cursor: 
                     # Tell the database that vrRegistration was performed and the time of processing
                     cursor.execute(self.createUpdateStatement('vrRegistration',row['uSessionID']),True)
+                    cursor.execute(self.createUpdateStatement('vrRegistrationError',row['uSessionID']),False)
+                    cursor.execute(self.createUpdateStatement('vrRegistrationException',row['uSessionID']),'')
                     cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),datetime.now())
                 countSessions += 1 # count successful sessions
                 totalOneData += sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()]) # accumulate oneData
@@ -357,7 +362,12 @@ class vrDatabase:
                       f"Estimate remaining: {bf.readableBytes(totalOneData/countSessions*estimateRemaining)}")
             finally: 
                 del vrExpReg
-                
+    
+    def printRegistrationErrors(self):
+        df = self.getTable()
+        for idx, row in df[df['vrRegistrationError']==True].iterrows():
+            print(f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}")
+            
     # == operating vrExperiment pipeline ==
     def clearOneData(self, **userOpts):
         opts = {}
