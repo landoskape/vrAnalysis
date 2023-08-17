@@ -665,11 +665,11 @@ class vrExperimentRegistration(vrExperiment):
         # rotary encoder is a counter with a big range that sometimes flips around it's axis
         # first get changes in encoder position, fix any big jumps in value, take the cumulative movement and scale to centimeters 
         rotaryMovement = bf.diffsame(rotaryEncoder)
-        idxHighValues = rotaryMovement > 2**(rigInfo['rotaryRange']-1)
-        idxLowValues = rotaryMovement < -2**(rigInfo['rotaryRange']-1)
-        rotaryMovement[idxHighValues] -= 2**rigInfo['rotaryRange']
-        rotaryMovement[idxLowValues] += 2**rigInfo['rotaryRange']
-        return rigInfo['rotEncSign']*np.cumsum(rotaryMovement)*(2*np.pi*rigInfo['wheelRadius'])/rigInfo['wheelToVR']
+        idxHighValues = rotaryMovement > 2**(rigInfo.rotaryRange-1)
+        idxLowValues = rotaryMovement < -2**(rigInfo.rotaryRange-1)
+        rotaryMovement[idxHighValues] -= 2**rigInfo.rotaryRange
+        rotaryMovement[idxLowValues] += 2**rigInfo.rotaryRange
+        return rigInfo.rotEncSign*np.cumsum(rotaryMovement)*(2*np.pi*rigInfo.wheelRadius)/rigInfo.wheelToVR
 
    
     # -------------------------------------- methods for handling vrBehavior data produced by vrControl ------------------------------------------------------------
@@ -678,7 +678,10 @@ class vrExperimentRegistration(vrExperiment):
         vrFile = scio.loadmat(vrFileName,struct_as_record=False,squeeze_me=True)
         if 'rigInfo' not in vrFile.keys():
             print(f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2!")
-            vrFile['rigInfo'] = {'computerName':'ZINKO','rotEncPos':'left','rotEncSign':-1,'wheelToVR':4000,'wheelRadius':9.75,'rotaryRange':32} # save dictionary with default B2 settings
+            vrFile['rigInfo'] = defaultRigInfo()
+            #{'computerName':'ZINKO','rotEncPos':'left','rotEncSign':-1,'wheelToVR':4000,'wheelRadius':9.75,'rotaryRange':32} # save dictionary with default B2 settings
+        if not(hasattr(vrFile['rigInfo'], 'rotaryRange')):
+            vrFile['rigInfo'].rotaryRange=32
         return vrFile
     
     def convertDense(self, data):
@@ -692,6 +695,15 @@ class vrExperimentRegistration(vrExperiment):
         return [d[nz] for (d,nz) in zip(data, nzindex)]
     
 
+class defaultRigInfo:
+    computerName='ZINKO'
+    rotEncPos='left'
+    rotEncSign=-1
+    wheelToVR=4000
+    wheelRadius=9.75
+    rotaryRange=32
+    
+    
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

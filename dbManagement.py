@@ -305,7 +305,7 @@ class vrDatabase:
         #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
         
     # == operating vrExperiment pipeline ==
-    def registerSessions(self, maxData=10e9, **userOpts):
+    def registerSessions(self, maxData=30e9, **userOpts):
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment

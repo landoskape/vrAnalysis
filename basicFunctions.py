@@ -218,6 +218,6 @@ def readableBytes(numBytes):
     sizeUnits = ("B", "KB", "MB", "GB", "TB")
     sizeIndex = int(math.floor(math.log(numBytes, 1024)))
     sizeBytes = math.pow(1024, sizeIndex)
-    readableSize = round(numBytes/sizeBytes, 3)
+    readableSize = round(numBytes/sizeBytes, 2)
     return f"{readableSize} {sizeUnits[sizeIndex]}"
 
