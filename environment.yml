@@ -9,6 +9,7 @@ dependencies:
   - scipy
   - numba
   - matplotlib
+  - ipympl
   - jupyterlab
   - pip:
     - natsort
