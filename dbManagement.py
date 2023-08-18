@@ -232,13 +232,50 @@ class vrDatabase:
             df = df.query(query)
         return df
     
+    def getRecord(self, mouseName, sessionDate, sessionID):
+        """
+        Retrieve single record from table in database and return as dataframe. 
+        
+        This method retrieves a single record(row) from the primary table in the database specified 
+        in vrDatabase instance. It identifies which session has the unique combination of mouseName,
+        sessionDate, and sessionID, and returns that row. 
+        
+        Parameters
+        ----------
+        mouseName : string, required - the name of the mouse, e.g. ATL001
+        sessionDate : string, required - the date of the session in yyyy-mm-dd format
+        sessionID : int64/string, required - the code for the session, e.g. 701
+        
+        Returns
+        -------
+        record : pandas Series
+            
+        Example
+        -------
+        >>> vrdb = YourDatabaseClass()
+        >>> record = vrdb.getRecord('ATL001','2000-01-01','701')
+        """
+        
+        fieldNames, tableData = self.tableData()
+        df = pd.DataFrame.from_records(tableData, columns=fieldNames)
+        record = df[(df['mouseName']==mouseName) 
+                    & (df['sessionDate'].apply(lambda sd : sd.strftime('%Y-%m-%d'))==sessionDate)
+                    & (df['sessionID']==int(sessionID))]
+        if len(record)==0: 
+            print(f"No session found under: {mouseName}/{sessionDate}/{sessionID}")
+            return None
+        if len(record)>1:
+            raise ValueError(f"Multiple sessions found under: {mouseName}/{sessionDate}/{sessionID}")
+        return record.iloc[0]
+    
     # == visualization ==
     def showTable(self, table=None):
         show(self.getTable() if table is None else table)
     
     # == helper functions for figuring out what needs work ==
-    def needsRegistration(self): 
+    def needsRegistration(self, skipErrors=True): 
         df = self.getTable()
+        if skipErrors: df = df[df['vrRegistrationError']==False]
         return df[df['vrRegistration']==False]
     
     def updateSuite2pDateTime(self):
@@ -305,7 +342,7 @@ class vrDatabase:
         #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
         
     # == operating vrExperiment pipeline ==
-    def registerSessions(self, maxData=30e9, **userOpts):
+    def defaultRegistrationOpts(self, **userOpts):
         # Options for data management:
         # These are a subset of what is available in vre.vrExperimentRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
@@ -320,48 +357,71 @@ class vrDatabase:
         
         assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
         opts.update(userOpts) # Update default opts with user requests
+        return opts
+    
+    def registerRecord(self, record, **opts):
+        opts['imaging'] = bool(record['imaging'])
+        opts['facecam'] = bool(record['faceCamera'])
+        vrExpReg = self.vrRegistration(record, **opts)
+        try: 
+            print(f"Performing vrExperiment preprocessing for session: {vrExpReg.sessionPrint()}")
+            vrExpReg.doPreprocessing()
+            print(f"Saving params...")
+            vrExpReg.saveParams()
+        except Exception as ex:
+            with self.openCursor(commitChanges=True) as cursor: 
+                cursor.execute(self.createUpdateStatement('vrRegistrationError',record['uSessionID']), True)
+                cursor.execute(self.createUpdateStatement('vrRegistrationException',record['uSessionID']), str(ex))
+            print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
+            vrExpReg.clearOneData()
+            errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
+            errorPrint(f"Exception: {ex}")
+            # If failed, return (False, 0B)
+            out = (False, 0)
+        else:
+            with self.openCursor(commitChanges=True) as cursor: 
+                # Tell the database that vrRegistration was performed and the time of processing
+                cursor.execute(self.createUpdateStatement('vrRegistration',record['uSessionID']),True)
+                cursor.execute(self.createUpdateStatement('vrRegistrationError',record['uSessionID']),False)
+                cursor.execute(self.createUpdateStatement('vrRegistrationException',record['uSessionID']),'')
+                cursor.execute(self.createUpdateStatement('vrRegistrationDate',record['uSessionID']),datetime.now())
+            # If successful, return (True, size of registered oneData)
+            out = (True, sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()])) # accumulate oneData
+            print(f"Session {vrExpReg.sessionPrint()} registered with {bf.readableBytes(out[1])} oneData.")
+        finally: 
+            del vrExpReg
+        return out
+        
+    def registerSingleSession(self, mouseName, sessionDate, sessionID, **userOpts):
+        # get opts for registering session
+        opts = self.defaultRegistrationOpts(**userOpts)
+        record = self.getRecord(mouseName, sessionDate, sessionID)
+        out = self.registerRecord(record, **opts)
+        return out[0]
+        
+    def registerSessions(self, maxData=30e9, skipErrors=True, **userOpts):
+        # get opts for registering session
+        opts = self.defaultRegistrationOpts(**userOpts)
         
         print("In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!") 
         
         countSessions = 0
         totalOneData = 0.0
-        dfToRegister = self.needsRegistration()
+        dfToRegister = self.needsRegistration(skipErrors=skipErrors)
+        
         for idx, (_, row) in enumerate(dfToRegister.iterrows()):
             if totalOneData > maxData: 
                 print(f"\nMax data limit reached. Total processed: {bf.readableBytes(totalOneData)}. Limit: {bf.readableBytes(maxData)}")
                 return
             print('')
-            opts['imaging']=row['imaging']
-            opts['facecam']=row['faceCamera']
-            vrExpReg = self.vrRegistration(row, **opts)
-            try: 
-                print(f"Performing vrExperiment preprocessing for session: {vrExpReg.sessionPrint()}")
-                vrExpReg.doPreprocessing()
-                print(f"Saving params...")
-                vrExpReg.saveParams()
-            except Exception as ex:
-                with self.openCursor(commitChanges=True) as cursor: 
-                    cursor.execute(self.createUpdateStatement('vrRegistrationError',row['uSessionID']), True)
-                    cursor.execute(self.createUpdateStatement('vrRegistrationException',row['uSessionID']), str(ex))
-                print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
-                vrExpReg.clearOneData()
-                errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
-                errorPrint(f"Exception: {ex}")
-            else:
-                with self.openCursor(commitChanges=True) as cursor: 
-                    # Tell the database that vrRegistration was performed and the time of processing
-                    cursor.execute(self.createUpdateStatement('vrRegistration',row['uSessionID']),True)
-                    cursor.execute(self.createUpdateStatement('vrRegistrationError',row['uSessionID']),False)
-                    cursor.execute(self.createUpdateStatement('vrRegistrationException',row['uSessionID']),'')
-                    cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),datetime.now())
+            out = self.registerRecord(row, **opts)
+            if out[0]: 
                 countSessions += 1 # count successful sessions
-                totalOneData += sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()]) # accumulate oneData
+                totalOneData += out[1] # accumulated oneData registered
                 estimateRemaining = len(dfToRegister) - idx
                 print(f"Accumulated oneData registered: {bf.readableBytes(totalOneData)}. "
                       f"Averaging: {bf.readableBytes(totalOneData/countSessions)} / session. "
                       f"Estimate remaining: {bf.readableBytes(totalOneData/countSessions*estimateRemaining)}")
-            finally: 
-                del vrExpReg
     
     def printRegistrationErrors(self):
         df = self.getTable()
