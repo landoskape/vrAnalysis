@@ -396,6 +396,9 @@ class vrDatabase:
         # get opts for registering session
         opts = self.defaultRegistrationOpts(**userOpts)
         record = self.getRecord(mouseName, sessionDate, sessionID)
+        if record is None: 
+            print(f"Session {vre.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
+            return 
         out = self.registerRecord(record, **opts)
         return out[0]
         
