@@ -287,7 +287,8 @@ class vrDatabase:
             vrs = self.vrSession(row) # create vrSession to point to session folder
             cLatestMod = 0
             for p in vrs.suite2pPath().rglob("*"):
-                cLatestMod = max(p.stat().st_mtime, cLatestMod)
+                if not(p.is_dir()):
+                    cLatestMod = max(p.stat().st_mtime, cLatestMod)
             cDateTime = datetime.fromtimestamp(cLatestMod)
             s2pCreationDate.append(cDateTime) # get suite2p path creation date
             
