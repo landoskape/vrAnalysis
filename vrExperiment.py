@@ -313,7 +313,7 @@ class vrExperimentRegistration(vrExperiment):
         if len(inputs)==1 and isinstance(inputs[0], vrExperiment):
             # This means we are creating a vrExperimentRegistration object from an existing vrExperiment
             self.createObject(*inputs)
-            assert userOpts.keys() <= self.opts, f"userOpts contains the following invalid keys:  {set(userOpts.keys()).difference(opts.keys())}"
+            assert userOpts.keys() <= self.opts.keys(), f"userOpts contains the following invalid keys:  {set(userOpts.keys()).difference(opts.keys())}"
             for key,value in userOpts.items():
                 if value != self.opts[key]:
                     print(f"In existing vrExperiment, opts['{key}']={self.opts[key]} but you just requested {key}={value}."
