@@ -270,7 +270,9 @@ class vrDatabase:
     
     # == visualization ==
     def showTable(self, table=None):
-        show(self.getTable() if table is None else table)
+        errorPrint("pandasgui doesn't seem to work with PyQt5 and Napari (I stopped trying to figure it out)"
+                   "In a different environment where you can install pandasgui, uncomment the following line")
+        # show(self.getTable() if table is None else table)
     
     # == helper functions for figuring out what needs work ==
     def needsRegistration(self, skipErrors=True): 
