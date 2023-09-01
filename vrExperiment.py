@@ -8,6 +8,7 @@ import scipy as sp
 import scipy.io as scio
 import numba as nb
 from numpyencoder import NumpyEncoder
+from oasis.functions import deconvolve
 import vrFunctions as vrf
 import basicFunctions as bf
 
@@ -340,6 +341,7 @@ class vrExperimentRegistration(vrExperiment):
             opts.update(userOpts) # Update default opts with user requests
         
             # -- initialize vrExperiment parameters --
+            mouseName, dateString, session = inputs
             self.mouseName = mouseName
             self.dateString = dateString
             self.session = session
@@ -607,6 +609,7 @@ class vrExperimentRegistration(vrExperiment):
             g = np.exp(-1/self.opts['tau']/self.opts['fs'])
             fcorr = self.loadfcorr(loadFromOne=False)
             ospks = []
+            print("Performing oasis...")
             for fc in tqdm(fcorr):
                 ospks.append(deconvolve(fc, g=(g,), penalty=1)[1])
             ospks = np.stack(ospks)
