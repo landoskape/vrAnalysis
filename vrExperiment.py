@@ -65,6 +65,9 @@ class vrSession:
         # useful function for generating string of session name for useful feedback to user 
         return f"{self.mouseName}/{self.dateString}/{self.session}"   
     
+    def __str__(self):
+        return f"{self.mouseName}_{self.dateString}_{self.session}"
+    
         
         
         
