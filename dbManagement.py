@@ -165,6 +165,10 @@ class vrDatabase:
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return vre.vrSession(mouseName, sessionDate, sessionID)
     
+    def vrExperiment(self, row):
+        mouseName, sessionDate, sessionID = self.sessionName(row)
+        return vre.vrExperiment(mouseName, sessionDate, sessionID)
+        
     def vrRegistration(self, row, **opts):
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID, **opts)
