@@ -1,6 +1,13 @@
 import math
 import numpy as np
 import scipy as sp
+import matplotlib
+
+def ncmap(name='Spectral', vmin=0., vmax=1.):
+    cmap = matplotlib.cm.get_cmap(name)
+    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+    def cm(val): return cmap(norm(val))
+    return cm
 
 def diffsame(data, zero=0):
     # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back. 
