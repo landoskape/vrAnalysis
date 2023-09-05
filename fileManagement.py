@@ -9,6 +9,9 @@ def codePath():
 def localDataPath():
     return Path("C:/Users/andrew/Documents/localData")
 
+def analysisPath():
+    return localDataPath() / 'analysis'
+    
 def serverPath():
     return Path("//zaru.cortexlab.net/Subjects")
 
