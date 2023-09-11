@@ -232,7 +232,7 @@ class vrDatabase:
         if kwConditions:
             for key in kwConditions.keys(): 
                 assert key in fieldNames, f"{key} is not a column name in {self.tableName}"
-            query = " & ".join([f"`{key}`=={val}" for key, val in kwConditions.items()])
+            query = " & ".join([f"`{key}`=={val!r}" for key, val in kwConditions.items()])
             df = df.query(query)
         return df
     

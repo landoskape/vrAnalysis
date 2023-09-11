@@ -9,6 +9,7 @@ here = pathlib.Path(__file__).parent.resolve()
 # Get the long description from the README file
 long_description = (here / "README.md").read_text(encoding="utf-8")
 
+# Core code for managing sessions and the database
 deps_core = [
     "numpy",
     "scipy",
@@ -23,11 +24,13 @@ deps_core = [
     "numpyencoder",
 ]
     
+# Extra code for performing registration (these things are extras specifically for oasis)
 deps_registration = [
     "oasis-deconv",
     "cvxpy",
 ]
 
+# Extra packages for managing the GUI
 deps_gui = [
     "pyqt5",
     "pyqtgraph",
