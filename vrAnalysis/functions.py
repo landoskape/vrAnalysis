@@ -1,7 +1,7 @@
 import numpy as np
 import scipy as sp
 import numba as nb
-import basicFunctions as bf
+from . import helpers
 
 # ------------------------------------------------- postprocessing functions for creating spatial maps -----------------------------------------------------
 def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
@@ -18,7 +18,7 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     roomLength = roomLength[0]
     numPosition = int(roomLength/distStep[0])
     distvec = np.linspace(0,roomLength,numPosition+1)
-    distcenter = bf.edge2center(distvec)
+    distcenter = helpers.edge2center(distvec)
     
     trialStartSample = vrexp.loadone('trials.positionTracking')
     behaveTimeStamps = vrexp.loadone('positionTracking.times')
@@ -61,11 +61,11 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
 
     else:
         # Create spatial smoothing kernel 
-        kk = bf.getGaussKernel(distcenter, distStep[1])
+        kk = helpers.getGaussKernel(distcenter, distStep[1])
 
         # Smooth maps and correct speed map to be an average across time (don't smooth out licks, we're going to sum not average)
-        occmap = bf.convolveToeplitz(occmap, kk, axis=1)
-        speedmap = bf.convolveToeplitz(speedmap, kk, axis=1)
+        occmap = helpers.convolveToeplitz(occmap, kk, axis=1)
+        speedmap = helpers.convolveToeplitz(speedmap, kk, axis=1)
         correctMap(occmap, speedmap)
 
         # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins) -- do this after convolution!
@@ -99,10 +99,10 @@ def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, omap, 
     spkmap = np.transpose(spkmap,(2,0,1)) # convert to smart indices
 
     if doSmoothing:
-        kk = bf.getGaussKernel(bf.edge2center(distvec),doSmoothing)
+        kk = helpers.getGaussKernel(helpers.edge2center(distvec),doSmoothing)
         idxnan = np.isnan(spkmap)
         spkmap[idxnan]=0
-        spkmap = bf.convolveToeplitz(spkmap, kk, mode='same')
+        spkmap = helpers.convolveToeplitz(spkmap, kk, mode='same')
         spkmap[idxnan]=np.nan
     
     # correct for nans where there is not positional data in omap
@@ -124,7 +124,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1):
     relmse = np.zeros(numROIs)
     relcor = np.zeros(numROIs)
     for repeat in range(numRepeats):
-        foldIdx = bf.cvFoldSplit(numTrials, numcv)
+        foldIdx = helpers.cvFoldSplit(numTrials, numcv)
         for fold in range(numcv):
             cTrainTrial = np.concatenate(foldIdx[:fold]+foldIdx[fold+1:])
             cTestTrial = foldIdx[fold]
@@ -135,7 +135,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1):
             numerator = np.sum((testProfile-trainProfile)**2,axis=0)
             denominator = np.sum((testProfile-meanTrain)**2,axis=0)
             relmse += (1 - numerator/denominator)
-            relcor += bf.vectorCorrelation(trainProfile, testProfile)
+            relcor += helpers.vectorCorrelation(trainProfile, testProfile)
     relmse /= (numcv*numRepeats)
     relcor /= (numcv*numRepeats)
     return relmse,relcor

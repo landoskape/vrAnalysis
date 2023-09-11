@@ -15,7 +15,6 @@ dependencies:
   - oasis-deconv
   - cvxpy
   - pip:
-    - natsort
     - numpyencoder
     - pyqt5
     - pyqtgraph

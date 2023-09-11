@@ -15,13 +15,13 @@ from PyQt5 import QtGui, QtCore, QtWidgets
 from PyQt5.QtWidgets import QGraphicsProxyWidget, QSlider, QPushButton, QVBoxLayout, QLabel, QLineEdit, QShortcut
 from PyQt5.QtGui import QKeySequence
 
-# Special vrExperiment modules
-import vrExperiment
-import basicFunctions as bf
+# Special vrAnalysis modules
+from .. import session
+from .. import helpers
 
 class redSelectionGUI:
     def __init__(self, redCellObj, numBins=50):
-        assert type(redCellObj)==vrExperiment.redCellProcessing, "redCellObj must be an instance of the redCellProcessing class inherited from vrExperiment"
+        assert type(redCellObj)==session.redCellProcessing, "redCellObj must be an instance of the redCellProcessing class inherited from session"
         self.redCell = redCellObj
         self.numPlanes = self.redCell.numPlanes
         self.roiPerPlane = self.redCell.value['roiPerPlane']
@@ -78,8 +78,8 @@ class redSelectionGUI:
         self.histReds = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             barWidth = np.diff(self.hedges[feature][:2])
-            self.histGraphs[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[feature]), height=self.hvalues[self.planeIdx][feature], width=barWidth)
-            self.histReds[feature] = pg.BarGraphItem(x=bf.edge2center(self.hedges[feature]), height=self.hvalred[self.planeIdx][feature], width=barWidth, brush='r')
+            self.histGraphs[feature] = pg.BarGraphItem(x=helpers.edge2center(self.hedges[feature]), height=self.hvalues[self.planeIdx][feature], width=barWidth)
+            self.histReds[feature] = pg.BarGraphItem(x=helpers.edge2center(self.hedges[feature]), height=self.hvalred[self.planeIdx][feature], width=barWidth, brush='r')
         
         # add bargraphs to plotArea
         self.histPlots = [None]*self.numFeatures
@@ -489,7 +489,7 @@ def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=Tr
         # make histogram of each feature
         cHist,cEdges = np.histogram(feature,bins=50)
         histRange.append((cEdges[0],cEdges[-1])) # min/max of histogram for each feature
-        histCenters.append(bf.edge2center(cEdges)) # center of histogram bin for each feature
+        histCenters.append(helpers.edge2center(cEdges)) # center of histogram bin for each feature
         histValues.append(cHist) # histogram value for each bin for each feature
     featureHistograms = [pg.BarGraphItem(x=histCenter,height=histValue,width=histCenter[1]-histCenter[0]) for histCenter,histValue in zip(histCenters,histValues)]
     featRedHistograms = [pg.BarGraphItem(x=histCenter,height=histValue/2,width=histCenter[1]-histCenter[0],brush='r') for histCenter,histValue in zip(histCenters,histValues)]
@@ -665,7 +665,7 @@ def redSelectionAmorphous(stacks, features, enableMouse=False, lockAspect=1, inf
         # make histogram of each feature
         cHist,cEdges = np.histogram(feature,bins=100)
         histRange.append((cEdges[0],cEdges[-1])) # min/max of histogram for each feature
-        histCenters.append(bf.edge2center(cEdges)) # center of histogram bin for each feature
+        histCenters.append(helpers.edge2center(cEdges)) # center of histogram bin for each feature
         histValues.append(cHist) # histogram value for each bin for each feature
     featureHistograms = [pg.BarGraphItem(x=histCenter,height=histValue,width=histCenter[1]-histCenter[0]) for histCenter,histValue in zip(histCenters,histValues)]
         

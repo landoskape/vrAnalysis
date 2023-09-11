@@ -4,10 +4,10 @@ from IPython.display import Markdown, display
 from datetime import datetime
 from contextlib import contextmanager
 import pandas as pd
-# from pandasgui import show
-import vrExperiment as vre
-import fileManagement as fm
-import basicFunctions as bf
+
+from . import session
+from . import helpers
+from . import fileManagement as fm
 
 def errorPrint(text):
     # supporting function for printing error messages but continuing
@@ -163,15 +163,15 @@ class vrDatabase:
 
     def vrSession(self, row):
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return vre.vrSession(mouseName, sessionDate, sessionID)
+        return session.vrSession(mouseName, sessionDate, sessionID)
     
     def vrExperiment(self, row):
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return vre.vrExperiment(mouseName, sessionDate, sessionID)
+        return session.vrExperiment(mouseName, sessionDate, sessionID)
         
     def vrRegistration(self, row, **opts):
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return vre.vrExperimentRegistration(mouseName, sessionDate, sessionID, **opts)
+        return session.vrRegistration(mouseName, sessionDate, sessionID, **opts)
         
     # == retrieve table data ==
     def tableData(self):
@@ -351,7 +351,7 @@ class vrDatabase:
     # == operating vrExperiment pipeline ==
     def defaultRegistrationOpts(self, **userOpts):
         # Options for data management:
-        # These are a subset of what is available in vre.vrExperimentRegistration 
+        # These are a subset of what is available in session.vrRegistration 
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
         opts = {}
         opts['vrBehaviorVersion'] = 1 # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
@@ -394,7 +394,7 @@ class vrDatabase:
                 cursor.execute(self.createUpdateStatement('vrRegistrationDate',record['uSessionID']),datetime.now())
             # If successful, return (True, size of registered oneData)
             out = (True, sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()])) # accumulate oneData
-            print(f"Session {vrExpReg.sessionPrint()} registered with {bf.readableBytes(out[1])} oneData.")
+            print(f"Session {vrExpReg.sessionPrint()} registered with {helpers.readableBytes(out[1])} oneData.")
         finally: 
             del vrExpReg
         return out
@@ -404,7 +404,7 @@ class vrDatabase:
         opts = self.defaultRegistrationOpts(**userOpts)
         record = self.getRecord(mouseName, sessionDate, sessionID)
         if record is None: 
-            print(f"Session {vre.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
+            print(f"Session {session.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
             return 
         out = self.registerRecord(record, **opts)
         return out[0]
@@ -421,7 +421,7 @@ class vrDatabase:
         
         for idx, (_, row) in enumerate(dfToRegister.iterrows()):
             if totalOneData > maxData: 
-                print(f"\nMax data limit reached. Total processed: {bf.readableBytes(totalOneData)}. Limit: {bf.readableBytes(maxData)}")
+                print(f"\nMax data limit reached. Total processed: {helpers.readableBytes(totalOneData)}. Limit: {helpers.readableBytes(maxData)}")
                 return
             print('')
             out = self.registerRecord(row, **opts)
@@ -429,9 +429,9 @@ class vrDatabase:
                 countSessions += 1 # count successful sessions
                 totalOneData += out[1] # accumulated oneData registered
                 estimateRemaining = len(dfToRegister) - idx
-                print(f"Accumulated oneData registered: {bf.readableBytes(totalOneData)}. "
-                      f"Averaging: {bf.readableBytes(totalOneData/countSessions)} / session. "
-                      f"Estimate remaining: {bf.readableBytes(totalOneData/countSessions*estimateRemaining)}")
+                print(f"Accumulated oneData registered: {helpers.readableBytes(totalOneData)}. "
+                      f"Averaging: {helpers.readableBytes(totalOneData/countSessions)} / session. "
+                      f"Estimate remaining: {helpers.readableBytes(totalOneData/countSessions*estimateRemaining)}")
     
     def printRegistrationErrors(self):
         df = self.getTable()

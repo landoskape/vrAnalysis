@@ -4,10 +4,8 @@ import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib
 
-import vrExperiment as vre
-import vrFunctions as vrf
-import basicFunctions as bf
-import fileManagement as fm
+from . import helpers
+from . import fileManagement as fm
 
 # common variables
 analysisDirectory = fm.analysisPath()
@@ -25,14 +23,17 @@ class sameCellCandidates:
         self.vrexp = vrexp
         
         self.binEdges = np.linspace(-1, 1, self.ncorrbins)
-        self.binCenters = bf.edge2center(self.binEdges)
+        self.binCenters = helpers.edge2center(self.binEdges)
         self.barWidth = np.diff(self.binEdges[:2])
         
         # automatically do measurements
         if autorun: self.run()
     
-    def run(self, onefile=None):
+    def run(self, onefile=None, npixCutoff=25, keepPlanes=None):
         self.onefile = self.onefile if onefile is None else onefile
+        
+        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')]) # get number of pixels for each ROI
+        idxNPIX = npix > npixCutoff
         
         # Analyze cross-plane possibilities
         data = self.vrexp.loadone(self.onefile)
@@ -40,6 +41,18 @@ class sameCellCandidates:
         roiPlaneIdx = stackPosition[:,2]
         xyPos = stackPosition[:,0:2] * 1.3 # convert to um (assume it's always the same at B2...)
 
+        if keepPlanes is not None:
+            idxKeepPlanes = np.isin(roiPlaneIdx, keepPlanes)
+        else:
+            idxKeepPlanes = np.full(idxNPIX.shape, True)
+        
+        # Filter ROIs 
+        idxROIsToUse = idxKeepPlanes & idxNPIX
+        
+        data = data[:, idxROIsToUse]
+        roiPlaneIdx = roiPlaneIdx[idxROIsToUse]
+        xyPos = xyPos[idxROIsToUse]
+        
         # Get correlation coefficients
         xcROIs = np.corrcoef(data.T)
 
@@ -66,8 +79,56 @@ class sameCellCandidates:
         self.fcPlane = np.stack([np.histogram(xcPairs[spPairs==planeIdx], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']])
         self.ccPlane = [np.stack([np.histogram(xcPairs[(spPairs==planeIdx) & ic], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']]) for ic in idxClose]
     
+    def somaDendritePairs(self, onefile=None, corrCutoff=0.1, npixCutoff=25):
+        self.onefile = self.onefile if onefile is None else onefile
+        
+        # Analyze cross-plane possibilities
+        data = self.vrexp.loadone(self.onefile)
+        stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
+        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')]) # get number of pixels for each ROI
+        roiPlaneIdx = stackPosition[:,2]
+        xyPos = stackPosition[:,0:2] * 1.3 # convert to um (assume it's always the same at B2...)
+
+        # Get correlation coefficients
+        xcROIs = np.corrcoef(data.T)
+        
+        planeDifference = roiPlaneIdx.reshape(-1,1) - roiPlaneIdx.reshape(1,-1)
+        roiSizeDifference = npix.reshape(-1,1) - npix.reshape(1,-1)
+        
+        # Convert to vector representation
+        xcPairs = sp.spatial.distance.squareform(xcROIs, checks=False)
+        pdiffPairs = sp.spatial.distance.squareform(planeDifference, checks=False)
+        rsdiffPairs = sp.spatial.distance.squareform(roiSizeDifference, checks=False)
+        
+        # Measure spatial distance between ROI centroids
+        pwDistance = sp.spatial.distance.pdist(xyPos)
+        
+        # filter to pairs that exceed a certain correlation coefficient
+        idxCorrelated = xcPairs > corrCutoff 
+        xcCorr = xcPairs[idxCorrelated]
+        planeDiffCorr = pdiffPairs[idxCorrelated]
+        roiSizeDiffCorr = rsdiffPairs[idxCorrelated]
+        
+        # And plot some results
+        plt.close('all')
+        
+        fig,ax = plt.subplots(1,4,figsize=(16,4))
+        ax[0].scatter(planeDiffCorr, xcCorr, c='k', alpha=0.3)
+        ax[0].set_xlabel('planediff')
+        ax[0].set_ylabel('cross-corr')
+        
+        ax[1].scatter(planeDiffCorr, roiSizeDiffCorr, c='k', alpha=0.3)
+        ax[1].set_xlabel('planediff')
+        ax[1].set_ylabel('roiSize diff')
+        
+        ax[2].scatter(roiSizeDiffCorr, xcCorr, c='k', alpha=0.3)
+        ax[2].set_xlabel('roiSize diff')
+        ax[2].set_ylabel('cross-corr')
+        
+        plt.show()
+        
     def plotSession(self, withSave=False):
-        cmap = bf.ncmap('winter', 0, len(self.thresholds)-1)
+        cmap = helpers.ncmap('winter', 0, len(self.thresholds)-1)
         fig,ax = plt.subplots(1,2,figsize=(12,4))
         
         # Plot histograms for full count
