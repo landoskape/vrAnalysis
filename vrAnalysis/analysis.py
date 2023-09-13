@@ -97,22 +97,19 @@ class sameCellCandidates:
         pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff) # no filtering at the moment
         xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
-        print('hello')
-        
         randomFilter = np.random.random(xcROIs.shape) < 0.05
         xcROIs = xcROIs[randomFilter]
         planePair1 = planePair1[randomFilter]
         planePair2 = planePair2[randomFilter]
         pwDist = pwDist[randomFilter]
         
-        # These three categories define a color-code
-        ccode = 'kbr' 
+        # Plane relationship categories
         idxSamePlane = planePair1 == planePair2
         idxNeighbor = np.abs(planePair1 - planePair2) == 1
         idxDistant = np.abs(planePair1 - planePair2) > 1
         
         # Put them in an iterable list
-        idxCategory = [idxDistant, idxSamePlane, idxNeighbor] 
+        idxCategory = [idxSamePlane, idxNeighbor, idxDistant] 
         nameCategory = ['same plane', 'neighbor', 'distant']
         
         # Plotting parameters
@@ -126,7 +123,7 @@ class sameCellCandidates:
         plt.close('all')
         fig, ax = plt.subplots(1,3,figsize=(13,4))
         for idx, (a, idxCat, name) in enumerate(zip(ax, idxCategory, nameCategory)):
-            a.scatter(pwDist[idxCat], xcROIs[idxCat], c=ccode[idx], alpha=0.1)
+            a.scatter(pwDist[idxCat], xcROIs[idxCat], c='k', alpha=0.2)
             a.set_title(f"{name}")
             
         plt.show()
