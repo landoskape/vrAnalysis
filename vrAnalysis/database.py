@@ -273,10 +273,15 @@ class vrDatabase:
         return record.iloc[0]
     
     # == visualization ==
-    def showTable(self, table=None):
-        errorPrint("pandasgui doesn't seem to work with PyQt5 and Napari (I stopped trying to figure it out)"
-                   "In a different environment where you can install pandasgui, uncomment the following line")
-        # show(self.getTable() if table is None else table)
+    def printSessions(self, ignoreScratched=True, **kwConditions):
+        """
+        Copy of getTable(), except instead of returning a df, will iterate through the rows and 
+        session print each session that meets the given conditions. See getTable()'s documentation
+        for info on how to use the optional inputs of this function
+        """
+        df = self.getTable(ignoreScratched=ignoreScratched, **kwConditions)
+        for idx, row in df.iterrows():
+            print(self.vrSession(row).sessionPrint())
     
     # == helper functions for figuring out what needs work ==
     def needsRegistration(self, skipErrors=True): 
