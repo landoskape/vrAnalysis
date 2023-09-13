@@ -680,15 +680,17 @@ class vrRegistration(vrExperiment):
         tlFileName = self.sessionPath() / f"{self.dateString}_{self.session}_{self.mouseName}_Timeline.mat" # timeline.mat file name
         self.tlFile = scio.loadmat(tlFileName,simplify_cells=True)['Timeline'] # load matlab structure
     
-    def timelineInputs(self):
+    def timelineInputs(self, ignoreTimestamps=False):
         if not hasattr(self, 'tlFile'): self.tlFile = self.loadTimelineStructure()
-        return ['timestamps', *[hwInput['name'] for hwInput in self.tlFile['hw']['inputs']]]
+        hwInputs = [hwInput['name'] for hwInput in self.tlFile['hw']['inputs']]
+        if ignoreTimestamps: return hwInputs
+        return ['timestamps', *hwInputs]
         
     def getTimelineVar(self, varName):
         if varName=='timestamps': 
             return self.tlFile['rawDAQTimestamps']
         else:
-            inputNames = self.timelineInputs()
+            inputNames = self.timelineInputs(ignoreTimestamps=True)
             assert varName in inputNames, f"{varName} is not a tlFile in session {self.sessionPrint()}"
             return np.squeeze(self.tlFile['rawDAQData'][:,np.where([inputName==varName for inputName in inputNames])[0]])
 
