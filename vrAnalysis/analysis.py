@@ -60,11 +60,19 @@ class sameCellCandidates:
         samePlaneIdx=(roiPlaneIdx.reshape(-1,1)==roiPlaneIdx.reshape(1,-1))
         planePair = roiPlaneIdx * samePlaneIdx
         planePair[~samePlaneIdx]=-1
-
+        
+        # Get pair ID of plane-plane comparison
+        pp1 = roiPlaneIdx.astype(np.int32).reshape(-1,1).repeat(len(roiPlaneIdx),axis=1)
+        pp2 = roiPlaneIdx.astype(np.int32).reshape(1,-1).repeat(len(roiPlaneIdx),axis=0)
+        
+        # Get pair npix size within comparisons
+        npx1 = npix.astype(np.int32).reshape(-1,1).repeat(len(npix),axis=1)
+        npx2 = npix.astype(np.int32).reshape(1,-1).repeat(len(npix),axis=0)
+        
         # Convert to vector representation
         xcPairs = sp.spatial.distance.squareform(xcROIs, checks=False)
         spPairs = sp.spatial.distance.squareform(planePair, checks=False)
-
+        
         # Measure spatial distance between ROI centroids
         pwDistance = sp.spatial.distance.pdist(xyPos)
 
@@ -78,7 +86,14 @@ class sameCellCandidates:
         # Then do it for each plane individually
         self.fcPlane = np.stack([np.histogram(xcPairs[spPairs==planeIdx], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']])
         self.ccPlane = [np.stack([np.histogram(xcPairs[(spPairs==planeIdx) & ic], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']]) for ic in idxClose]
-    
+        
+        # Save these right now
+        self.xcPairs = xcPairs
+        self.pp1 = sp.spatial.distance.squareform(pp1,checks=False)
+        self.pp2 = sp.spatial.distance.squareform(pp2,checks=False)
+        self.npx1 = sp.spatial.distance.squareform(npx1, checks=False)
+        self.npx2 = sp.spatial.distance.squareform(npx2, checks=False)
+        
     def somaDendritePairs(self, onefile=None, corrCutoff=0.1, npixCutoff=25):
         self.onefile = self.onefile if onefile is None else onefile
         
