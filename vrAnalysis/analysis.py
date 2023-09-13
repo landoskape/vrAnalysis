@@ -90,32 +90,102 @@ class sameCellCandidates:
         assert self.numPairs==self.numROIs*(self.numROIs-1)/2, f"math flex failed: numPairs={self.numPairs}, math: {self.numROIs*(self.numROIs-1)/2}"
         self.dataloaded = True
         
-    def scatterForThresholds(self, keepPlanes=None, distanceCutoff=None):
+    def scatterForThresholds(self, keepPlanes=None, distanceCutoff=None, outputFig=False):
         '''Make color-coded scatter plot to visualize potential thresholds for distance and planes'''
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff) # no filtering at the moment
         xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
+        print('hello')
+        
+        randomFilter = np.random.random(xcROIs.shape) < 0.05
+        xcROIs = xcROIs[randomFilter]
+        planePair1 = planePair1[randomFilter]
+        planePair2 = planePair2[randomFilter]
+        pwDist = pwDist[randomFilter]
+        
         # These three categories define a color-code
-        ccode = 'kbr' # same plane, neighboring planes, distance planes
+        ccode = 'kbr' 
         idxSamePlane = planePair1 == planePair2
         idxNeighbor = np.abs(planePair1 - planePair2) == 1
         idxDistant = np.abs(planePair1 - planePair2) > 1
         
         # Put them in an iterable list
-        idxCategory = [idxSamePlane, idxNeighbor, idxDistant] 
+        idxCategory = [idxDistant, idxSamePlane, idxNeighbor] 
         nameCategory = ['same plane', 'neighbor', 'distant']
+        
+        # Plotting parameters
+        maxDist = max(pwDist)
+        xmin, xmax = 0, maxDist
+        ymin, ymax = -1, 1
+        xx,yy = np.mgrid[xmin:xmax:100j, ymin:ymax:100j]
+        positions = np.vstack([xx.ravel(), yy.ravel()])
         
         # Make figures
         plt.close('all')
-        fig = plt.figure()
-        for idx, idxCat in enumerate(idxCategory):
-            plt.scatter(pwDist[idxCat], xcROIs[idxCat], c=ccode[idx], alpha=0.05, label=nameCategory[idx])
+        fig, ax = plt.subplots(1,3,figsize=(13,4))
+        for idx, (a, idxCat, name) in enumerate(zip(ax, idxCategory, nameCategory)):
+            a.scatter(pwDist[idxCat], xcROIs[idxCat], c=ccode[idx], alpha=0.1)
+            a.set_title(f"{name}")
+            
         plt.show()
-        return fig
         
+        if outputFig:
+            return fig
         
+    
+    def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85]):
+        '''Make histogram of number of pairs across specific planes meeting some correlation threshold'''
+        
+        if len(corrCutoff)>1:
+            minCutoff = min(corrCutoff)
+            corrCutoff = sorted(corrCutoff) # make sure it goes from smallest to highest cutoff
+        else:
+            if not(type(corrCutoff)==list): corrCutoff = [corrCutoff]
+            minCutoff = corrCutoff[0]
+            
+        # filter pairs based on optional cutoffs and plane indices (and more...)
+        pairIdx = self.getPairFilter(corrCutoff=minCutoff) # no filtering at the moment
+        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
+        
+        # get full list of possible plane/plane pair names
+        ppStr = [str(int(p1))+str(int(p2)) for (p1,p2) in zip(planePair1, planePair2)]
+        ppUniq = np.unique(ppStr) 
+        
+        ppCounts = []
+        for cc in corrCutoff:
+            # get idx of current correlation cutoff
+            cidx = xcROIs > cc
+            # make string pair name for planePair indices within this cutoff
+            cppstr = np.array([str(int(p1))+str(int(p2)) for (p1,p2) in zip(planePair1[cidx], planePair2[cidx])])
+            # append counts to list
+            ppCounts.append(np.array([sum(cppstr==puniq) for puniq in ppUniq]))
+        
+        # Create colormap for each cutoff
+        cmap = helpers.ncmap('plasma', 0, len(corrCutoff)-1)
+        
+        # # Get indices of pairs from specific combinations of planes
+        # idx23 = (planePair1==2) & (planePair2==3)
+        # idx34 = (planePair1==3) & (planePair2==4)
+        # print(f"23 counts: {np.sum(idx23)}")
+        # print(f"34 counts: {np.sum(idx34)}")
+        # xc_23 = xcROIs[idx23]
+        # xc_34 = xcROIs[idx34]
+        # npix1High_23 = npixPair1[idx23]
+        # npix2High_23 = npixPair2[idx23]
+        # npix1High_34 = npixPair1[idx34]
+        # npix2High_34 = npixPair2[idx34]
+        
+        fig = plt.figure()
+        for idx, ppc in enumerate(ppCounts):
+            plt.bar(x=range(len(ppUniq)), height=ppc, color=cmap(idx), tick_label=ppUniq, label=f"Corr > {corrCutoff[idx]}")
+        plt.xlabel('Plane Indices of Pair')
+        plt.ylabel('Counts')
+        plt.title('Filtering for pair correlations')
+        plt.legend()
+        plt.show();
+
     def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
         '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
         
