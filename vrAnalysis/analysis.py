@@ -41,7 +41,7 @@ class sameCellCandidates:
             p2 = sp.spatial.distance.squareform(p2, checks=False)
         return p1, p2
     
-    def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None):
+    def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None, distanceCutoff=None):
         assert self.dataloaded, "data is not loaded yet, use 'run()' to get key datapoints"
         pairIdx = np.full(self.numPairs, True)
         if npixCutoff is not None:
@@ -53,6 +53,8 @@ class sameCellCandidates:
             pairIdx &= np.isin(self.planePair2, keepPlanes)
         if corrCutoff is not None:
             pairIdx &= self.xcROIs > corrCutoff
+        if distanceCutoff is not None:
+            pairIdx &= self.pwDist < distanceCutoff
         return pairIdx
     
     def filterPairs(self, pairIdx):
@@ -87,6 +89,32 @@ class sameCellCandidates:
         self.numPairs = len(self.xcROIs)
         assert self.numPairs==self.numROIs*(self.numROIs-1)/2, f"math flex failed: numPairs={self.numPairs}, math: {self.numROIs*(self.numROIs-1)/2}"
         self.dataloaded = True
+        
+    def scatterForThresholds(self, keepPlanes=None, distanceCutoff=None):
+        '''Make color-coded scatter plot to visualize potential thresholds for distance and planes'''
+        
+        # filter pairs based on optional cutoffs and plane indices (and more...)
+        pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff) # no filtering at the moment
+        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
+        
+        # These three categories define a color-code
+        ccode = 'kbr' # same plane, neighboring planes, distance planes
+        idxSamePlane = planePair1 == planePair2
+        idxNeighbor = np.abs(planePair1 - planePair2) == 1
+        idxDistant = np.abs(planePair1 - planePair2) > 1
+        
+        # Put them in an iterable list
+        idxCategory = [idxSamePlane, idxNeighbor, idxDistant] 
+        nameCategory = ['same plane', 'neighbor', 'distant']
+        
+        # Make figures
+        plt.close('all')
+        fig = plt.figure()
+        for idx, idxCat in enumerate(idxCategory):
+            plt.scatter(pwDist[idxCat], xcROIs[idxCat], c=ccode[idx], alpha=0.05, label=nameCategory[idx])
+        plt.show()
+        return fig
+        
         
     def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
         '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
@@ -146,7 +174,6 @@ class sameCellCandidates:
     
     
     def somaDendritePairs(self, corrCutoff=0.1, npixCutoff=25):
-        
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(npixCutoff=npixCutoff, corrCutoff=corrCutoff)
         xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
