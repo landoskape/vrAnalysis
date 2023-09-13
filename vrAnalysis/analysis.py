@@ -27,138 +27,111 @@ class sameCellCandidates:
         self.barWidth = np.diff(self.binEdges[:2])
         
         # automatically do measurements
+        self.dataloaded = False
         if autorun: self.run()
     
-    def run(self, onefile=None, npixCutoff=25, keepPlanes=None):
-        self.onefile = self.onefile if onefile is None else onefile
-        
-        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')]) # get number of pixels for each ROI
-        idxNPIX = npix > npixCutoff
-        
-        # Analyze cross-plane possibilities
-        data = self.vrexp.loadone(self.onefile)
-        stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
-        roiPlaneIdx = stackPosition[:,2]
-        xyPos = stackPosition[:,0:2] * 1.3 # convert to um (assume it's always the same at B2...)
-
+    def pairValFromVec(self, vector, squareform=True):
+        '''Convert vector to pair values, optionally perform squareform without checks'''
+        assert isinstance(vector, np.ndarray) and vector.ndim==1, "vector must be 1d numpy array"
+        N = len(vector)
+        p1 = vector.reshape(-1,1).repeat(N,axis=1)
+        p2 = vector.reshape(1,-1).repeat(N,axis=0)
+        if squareform:
+            p1 = sp.spatial.distance.squareform(p1, checks=False)
+            p2 = sp.spatial.distance.squareform(p2, checks=False)
+        return p1, p2
+    
+    def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None):
+        assert self.dataloaded, "data is not loaded yet, use 'run()' to get key datapoints"
+        pairIdx = np.full(self.numPairs, True)
+        if npixCutoff is not None:
+            # remove pairs from index if they don't pass the cutoff
+            pairIdx &= self.npixPair1 > npixCutoff
+            pairIdx &= self.npixPair2 > npixCutoff
         if keepPlanes is not None:
-            idxKeepPlanes = np.isin(roiPlaneIdx, keepPlanes)
-        else:
-            idxKeepPlanes = np.full(idxNPIX.shape, True)
+            pairIdx &= np.isin(self.planePair1, keepPlanes)
+            pairIdx &= np.isin(self.planePair2, keepPlanes)
+        if corrCutoff is not None:
+            pairIdx &= self.xcROIs > corrCutoff
+        return pairIdx
+    
+    def filterPairs(self, pairIdx):
+        xcROIs = self.xcROIs[pairIdx]
+        pwDist = self.pwDist[pairIdx]
+        planePair1, planePair2 = self.planePair1[pairIdx], self.planePair2[pairIdx]
+        npixPair1, npixPair2 = self.npixPair1[pairIdx], self.npixPair2[pairIdx]
+        xposPair1, xposPair2 = self.xposPair1[pairIdx], self.xposPair2[pairIdx]
+        yposPair1, yposPair2 = self.yposPair1[pairIdx], self.yposPair2[pairIdx]
+        return xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2
+    
+    def run(self, onefile=None):
+        '''load standard data for measuring same cell candidate'''
+        # update onefile if using a different measure of activity
+        self.onefile = self.onefile if onefile is None else onefile
+        self.numROIs = sum(self.vrexp.value['roiPerPlane'])
         
-        # Filter ROIs 
-        idxROIsToUse = idxKeepPlanes & idxNPIX
+        # get relevant data
+        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')]).astype(np.int32) # roi size (in pixels of mask)
+        data = self.vrexp.loadone(self.onefile) # activity array
+        stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
+        roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
+        xyPos = stackPosition[:,0:2] * 1.3 # xy position to um
         
-        data = data[:, idxROIsToUse]
-        roiPlaneIdx = roiPlaneIdx[idxROIsToUse]
-        xyPos = xyPos[idxROIsToUse]
+        # comparisons
+        self.xcROIs = sp.spatial.distance.squareform(np.corrcoef(data.T), checks=False)
+        self.pwDist = sp.spatial.distance.pdist(xyPos)
+        self.planePair1, self.planePair2 = self.pairValFromVec(roiPlaneIdx, squareform=True)
+        self.npixPair1, self.npixPair2 = self.pairValFromVec(npix, squareform=True)
+        self.xposPair1, self.xposPair2 = self.pairValFromVec(xyPos[:,0], squareform=True)
+        self.yposPair1, self.yposPair2 = self.pairValFromVec(xyPos[:,1], squareform=True)
+        self.numPairs = len(self.xcROIs)
+        assert self.numPairs==self.numROIs*(self.numROIs-1)/2, f"math flex failed: numPairs={self.numPairs}, math: {self.numROIs*(self.numROIs-1)/2}"
+        self.dataloaded = True
         
-        # Get correlation coefficients
-        xcROIs = np.corrcoef(data.T)
-
-        # Get index of plane if in same plane (-1 otherwise)
-        samePlaneIdx=(roiPlaneIdx.reshape(-1,1)==roiPlaneIdx.reshape(1,-1))
-        planePair = roiPlaneIdx * samePlaneIdx
-        planePair[~samePlaneIdx]=-1
+    def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
+        '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
         
-        # Get pair ID of plane-plane comparison
-        pp1 = roiPlaneIdx.astype(np.int32).reshape(-1,1).repeat(len(roiPlaneIdx),axis=1)
-        pp2 = roiPlaneIdx.astype(np.int32).reshape(1,-1).repeat(len(roiPlaneIdx),axis=0)
+        # default parameter
+        thresholds = thresholds if thresholds is not None else self.thresholds
         
-        # Get pair npix size within comparisons
-        npx1 = npix.astype(np.int32).reshape(-1,1).repeat(len(npix),axis=1)
-        npx2 = npix.astype(np.int32).reshape(1,-1).repeat(len(npix),axis=0)
+        # filter pairs based on optional cutoffs and plane indices (and more...)
+        pairIdx = self.getPairFilter(npixCutoff=npixCutoff, keepPlanes=keepPlanes)
+        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
-        # Convert to vector representation
-        xcPairs = sp.spatial.distance.squareform(xcROIs, checks=False)
-        spPairs = sp.spatial.distance.squareform(planePair, checks=False)
+        # same plane information
+        samePlaneIdx = planePair1 == planePair2 # boolean for same plane pairs
+        planePair = planePair1 * samePlaneIdx # plane for same plane pairs
+        planePair[~samePlaneIdx] = -1 # set plane to -1 for any pairs not in the same plane
         
-        # Measure spatial distance between ROI centroids
-        pwDistance = sp.spatial.distance.pdist(xyPos)
-
         # Get index of ROIs within a certain distance from each other
-        idxClose = [pwDistance < th for th in self.thresholds]
-
+        idxClose = [pwDist < th for th in self.thresholds]
+        
         # Do it for all data
-        self.fullCounts = np.histogram(xcPairs, bins=self.binEdges)[0]
-        self.closeCounts = [np.histogram(xcPairs[ic], bins=self.binEdges)[0] for ic in idxClose]
+        fullCounts = np.histogram(xcROIs, bins=self.binEdges)[0]
+        closeCounts = [np.histogram(xcROIs[ic], bins=self.binEdges)[0] for ic in idxClose]
 
         # Then do it for each plane individually
-        self.fcPlane = np.stack([np.histogram(xcPairs[spPairs==planeIdx], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']])
-        self.ccPlane = [np.stack([np.histogram(xcPairs[(spPairs==planeIdx) & ic], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']]) for ic in idxClose]
+        fcPlane = np.stack([np.histogram(xcROIs[planePair==planeIdx], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']])
+        ccPlane = [np.stack([np.histogram(xcROIs[(planePair==planeIdx) & ic], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']]) for ic in idxClose]
         
-        # Save these right now
-        self.xcPairs = xcPairs
-        self.pp1 = sp.spatial.distance.squareform(pp1,checks=False)
-        self.pp2 = sp.spatial.distance.squareform(pp2,checks=False)
-        self.npx1 = sp.spatial.distance.squareform(npx1, checks=False)
-        self.npx2 = sp.spatial.distance.squareform(npx2, checks=False)
-        
-    def somaDendritePairs(self, onefile=None, corrCutoff=0.1, npixCutoff=25):
-        self.onefile = self.onefile if onefile is None else onefile
-        
-        # Analyze cross-plane possibilities
-        data = self.vrexp.loadone(self.onefile)
-        stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
-        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')]) # get number of pixels for each ROI
-        roiPlaneIdx = stackPosition[:,2]
-        xyPos = stackPosition[:,0:2] * 1.3 # convert to um (assume it's always the same at B2...)
-
-        # Get correlation coefficients
-        xcROIs = np.corrcoef(data.T)
-        
-        planeDifference = roiPlaneIdx.reshape(-1,1) - roiPlaneIdx.reshape(1,-1)
-        roiSizeDifference = npix.reshape(-1,1) - npix.reshape(1,-1)
-        
-        # Convert to vector representation
-        xcPairs = sp.spatial.distance.squareform(xcROIs, checks=False)
-        pdiffPairs = sp.spatial.distance.squareform(planeDifference, checks=False)
-        rsdiffPairs = sp.spatial.distance.squareform(roiSizeDifference, checks=False)
-        
-        # Measure spatial distance between ROI centroids
-        pwDistance = sp.spatial.distance.pdist(xyPos)
-        
-        # filter to pairs that exceed a certain correlation coefficient
-        idxCorrelated = xcPairs > corrCutoff 
-        xcCorr = xcPairs[idxCorrelated]
-        planeDiffCorr = pdiffPairs[idxCorrelated]
-        roiSizeDiffCorr = rsdiffPairs[idxCorrelated]
-        
-        # And plot some results
+        # now plot data
         plt.close('all')
-        
-        fig,ax = plt.subplots(1,4,figsize=(16,4))
-        ax[0].scatter(planeDiffCorr, xcCorr, c='k', alpha=0.3)
-        ax[0].set_xlabel('planediff')
-        ax[0].set_ylabel('cross-corr')
-        
-        ax[1].scatter(planeDiffCorr, roiSizeDiffCorr, c='k', alpha=0.3)
-        ax[1].set_xlabel('planediff')
-        ax[1].set_ylabel('roiSize diff')
-        
-        ax[2].scatter(roiSizeDiffCorr, xcCorr, c='k', alpha=0.3)
-        ax[2].set_xlabel('roiSize diff')
-        ax[2].set_ylabel('cross-corr')
-        
-        plt.show()
-        
-    def plotSession(self, withSave=False):
         cmap = helpers.ncmap('winter', 0, len(self.thresholds)-1)
         fig,ax = plt.subplots(1,2,figsize=(12,4))
         
         # Plot histograms for full count
-        ax[0].bar(self.binCenters, self.fullCounts, width=self.barWidth, color='k', alpha=1, label='full distribution')
-        for idx, counts in enumerate(self.closeCounts):
-            ax[0].bar(self.binCenters, counts, width=self.barWidth, color=cmap(idx), alpha=0.4, label=f"Threshold: {self.thresholds[idx]}")
+        ax[0].bar(self.binCenters, fullCounts, width=self.barWidth, color='k', alpha=1, label='full distribution')
+        for idx, counts in enumerate(closeCounts):
+            ax[0].bar(self.binCenters, counts, width=self.barWidth, color=cmap(idx), alpha=0.4, label=f"Threshold: {thresholds[idx]}")
         ax[0].set_yscale('log')
         ax[0].set_xlabel('correlation')
         ax[0].set_ylabel('counts')
         ax[0].legend(loc='upper left')
         ax[0].set_title(f"All pairs across planes - {self.onefile}")
         
-        ax[1].bar(self.binCenters, np.nanmean(self.fcPlane,axis=0), width=self.barWidth, alpha=1, color='k', label='full (each plane)')
-        for idx, counts in enumerate(self.ccPlane):
-            ax[1].bar(self.binCenters, np.nanmean(counts,axis=0), width=self.barWidth, alpha=0.4, color=cmap(idx), label=f"Threshold: {self.thresholds[idx]}")
+        ax[1].bar(self.binCenters, np.nanmean(fcPlane,axis=0), width=self.barWidth, alpha=1, color='k', label='full (each plane)')
+        for idx, counts in enumerate(ccPlane):
+            ax[1].bar(self.binCenters, np.nanmean(counts,axis=0), width=self.barWidth, alpha=0.4, color=cmap(idx), label=f"Threshold: {thresholds[idx]}")
         ax[1].set_yscale('log')
         ax[1].set_xlabel('correlation')
         ax[1].set_ylabel('counts')
@@ -166,9 +139,39 @@ class sameCellCandidates:
         ax[1].set_title("Average within-plane distribution")
         
         if withSave:
-            print(str(self.vrexp))
+            print(f"Saving histogram figure for session: {self.vrexp.sessionPrint()}")
             plt.savefig(self.saveDirectory() / str(self.vrexp))
             
+        return fig, ax
+    
+    
+    def somaDendritePairs(self, corrCutoff=0.1, npixCutoff=25):
+        
+        # filter pairs based on optional cutoffs and plane indices (and more...)
+        pairIdx = self.getPairFilter(npixCutoff=npixCutoff, corrCutoff=corrCutoff)
+        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
+        
+        planeDifference = planePair1 - planePair2
+        sizeDifference = npixPair1 - npixPair2
+        
+        # And plot some results
+        plt.close('all')
+        
+        fig,ax = plt.subplots(1,4,figsize=(16,4))
+        ax[0].scatter(planeDifference, xcROIs, c='k', alpha=0.3)
+        ax[0].set_xlabel('planediff')
+        ax[0].set_ylabel('cross-corr')
+        
+        ax[1].scatter(planeDifference, sizeDifference, c='k', alpha=0.3)
+        ax[1].set_xlabel('planediff')
+        ax[1].set_ylabel('roiSize diff')
+        
+        ax[2].scatter(sizeDifference, xcROIs, c='k', alpha=0.3)
+        ax[2].set_xlabel('roiSize diff')
+        ax[2].set_ylabel('cross-corr')
+        
+        plt.show()
+        
         return fig, ax
         
     def saveDirectory(self):
