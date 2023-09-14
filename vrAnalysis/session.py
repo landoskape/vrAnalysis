@@ -681,12 +681,15 @@ class vrRegistration(vrExperiment):
         self.tlFile = scio.loadmat(tlFileName,simplify_cells=True)['Timeline'] # load matlab structure
     
     def timelineInputs(self, ignoreTimestamps=False):
-        if not hasattr(self, 'tlFile'): self.tlFile = self.loadTimelineStructure()
+        if not hasattr(self, 'tlFile'): 
+            self.loadTimelineStructure()
         hwInputs = [hwInput['name'] for hwInput in self.tlFile['hw']['inputs']]
         if ignoreTimestamps: return hwInputs
         return ['timestamps', *hwInputs]
         
     def getTimelineVar(self, varName):
+        if not hasattr(self, 'tlFile'): 
+            self.loadTimelineStructure()
         if varName=='timestamps': 
             return self.tlFile['rawDAQTimestamps']
         else:
