@@ -4,6 +4,9 @@ import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib
 
+import pandas as pd
+
+from . import session
 from . import helpers
 from . import fileManagement as fm
 
@@ -132,7 +135,7 @@ class sameCellCandidates:
             return fig
         
     
-    def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85]):
+    def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None):
         '''Make histogram of number of pairs across specific planes meeting some correlation threshold'''
         
         if len(corrCutoff)>1:
@@ -143,7 +146,7 @@ class sameCellCandidates:
             minCutoff = corrCutoff[0]
             
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(corrCutoff=minCutoff) # no filtering at the moment
+        pairIdx = self.getPairFilter(corrCutoff=minCutoff, distanceCutoff=distanceCutoff) # no filtering at the moment
         xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
         # get full list of possible plane/plane pair names
@@ -161,27 +164,21 @@ class sameCellCandidates:
         
         # Create colormap for each cutoff
         cmap = helpers.ncmap('plasma', 0, len(corrCutoff)-1)
-        
-        # # Get indices of pairs from specific combinations of planes
-        # idx23 = (planePair1==2) & (planePair2==3)
-        # idx34 = (planePair1==3) & (planePair2==4)
-        # print(f"23 counts: {np.sum(idx23)}")
-        # print(f"34 counts: {np.sum(idx34)}")
-        # xc_23 = xcROIs[idx23]
-        # xc_34 = xcROIs[idx34]
-        # npix1High_23 = npixPair1[idx23]
-        # npix2High_23 = npixPair2[idx23]
-        # npix1High_34 = npixPair1[idx34]
-        # npix2High_34 = npixPair2[idx34]
-        
+
+        # Make plot
         fig = plt.figure()
         for idx, ppc in enumerate(ppCounts):
             plt.bar(x=range(len(ppUniq)), height=ppc, color=cmap(idx), tick_label=ppUniq, label=f"Corr > {corrCutoff[idx]}")
         plt.xlabel('Plane Indices of Pair')
         plt.ylabel('Counts')
-        plt.title('Filtering for pair correlations')
-        plt.legend()
+        title = 'Pairs exceeding correlation'
+        if distanceCutoff is not None:
+            title += f' (distance < {distanceCutoff})'
+        plt.title(title)
+        plt.legend(loc='best')
+        plt.rcParams.update({'font.size': 12})
         plt.show();
+        
 
     def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
         '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
@@ -274,7 +271,90 @@ class sameCellCandidates:
         if not(dirName.is_dir()): dirName.mkdir(parents=True)
         return dirName
     
-        
-        
+
+
+class piezoConsistency:
+    '''Analysis class for analyzing the piezo consistency'''
+    def __init__(self, vrreg):
+        assert isinstance(vrreg, session.vrRegistration), "input must be a vrRegistration object"
+        self.vrreg = vrreg
+        self.timestamps = self.vrreg.getTimelineVar('timestamps')
+        self.piezoCommand = self.vrreg.getTimelineVar('piezoCommand')
+        self.piezoPosition = self.vrreg.getTimelineVar('piezoPosition')
+        self.neuralFrames = self.vrreg.getTimelineVar('neuralFrames')
+        self.changeFrames = np.append(0, np.diff(np.ceil(self.neuralFrames/len(self.vrreg.value['planeIDs']))))==1
+        self.frameSamples = np.where(self.changeFrames)[0]
+        self.changePlanes = np.append(0, np.diff(self.neuralFrames))==1
+        self.planeSamples = np.where(self.changePlanes)[0]
     
+    def checkFrameTiming(self, verbose=True, force=False):
+        '''Reports the number of samples per frame and plane, and the number of instances
+        If frame timing is consistent, then there should be only a few possibilities for samples per frame/plane, 
+        and the instances of each number of samples should be well distributed.'''
+        if force or not(hasattr(self, 'samplePerFrame') and hasattr(self, 'samplePerPlane')):
+            self.samplePerFrame, self.sampleEachFrame, self.frameCounts = np.unique(np.diff(self.frameSamples), return_counts=True, return_inverse=True)
+            self.samplePerPlane, self.sampleEachPlane, self.planeCounts = np.unique(np.diff(self.planeSamples), return_counts=True, return_inverse=True)
+        if verbose:
+            print(pd.DataFrame({'Samples Per Frame':self.samplePerFrame, 'Instances':self.frameCounts}))
+            print(pd.DataFrame({'Samples Per Plane':self.samplePerPlane, 'Instances':self.planeCounts}))
+        
+    def plotAveragePiezo(self, extend=0.1, withSave=False, withShow=True):
+        '''Make plot of average piezo command and position for each frame (and return data).
+        Extend allows you to see before and after the frame by a proportion of the frame duration'''
+        assert 0<=extend<1, "extend must be within [0,1)"
+        if not(hasattr(self, 'samplePerFrame') and hasattr(self, 'samplePerPlane')):
+            self.checkFrameTiming(verbose=False)
+        cycleSamples = min(self.samplePerFrame) # number of samples to use for each frame cycle
+        extendSamples = int(cycleSamples*extend) # number of samples to extend window before and after each frame cycle
+        numCycles = len(self.frameSamples)-1 # number of cycles to plot
+        # Create an index for each cycle
+        idx = np.full(self.timestamps.shape, True) # initialize cycle index
+        idx[:self.frameSamples[0]]=False # remove any samples before first frame
+        idx[self.frameSamples[-1]:]=False # remove any samples after last frame
+        # Then remove any samples at the end of a frame cycle that are longer than the minimum
+        for fs, sef in zip(self.frameSamples, self.sampleEachFrame):
+            idx[fs+cycleSamples:fs+self.samplePerFrame[sef]]=False
+        # Now create a new index for the precycle component
+        preidx = np.full(self.timestamps.shape, False) # 
+        for fs in self.frameSamples[:-1]:
+            preidx[fs-extendSamples:fs]=True
+        # End by getting each full cycle in stack
+        preCycle = self.piezoPosition[preidx].reshape(numCycles, extendSamples)
+        eachCycle = self.piezoPosition[idx].reshape(numCycles, cycleSamples)
+        postCycle = eachCycle[:,:extendSamples]
+        fullCycle = helpers.scale(np.hstack((preCycle, eachCycle, postCycle)))
+
+        # And finally make time series for the cycle
+        dt = np.median(np.diff(self.timestamps))
+        timeCycle = np.arange(-extendSamples, cycleSamples+extendSamples) * dt
+        planeTimes = 1000*np.linspace(0, cycleSamples*dt, len(self.vrreg.value['planeNames'])+1)[:-1]
+        cmap = helpers.ncmap('brg',vmin=0,vmax=len(planeTimes)-1) 
+
+        # plot it
+        plt.close('all')
+        for ii,pt in enumerate(planeTimes):
+            plt.axvline(x=pt, c=cmap(ii), label=f"plane{ii}")
+        plt.axvline(x=1000*cycleSamples*dt, c='k')
+        helpers.errorPlot(timeCycle*1000, fullCycle, axis=0, color='k', alpha=0.5)
+        plt.xlabel('Time (ms)')
+        plt.ylabel('Piezo Position (au)')
+        plt.title('Piezo Position Over 1 Cycle')
+        plt.legend(loc='lower right')
+        
+        if withSave:
+            print(f"Saving piezo figure for session: {self.vrreg.sessionPrint()}")
+            plt.savefig(self.saveDirectory() / str(self.vrreg))
+        
+        if withShow:
+            plt.show()
+        else:
+            plt.close()
+            
+        # return data
+        return timeCycle, fullCycle
     
+    def saveDirectory(self):
+        # Define and create target directory
+        dirName = analysisDirectory / 'piezoConsistency'
+        if not(dirName.is_dir()): dirName.mkdir(parents=True)
+        return dirName
