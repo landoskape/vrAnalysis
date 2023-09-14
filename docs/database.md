@@ -10,7 +10,7 @@ This section contains codeblocks explaining how to use the database. Note that
 it's designed so it's easy to copy code when previewed on GitHub, so I suggest
 checking it out there:
 
-https://github.com/landoskape/vrAnalysis/tree/main/vrAnalysis/database.md
+https://github.com/landoskape/vrAnalysis/tree/main/docs/database.md
 
 ### Importing the database and creating a connection
 The database module is part of the vrAnalysis package. Import as follows and
