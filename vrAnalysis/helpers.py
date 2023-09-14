@@ -20,7 +20,10 @@ def errorPlot(x, data, axis=-1, se=False, ax=None, **kwargs):
     meanData = np.mean(data,axis=axis)
     correction = data.shape[axis] if se else 1
     errorData = np.std(data,axis=axis)/correction
-    ax.fill_between(x, meanData+errorData, meanData-errorData, **kwargs)
+    fillBetweenArgs = kwargs.copy()
+    fillBetweenArgs.pop('label')
+    ax.fill_between(x, meanData+errorData, meanData-errorData, **fillBetweenArgs)
+    kwargs.pop('alpha')
     ax.plot(x, meanData, **kwargs)
     
 def ncmap(name='Spectral', vmin=0., vmax=1.):

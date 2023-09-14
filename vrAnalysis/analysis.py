@@ -274,7 +274,23 @@ class sameCellCandidates:
 
 
 class piezoConsistency:
-    '''Analysis class for analyzing the piezo consistency'''
+    '''
+    Analysis class for analyzing the piezo consistency
+    
+    Measures average +/- std piezo position (& command) and plots it with the plane times overlaid
+    
+    Standard usage: 
+    ---------------
+    vrdb = database.vrDatabase() # get database object
+    for ses in vrdb.iterSessions(imaging=True): 
+        # go through each session with imaging data and make a plot of the average piezo
+        pconst = analysis.piezoConsistency(session.vrRegistration(ses))
+        # you can save or show the plot as you wish
+        pconst.plotAveragePiezo(withSave=True, withShow=False);
+    
+    # This prints the distribution of frame/plane timing, which needs to be consistent for this analysis to work
+    pconst.checkFrameTiming(verbose=True)
+    '''
     def __init__(self, vrreg):
         assert isinstance(vrreg, session.vrRegistration), "input must be a vrRegistration object"
         self.vrreg = vrreg
@@ -323,7 +339,12 @@ class piezoConsistency:
         eachCycle = self.piezoPosition[idx].reshape(numCycles, cycleSamples)
         postCycle = eachCycle[:,:extendSamples]
         fullCycle = helpers.scale(np.hstack((preCycle, eachCycle, postCycle)))
-
+        
+        preCommand = self.piezoCommand[preidx].reshape(numCycles, extendSamples)
+        eachCommand = self.piezoCommand[idx].reshape(numCycles, cycleSamples)
+        postCommand = eachCommand[:,:extendSamples]
+        fullCommand = helpers.scale(np.hstack((preCommand, eachCommand, postCommand)))
+        
         # And finally make time series for the cycle
         dt = np.median(np.diff(self.timestamps))
         timeCycle = np.arange(-extendSamples, cycleSamples+extendSamples) * dt
@@ -335,20 +356,19 @@ class piezoConsistency:
         for ii,pt in enumerate(planeTimes):
             plt.axvline(x=pt, c=cmap(ii), label=f"plane{ii}")
         plt.axvline(x=1000*cycleSamples*dt, c='k')
-        helpers.errorPlot(timeCycle*1000, fullCycle, axis=0, color='k', alpha=0.5)
+        helpers.errorPlot(timeCycle*1000, fullCycle, axis=0, color='b', alpha=0.5, label='position')
+        plt.plot(timeCycle*1000, np.mean(fullCommand,axis=0), color='k', linestyle='--', label='command')
         plt.xlabel('Time (ms)')
-        plt.ylabel('Piezo Position (au)')
-        plt.title('Piezo Position Over 1 Cycle')
+        plt.ylabel('Piezo (au)')
+        plt.title('Piezo Over 1 Cycle')
         plt.legend(loc='lower right')
         
         if withSave:
             print(f"Saving piezo figure for session: {self.vrreg.sessionPrint()}")
             plt.savefig(self.saveDirectory() / str(self.vrreg))
         
-        if withShow:
-            plt.show()
-        else:
-            plt.close()
+        # Show it if requested, otherwise keep pyplot clean by closing it
+        plt.show() if withShow else plt.close()
             
         # return data
         return timeCycle, fullCycle
