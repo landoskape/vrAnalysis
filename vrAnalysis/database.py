@@ -272,6 +272,14 @@ class vrDatabase:
             raise ValueError(f"Multiple sessions found under: {mouseName}/{sessionDate}/{sessionID}")
         return record.iloc[0]
     
+    def iterSessions(self, ignoreScratched=True, **kwConditions):
+        """Creates list of sessions that can be iterated through"""
+        df = self.getTable(ignoreScratched=ignoreScratched, **kwConditions)
+        ises = []
+        for idx, row in df.iterrows():
+            ises.append(self.vrExperiment(row))
+        return ises
+    
     # == visualization ==
     def printSessions(self, ignoreScratched=True, **kwConditions):
         """
