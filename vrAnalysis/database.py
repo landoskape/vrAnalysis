@@ -154,6 +154,27 @@ class vrDatabase:
             cursor.close()
             conn.close()
     
+    # == methods for adding records and updating information to the database ==
+    def createUpdateStatement(self, field, uid):
+        """to update a single field with a value for a particular session defined by the uSessionID
+        
+        Example
+        -------
+        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>>     cursor.execute(self.createUpdateManyStatement(<field>, <uid>), <val>)
+        """
+        return f"UPDATE {self.tableName} set {field} = ? WHERE uSessionID = {uid}"
+    
+    def createUpdateManyStatement(self, field):
+        """to update a single field many times where the value for each uSessionID is provided as a list to cursor.executemany()
+        
+        Example
+        -------
+        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
+        """
+        return f"UPDATE {self.tableName} set {field} = ? where uSessionID = ?"
+    
     # == vrExperiment related methods ==
     def sessionName(self, row):
         mouseName = row['mouseName']
@@ -292,8 +313,8 @@ class vrDatabase:
             print(self.vrSession(row).sessionPrint())
     
     # == helper functions for figuring out what needs work ==
-    def needsRegistration(self, skipErrors=True): 
-        df = self.getTable()
+    def needsRegistration(self, skipErrors=True, **kwargs): 
+        df = self.getTable(**kwargs)
         if skipErrors: df = df[df['vrRegistrationError']==False]
         return df[df['vrRegistration']==False]
     
@@ -333,27 +354,36 @@ class vrDatabase:
                     mouseName, sessionDate, sessionID = self.sessionName(row)
                     fm.s2pTargets(mouseName, sessionDate, sessionID)
                     print("")
-      
-    # == methods for adding records and updating information to the database ==
-    def createUpdateStatement(self, field, uid):
-        """to update a single field with a value for a particular session defined by the uSessionID
-        
-        Example
-        -------
-        >>> with self.openCursor(commitChanges=True) as cursor:
-        >>>     cursor.execute(self.createUpdateManyStatement(<field>, <uid>), <val>)
-        """
-        return f"UPDATE {self.tableName} set {field} = ? WHERE uSessionID = {uid}"
     
-    def createUpdateManyStatement(self, field):
-        """to update a single field many times where the value for each uSessionID is provided as a list to cursor.executemany()
+    def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
+        df = self.getTable()
         
-        Example
-        -------
-        >>> with self.openCursor(commitChanges=True) as cursor:
-        >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
-        """
-        return f"UPDATE {self.tableName} set {field} = ? where uSessionID = ?"
+        # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
+        check_s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
+        checked_notDone = check_s2pDone.apply(lambda row: not(self.vrSession(row).suite2pPath().exists()), axis=1)
+        notActuallyDone = check_s2pDone[checked_notDone]
+        
+        # return dataframe of sessions with imaging where suite2p was done, even though the database thinks it wasn't
+        check_s2pNeed = df[(df['imaging']==True) & (df['suite2p']==False)]
+        checked_notNeed = check_s2pNeed.apply(lambda row: self.vrSession(row).suite2pPath().exists(), axis=1)
+        notActuallyNeed = check_s2pNeed[checked_notNeed]
+        
+        # Print database errors to workspace
+        for idx, row in notActuallyDone.iterrows(): print(f"Database said suite2p has been ran, but it actually hasn't: {self.vrSession(row).sessionPrint()}")
+        for idx, row in notActuallyNeed.iterrows(): print(f"Database said suite2p didn't run, but it already did: {self.vrSession(row).sessionPrint()}")
+        
+        # If withDatabaseUpdate==True, then correct the database
+        if withDatabaseUpdate: 
+            for idx, row in notActuallyDone.iterrows():
+                with self.openCursor(commitChanges=True) as cursor:
+                    cursor.execute(self.createUpdateStatement('suite2p',row['uSessionID']),False)
+                    
+            for idx, row in notActuallyNeed.iterrows():
+                with self.openCursor(commitChanges=True) as cursor:
+                    cursor.execute(self.createUpdateStatement('suite2p',row['uSessionID']),True)
+                    
+        # If returnCheck is requested, return True if any records were invalid
+        if returnCheck: return checked_notDone.any() or checked_notNeed.any()
     
     def addRecord(self):
         raise ValueError("Not coded yet!")
@@ -446,8 +476,8 @@ class vrDatabase:
                       f"Averaging: {helpers.readableBytes(totalOneData/countSessions)} / session. "
                       f"Estimate remaining: {helpers.readableBytes(totalOneData/countSessions*estimateRemaining)}")
     
-    def printRegistrationErrors(self):
-        df = self.getTable()
+    def printRegistrationErrors(self, **kwargs):
+        df = self.getTable(**kwargs)
         for idx, row in df[df['vrRegistrationError']==True].iterrows():
             print(f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}")
             
@@ -455,6 +485,8 @@ class vrDatabase:
     def clearOneData(self, **userOpts):
         opts = {}
         opts['clearOne'] = True # clear previous oneData.... yikes, big move dude!
+        
+        raise ValueError('write in a user prompt to make sure they want to go through with this...')
         
         assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
         opts.update(userOpts) # Update default opts with user requests
@@ -480,36 +512,6 @@ class vrDatabase:
                     cursor.execute(self.createUpdateStatement('vrRegistrationDate',row['uSessionID']),None)
             finally: 
                 del vrExpReg
-                
-    def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
-        df = self.getTable()
-        
-        # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
-        check_s2pDone = df[(df['imaging']==True) & (df['suite2p']==True)]
-        checked_notDone = check_s2pDone.apply(lambda row: not(self.vrSession(row).suite2pPath().exists()), axis=1)
-        notActuallyDone = check_s2pDone[checked_notDone]
-        
-        # return dataframe of sessions with imaging where suite2p was done, even though the database thinks it wasn't
-        check_s2pNeed = df[(df['imaging']==True) & (df['suite2p']==False)]
-        checked_notNeed = check_s2pNeed.apply(lambda row: self.vrSession(row).suite2pPath().exists(), axis=1)
-        notActuallyNeed = check_s2pNeed[checked_notNeed]
-        
-        # Print database errors to workspace
-        for idx, row in notActuallyDone.iterrows(): print(f"Database said suite2p has been ran, but it actually hasn't: {self.vrSession(row).sessionPrint()}")
-        for idx, row in notActuallyNeed.iterrows(): print(f"Database said suite2p didn't run, but it already did: {self.vrSession(row).sessionPrint()}")
-        
-        # If withDatabaseUpdate==True, then correct the database
-        if withDatabaseUpdate: 
-            for idx, row in notActuallyDone.iterrows():
-                with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(self.createUpdateStatement('suite2p',row['uSessionID']),False)
-                    
-            for idx, row in notActuallyNeed.iterrows():
-                with self.openCursor(commitChanges=True) as cursor:
-                    cursor.execute(self.createUpdateStatement('suite2p',row['uSessionID']),True)
-                    
-        # If returnCheck is requested, return True if any records were invalid
-        if returnCheck: return checked_notDone.any() or checked_notNeed.any()
                     
 
 class vrDatabaseGrossUpdate(vrDatabase):
