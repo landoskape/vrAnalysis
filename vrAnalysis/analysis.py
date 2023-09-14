@@ -18,6 +18,16 @@ class sameCellCandidates:
     
     Takes as required input a vrexp object. Optional inputs define parameters of analysis, 
     including which activity to run measurement on (could be deconvolvedOasis, or neuropilF, for example).
+    
+    Standard usage:
+    ---------------
+    To make histograms of the number of pairs exceeding a given correlation as a function of which plane
+    each pair is in (and using any other filtering):
+    vrdb = database.vrDatabase() # get database object
+    for ses in vrdb.iterSessions(imaging=True, vrRegistration=True):
+        # go through each session that has been registered and has imaging data
+        scc = analysis.sameCellCandidates(ses)
+        scc.planePairHistograms(corrCutoff=[0.5, 0.6, 0.7, 0.8], distanceCutoff=50, withSave=True, withShow=False)
     '''
     def __init__(self, vrexp, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, onefile='mpci.roiActivityDeconvolvedOasis', autorun=True):
         self.thresholds = thresholds
@@ -98,13 +108,12 @@ class sameCellCandidates:
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff) # no filtering at the moment
-        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
-        randomFilter = np.random.random(xcROIs.shape) < 0.05
-        xcROIs = xcROIs[randomFilter]
-        planePair1 = planePair1[randomFilter]
-        planePair2 = planePair2[randomFilter]
-        pwDist = pwDist[randomFilter]
+        randomFilter = pairIdx & (np.random.random(self.xcROIs.shape) < 0.05)
+        xcROIs = self.xcROIs[randomFilter]
+        planePair1 = self.planePair1[randomFilter]
+        planePair2 = self.planePair2[randomFilter]
+        pwDist = self.pwDist[randomFilter]
         
         # Plane relationship categories
         idxSamePlane = planePair1 == planePair2
@@ -131,11 +140,9 @@ class sameCellCandidates:
             
         plt.show()
         
-        if outputFig:
-            return fig
-        
+        if outputFig: return fig
     
-    def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None):
+    def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None, withSave=False, withShow=True):
         '''Make histogram of number of pairs across specific planes meeting some correlation threshold'''
         
         if len(corrCutoff)>1:
@@ -147,18 +154,17 @@ class sameCellCandidates:
             
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(corrCutoff=minCutoff, distanceCutoff=distanceCutoff) # no filtering at the moment
-        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
         # get full list of possible plane/plane pair names
-        ppStr = [str(int(p1))+str(int(p2)) for (p1,p2) in zip(planePair1, planePair2)]
+        ppStr = [str(int(p1))+str(int(p2)) for (p1,p2) in zip(self.planePair1[pairIdx], self.planePair2[pairIdx])]
         ppUniq = np.unique(ppStr) 
         
         ppCounts = []
         for cc in corrCutoff:
             # get idx of current correlation cutoff
-            cidx = xcROIs > cc
+            cidx = self.xcROIs > cc
             # make string pair name for planePair indices within this cutoff
-            cppstr = np.array([str(int(p1))+str(int(p2)) for (p1,p2) in zip(planePair1[cidx], planePair2[cidx])])
+            cppstr = np.array([str(int(p1))+str(int(p2)) for (p1,p2) in zip(self.planePair1[pairIdx & cidx], self.planePair2[pairIdx & cidx])])
             # append counts to list
             ppCounts.append(np.array([sum(cppstr==puniq) for puniq in ppUniq]))
         
@@ -177,7 +183,12 @@ class sameCellCandidates:
         plt.title(title)
         plt.legend(loc='best')
         plt.rcParams.update({'font.size': 12})
-        plt.show();
+        
+        if withSave:
+            print(f"Saving plane pair histograms for session: {self.vrexp.sessionPrint()}")
+            plt.savefig(self.saveDirectory('planePairHistogram') / str(self.vrexp))
+        
+        plt.show() if withShow else plt.close()
         
 
     def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
@@ -232,7 +243,7 @@ class sameCellCandidates:
         
         if withSave:
             print(f"Saving histogram figure for session: {self.vrexp.sessionPrint()}")
-            plt.savefig(self.saveDirectory() / str(self.vrexp))
+            plt.savefig(self.saveDirectory(self.onefile) / str(self.vrexp))
             
         return fig, ax
     
@@ -265,9 +276,9 @@ class sameCellCandidates:
         
         return fig, ax
         
-    def saveDirectory(self):
+    def saveDirectory(self, name):
         # Define and create target directory
-        dirName = analysisDirectory / 'sameCellCandidates' / self.onefile
+        dirName = analysisDirectory / 'sameCellCandidates' / name
         if not(dirName.is_dir()): dirName.mkdir(parents=True)
         return dirName
     
