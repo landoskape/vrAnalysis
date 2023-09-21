@@ -1,8 +1,10 @@
+import time
 import numpy as np
 import numba as nb
 import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib
+import networkx as nx
 
 import pandas as pd
 
@@ -28,6 +30,20 @@ class sameCellCandidates:
         # go through each session that has been registered and has imaging data
         scc = analysis.sameCellCandidates(ses)
         scc.planePairHistograms(corrCutoff=[0.5, 0.6, 0.7, 0.8], distanceCutoff=50, withSave=True, withShow=False)
+        
+    Or, for plotting the results of one session within a notebook: 
+    scc.planePairHistograms(corrCutoff=[0.5, 0.6, 0.7, 0.8], distanceCutoff=50, withSave=False, withShow=True)
+    
+    There's also two related methods for looking at the relationship between distance and correlation. 
+    One of them makes a scatter plot of all pairs passing the filtering requirements. This is: 
+    scc.scatterForThresholds(keepPlanes=[1,2,3,4], distanceCutoff=250);
+    
+    The other makes a cumulative distribution plot for ROIs of two different distance ranges...
+    
+    Theory:
+    -------
+    This is used for producing the maximum independent set of nodes that are not the same cell. It's a nice graph theory problem.
+    https://www.gcsu.edu/sites/files/page-assets/node-808/attachments/ballardmyer.pdf
     '''
     def __init__(self, vrexp, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, onefile='mpci.roiActivityDeconvolvedOasis', autorun=True):
         self.thresholds = thresholds
@@ -43,6 +59,12 @@ class sameCellCandidates:
         self.dataloaded = False
         if autorun: self.run()
     
+    def totalFromPairs(self, pairs):
+        assert type(pairs)==int, "pairs is not an integer..."
+        n = (1+np.sqrt(1+8*pairs))/2
+        assert n.is_integer(), "pairs is not a valid binomial coefficient choose 2..."
+        return int(n)
+        
     def pairValFromVec(self, vector, squareform=True):
         '''Convert vector to pair values, optionally perform squareform without checks'''
         assert isinstance(vector, np.ndarray) and vector.ndim==1, "vector must be 1d numpy array"
@@ -54,7 +76,7 @@ class sameCellCandidates:
             p2 = sp.spatial.distance.squareform(p2, checks=False)
         return p1, p2
     
-    def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None, distanceCutoff=None):
+    def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None, distanceCutoff=None, extraFilter=None):
         assert self.dataloaded, "data is not loaded yet, use 'run()' to get key datapoints"
         pairIdx = np.full(self.numPairs, True)
         if npixCutoff is not None:
@@ -68,6 +90,8 @@ class sameCellCandidates:
             pairIdx &= self.xcROIs > corrCutoff
         if distanceCutoff is not None:
             pairIdx &= self.pwDist < distanceCutoff
+        if extraFilter is not None:
+            pairIdx &= extraFilter
         return pairIdx
     
     def filterPairs(self, pairIdx):
@@ -95,6 +119,7 @@ class sameCellCandidates:
         # comparisons
         self.xcROIs = sp.spatial.distance.squareform(np.corrcoef(data.T), checks=False)
         self.pwDist = sp.spatial.distance.pdist(xyPos)
+        self.idxRoi1, self.idxRoi2 = self.pairValFromVec(np.arange(self.numROIs), squareform=True)
         self.planePair1, self.planePair2 = self.pairValFromVec(roiPlaneIdx, squareform=True)
         self.npixPair1, self.npixPair2 = self.pairValFromVec(npix, squareform=True)
         self.xposPair1, self.xposPair2 = self.pairValFromVec(xyPos[:,0], squareform=True)
@@ -107,7 +132,7 @@ class sameCellCandidates:
         '''Make color-coded scatter plot to visualize potential thresholds for distance and planes'''
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff) # no filtering at the moment
+        pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
         
         randomFilter = pairIdx & (np.random.random(self.xcROIs.shape) < 0.05)
         xcROIs = self.xcROIs[randomFilter]
@@ -141,6 +166,154 @@ class sameCellCandidates:
         plt.show()
         
         if outputFig: return fig
+    
+    def cdfForThresholds(self, cdfVals=np.linspace(0,1,11), ylim=None, keepPlanes=None, distanceCutoff=50, corrCutoff=None, distanceDistant=(50, 250), withSave=False, withShow=True):
+        '''Make color-coded cumulative distribution plots to visualize potential thresholds for distance and planes
+        the cutoff inputs and keepPlanes input are all standard - they go into getPairFilter. 
+        the distanceDistant input requires a tuple and determines the range of distances to use for the "distant" group
+        the "close" group is based purely on 'distanceCutoff'
+        This uses a fast approximation of the cdf with prespecified cdfVals, which should be an increasing linspace like array.
+        '''
+        assert type(distanceDistant)==tuple and len(distanceDistant)==2, "distanceDistant should be a tuple specifying the range"
+        
+        # filter pairs based on optional cutoffs and plane indices (and more...)
+        closeIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff, corrCutoff=corrCutoff)
+        farIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceDistant[1], corrCutoff=corrCutoff, extraFilter=(self.pwDist>distanceDistant[0])) 
+        
+        def makeCDF(self, idx):            
+            xcROIs = self.xcROIs[idx]
+            planePair1 = self.planePair1[idx]
+            planePair2 = self.planePair2[idx]
+            totalPairs = len(xcROIs) 
+            
+            out = np.zeros(len(cdfVals))
+            for ii, cval in enumerate(cdfVals):
+                out[ii] = np.sum(xcROIs < cval) / totalPairs
+
+            return out
+        
+        nameDistance = [f"{distanceDistant[0]} < distance < {distanceDistant[1]}", f"distance < {distanceCutoff}"]
+        colorDistance = ['k', 'b']
+        cdfs = [makeCDF(self, farIdx), makeCDF(self, closeIdx)]
+        
+        # Make figures
+        plt.close('all')
+        fig, ax = plt.subplots(1,2,figsize=(10,4))
+        for name, color, data in zip(nameDistance, colorDistance, cdfs):
+            ax[0].plot(cdfVals, data, c=color, marker='.', label=name)
+        if ylim is not None:
+            ax[0].set_ylim(ylim[0], ylim[1])
+        ax[0].set_xlabel("Correlation Coefficient of Pair")
+        ax[0].set_ylabel("CDF")
+        ax[0].set_title("Full CDF")
+        ax[0].legend(loc='lower right')
+            
+        for name, color, data in zip(nameDistance, colorDistance, cdfs):
+            ax[1].plot(cdfVals, data, c=color, marker='.', label=name)
+        ax[1].set_xlim(0.2, 1)
+        ax[1].set_ylim(0.98, 1)
+        ax[1].set_xlabel("Correlation Coefficient of Pair")
+        ax[1].set_ylabel("CDF")
+        ax[1].set_title("Zoom in")
+        ax[1].legend(loc='lower right')
+        
+        if withSave:
+            print(f"Saving cdf plots for session: {self.vrexp.sessionPrint()}")
+            plt.savefig(self.saveDirectory('cdfCorrelations') / str(self.vrexp))
+        
+        plt.show() if withShow else plt.close()
+        
+    
+    def roiCountHandling(self, roiCountCutoffs=np.linspace(0, 1, 11), maxBinConnections=25, keepPlanes=None, distanceCutoff=40, withSave=False, withShow=True):
+        '''measures statistics about how many ROIs are removed (and other things about the connection graph)'''
+        
+        if len(roiCountCutoffs)>11:
+            print(f"Note: number of roiCountCutoffs is {len(roiCountCutoffs)}"
+                  "this could lead to an extremely long processing time due to the MIS algorithm!")
+            
+        # filter pairs based on optional cutoffs and plane indices (and more...)
+        pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
+        xcROIs = self.xcROIs[pairIdx]
+        idxRoi1 = self.idxRoi1[pairIdx]
+        idxRoi2 = self.idxRoi2[pairIdx]
+        numROIs = len(set(np.concatenate((idxRoi1, idxRoi2))))
+        
+        def removeCount_simple(self, cutoff):
+            # Count removed by removing any ROI in a pair
+            idxMatches = xcROIs > cutoff # True if pair is matched
+            t = time.time()
+            m1 = idxRoi1[idxMatches]
+            m2 = idxRoi2[idxMatches]
+            return len(set(np.concatenate((m1,m2)))), time.time()-t
+        
+        def removeCount_MIS(self, cutoff):
+            # Count removed by removing only ROIs necessary to make a (stochastic) maximal independent set
+            idxMatches = xcROIs > cutoff # True if pair is matched
+            t = time.time()
+            removeFull = np.full(len(pairIdx), False) # Start with every pair being valid
+            removeFull[pairIdx]=idxMatches # assign matched ROIs to their proper location in the full list
+            adjacencyMatrix = sp.spatial.distance.squareform(1*removeFull) # convert pair boolean to adjacency matrix (1 if connected)
+            N = adjacencyMatrix.shape[0]
+            assert N==self.numROIs, "oops!"
+            graph = nx.from_numpy_array(adjacencyMatrix)
+            numInMIS = len(nx.maximal_independent_set(graph)) 
+            return N-numInMIS, time.time()-t
+            
+        def countConnections(self, cutoff):
+            idxMatches = xcROIs > cutoff # True if pair is matched
+            fullPairs = np.full(len(self.xcROIs), False)
+            fullPairs[pairIdx] = idxMatches # set any bad pairs to True
+            G = sp.spatial.distance.squareform(fullPairs)
+            firstOrder = np.sum(G,axis=1) # number of first order connections per ROI
+            return firstOrder
+        
+        filterNames = [f"rmv>{rcc}" for rcc in roiCountCutoffs]
+        roiCounts = [removeCount_simple(self, cutoff) for cutoff in roiCountCutoffs]
+        roiCountTime = [rc[1] for rc in roiCounts]
+        roiCounts = [rc[0] for rc in roiCounts]
+        
+        misCounts = [removeCount_MIS(self, cutoff) for cutoff in roiCountCutoffs]
+        misCountTime = [mc[1] for mc in misCounts]
+        misCounts = [mc[0] for mc in misCounts]
+        
+        filtConnCutoffs = np.round(np.linspace(0.3,0.9,7),1)
+        filtConnNames = [f"corr>{fcc}" for fcc in filtConnCutoffs]
+        roiConnections = [countConnections(self, cutoff) for cutoff in filtConnCutoffs]
+        maxNumConnections = max([max(rc) for rc in roiConnections])
+        binCounts = [np.unique(rc, return_counts=True) for rc in roiConnections]
+        
+        plt.close('all')
+        fig, ax = plt.subplots(1,3,figsize=(14,4))
+        ax[0].plot(roiCountCutoffs, roiCounts, c='k', marker='.', markersize=12, label='aggressive removal')
+        ax[0].plot(roiCountCutoffs, misCounts, c='b', marker='.', markersize=12, label='MIS removal')
+        ax[0].axhline(y=numROIs, c='k', linestyle='--', label='Total ROIs')
+        ax[0].set_xlabel('Correlation Cutoff')
+        ax[0].set_ylabel('ROIs removed')
+        ax[0].set_title(f'# ROIs Removed (dist < {distanceCutoff}um)')
+        # ax[0].set_yscale('log')
+        ax[0].legend()
+        
+        ax[1].plot(roiCountCutoffs, roiCountTime, c='k', marker='.', markersize=12, label='aggressive removal')
+        ax[1].plot(roiCountCutoffs, misCountTime, c='b', marker='.', markersize=12, label='MIS removal')
+        ax[1].set_xlabel('Correlation Cutoff')
+        ax[1].set_ylabel('Time for removal (s)')
+        ax[1].set_title('Speed of algorithm')
+        ax[1].legend()
+        
+        for name, (bins, counts) in zip(filtConnNames, binCounts):
+            ax[2].plot(bins, counts, marker='.', markersize=12, label=name)
+        ax[2].set_xlabel('Number Pairs Per ROI')
+        ax[2].set_ylabel('Counts')
+        ax[2].set_xlim(0, maxBinConnections)
+        ax[2].set_title('Num "connected" ROIs')
+        ax[2].set_yscale('log')
+        ax[2].legend()
+        
+        if withSave:
+            print(f"Saving roiCount statistics for session: {self.vrexp.sessionPrint()}")
+            plt.savefig(self.saveDirectory('roiCountStats') / str(self.vrexp))
+        
+        plt.show() if withShow else plt.close()
     
     def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None, withSave=False, withShow=True):
         '''Make histogram of number of pairs across specific planes meeting some correlation threshold'''

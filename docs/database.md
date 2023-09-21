@@ -8,7 +8,7 @@ it.
 ## Standard Usage
 This section contains codeblocks explaining how to use the database. Note that
 it's designed so it's easy to copy code when previewed on GitHub, so I suggest
-checking it out there:
+checking it out there if you aren't already:
 
 https://github.com/landoskape/vrAnalysis/tree/main/docs/database.md
 
