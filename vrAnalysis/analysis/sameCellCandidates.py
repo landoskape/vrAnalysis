@@ -80,8 +80,8 @@ class sameCellCandidates(standardAnalysis):
             pairIdx &= self.npixPair1 > npixCutoff
             pairIdx &= self.npixPair2 > npixCutoff
         if keepPlanes is not None:
-            pairIdx &= np.isin(self.planePair1, keepPlanes)
-            pairIdx &= np.isin(self.planePair2, keepPlanes)
+            pairIdx &= np.any(np.stack([self.planePair1==pidx for pidx in keepPlanes]),axis=0)
+            pairIdx &= np.any(np.stack([self.planePair2==pidx for pidx in keepPlanes]),axis=0)
         if corrCutoff is not None:
             pairIdx &= self.xcROIs > corrCutoff
         if distanceCutoff is not None:
