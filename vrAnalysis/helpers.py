@@ -26,7 +26,10 @@ def errorPlot(x, data, axis=-1, se=False, ax=None, **kwargs):
     kwargs.pop('alpha')
     ax.plot(x, meanData, **kwargs)
     
-def ncmap(name='Spectral', vmin=0., vmax=1.):
+def ncmap(name='Spectral', vmin=10, vmax=None):
+    if vmax is None:
+        vmax = vmin-1
+        vmin = 0
     cmap = matplotlib.cm.get_cmap(name)
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
     def cm(val): return cmap(norm(val))
