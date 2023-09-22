@@ -3,6 +3,7 @@ import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib
+from matplotlib.widgets import Button, Slider
 import networkx as nx
 
 from .. import session
@@ -420,5 +421,194 @@ class sameCellCandidates(standardAnalysis):
         # Show figure if requested
         plt.show() if withShow else plt.close()
         
+    
+    def explorePairs(self, corrCutoff=0.4, maxCutoff=0.5, distanceCutoff=20, keepPlanes=[1,2,3,4], activity='mpci.roiActivityDeconvolved'):
+        timestamps = self.vrexp.loadone('mpci.times')
+        deconv = self.vrexp.loadone(activity)
+        neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')
+        
+        extraFilter = self.xcROIs < maxCutoff if maxCutoff is not None else None
+        boolIdx = self.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, extraFilter=None)
+        pairIdx = np.nonzero(boolIdx)[0]
+        numPairs = len(pairIdx)
+
+        def getPair(self, data, neuropil, idx):
+            i1,i2 = self.idxRoi1[idx], self.idxRoi2[idx]
+            d1,d2 = data[:,i1], data[:,i2]
+            n1,n2 = neuropil[:,i1], neuropil[:,i2]
+            return i1, i2, d1, d2, n1, n2
+
+        initIdx = 0
+        i1, i2, d1, d2, n1, n2 = getPair(self, deconv, neuropil, pairIdx[initIdx])
+
+        plt.close('all')
+        fig, ax = plt.subplots(1,2,figsize=(9,4), sharex=True)
+        fig.subplots_adjust(bottom=0.25)
+
+        roi1, = ax[0].plot(timestamps, d1, lw=2, c='k')
+        roi2, = ax[0].plot(timestamps, d2, lw=2, c='r')
+        title1 = ax[0].set_title('deconvolved')
+
+        npl1, = ax[1].plot(timestamps, n1, lw=2, c='k')
+        npl2, = ax[1].plot(timestamps, n2, lw=2, c='r')
+        title2 = ax[1].set_title('neuropil')
+
+        axIdx = fig.add_axes([0.25, 0.1, 0.65, 0.05])
+
+        # define the values to use for snapping
+        allowedPairs = np.arange(numPairs)
+
+        # create the sliders
+        sPair = Slider(
+            axIdx, "ROI Pair", 0, len(allowedPairs)-1,
+            valinit=initIdx, valstep=allowedPairs,
+            color="black"
+        )
+
+        def update(val):
+            newIdx = int(sPair.val)
+            i1, i2, d1, d2, n1, n2 = getPair(self, deconv, neuropil, pairIdx[newIdx])
+            roi1.set_ydata(d1)
+            roi2.set_ydata(d2)
+            title1.set_text(f"Deconvolved - idx:{newIdx}")
+            npl1.set_ydata(n1)
+            npl2.set_ydata(n2)
+            title2.set_text(f"Neuropil - idx:{newIdx}")
+            fig.canvas.draw_idle()
+
+        sPair.on_changed(update)
+        plt.show()
+        
+        
+    def exploreClusters(self, maxCluster=10, corrCutoff=0.4, maxCutoff=0.5, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityDeconvolved'):
+        timestamps = self.vrexp.loadone('mpci.times')
+        deconv = self.vrexp.loadone(activity)
+        neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')
+        
+        if maxCutoff is not None or minDistance is not None:
+            extraFilter = np.full(len(self.xcROIs),True)
+            if maxCutoff is not None:
+                extraFilter &= self.xcROIs < maxCutoff
+            if minDistance is not None:
+                extraFilter &= self.pwDist > minDistance
+        else:
+            extraFilter = None
+            
+        boolIdx = self.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, extraFilter=extraFilter)
+        allROIs = list(set(self.idxRoi1[boolIdx]).union(set(self.idxRoi2[boolIdx])))
+        numPairs = len(allROIs)
+        
+        def getCluster(iSeed):
+            includesSeed = (self.idxRoi1==iSeed) | (self.idxRoi2==iSeed)
+            iCluster = np.nonzero(boolIdx & includesSeed)[0]
+            idxROIs = list(set(self.idxRoi1[iCluster]).union(set(self.idxRoi2[iCluster])))
+            numInCluster = len(idxROIs)
+            numToPlot = min(numInCluster, maxCluster)
+            idxToPlot = np.random.choice(idxROIs, numToPlot, replace=False)
+            return iSeed, numInCluster, deconv[:, idxToPlot].T, neuropil[:, idxToPlot].T
+        
+        initIdx = 0
+
+        plt.close('all')
+        fig, ax = plt.subplots(1,3,figsize=(13,4), sharex=True)
+        fig.subplots_adjust(bottom=0.25)
+        
+        axIdx = fig.add_axes([0.25, 0.1, 0.65, 0.05])
+
+        # define the values to use for snapping
+        allowedPairs = np.arange(numPairs)
+
+        # create the sliders
+        sSeed = Slider(
+            axIdx, "ROI Seed", 0, len(allowedPairs)-1,
+            valinit=initIdx, valstep=allowedPairs,
+            color="black"
+        )
+        
+        def updatePlot(val):
+            newIdx = int(sSeed.val)
+            iSeed, numInCluster, dTraces, nTraces = getCluster(allROIs[newIdx])
+            ydlim = np.min(dTraces), np.max(dTraces)
+            ynlim = np.min(nTraces), np.max(nTraces)
+            ax[0].set_ylim(ydlim[0], ydlim[1])
+            ax[1].set_ylim(ynlim[0], ynlim[1])
+            cmap = helpers.ncmap('plasma', len(dTraces))
+            for i, (dl,nl,d,n) in enumerate(zip(dLine, nLine, dTraces, nTraces)):
+                dl.set(ydata=d, color=cmap(i), visible=True)
+                nl.set(ydata=n, color=cmap(i), visible=True)
+            for i in range(len(dTraces),maxCluster):
+                dLine[i].set(visible=False)
+                nLine[i].set(visible=False)
+            newImshow = sp.signal.savgol_filter(dTraces/np.max(dTraces,axis=1,keepdims=True),15,1,axis=1)
+            im.set(data=newImshow, extent=(timestamps[0], timestamps[-1], 0, numInCluster))
+            title1.set_text(f"Deconvolved - idx:{newIdx}")
+            title2.set_text(f"Neuropil - numInCluster:{numInCluster}")
+            fig.canvas.draw_idle()
+            
+        # initialize plot objects
+        dLine = []
+        nLine = []
+        for n in range(maxCluster):
+            dLine.append(ax[0].plot(timestamps, deconv[:,0], lw=1, c='k', alpha=0.8)[0])
+            nLine.append(ax[1].plot(timestamps, neuropil[:,0], lw=1, c='k', alpha=0.8)[0])
+        im = ax[2].imshow(deconv[:,:10].T, vmin=0, vmax=1, extent=(timestamps[0], timestamps[-1], 0, 1), aspect='auto', interpolation='nearest', cmap='hot')
+        title1 = ax[0].set_title('deconvolved')
+        title2 = ax[1].set_title('neuropil')
+        title3 = ax[2].set_title('full cluster (deconv)')
+        
+        # then add real data to them
+        updatePlot(0)
+        
+        sSeed.on_changed(updatePlot)
+        plt.show()
+
+        
+    def savingCodeForChecksAboutSizes(self):
+        corrCutoff = 0.5
+        distanceCutoff = np.inf
+        keepPlanes = [1,2,3,4]
+        boolPlaneOnly = self.getPairFilter(keepPlanes=keepPlanes)
+        boolIdx = self.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
+        pairIdx = np.nonzero(boolIdx)[0]
+        numPairs = len(pairIdx)
+
+        print(f"Percent pairs exceeding corr-cutoff within requested planes: {round(100*sum(boolIdx)/sum(boolPlaneOnly),3)}")
+
+        iPlane1, iPlane2 = self.idxRoi1[boolPlaneOnly], self.idxRoi2[boolPlaneOnly]
+        iCut1, iCut2 = self.idxRoi1[boolIdx], self.idxRoi2[boolIdx]
+
+        roiInPlane = set(np.concatenate((iPlane1, iPlane2)))
+        roiCut = set(np.concatenate((iCut1, iCut2)))
+        roiSecond = set(iCut2)
+        roiFirst = set(iCut1)
+
+        print(f"#First: {len(roiFirst)}, #Second: {len(roiSecond)}, #Both: {len(roiCut)}, #Total: {len(roiInPlane)}")
+        roiClip = list(roiFirst) if len(roiFirst)<len(roiSecond) else list(roiSecond)
+
+        # Now test clipping methods
+        data = self.vrexp.loadone(self.onefile)
+        idxKeep = np.full(self.numROIs,True)
+        idxKeep[roiClip]=False
+        idxKeep[:self.vrexp.value['roiPerPlane'][0]]=False
+        print(f"Sanity check: sum(idxKeep=False)={np.sum(idxKeep==False)}, plane0+second: {self.vrexp.value['roiPerPlane'][0]+len(roiClip)}")
+
+        clipData = data[:,idxKeep]
+        newXC = sp.spatial.distance.squareform(np.corrcoef(clipData.T), checks=False)
+        print("Succesful clip by second in pair only if this is false: ", np.any(newXC>corrCutoff))
+
+        fullIdx = copy(boolPlaneOnly)
+        fullIdx[boolIdx]=False
+        idxJustKept = fullIdx[boolPlaneOnly]
+        G = sp.spatial.distance.squareform(1*(idxJustKept==False))
+        graph = nx.from_numpy_array(G)
+        mis = sorted(nx.maximal_independent_set(graph))
+        misData = data[:,self.vrexp.value['roiPerPlane'][0]:]
+        print(misData.shape)
+        misData = misData[:,mis]
+        newXC = sp.spatial.distance.squareform(np.corrcoef(misData.T), checks=False)
+
+        print('')
+        print(G.shape[0], np.sum(np.any(G,axis=1)), "mis --> newG:", misData.shape)
+        print("Succesful clip by second in pair only if this is false: ", np.any(newXC>corrCutoff))
         
         
