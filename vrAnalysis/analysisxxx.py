@@ -12,10 +12,7 @@ from . import session
 from . import helpers
 from . import fileManagement as fm
 
-# common variables
-analysisDirectory = fm.analysisPath()
-
-class sameCellCandidates:
+class sameCellCandidates(standardAnalysis):
     '''Measures cross-correlation of pairs of ROI activity with spatial distance
     
     Takes as required input a vrexp object. Optional inputs define parameters of analysis, 
@@ -45,7 +42,8 @@ class sameCellCandidates:
     This is used for producing the maximum independent set of nodes that are not the same cell. It's a nice graph theory problem.
     https://www.gcsu.edu/sites/files/page-assets/node-808/attachments/ballardmyer.pdf
     '''
-    def __init__(self, vrexp, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, onefile='mpci.roiActivityDeconvolvedOasis', autorun=True):
+    def __init__(self, vrexp, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True):
+        self.name = 'sameCellCandidates'
         self.thresholds = thresholds
         self.ncorrbins = ncorrbins
         self.onefile = onefile
@@ -57,7 +55,7 @@ class sameCellCandidates:
         
         # automatically do measurements
         self.dataloaded = False
-        if autorun: self.run()
+        if autoload: self.autoload()
     
     def totalFromPairs(self, pairs):
         assert type(pairs)==int, "pairs is not an integer..."
@@ -103,7 +101,7 @@ class sameCellCandidates:
         yposPair1, yposPair2 = self.yposPair1[pairIdx], self.yposPair2[pairIdx]
         return xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2
     
-    def run(self, onefile=None):
+    def autoload(self, onefile=None):
         '''load standard data for measuring same cell candidate'''
         # update onefile if using a different measure of activity
         self.onefile = self.onefile if onefile is None else onefile
@@ -230,7 +228,7 @@ class sameCellCandidates:
         if len(roiCountCutoffs)>11:
             print(f"Note: number of roiCountCutoffs is {len(roiCountCutoffs)}"
                   "this could lead to an extremely long processing time due to the MIS algorithm!")
-            
+        
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
         xcROIs = self.xcROIs[pairIdx]
@@ -309,10 +307,11 @@ class sameCellCandidates:
         ax[2].set_yscale('log')
         ax[2].legend()
         
-        if withSave:
-            print(f"Saving roiCount statistics for session: {self.vrexp.sessionPrint()}")
-            plt.savefig(self.saveDirectory('roiCountStats') / str(self.vrexp))
+        # Save figure if requested
+        if withSave: 
+            self.saveFigure(self, fig.number, 'roiCountStats')
         
+        # Show figure if requested
         plt.show() if withShow else plt.close()
     
     def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None, withSave=False, withShow=True):
@@ -357,10 +356,11 @@ class sameCellCandidates:
         plt.legend(loc='best')
         plt.rcParams.update({'font.size': 12})
         
-        if withSave:
-            print(f"Saving plane pair histograms for session: {self.vrexp.sessionPrint()}")
-            plt.savefig(self.saveDirectory('planePairHistogram') / str(self.vrexp))
+        # Save figure if requested
+        if withSave: 
+            self.saveFigure(self, fig.number, 'planePairHistogram')
         
+        # Show figure if requested
         plt.show() if withShow else plt.close()
         
 
@@ -414,47 +414,14 @@ class sameCellCandidates:
         ax[1].legend(loc='upper left')
         ax[1].set_title("Average within-plane distribution")
         
-        if withSave:
-            print(f"Saving histogram figure for session: {self.vrexp.sessionPrint()}")
-            plt.savefig(self.saveDirectory(self.onefile) / str(self.vrexp))
-            
-        return fig, ax
-    
-    
-    def somaDendritePairs(self, corrCutoff=0.1, npixCutoff=25):
-        # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(npixCutoff=npixCutoff, corrCutoff=corrCutoff)
-        xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
+        # Save figure if requested
+        if withSave: 
+            self.saveFigure(self, fig.number, f"correlationHistogram_{self.onefile}")
         
-        planeDifference = planePair1 - planePair2
-        sizeDifference = npixPair1 - npixPair2
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+
         
-        # And plot some results
-        plt.close('all')
-        
-        fig,ax = plt.subplots(1,4,figsize=(16,4))
-        ax[0].scatter(planeDifference, xcROIs, c='k', alpha=0.3)
-        ax[0].set_xlabel('planediff')
-        ax[0].set_ylabel('cross-corr')
-        
-        ax[1].scatter(planeDifference, sizeDifference, c='k', alpha=0.3)
-        ax[1].set_xlabel('planediff')
-        ax[1].set_ylabel('roiSize diff')
-        
-        ax[2].scatter(sizeDifference, xcROIs, c='k', alpha=0.3)
-        ax[2].set_xlabel('roiSize diff')
-        ax[2].set_ylabel('cross-corr')
-        
-        plt.show()
-        
-        return fig, ax
-        
-    def saveDirectory(self, name):
-        # Define and create target directory
-        dirName = analysisDirectory / 'sameCellCandidates' / name
-        if not(dirName.is_dir()): dirName.mkdir(parents=True)
-        return dirName
-    
 
 
 class piezoConsistency:
