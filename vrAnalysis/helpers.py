@@ -32,9 +32,12 @@ def ncmap(name='Spectral', vmin=10, vmax=None):
         vmin = 0
     cmap = matplotlib.cm.get_cmap(name)
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
-    def cm(val): return cmap(norm(val))
-    return cm
-
+    
+    class callableScalarMappable(matplotlib.cm.ScalarMappable):
+        def __call__(self, val): return self.to_rgba(val)
+    
+    return callableScalarMappable(cmap=name, norm=norm)
+    
 def diffsame(data, zero=0):
     # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back. 
     # zero=0 means front, zero=1 means back

@@ -422,69 +422,17 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
         
     
-    def explorePairs(self, corrCutoff=0.4, maxCutoff=0.5, distanceCutoff=20, keepPlanes=[1,2,3,4], activity='mpci.roiActivityDeconvolved'):
+    def exploreClusters(self, maxCluster=20, corrCutoff=0.4, maxCutoff=0.5, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityF'):
         timestamps = self.vrexp.loadone('mpci.times')
         deconv = self.vrexp.loadone(activity)
         neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')
-        
-        extraFilter = self.xcROIs < maxCutoff if maxCutoff is not None else None
-        boolIdx = self.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, extraFilter=None)
-        pairIdx = np.nonzero(boolIdx)[0]
-        numPairs = len(pairIdx)
-
-        def getPair(self, data, neuropil, idx):
-            i1,i2 = self.idxRoi1[idx], self.idxRoi2[idx]
-            d1,d2 = data[:,i1], data[:,i2]
-            n1,n2 = neuropil[:,i1], neuropil[:,i2]
-            return i1, i2, d1, d2, n1, n2
-
-        initIdx = 0
-        i1, i2, d1, d2, n1, n2 = getPair(self, deconv, neuropil, pairIdx[initIdx])
-
-        plt.close('all')
-        fig, ax = plt.subplots(1,2,figsize=(9,4), sharex=True)
-        fig.subplots_adjust(bottom=0.25)
-
-        roi1, = ax[0].plot(timestamps, d1, lw=2, c='k')
-        roi2, = ax[0].plot(timestamps, d2, lw=2, c='r')
-        title1 = ax[0].set_title('deconvolved')
-
-        npl1, = ax[1].plot(timestamps, n1, lw=2, c='k')
-        npl2, = ax[1].plot(timestamps, n2, lw=2, c='r')
-        title2 = ax[1].set_title('neuropil')
-
-        axIdx = fig.add_axes([0.25, 0.1, 0.65, 0.05])
-
-        # define the values to use for snapping
-        allowedPairs = np.arange(numPairs)
-
-        # create the sliders
-        sPair = Slider(
-            axIdx, "ROI Pair", 0, len(allowedPairs)-1,
-            valinit=initIdx, valstep=allowedPairs,
-            color="black"
-        )
-
-        def update(val):
-            newIdx = int(sPair.val)
-            i1, i2, d1, d2, n1, n2 = getPair(self, deconv, neuropil, pairIdx[newIdx])
-            roi1.set_ydata(d1)
-            roi2.set_ydata(d2)
-            title1.set_text(f"Deconvolved - idx:{newIdx}")
-            npl1.set_ydata(n1)
-            npl2.set_ydata(n2)
-            title2.set_text(f"Neuropil - idx:{newIdx}")
-            fig.canvas.draw_idle()
-
-        sPair.on_changed(update)
-        plt.show()
-        
-        
-    def exploreClusters(self, maxCluster=10, corrCutoff=0.4, maxCutoff=0.5, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityDeconvolved'):
-        timestamps = self.vrexp.loadone('mpci.times')
-        deconv = self.vrexp.loadone(activity)
-        neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')
-        
+        stat = self.vrexp.loadS2P('stat')
+        roiPlaneIdx = self.vrexp.loadone('mpciROIs.stackPosition')[:,2]
+        if keepPlanes==None:
+            planeColormap = helpers.ncmap('plasma', vmin=min(roiPlaneIdx), vmax=max(roiPlaneIdx))
+        else:
+            planeColormap = helpers.ncmap('plasma', vmin=min(keepPlanes), vmax=max(keepPlanes))
+            
         if maxCutoff is not None or minDistance is not None:
             extraFilter = np.full(len(self.xcROIs),True)
             if maxCutoff is not None:
@@ -497,7 +445,14 @@ class sameCellCandidates(standardAnalysis):
         boolIdx = self.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, extraFilter=extraFilter)
         allROIs = list(set(self.idxRoi1[boolIdx]).union(set(self.idxRoi2[boolIdx])))
         numPairs = len(allROIs)
-        
+
+        def getConvexHull(idxroi):
+            roipix = np.stack((stat[idxroi]['ypix'], stat[idxroi]['xpix'])).T
+            hull = sp.spatial.ConvexHull(roipix)
+            xpoints, ypoints = hull.points[[*hull.vertices, hull.vertices[0]],1], hull.points[[*hull.vertices, hull.vertices[0]],0]
+            planeIdx = roiPlaneIdx[idxroi]
+            return xpoints, ypoints, planeIdx
+
         def getCluster(iSeed):
             includesSeed = (self.idxRoi1==iSeed) | (self.idxRoi2==iSeed)
             iCluster = np.nonzero(boolIdx & includesSeed)[0]
@@ -505,13 +460,22 @@ class sameCellCandidates(standardAnalysis):
             numInCluster = len(idxROIs)
             numToPlot = min(numInCluster, maxCluster)
             idxToPlot = np.random.choice(idxROIs, numToPlot, replace=False)
-            return iSeed, numInCluster, deconv[:, idxToPlot].T, neuropil[:, idxToPlot].T
+            hulls = [getConvexHull(i) for i in idxToPlot]
+            return iSeed, numInCluster, deconv[:, idxToPlot].T, neuropil[:, idxToPlot].T, hulls
         
         initIdx = 0
 
         plt.close('all')
-        fig, ax = plt.subplots(1,3,figsize=(13,4), sharex=True)
-        fig.subplots_adjust(bottom=0.25)
+        ax = []
+        fig = plt.figure(figsize=(14,4), layout='constrained')
+        ax.append(fig.add_subplot(1, 4, 1))
+        ax.append(fig.add_subplot(1, 4, 2, sharex=ax[0]))
+        ax.append(fig.add_subplot(1, 4, 3, sharex=ax[0]))
+        ax.append(fig.add_subplot(1, 4, 4))
+        
+        fig.get_layout_engine().set(hspace=0.5)
+        
+        # fig.subplots_adjust(bottom=0.25)
         
         axIdx = fig.add_axes([0.25, 0.1, 0.65, 0.05])
 
@@ -527,18 +491,24 @@ class sameCellCandidates(standardAnalysis):
         
         def updatePlot(val):
             newIdx = int(sSeed.val)
-            iSeed, numInCluster, dTraces, nTraces = getCluster(allROIs[newIdx])
+            iSeed, numInCluster, dTraces, nTraces, hulls = getCluster(allROIs[newIdx])
             ydlim = np.min(dTraces), np.max(dTraces)
             ynlim = np.min(nTraces), np.max(nTraces)
+            rhxlim = min([np.min(h[0]) for h in hulls]), max([np.max(h[0]) for h in hulls])
+            rhylim = min([np.min(h[1]) for h in hulls]), max([np.max(h[1]) for h in hulls])
             ax[0].set_ylim(ydlim[0], ydlim[1])
             ax[1].set_ylim(ynlim[0], ynlim[1])
+            ax[3].set_xlim(rhxlim[0], rhxlim[1])
+            ax[3].set_ylim(rhylim[0], rhylim[1])
             cmap = helpers.ncmap('plasma', len(dTraces))
-            for i, (dl,nl,d,n) in enumerate(zip(dLine, nLine, dTraces, nTraces)):
+            for i, (dl,nl,rh,d,n,hull) in enumerate(zip(dLine, nLine, roiHull, dTraces, nTraces, hulls)):
                 dl.set(ydata=d, color=cmap(i), visible=True)
                 nl.set(ydata=n, color=cmap(i), visible=True)
+                rh.set(xdata=hull[0], ydata=hull[1], color=planeColormap(hull[2]), visible=True)
             for i in range(len(dTraces),maxCluster):
                 dLine[i].set(visible=False)
                 nLine[i].set(visible=False)
+                roiHull[i].set(visible=False)
             newImshow = sp.signal.savgol_filter(dTraces/np.max(dTraces,axis=1,keepdims=True),15,1,axis=1)
             im.set(data=newImshow, extent=(timestamps[0], timestamps[-1], 0, numInCluster))
             title1.set_text(f"Deconvolved - idx:{newIdx}")
@@ -548,13 +518,20 @@ class sameCellCandidates(standardAnalysis):
         # initialize plot objects
         dLine = []
         nLine = []
+        roiHull = []
         for n in range(maxCluster):
             dLine.append(ax[0].plot(timestamps, deconv[:,0], lw=1, c='k', alpha=0.8)[0])
             nLine.append(ax[1].plot(timestamps, neuropil[:,0], lw=1, c='k', alpha=0.8)[0])
+            hull = getConvexHull(n)
+            roiHull.append(ax[3].plot(hull[0], hull[1], c=planeColormap(hull[2]))[0])
         im = ax[2].imshow(deconv[:,:10].T, vmin=0, vmax=1, extent=(timestamps[0], timestamps[-1], 0, 1), aspect='auto', interpolation='nearest', cmap='hot')
+        
+        fig.colorbar(planeColormap, ax=ax[3])
+        
         title1 = ax[0].set_title('deconvolved')
         title2 = ax[1].set_title('neuropil')
         title3 = ax[2].set_title('full cluster (deconv)')
+        title4 = ax[3].set_title('roi convex hulls')
         
         # then add real data to them
         updatePlot(0)
