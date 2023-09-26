@@ -26,18 +26,22 @@ def errorPlot(x, data, axis=-1, se=False, ax=None, **kwargs):
     kwargs.pop('alpha')
     ax.plot(x, meanData, **kwargs)
     
+def discreteColormap(name='Spectral', N=10):
+    return matplotlib.colormaps[name].resampled(N)
+
 def ncmap(name='Spectral', vmin=10, vmax=None):
     if vmax is None:
         vmax = vmin-1
         vmin = 0
+    
     cmap = matplotlib.cm.get_cmap(name)
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
     
-    class callableScalarMappable(matplotlib.cm.ScalarMappable):
-        def __call__(self, val): return self.to_rgba(val)
-    
-    return callableScalarMappable(cmap=name, norm=norm)
-    
+    def getcolor(val):
+        return cmap(norm(val))
+
+    return getcolor
+
 def diffsame(data, zero=0):
     # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back. 
     # zero=0 means front, zero=1 means back
