@@ -678,9 +678,12 @@ class clusterExplorer():
         plt.show()   
     
     def onclick(self, event):
+        selected = False
         if event.inaxes==self.ax[2]:
             plotIndex = int(np.floor(event.ydata))
-
+            roiSelection = self.idxToPlot[plotIndex]
+            selected = True
+            
         elif event.inaxes==self.ax[3]:
             # color based on click position
             return None
@@ -693,15 +696,17 @@ class clusterExplorer():
             self.dLine[i].set(color=self.plot_cmap(i), alpha=self.default_alpha, zorder=i)
             self.nLine[i].set(color=self.plot_cmap(i), alpha=self.default_alpha, zorder=i)
             self.roiHull[i].set(color=self.planeColormap(self.planeToCmap(self.hulls[i][2])), zorder=i, lw=self.default_linewidth)
-
-        if plotIndex < self.numToPlot:            
-            # then make the new one black
-            self.dLine[plotIndex].set(color='k', alpha=1, zorder=self.maxCluster+10)
-            self.nLine[plotIndex].set(color='k', alpha=1, zorder=self.maxCluster+10)
-            self.roiHull[plotIndex].set(color='k', zorder=self.maxCluster+10, lw=self.default_linewidth*2)
-            self.title4.set_text(f"ROI Index: {self.idxROIs[plotIndex]}")
-        else:
-            self.title4.set_text("Selected ROI not plotted")
+        
+        if not selected: return 
+        
+        # then make the new one black
+        self.dLine[plotIndex].set(color='k', alpha=1, zorder=self.maxCluster+10)
+        self.nLine[plotIndex].set(color='k', alpha=1, zorder=self.maxCluster+10)
+        self.roiHull[plotIndex].set(color='k', zorder=self.maxCluster+10, lw=self.default_linewidth*2)
+        roiIndex = self.idxToPlot[plotIndex]
+        roiPlane = int(self.roiPlaneIdx[roiIndex])
+        inPlaneIndex = roiIndex - sum(self.vrexp.value['roiPerPlane'][:roiPlane])
+        self.title4.set_text(f"ROI Index: {inPlaneIndex} Plane: {roiPlane}")
         
     def getConvexHull(self, idxroi):
         roipix = np.stack((self.stat[idxroi]['ypix'], self.stat[idxroi]['xpix'])).T
