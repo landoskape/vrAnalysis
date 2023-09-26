@@ -415,7 +415,6 @@ class sameCellCandidates(standardAnalysis):
         ax[1].set_xscale('log')
         ax[0].set_yscale('log')
         ax[1].set_yscale('log')
-        plt.show()
         
         # Save figure if requested
         if withSave: 
@@ -423,6 +422,7 @@ class sameCellCandidates(standardAnalysis):
         
         # Show figure if requested
         plt.show() if withShow else plt.close()
+        
     
     def planePairHistograms(self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None, withSave=False, withShow=True):
         '''Make histogram of number of pairs across specific planes meeting some correlation threshold'''
@@ -454,6 +454,7 @@ class sameCellCandidates(standardAnalysis):
         cmap = helpers.ncmap('plasma', 0, len(corrCutoff)-1)
 
         # Make plot
+        plt.close('all')
         fig = plt.figure()
         for idx, ppc in enumerate(ppCounts):
             plt.bar(x=range(len(ppUniq)), height=ppc, color=cmap(idx), tick_label=ppUniq, label=f"Corr > {corrCutoff[idx]}")
@@ -473,7 +474,59 @@ class sameCellCandidates(standardAnalysis):
         # Show figure if requested
         plt.show() if withShow else plt.close()
         
-
+    
+    def distanceDistribution(self, corrCutoffs=np.linspace(0.2, 0.6, 5), maxDistance=200, normalize='counts', keepPlanes=[1,2,3,4], withSave=False, withShow=True):
+        planeIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=maxDistance) 
+        corrIdx = [planeIdx & (self.xcROIs>cc) for cc in corrCutoffs]
+        corrDistanceDistribution = [self.pwDist[cidx] for cidx in corrIdx]
+        maxDistance = max([np.max(cdd) for cdd in corrDistanceDistribution])
+        bins = np.arange(0, maxDistance+1, 2)-0.5
+        centers = helpers.edge2center(bins)
+        counts = [np.histogram(cdd, bins=bins)[0] for cdd in corrDistanceDistribution]
+        
+        samePlaneIdx = self.planePair1==self.planePair2
+        planeIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=maxDistance, extraFilter=samePlaneIdx) 
+        corrIdx = [planeIdx & (self.xcROIs>cc) for cc in corrCutoffs]
+        corrDistanceDistribution = [self.pwDist[cidx] for cidx in corrIdx]
+        maxDistance = max([np.max(cdd) for cdd in corrDistanceDistribution])
+        samePlane_counts = [np.histogram(cdd, bins=bins)[0] for cdd in corrDistanceDistribution]
+        
+        if normalize=='relative':
+            counts = [c/np.max(c) for c in counts]
+            samePlane_counts = [c/np.max(c) for c in samePlane_counts]
+            ylabel = 'relative counts'
+        elif normalize=='probability':
+            counts = [c/np.sum(c) for c in counts]
+            samePlane_counts = [c/np.sum(c) for c in samePlane_counts]
+            ylabel = 'probability'
+        elif normalize=='counts':
+            ylabel = 'counts'
+        else:
+            raise ValueError("value of normalize not recognized")
+            
+        cmap = mpl.colormaps['jet'].resampled(len(corrCutoffs))
+        plt.close('all')
+        fig,ax = plt.subplots(1, 2, figsize=(8,4), layout='constrained')
+        for i, (cc,count,samePlane_count) in enumerate(zip(corrCutoffs,counts, samePlane_counts)):
+            ax[0].plot(centers, count, color=cmap(i), label=f"corr>{round(cc,1)}")
+            ax[1].plot(centers, samePlane_count, color=cmap(i), label=f"corr>{round(cc,1)}")
+        ax[0].set_xlabel('Distance (um)')
+        ax[0].set_ylabel(ylabel)
+        ax[0].set_title('Distance Given Correlation')
+        ax[0].legend(loc='upper right')
+        
+        ax[1].set_xlabel('Distance (um)')
+        ax[1].set_ylabel(ylabel)
+        ax[1].set_title('Same Plane Pairs')
+        ax[1].legend(loc='upper right')
+        
+        if withSave: 
+            self.saveFigure(fig.number, 'distanceDistributionGivenCorrelation')
+        
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+        
+        
     def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
         '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
         
@@ -627,7 +680,6 @@ class clusterExplorer():
     def onclick(self, event):
         if event.inaxes==self.ax[2]:
             plotIndex = int(np.floor(event.ydata))
-            self.title3.set_text(f"{event.ydata}")
 
         elif event.inaxes==self.ax[3]:
             # color based on click position

@@ -21,7 +21,7 @@ class standardAnalysis:
         if not(dirName.is_dir()): dirName.mkdir(parents=True)
         return dirName
     
-    def saveFigure(self, fig, name):
+    def saveFigure(self, figNumber, name):
         print(f"{self.name} is saving a {name} figure for session: {self.vrexp.sessionPrint()}")
-        plt.figure(fig.num)
+        plt.figure(figNumber)
         plt.savefig(self.saveDirectory(name) / str(self.vrexp))
