@@ -84,11 +84,6 @@ class sameCellCandidates(standardAnalysis):
     scc.scatterForThresholds(keepPlanes=[1,2,3,4], distanceCutoff=250);
     
     The other makes a cumulative distribution plot for ROIs of two different distance ranges...
-    
-    Theory:
-    -------
-    This is used for producing the maximum independent set of nodes that are not the same cell. It's a nice graph theory problem.
-    https://www.gcsu.edu/sites/files/page-assets/node-808/attachments/ballardmyer.pdf
     '''
     def __init__(self, vrexp, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True):
         self.name = 'sameCellCandidates'
