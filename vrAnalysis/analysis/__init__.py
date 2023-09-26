@@ -1,2 +1,2 @@
-from .sameCellCandidates import sameCellCandidates
+from .sameCellCandidates import sameCellCandidates, clusterExplorer
 from .piezoConsistency import piezoConsistency
