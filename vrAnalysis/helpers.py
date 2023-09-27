@@ -1,3 +1,5 @@
+import sys
+import inspect
 import math
 import numpy as np
 import scipy as sp
@@ -261,3 +263,18 @@ def readableBytes(numBytes):
     readableSize = round(numBytes/sizeBytes, 2)
     return f"{readableSize} {sizeUnits[sizeIndex]}"
 
+def printWorkspace(maxToPrint=12):
+    """
+    Original author: https://stackoverflow.com/users/1870254/jan-glx
+    Reference: https://stackoverflow.com/questions/24455615/python-how-to-display-size-of-all-variables
+    """
+    callerGlobals = inspect.currentframe().f_back.f_globals
+    variables = [(name,sys.getsizeof(value)) for name, value in callerGlobals.items()]
+    variables = sorted(variables, key=lambda x: -x[1])  # Sort by variable size
+    # variables = [(name, sys.getsizeof(value)) for name, value in callerLocals.items()]
+    totalMemory = sum([v[1] for v in variables])
+    print(f"Workspace Size: {readableBytes(totalMemory)}")
+    print("Note: this method is not equipped to handle complicated variables, it is possible underestimating the workspace size!\n") 
+    for name, size in variables[:min(maxToPrint, len(variables))]:
+        print(f"{name:>30}: {readableBytes(size):>8}")
+        
