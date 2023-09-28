@@ -16,7 +16,7 @@ https://github.com/landoskape/vrAnalysis/tree/main/docs/database.md
 The database module is part of the vrAnalysis package. Import as follows and
 create a database object (a one size fits all object for communicating with 
 the database).
-```
+```python
 from vrAnalysis import database
 vrdb = database.vrDatabase()
 ```
@@ -28,12 +28,12 @@ not pass quality control), and can accept additional kwargs corresponding to
 field names of the database and the desired field value. For example, the
 following line will return any session for which suite2p has been performed, 
 and ignore any sessions that did not pass quality control.
-```
+```python
 df = vrdb.getTable(suite2p=True)
 ```
 
 If you simply want to look at the field names of the database, then do this:
-```
+```python
 for fieldName in vrdb.tableData()[0]:
     print(fieldName)
 ```
@@ -41,13 +41,13 @@ for fieldName in vrdb.tableData()[0]:
 Instead of retrieving a dataframe, you can list sessions meeting the desired
 criteria. This uses the readable `sessionPrint()` method of `vrSession` 
 objects. Here, we list all imaging sessions for mouse ATL020. 
-```
+```python
 vrdb.printSessions(mouseName="ATL020", imaging=True, ignoreScratched=False)
 ```
 
 Alternatively, if you want an iterable list of `vrExperiment` objects 
 referenced in the desired dataframe, you can use this:
-```
+```python
 vrdb.iterSessions(imaging=True, vrRegistration=True)
 ```
 
@@ -56,14 +56,14 @@ You can register sessions from the `database` object, which is good practice
 because it automatically updates the SQL database appropriately. To update a
 single session, use this command, where the three arguments are the mousename, 
 datestring, and sessionid:
-```
+```python
 vrdb.registerSingleSession('ATL022','2023-04-26','701')
 ```
 
 To determine which sessions need registration, use this line. Note that 
 default behavior is to skip sessions that have already experienced an error in
 registration. You can add kwargs to filter the table even further. 
-```
+```python
 vrdb.needsRegistration(skipErrors=True)
 ```
 
@@ -73,7 +73,7 @@ oneData can be produced each time this is run -- (registration saves oneData
 which can be a lot of memory). Additionally, you can specify `userOpts` which
 are passed to the `vrRegistration` object that determine how to register each 
 session.
-```
+```python
 def registerSessions(self, maxData=30e9, skipErrors=True, **userOpts):
 ```
 
@@ -81,7 +81,7 @@ If an error was encountered during registration, it is saved in the SQL
 database. To find out what errors have been encountered, use the following 
 line. Note that default behavior is to avoid scratched sessions, and usually I
 scratch sessions that encountered insurmountable registration errors...
-```
+```python
 vrdb.printRegistrationErrors(ignoreScratched=False)
 ```
 
@@ -89,13 +89,13 @@ vrdb.printRegistrationErrors(ignoreScratched=False)
 To determine which sessions require suite2p to be performed (i.e. they are a
 session that is not scratched, that has imaging data but has not been 
 processed through suite2p), use this: 
-```
+```python
 df = vrdb.needsS2P()
 ```
 
 If you want to look at sessions in which suite2p _has_ been performed, but has
 _not yet_ been quality controlled, use this:
-```
+```python
 df = vrdb.needsS2P(needsQC=True)
 ```
 
@@ -104,7 +104,7 @@ In addition to both of the above methods, you can also use
 description as above. It also has the `needsQC` switch. Additionally, default 
 behavior is `printTargets=True` (a kw argument), which prints the suite2p 
 target directories in addition to the session name. 
-```
+```python
 vrdb.printRequiresSuite2P()
 ```
 
@@ -112,7 +112,7 @@ If suite2p has been run elsewhere or QC'd, you can update the database's
 record of exactly when suite2p files were last updated. (This is useful to 
 know when QC was done, and also useful to know if you should re-register any
 sessions -- which by the way, I haven't coded yet!). 
-```
+```python
 vrdb.updateSuite2pDateTime()
 ```
 
@@ -121,7 +121,7 @@ processed suite2p data is inaccurate, you can use this method to correct it.
 Note that it will only update the database if you set 
 `withDatabaseUpdate=True` and will return a boolean telling you if inaccurate 
 records were found if you set `returnCheck=True`.
-```
+```python
 validDatabase = vrdb.checkS2P(withDatabaseUpdate=True, returnCheck=True)
 ```
 

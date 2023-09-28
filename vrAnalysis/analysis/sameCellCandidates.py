@@ -5,13 +5,13 @@ import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from matplotlib.widgets import Button, Slider
+from matplotlib.widgets import Button, Slider, TextBox
 import networkx as nx
 
 from .. import session
 from .. import helpers
-from .. import fileManagement as fm
 from .standardAnalysis import standardAnalysis
+
 
 def getConnectedGroups(G):
     """Utility especially useful for clusterSize()
@@ -60,6 +60,7 @@ def getConnectedGroups(G):
     components = get_all_connected_groups(graph) # 
     return [list(c) for c in components]
 
+
 class sameCellCandidates(standardAnalysis):
     '''Measures cross-correlation of pairs of ROI activity with spatial distance
     
@@ -85,21 +86,47 @@ class sameCellCandidates(standardAnalysis):
     
     The other makes a cumulative distribution plot for ROIs of two different distance ranges...
     '''
-    def __init__(self, vrexp, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True):
+    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4]):
         self.name = 'sameCellCandidates'
-        self.thresholds = thresholds
-        self.ncorrbins = ncorrbins
         self.onefile = onefile
         self.vrexp = vrexp
-        
-        self.binEdges = np.linspace(-1, 1, self.ncorrbins)
-        self.binCenters = helpers.edge2center(self.binEdges)
-        self.barWidth = np.diff(self.binEdges[:2])
+        self.keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(vrexp.value['roiPerPlane']))]
         
         # automatically do measurements
         self.dataloaded = False
-        if autoload: self.autoload()
+        if autoload: self.load_data()
     
+    def load_data(self, onefile=None):
+        '''load standard data for measuring same cell candidate'''
+        # update onefile if using a different measure of activity
+        self.onefile = self.onefile if onefile is None else onefile
+        
+        self.roiPerPlane = [self.vrexp.value['roiPerPlane'][kp] for kp in sorted(self.keepPlanes)]
+        self.numROIs = sum(self.roiPerPlane)
+        
+        # get relevant data
+        stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
+        roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
+        # figure out which ROIs are in the target planes
+        self.idxROI_inTargetPlane = np.any(np.stack([roiPlaneIdx==pidx for pidx in self.keepPlanes]),axis=0)
+        
+        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')[self.idxROI_inTargetPlane]]).astype(np.int32) # roi size (in pixels of mask)
+        data = self.vrexp.loadone(self.onefile)[:,self.idxROI_inTargetPlane] # activity array
+        xyPos = stackPosition[self.idxROI_inTargetPlane,0:2] * 1.3 # xy position to um
+        roiPlaneIdx = roiPlaneIdx[self.idxROI_inTargetPlane].astype(np.int32)
+        
+        # comparisons
+        self.xcROIs = sp.spatial.distance.squareform(np.corrcoef(data.T), checks=False)
+        self.pwDist = sp.spatial.distance.pdist(xyPos)
+        self.idxRoi1, self.idxRoi2 = self.pairValFromVec(np.arange(self.numROIs), squareform=True)
+        self.planePair1, self.planePair2 = self.pairValFromVec(roiPlaneIdx, squareform=True)
+        self.npixPair1, self.npixPair2 = self.pairValFromVec(npix, squareform=True)
+        self.xposPair1, self.xposPair2 = self.pairValFromVec(xyPos[:,0], squareform=True)
+        self.yposPair1, self.yposPair2 = self.pairValFromVec(xyPos[:,1], squareform=True)
+        self.numPairs = len(self.xcROIs)
+        assert self.numPairs==self.numROIs*(self.numROIs-1)/2, f"math flex failed: numPairs={self.numPairs}, math: {self.numROIs*(self.numROIs-1)/2}"
+        self.dataloaded = True
+        
     def totalFromPairs(self, pairs):
         assert type(pairs)==int, "pairs is not an integer..."
         n = (1+np.sqrt(1+8*pairs))/2
@@ -119,6 +146,9 @@ class sameCellCandidates(standardAnalysis):
     
     def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None, distanceCutoff=None, extraFilter=None):
         assert self.dataloaded, "data is not loaded yet, use 'run()' to get key datapoints"
+        if keepPlanes is not None: 
+            assert set(keepPlanes)<=set(self.keepPlanes), f"requested planes are not stored in data, at initialization, you only loaded: {self.keepPlanes}"
+            
         pairIdx = np.full(self.numPairs, True)
         if npixCutoff is not None:
             # remove pairs from index if they don't pass the cutoff
@@ -143,31 +173,6 @@ class sameCellCandidates(standardAnalysis):
         xposPair1, xposPair2 = self.xposPair1[pairIdx], self.xposPair2[pairIdx]
         yposPair1, yposPair2 = self.yposPair1[pairIdx], self.yposPair2[pairIdx]
         return xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2
-    
-    def autoload(self, onefile=None):
-        '''load standard data for measuring same cell candidate'''
-        # update onefile if using a different measure of activity
-        self.onefile = self.onefile if onefile is None else onefile
-        self.numROIs = sum(self.vrexp.value['roiPerPlane'])
-        
-        # get relevant data
-        npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')]).astype(np.int32) # roi size (in pixels of mask)
-        data = self.vrexp.loadone(self.onefile) # activity array
-        stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
-        roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
-        xyPos = stackPosition[:,0:2] * 1.3 # xy position to um
-        
-        # comparisons
-        self.xcROIs = sp.spatial.distance.squareform(np.corrcoef(data.T), checks=False)
-        self.pwDist = sp.spatial.distance.pdist(xyPos)
-        self.idxRoi1, self.idxRoi2 = self.pairValFromVec(np.arange(self.numROIs), squareform=True)
-        self.planePair1, self.planePair2 = self.pairValFromVec(roiPlaneIdx, squareform=True)
-        self.npixPair1, self.npixPair2 = self.pairValFromVec(npix, squareform=True)
-        self.xposPair1, self.xposPair2 = self.pairValFromVec(xyPos[:,0], squareform=True)
-        self.yposPair1, self.yposPair2 = self.pairValFromVec(xyPos[:,1], squareform=True)
-        self.numPairs = len(self.xcROIs)
-        assert self.numPairs==self.numROIs*(self.numROIs-1)/2, f"math flex failed: numPairs={self.numPairs}, math: {self.numROIs*(self.numROIs-1)/2}"
-        self.dataloaded = True
         
     def scatterForThresholds(self, keepPlanes=None, distanceCutoff=None, outputFig=False):
         '''Make color-coded scatter plot to visualize potential thresholds for distance and planes'''
@@ -527,11 +532,11 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
         
         
-    def makeHistograms(self, thresholds=None, withSave=False, npixCutoff=None, keepPlanes=None):
+    def makeHistograms(self, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, withSave=False, npixCutoff=None, keepPlanes=None):
         '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
-        
-        # default parameter
-        thresholds = thresholds if thresholds is not None else self.thresholds
+        binEdges = np.linspace(-1, 1, ncorrbins)
+        binCenters = helpers.edge2center(binEdges)
+        barWidth = np.diff(binEdges[:2])
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(npixCutoff=npixCutoff, keepPlanes=keepPlanes)
@@ -543,34 +548,34 @@ class sameCellCandidates(standardAnalysis):
         planePair[~samePlaneIdx] = -1 # set plane to -1 for any pairs not in the same plane
         
         # Get index of ROIs within a certain distance from each other
-        idxClose = [pwDist < th for th in self.thresholds]
+        idxClose = [pwDist < th for th in thresholds]
         
         # Do it for all data
-        fullCounts = np.histogram(xcROIs, bins=self.binEdges)[0]
-        closeCounts = [np.histogram(xcROIs[ic], bins=self.binEdges)[0] for ic in idxClose]
+        fullCounts = np.histogram(xcROIs, bins=binEdges)[0]
+        closeCounts = [np.histogram(xcROIs[ic], bins=binEdges)[0] for ic in idxClose]
 
         # Then do it for each plane individually
-        fcPlane = np.stack([np.histogram(xcROIs[planePair==planeIdx], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']])
-        ccPlane = [np.stack([np.histogram(xcROIs[(planePair==planeIdx) & ic], bins=self.binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']]) for ic in idxClose]
+        fcPlane = np.stack([np.histogram(xcROIs[planePair==planeIdx], bins=binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']])
+        ccPlane = [np.stack([np.histogram(xcROIs[(planePair==planeIdx) & ic], bins=binEdges)[0] for planeIdx in self.vrexp.value['planeIDs']]) for ic in idxClose]
         
         # now plot data
         plt.close('all')
-        cmap = helpers.ncmap('winter', 0, len(self.thresholds)-1)
+        cmap = helpers.ncmap('winter', 0, len(thresholds)-1)
         fig,ax = plt.subplots(1,2,figsize=(12,4))
         
         # Plot histograms for full count
-        ax[0].bar(self.binCenters, fullCounts, width=self.barWidth, color='k', alpha=1, label='full distribution')
+        ax[0].bar(binCenters, fullCounts, width=barWidth, color='k', alpha=1, label='full distribution')
         for idx, counts in enumerate(closeCounts):
-            ax[0].bar(self.binCenters, counts, width=self.barWidth, color=cmap(idx), alpha=0.4, label=f"Threshold: {thresholds[idx]}")
+            ax[0].bar(binCenters, counts, width=barWidth, color=cmap(idx), alpha=0.4, label=f"Threshold: {thresholds[idx]}")
         ax[0].set_yscale('log')
         ax[0].set_xlabel('correlation')
         ax[0].set_ylabel('counts')
         ax[0].legend(loc='upper left')
         ax[0].set_title(f"All pairs across planes - {self.onefile}")
         
-        ax[1].bar(self.binCenters, np.nanmean(fcPlane,axis=0), width=self.barWidth, alpha=1, color='k', label='full (each plane)')
+        ax[1].bar(binCenters, np.nanmean(fcPlane,axis=0), width=barWidth, alpha=1, color='k', label='full (each plane)')
         for idx, counts in enumerate(ccPlane):
-            ax[1].bar(self.binCenters, np.nanmean(counts,axis=0), width=self.barWidth, alpha=0.4, color=cmap(idx), label=f"Threshold: {thresholds[idx]}")
+            ax[1].bar(binCenters, np.nanmean(counts,axis=0), width=barWidth, alpha=0.4, color=cmap(idx), label=f"Threshold: {thresholds[idx]}")
         ax[1].set_yscale('log')
         ax[1].set_xlabel('correlation')
         ax[1].set_ylabel('counts')
@@ -587,24 +592,24 @@ class sameCellCandidates(standardAnalysis):
         
         
         
-class clusterExplorer():
+class clusterExplorer(sameCellCandidates):
     def __init__(self,  scc, maxCluster=25, corrCutoff=0.4, maxCutoff=None, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityF'):
-        # Store same cell candidates object
-        self.scc = scc
-        self.vrexp = self.scc.vrexp # moving this here is easier
+        for att,val in vars(scc).items(): setattr(self, att, val)
         self.maxCluster = maxCluster
         self.default_alpha = 0.8
         self.default_linewidth = 1
         
         # Load activity and suite2p data
         self.timestamps = self.vrexp.loadone('mpci.times')
-        self.activity = self.vrexp.loadone(activity)
-        self.neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')
-        self.stat = self.vrexp.loadS2P('stat')
-        self.roiCentroid = self.vrexp.loadone('mpciROIs.stackPosition')[:,:2]
-        self.roiPlaneIdx = self.vrexp.loadone('mpciROIs.stackPosition')[:,2]
+        self.activity = self.vrexp.loadone(activity)[:,self.idxROI_inTargetPlane]
+        self.neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')[:,self.idxROI_inTargetPlane]
+        self.stat = self.vrexp.loadS2P('stat')[self.idxROI_inTargetPlane]
+        self.roiCentroid = self.vrexp.loadone('mpciROIs.stackPosition')[self.idxROI_inTargetPlane,:2]
+        self.roiPlaneIdx = self.vrexp.loadone('mpciROIs.stackPosition')[self.idxROI_inTargetPlane,2].astype(np.int32)
         
         # Create look up table for plane colormap
+        if keepPlanes is None: 
+            assert set(keepPlanes) <= set(self.keepPlanes), "requested planes include some not stored in sameCellCandidate object"
         roiPlanes = np.unique(self.roiPlaneIdx) if keepPlanes is None else copy(keepPlanes)
         numPlanes = len(roiPlanes)
         self.planeColormap = mpl.colormaps.get_cmap('jet').resampled(numPlanes)
@@ -612,17 +617,17 @@ class clusterExplorer():
         
         # Create extrafilter if requested
         if maxCutoff is not None or minDistance is not None:
-            extraFilter = np.full(len(self.scc.xcROIs),True)
+            extraFilter = np.full(len(self.xcROIs),True)
             if maxCutoff is not None:
-                extraFilter &= self.scc.xcROIs < maxCutoff
+                extraFilter &= self.xcROIs < maxCutoff
             if minDistance is not None:
-                extraFilter &= self.scc.pwDist > minDistance
+                extraFilter &= self.pwDist > minDistance
         else:
             extraFilter = None
 
         # generate pair filter and return list of ROIs in clusters based on correlation, distance, and plane
-        self.boolIdx = self.scc.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, extraFilter=extraFilter)
-        self.allROIs = list(set(self.scc.idxRoi1[self.boolIdx]).union(set(self.scc.idxRoi2[self.boolIdx])))
+        self.boolIdx = self.getPairFilter(corrCutoff=corrCutoff, distanceCutoff=distanceCutoff, keepPlanes=keepPlanes, extraFilter=extraFilter)
+        self.allROIs = list(set(self.idxRoi1[self.boolIdx]).union(set(self.idxRoi2[self.boolIdx])))
         numPairs = len(self.allROIs)
         
         # create figure
@@ -637,7 +642,8 @@ class clusterExplorer():
         self.fig.subplots_adjust(bottom=0.25)
 
         self.axIdx = self.fig.add_axes([0.25, 0.1, 0.65, 0.05])
-
+        self.axText = self.fig.add_axes([0.05, 0.1, 0.1, 0.05])
+        
         # define the values to use for snapping
         allowedPairs = np.arange(numPairs)
 
@@ -648,6 +654,9 @@ class clusterExplorer():
             valinit=initIdx, valstep=allowedPairs,
             color="black"
         )
+        
+        self.text_box = TextBox(self.axText, "ROI", textalignment="center")
+        self.text_box.set_val("0")  # Trigger `submit` with the initial string.
 
         # initialize plot objects
         self.dLine = []
@@ -656,7 +665,7 @@ class clusterExplorer():
         for n in range(self.maxCluster):
             self.dLine.append(self.ax[0].plot(self.timestamps, self.activity[:,0], lw=self.default_linewidth, c='k', alpha=self.default_alpha)[0])
             self.nLine.append(self.ax[1].plot(self.timestamps, self.neuropil[:,0], lw=self.default_linewidth, c='k', alpha=self.default_alpha)[0])
-            hull = self.getConvexHull(n)
+            hull = self.getMinMaxHull(n)
             self.roiHull.append(self.ax[3].plot(hull[0], hull[1], c=self.planeColormap(hull[2]), lw=self.default_linewidth)[0])
         self.im = self.ax[2].imshow(self.activity[:,:10].T, vmin=0, vmax=1, extent=(self.timestamps[0], self.timestamps[-1], 0, 1), aspect='auto', interpolation='nearest', cmap='hot', origin='lower')
 
@@ -667,16 +676,35 @@ class clusterExplorer():
         self.title1 = self.ax[0].set_title('deconvolved')
         self.title2 = self.ax[1].set_title('neuropil')
         self.title3 = self.ax[2].set_title('full cluster (deconv)')
-        self.title4 = self.ax[3].set_title('roi convex hulls')
+        self.title4 = self.ax[3].set_title('roi outlines')
 
         # then add real data to them
         self.updatePlot(initIdx)
 
         cid = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        kid = self.fig.canvas.mpl_connect('key_press_event', self.onkey)
+        
+        self.sSeed.on_changed(self.changeSlider)
+        self.text_box.on_submit(self.typeROI)
 
-        self.sSeed.on_changed(self.updatePlot)
         plt.show()   
     
+    def changeSlider(self, event):
+        self.updatePlot(int(self.sSeed.val))
+        
+    def typeROI(self, event):
+        valid = self.text_box.text.isnumeric()
+        if valid:
+            self.sSeed.set_val(int(self.text_box.text))
+        else:
+            self.text_box.set_val('not an int')
+        
+    def onkey(self, event):
+        if event.key=='right':
+            self.sSeed.set_val(self.sSeed.val+1)
+        if event.key=='left':
+            self.sSeed.set_val(self.sSeed.val-1)
+        
     def onclick(self, event):
         selected = False
         if event.inaxes==self.ax[2]:
@@ -689,7 +717,7 @@ class clusterExplorer():
             return None
         
         else:
-            self.title4.set_text("reset selection to null")
+            self.title4.set_text("ROI Outlines")
         
         # first reset colors and alphas and zorder
         for i in range(self.numToPlot):
@@ -705,8 +733,18 @@ class clusterExplorer():
         self.roiHull[plotIndex].set(color='k', zorder=self.maxCluster+10, lw=self.default_linewidth*2)
         roiIndex = self.idxToPlot[plotIndex]
         roiPlane = int(self.roiPlaneIdx[roiIndex])
-        inPlaneIndex = roiIndex - sum(self.vrexp.value['roiPerPlane'][:roiPlane])
+        inPlaneIndex = self.inPlaneIndex(roiIndex)
         self.title4.set_text(f"ROI Index: {inPlaneIndex} Plane: {roiPlane}")
+        
+    def getMinMaxHull(self, idxroi):
+        ypix = self.stat[idxroi]['ypix']
+        xpix = self.stat[idxroi]['xpix']
+        allx, invx = np.unique(xpix, return_inverse=True)
+        miny, maxy = list(map(list,zip(*[(min(ypix[xpix==u]), max(ypix[xpix==u])) for u in allx])))
+        xpoints = np.append(np.concatenate((allx, allx[::-1])), allx[0])
+        ypoints = np.append(np.concatenate((miny, maxy[::-1])), miny[0])
+        planeIdx = self.roiPlaneIdx[idxroi]
+        return xpoints, ypoints, planeIdx
         
     def getConvexHull(self, idxroi):
         roipix = np.stack((self.stat[idxroi]['ypix'], self.stat[idxroi]['xpix'])).T
@@ -716,17 +754,16 @@ class clusterExplorer():
         return xpoints, ypoints, planeIdx
     
     def getCluster(self, iSeed):
-        includesSeed = (self.scc.idxRoi1==iSeed) | (self.scc.idxRoi2==iSeed)
+        includesSeed = (self.idxRoi1==iSeed) | (self.idxRoi2==iSeed)
         iCluster = np.nonzero(self.boolIdx & includesSeed)[0]
-        self.idxROIs = list(set(self.scc.idxRoi1[iCluster]).union(set(self.scc.idxRoi2[iCluster])))
+        self.idxROIs = list(set(self.idxRoi1[iCluster]).union(set(self.idxRoi2[iCluster])))
         self.numInCluster = len(self.idxROIs)
         self.numToPlot = min(self.numInCluster, self.maxCluster)
         self.idxToPlot = sorted(np.random.choice(self.idxROIs, self.numToPlot, replace=False))
-        self.hulls = [self.getConvexHull(i) for i in self.idxToPlot]
+        self.hulls = [self.getMinMaxHull(i) for i in self.idxToPlot]
         return self.activity[:,self.idxToPlot].T, self.neuropil[:, self.idxToPlot].T
         
-    def updatePlot(self, val):
-        newIdx = int(self.sSeed.val)
+    def updatePlot(self, newIdx):
         dTraces, nTraces = self.getCluster(self.allROIs[newIdx])
         ydlim = np.min(dTraces), np.max(dTraces)
         ynlim = np.min(nTraces), np.max(nTraces)
@@ -750,80 +787,18 @@ class clusterExplorer():
             self.nLine[i].set(visible=False)
             self.roiHull[i].set(visible=False)
             
+        self.ax[3].invert_yaxis()
         newImshow = sp.signal.savgol_filter(dTraces/np.max(dTraces,axis=1,keepdims=True),15,1,axis=1)
         newImshow = newImshow - np.mean(newImshow, axis=1, keepdims=True)
         self.im.set(data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot))
         self.title1.set_text(f"Activity - idx:{newIdx}")
         self.title2.set_text(f"Neuropil - numInCluster:{self.numInCluster}")
         self.fig.canvas.draw_idle()
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-#     def savingCodeForChecksAboutSizes(self):
-#         corrCutoff = 0.5
-#         distanceCutoff = np.inf
-#         keepPlanes = [1,2,3,4]
-#         boolPlaneOnly = self.getPairFilter(keepPlanes=keepPlanes)
-#         boolIdx = self.getPairFilter(corrCutoff=corrCutoff, keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
-#         pairIdx = np.nonzero(boolIdx)[0]
-#         numPairs = len(pairIdx)
-
-#         print(f"Percent pairs exceeding corr-cutoff within requested planes: {round(100*sum(boolIdx)/sum(boolPlaneOnly),3)}")
-
-#         iPlane1, iPlane2 = self.idxRoi1[boolPlaneOnly], self.idxRoi2[boolPlaneOnly]
-#         iCut1, iCut2 = self.idxRoi1[boolIdx], self.idxRoi2[boolIdx]
-
-#         roiInPlane = set(np.concatenate((iPlane1, iPlane2)))
-#         roiCut = set(np.concatenate((iCut1, iCut2)))
-#         roiSecond = set(iCut2)
-#         roiFirst = set(iCut1)
-
-#         print(f"#First: {len(roiFirst)}, #Second: {len(roiSecond)}, #Both: {len(roiCut)}, #Total: {len(roiInPlane)}")
-#         roiClip = list(roiFirst) if len(roiFirst)<len(roiSecond) else list(roiSecond)
-
-#         # Now test clipping methods
-#         data = self.vrexp.loadone(self.onefile)
-#         idxKeep = np.full(self.numROIs,True)
-#         idxKeep[roiClip]=False
-#         idxKeep[:self.vrexp.value['roiPerPlane'][0]]=False
-#         print(f"Sanity check: sum(idxKeep=False)={np.sum(idxKeep==False)}, plane0+second: {self.vrexp.value['roiPerPlane'][0]+len(roiClip)}")
-
-#         clipData = data[:,idxKeep]
-#         newXC = sp.spatial.distance.squareform(np.corrcoef(clipData.T), checks=False)
-#         print("Succesful clip by second in pair only if this is false: ", np.any(newXC>corrCutoff))
-
-#         fullIdx = copy(boolPlaneOnly)
-#         fullIdx[boolIdx]=False
-#         idxJustKept = fullIdx[boolPlaneOnly]
-#         G = sp.spatial.distance.squareform(1*(idxJustKept==False))
-#         graph = nx.from_numpy_array(G)
-#         mis = sorted(nx.maximal_independent_set(graph))
-#         misData = data[:,self.vrexp.value['roiPerPlane'][0]:]
-#         print(misData.shape)
-#         misData = misData[:,mis]
-#         newXC = sp.spatial.distance.squareform(np.corrcoef(misData.T), checks=False)
-
-#         print('')
-#         print(G.shape[0], np.sum(np.any(G,axis=1)), "mis --> newG:", misData.shape)
-#         print("Succesful clip by second in pair only if this is false: ", np.any(newXC>corrCutoff))
-        
     
+    def inPlaneIndex(self, roi):
+        idxToRoiPlane = self.keepPlanes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
+        return roi - sum(self.roiPerPlane[:idxToRoiPlane])
+        
+        
+        
+        
