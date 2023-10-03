@@ -384,6 +384,39 @@ class vrDatabase:
         # If returnCheck is requested, return True if any records were invalid
         if returnCheck: return checked_notDone.any() or checked_notNeed.any()
     
+    # == for communicating with the database about red cell quality control ==
+    def updateRedCellQCDateTime(self):
+        relevant_one_files = [
+            'mpciROIs.redCellIdx.npy',
+            'mpciROIs.redCellManualAssignment.npy',
+            'parametersRed*', # wild card because there are multiple possibilities
+        ]
+            
+        df = self.getTable()
+        redCellQC_done = df[(df['imaging']==True) & (df['suite2p']==True) & (df['redCellQC']==True)]
+        uids = redCellQC_done['uSessionID'].tolist()
+        rcEditDate = []
+        for idx, row in redCellQC_done.iterrows():
+            vrs = self.vrSession(row) # create vrSession to point to session folder
+            cLatestMod = 0
+            for f in relevant_one_files:
+                cLatestMod = max(vrs.onePath().rglob(f).stat().st_mtime, cLatestMod)
+            cDateTime = datetime.fromtimestamp(cLatestMod)
+            rcEditDate.append(cDateTime) # get suite2p path creation date
+            
+        with self.openCursor(commitChanges=True) as cursor:
+            cursor.executemany(self.createUpdateManyStatement('redCellQCDate'),zip(rcEditDate, uids))
+            
+    def needsRedCellQC(self):
+        df = self.getTable()
+        return df[(df['imaging']==True) & (df['suite2p']==True) & (df['redCellQC']==False)]
+        
+    def printRequiresRedCellQC(self, printTargets=True, needsQC=False):
+        need = self.needsRedCellQC()
+        for idx, row in need.iterrows():
+            print(f"Database indicates that redCellQC has not been performed for session: {self.vrSession(row).sessionPrint()}")
+    
+    # == well, this isn't coded yet :) ==
     def addRecord(self):
         raise ValueError("Not coded yet!")
         #updateStatement = f"insert into T 
