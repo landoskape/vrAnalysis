@@ -16,6 +16,7 @@ from vrAnalysis.redgui import redCellGUI as rgui
 vrdb = database.vrDatabase()
 ```
 
+### Primary Workflow
 1. Identify which sessions need red cell QC
 The database can create an iterable list of sessions that require red cell 
 quality control, along with any other filters. I usually start by iterating
@@ -57,6 +58,18 @@ is a different part of the GUI. (But of course you can always reopen the
 for ses in vrdb.iterSessions(mouseName='ATL027', redCellQC=True):
     print(ses.sessionPrint())
 ```
+
+### Additional Features
+Sometimes you'll want to compare the cutoffs you chose for sessions in the 
+same (or different) mice. To do so, use this block. Make a session iterable to
+go through target list of sessions, generally with a filter on the mouseName 
+and only looking at sessions where you've done red cell QC. It'll print a 
+pandas dataframe showing the min/max cutoffs for each feature value used in 
+the red cell detection. 
+```python
+rgui.compareFeatureCutoffs(*vrdb.iterSessions(mouseName='ATL027', redCellQC=True))
+```
+
 
 
 
