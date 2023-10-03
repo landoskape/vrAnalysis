@@ -125,7 +125,50 @@ records were found if you set `returnCheck=True`.
 validDatabase = vrdb.checkS2P(withDatabaseUpdate=True, returnCheck=True)
 ```
 
+### Managing Red Cell QC Information
+There are a similar set of methods for communicating with the database about
+which sessions need red cell quality control. They are all explained here in
+full anyway. 
 
+To determine which sessions need red cell QC, you can use the following block.
+Note that this assumes that the only sessions which need red cell QC are those
+in which imaging, suite2p, and vrRegistration have been performed, but red 
+cell QC has not. 
+```python
+df = vrdb.needsRedCellQC()
+```
 
+Or if instead of a dataframe you want it to print the session names, use:
+```python
+vrdb.printRequiresRedCellQC()
+```
 
+The database stores the time at which red cell QC was performed. You can go
+through and update the times by using the following block. 
+```python
+vrdb.updateRedCellQCDateTime()
+```
 
+Note that this assumes that the only relevant files indicating the last QC 
+update are the following one files:
+```python
+relevant_one_files = [
+    'mpciROIs.redCellIdx.npy',
+    'mpciROIs.redCellManualAssignment.npy',
+    'parametersRed*', # wild card because there are multiple possibilities
+]
+```
+
+If you'd like an iterator for vrExperiment session objects of the specific
+sessions that need red cell QC, use this: 
+```python
+ises = vrdb.iterSessionRedCell()
+```
+
+Finally, if you want to update the QC field (and date/time) of the database,
+you can use this block, where the first three inputs identify the session, and
+the last `state=True` input determines whether the field should be set to 
+`True` or `False`. This is what the `redCellGUI` uses. 
+```python
+success = vrdb.setRedCellQC(<mouseName>, <dateString>, <sessionid>, state=True)
+```

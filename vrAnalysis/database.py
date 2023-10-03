@@ -400,7 +400,8 @@ class vrDatabase:
             vrs = self.vrSession(row) # create vrSession to point to session folder
             cLatestMod = 0
             for f in relevant_one_files:
-                cLatestMod = max(vrs.onePath().rglob(f).stat().st_mtime, cLatestMod)
+                for file in vrs.onePath().rglob(f):
+                    cLatestMod = max(file.stat().st_mtime, cLatestMod)
             cDateTime = datetime.fromtimestamp(cLatestMod)
             rcEditDate.append(cDateTime) # get suite2p path creation date
             
@@ -409,12 +410,42 @@ class vrDatabase:
             
     def needsRedCellQC(self):
         df = self.getTable()
-        return df[(df['imaging']==True) & (df['suite2p']==True) & (df['redCellQC']==False)]
+        return df[(df['imaging']==True) & (df['suite2p']==True) & (df['vrRegistration']==True) & (df['redCellQC']==False)]
         
     def printRequiresRedCellQC(self, printTargets=True, needsQC=False):
         need = self.needsRedCellQC()
         for idx, row in need.iterrows():
             print(f"Database indicates that redCellQC has not been performed for session: {self.vrSession(row).sessionPrint()}")
+    
+    def iterSessionRedCell(self):
+        """Creates list of sessions that can be iterated through that require red cell quality control"""
+        df = self.needsRedCellQC()
+        ises = []
+        for idx, row in df.iterrows():
+            ises.append(self.vrExperiment(row))
+        return ises
+    
+    def setRedCellQC(self, mouseName, dateString, sessionid, state=True):
+        record = self.getRecord(mouseName, dateString, sessionid)
+        if record is None: 
+            print(f"Could not find session {self.vrSession(record).sessionPrint()} in database.")
+            return False
+        
+        try:
+            with self.openCursor(commitChanges=True) as cursor:
+                # Tell the database that vrRegistration was performed and the time of processing
+                cursor.execute(self.createUpdateStatement('redCellQC',record['uSessionID']),state)
+                if state==True:
+                    # If saying we are setting red cell qc to true, then add the date
+                    cursor.execute(self.createUpdateStatement('redCellQCDate',record['uSessionID']),datetime.now())
+                else:
+                    # Otherwise remove the date
+                    cursor.execute(self.createUpdateStatement('redCellQCDate',record['uSessionID']),'')
+            return True
+        
+        except:
+            print(f"Failed to update database for session: {self.vrSession(record).sessionPrint()}")
+            return False
     
     # == well, this isn't coded yet :) ==
     def addRecord(self):
@@ -514,30 +545,6 @@ class vrDatabase:
             print(f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}")
             
     # == operating vrExperiment pipeline ==
-    def setRedCellQC(self, mouseName, dateString, sessionid, state=True):
-        record = self.getRecord(mouseName, dateString, sessionid)
-        if record is None: 
-            print(f"Could not find session {self.vrSession(record).sessionPrint()} in database.")
-            return False
-        
-        try:
-            with self.openCursor(commitChanges=True) as cursor:
-                # Tell the database that vrRegistration was performed and the time of processing
-                cursor.execute(self.createUpdateStatement('redCellQC',record['uSessionID']),state)
-                if state==True:
-                    # If saying we are setting red cell qc to true, then add the date
-                    cursor.execute(self.createUpdateStatement('redCellQCDate',record['uSessionID']),datetime.now())
-                else:
-                    # Otherwise remove the date
-                    cursor.execute(self.createUpdateStatement('redCellQCDate',record['uSessionID']),'')
-            return True
-        
-        except:
-            print(f"Failed to update database for session: {self.vrSession(record).sessionPrint()}")
-            return False
-
-
-        
     def clearOneData(self, **userOpts):
         opts = {}
         opts['clearOne'] = True # clear previous oneData.... yikes, big move dude!
