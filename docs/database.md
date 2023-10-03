@@ -152,9 +152,10 @@ full anyway.
 To determine which sessions need red cell QC, you can use the following block.
 Note that this assumes that the only sessions which need red cell QC are those
 in which imaging, suite2p, and vrRegistration have been performed, but red 
-cell QC has not. 
+cell QC has not. You can add keyword conditions to filter the database before
+looking for sessions that need red cell QC. 
 ```python
-df = vrdb.needsRedCellQC()
+df = vrdb.needsRedCellQC(mouseName='ATL028')
 ```
 
 Or if instead of a dataframe you want it to print the session names, use:
