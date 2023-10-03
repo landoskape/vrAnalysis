@@ -9,7 +9,20 @@ it.
 The database module is designed to work with a local SQL database. At the 
 moment, my SQL database is Microsoft Access, which is available as part of 
 Microsoft Office. However, most of the code is generally just SQL code, so the
-only place that needs a change for a different database host is 
+only place that needs a change for a different database host is in the 
+`connect` method found 
+[here](https://github.com/landoskape/vrAnalysis/blob/main/vrAnalysis/database.py#L99)
+and it has instructions for how to improve compatibility. (By the way, if you
+use this code and add compatibility for a new host, please open a pull request
+or let me know so I can make it available for everyone). 
+
+This module primarily performs one of two things: 
+1. Return pandas dataframes from the database to inform the user
+2. Send update commands to the database when requested by the user
+
+It also depends on vrAnalysis functionality, because it continuously interacts
+with the `session` object to find the right datapaths, and even automatically
+register sessions (i.e. preprocessing) that need it.  
 
 ## Standard Usage
 This section contains codeblocks explaining how to use the database. Note that
