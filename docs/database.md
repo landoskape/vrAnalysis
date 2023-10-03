@@ -1,4 +1,4 @@
-# vrAnalysis: database
+# vrAnalysis Documentation: database
 
 This is some documentation for the database of vrAnalysis. The main goal of
 this file is to remind me what I've written so I don't forget. There may be 

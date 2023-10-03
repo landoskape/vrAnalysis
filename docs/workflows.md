@@ -1,4 +1,4 @@
-# vrAnalysis: workflows
+# vrAnalysis Documentation: workflows
 
 This is documentation for standard workflows using the vrAnalysis package. The
 main goal of this file is to remind me what I've written so I don't forget. 
@@ -41,19 +41,22 @@ redCell = session.redCellProcessing(vrexp)
 redSelection = rgui.redSelectionGUI(redCell)
 ```
 
-3. Do curation in the GUI
-This all happens in the GUI. 
+3. Do curation in the GUI, save work and update database
+This all happens in the GUI. For information on how to use the GUI (it's a 
+little tricky to use but powerful for my needs), go over to the
+[redCellGUI](redCellGUI.md) documentation page. 
 
-4. Save your work as one files
-
-
-5. Tell the database that you are finished curating
-
-6. Check your work
+4. Check your work!
 You can also print a list of sessions that have finished quality control. I 
 like doing this to sanity check that I curated successfully (where 
-successfully means that I pressed the save and update DB button). 
+successfully means that I pressed the save and update DB button). Note that 
+this _only_ checks if you updated the database, saving the results is a 
+different part of the GUI. (But of course you can always reopen the 
+`redCellGUI` for the same session and make sure it looks good. 
 ```python
 for ses in vrdb.iterSessions(mouseName='ATL027', redCellQC=True):
     print(ses.sessionPrint())
 ```
+
+
+

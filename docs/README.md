@@ -13,4 +13,6 @@ use, or (3) is almost useful but requires small modifications, I'd be happy to
 help you get it working. 
 
 ## Contents:
-- [database](database.md)
+- [Basic workflows with vrAnalysis](workflows.md)
+- [Working with the database](database.md)
+- [Using the redCellGUI for manual curation](redCellGUI.md)
