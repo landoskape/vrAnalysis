@@ -5,6 +5,7 @@ import functools
 import numpy as np
 import scipy as sp
 from scipy import ndimage as ndi
+import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -20,6 +21,38 @@ from .. import session
 from .. import helpers
 from .. import database
 
+def compareFeatureCutoffs(*vrexp):
+    features = [
+        'parametersRedDotProduct.minMaxCutoff',
+        'parametersRedPearson.minMaxCutoff',
+        'parametersRedPhaseCorrelation.minMaxCutoff',
+        'parametersRedS2P.minMaxCutoff'
+    ]
+    dfDict = {
+        'session': [ses.sessionPrint() for ses in vrexp]
+    }
+    def getFeatName(name):
+        cname = name[name.find('Red')+3:name.find('.')]
+        return cname #cname+'_min', cname+'_max'
+    
+    for feat in features:
+        dfDict[getFeatName(feat)]=[None]*len(vrexp)
+        #cmin, cmax = getFeatName(feat)
+        #dfDict[cmin]=np.zeros(len(vrexp))
+        #dfDict[cmax]=np.zeros(len(vrexp))
+        
+    for idx, ses in enumerate(vrexp):
+        for feat in features:
+            cdata = ses.loadone(feat)
+            dfDict[getFeatName(feat)][idx]=cdata
+            # cmin, cmax = getFeatName(feat)
+            # dfDict[cmin][idx]=cdata[0]
+            # dfDict[cmax][idx]=cdata[1]
+    
+    print(pd.DataFrame(dfDict))
+            
+        
+        
 class redSelectionGUI:
     def __init__(self, redCellObj, numBins=50):
         assert type(redCellObj)==session.redCellProcessing, "redCellObj must be an instance of the redCellProcessing class inherited from session"
