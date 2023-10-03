@@ -16,7 +16,15 @@ from vrAnalysis.redgui import redCellGUI as rgui
 vrdb = database.vrDatabase()
 ```
 
+There are two general workflows for curation of red cell assignment. The first
+is to go through each session and do the curation independently of all other 
+sessions. I refer to this as the "Primary Worklow", because it's pretty 
+efficient and I think I'll probably use it this way. Alternatively, you can do
+the curation for one or a few sessions and apply it to other sessions, usually
+from the same mouse. 
+
 ### Primary Workflow
+
 1. Identify which sessions need red cell QC
 The database can create an iterable list of sessions that require red cell 
 quality control, along with any other filters. I usually start by iterating
