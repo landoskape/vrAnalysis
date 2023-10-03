@@ -49,10 +49,10 @@ little tricky to use but powerful for my needs), go over to the
 4. Check your work!
 You can also print a list of sessions that have finished quality control. I 
 like doing this to sanity check that I curated successfully (where 
-successfully means that I pressed the save and update DB button). Note that 
-this _only_ checks if you updated the database, saving the results is a 
-different part of the GUI. (But of course you can always reopen the 
-`redCellGUI` for the same session and make sure it looks good. 
+successfully means that I pressed the save and the update database button). 
+Note that this _only_ checks if you updated the database, saving the results 
+is a different part of the GUI. (But of course you can always reopen the 
+`redCellGUI` for the same session and make sure it looks good). 
 ```python
 for ses in vrdb.iterSessions(mouseName='ATL027', redCellQC=True):
     print(ses.sessionPrint())
