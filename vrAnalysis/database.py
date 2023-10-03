@@ -96,15 +96,21 @@ class vrDatabase:
         self.dbName = metadata['dbName']
         self.tableName = metadata['tableName']
         
-    def connect(self):
+    def connect(self, hostType='access'):
         """
-        Connect to the Microsoft Access database defined from the vrDatabaseMetadata function.
+        Connect to the database defined from the vrDatabaseMetadata function.
         """
-        connString = (
-            r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
-            fr"DBQ={self.dbPath};"
-        )
-        return pyodbc.connect(connString)
+        driverString = {
+            'access' : r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + fr"DBQ={self.dbPath};"
+        }
+        
+        # Make sure connections are possible for this hosttype
+        failureMessage = (f"Requested hostType ({hostType}) is not available. The only ones that are coded are: {[k for k in driverString.keys()]}"
+                          "For support with writing a driver string for a different host, use the fantastic website: https://www.connectionstrings.com/")
+        assert hostType in driverString, failureMessage
+        
+        # Return a connection to the database
+        return pyodbc.connect(driverString[hostType])
     
     @contextmanager
     def openCursor(self, commitChanges=False):

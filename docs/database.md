@@ -5,6 +5,12 @@ this file is to remind me what I've written so I don't forget. There may be
 room for explaining how it works, but at the moment, I'll just focus on using 
 it.
 
+## How it works
+The database module is designed to work with a local SQL database. At the 
+moment, my SQL database is Microsoft Access, which is available as part of 
+Microsoft Office. However, most of the code is generally just SQL code, so the
+only place that needs a change for a different database host is 
+
 ## Standard Usage
 This section contains codeblocks explaining how to use the database. Note that
 it's designed so it's easy to copy code when previewed on GitHub, so I suggest
