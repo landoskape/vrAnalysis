@@ -138,7 +138,7 @@ class vrExperiment(vrSession):
         self.loadBuffer[fileName] = var
         np.save(self.onePath() / fileName, var)
 
-    def loadone(self,*names,force=False):
+    def loadone(self,*names,force=False, allow_pickle=True):
         # load one data from vrexp object. if available in loadBuffer, will grab it from there. force=True performs automatic reload, even if already in buffer
         fileName = self.oneFilename(*names)
         if not force and fileName in self.loadBuffer.keys():
@@ -148,7 +148,7 @@ class vrExperiment(vrSession):
                 print(f"In session {self.sessionPrint()}, the one file {fileName} doesn't exist. Here is a list of saved oneData files:")
                 for oneFile in self.printSavedOne(): print(oneFile)
                 raise ValueError("oneData requested is not available")
-            oneVar = np.load(self.onePath() / fileName)
+            oneVar = np.load(self.onePath() / fileName, allow_pickle=allow_pickle)
             self.loadBuffer[fileName] = oneVar
             return oneVar
 

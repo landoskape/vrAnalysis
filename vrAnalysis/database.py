@@ -414,18 +414,18 @@ class vrDatabase:
         with self.openCursor(commitChanges=True) as cursor:
             cursor.executemany(self.createUpdateManyStatement('redCellQCDate'),zip(rcEditDate, uids))
             
-    def needsRedCellQC(self):
-        df = self.getTable()
+    def needsRedCellQC(self, **kwConditions):
+        df = self.getTable(**kwConditions)
         return df[(df['imaging']==True) & (df['suite2p']==True) & (df['vrRegistration']==True) & (df['redCellQC']==False)]
         
-    def printRequiresRedCellQC(self, printTargets=True, needsQC=False):
-        need = self.needsRedCellQC()
+    def printRequiresRedCellQC(self, printTargets=True, needsQC=False, **kwConditions):
+        need = self.needsRedCellQC(**kwConditions)
         for idx, row in need.iterrows():
             print(f"Database indicates that redCellQC has not been performed for session: {self.vrSession(row).sessionPrint()}")
     
-    def iterSessionRedCell(self):
+    def iterSessionRedCell(self, **kwConditions):
         """Creates list of sessions that can be iterated through that require red cell quality control"""
-        df = self.needsRedCellQC()
+        df = self.needsRedCellQC(**kwConditions)
         ises = []
         for idx, row in df.iterrows():
             ises.append(self.vrExperiment(row))
