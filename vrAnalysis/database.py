@@ -281,8 +281,7 @@ class vrDatabase:
         >>> record = vrdb.getRecord('ATL001','2000-01-01','701')
         """
         
-        fieldNames, tableData = self.tableData()
-        df = pd.DataFrame.from_records(tableData, columns=fieldNames)
+        df = self.getTable()
         record = df[(df['mouseName']==mouseName) 
                     & (df['sessionDate'].apply(lambda sd : sd.strftime('%Y-%m-%d'))==sessionDate)
                     & (df['sessionID']==int(sessionID))]
@@ -482,6 +481,30 @@ class vrDatabase:
             print(f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}")
             
     # == operating vrExperiment pipeline ==
+    def setRedCellQC(self, mouseName, dateString, sessionid, state=True):
+        record = self.getRecord(mouseName, dateString, sessionid)
+        if record is None: 
+            print(f"Could not find session {self.vrSession(record).sessionPrint()} in database.")
+            return False
+        
+        try:
+            with self.openCursor(commitChanges=True) as cursor:
+                # Tell the database that vrRegistration was performed and the time of processing
+                cursor.execute(self.createUpdateStatement('redCellQC',record['uSessionID']),state)
+                if state==True:
+                    # If saying we are setting red cell qc to true, then add the date
+                    cursor.execute(self.createUpdateStatement('redCellQCDate',record['uSessionID']),datetime.now())
+                else:
+                    # Otherwise remove the date
+                    cursor.execute(self.createUpdateStatement('redCellQCDate',record['uSessionID']),'')
+            return True
+        
+        except:
+            print(f"Failed to update database for session: {self.vrSession(record).sessionPrint()}")
+            return False
+
+
+        
     def clearOneData(self, **userOpts):
         opts = {}
         opts['clearOne'] = True # clear previous oneData.... yikes, big move dude!
