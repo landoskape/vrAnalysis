@@ -18,6 +18,7 @@ from PyQt5.QtGui import QKeySequence
 # Special vrAnalysis modules
 from .. import session
 from .. import helpers
+from .. import database
 
 class redSelectionGUI:
     def __init__(self, redCellObj, numBins=50):
@@ -115,15 +116,37 @@ class redSelectionGUI:
         # once cutoff lines are established, reset redIdx to prevent silly behavior
         self.updateRedIdx()
         
+        # ---------------------
         # -- now add buttons --
+        # ---------------------
+        
+        # create save button 
         def saveROIs(event):
             self.saveSelection()
             
-        # create save button 
         self.saveButton = QPushButton('button',text='save red selection')
         self.saveButton.clicked.connect(saveROIs)
         self.saveButtonProxy = QGraphicsProxyWidget()
         self.saveButtonProxy.setWidget(self.saveButton)
+        
+        # create update database button
+        def updateDatabase(event):
+            self.updateDatabase(True)
+            
+        self.updateDatabaseButton = QPushButton('button',text='update database (QC=True)')
+        self.updateDatabaseButton.clicked.connect(updateDatabase)
+        self.updateDatabaseButtonProxy = QGraphicsProxyWidget()
+        self.updateDatabaseButtonProxy.setWidget(self.updateDatabaseButton)
+        
+        # create update database button
+        def updateDatabaseFalse(event):
+            self.updateDatabase(False)
+            
+        self.updateDatabaseFalseButton = QPushButton('button',text='update database (QC=False)')
+        self.updateDatabaseFalseButton.clicked.connect(updateDatabaseFalse)
+        self.updateDatabaseFalseButtonProxy = QGraphicsProxyWidget()
+        self.updateDatabaseFalseButtonProxy.setWidget(self.updateDatabaseFalseButton)
+        
         
         # add toggle control/red cell button
         def toggleCellsToView(inputArgument):
@@ -201,12 +224,14 @@ class redSelectionGUI:
         self.colormapSelectionProxy.setWidget(self.colormapSelection)
                                              
         self.buttonArea.addItem(self.saveButtonProxy, row=0, col=0)
-        self.buttonArea.addItem(self.toggleCellButtonProxy, row=0, col=1)
-        self.buttonArea.addItem(self.useManualLabelProxy, row=0, col=2)
-        self.buttonArea.addItem(self.showManualLabelProxy, row=0, col=3)
-        self.buttonArea.addItem(self.clearManualLabelProxy, row=0, col=4)
-        self.buttonArea.addItem(self.colorButtonProxy, row=0, col=5)
-        self.buttonArea.addItem(self.colormapSelectionProxy, row=0, col=6)
+        self.buttonArea.addItem(self.updateDatabaseButtonProxy, row=0, col=1)
+        self.buttonArea.addItem(self.updateDatabaseFalseButtonProxy, row=0, col=2)
+        self.buttonArea.addItem(self.toggleCellButtonProxy, row=0, col=3)
+        self.buttonArea.addItem(self.useManualLabelProxy, row=0, col=4)
+        self.buttonArea.addItem(self.showManualLabelProxy, row=0, col=5)
+        self.buttonArea.addItem(self.clearManualLabelProxy, row=0, col=6)
+        self.buttonArea.addItem(self.colorButtonProxy, row=0, col=7)
+        self.buttonArea.addItem(self.colormapSelectionProxy, row=0, col=8)
         
         # add feature plots to napari window
         self.dockWindow = self.viewer.window.add_dock_widget(self.featureWindow, name='ROI Features', area='bottom')
@@ -226,10 +251,13 @@ class redSelectionGUI:
         self.viewer.bind_key('a', nextColormap, overwrite=True)
         
         def doubleClickLabel(layer, event):
+            self.viewer.status = "you just double clicked!"
+            
             # if not looking at labels, then don't allow manual selection (it would be random!)
             if not(self.labels.visible): 
                 self.viewer.status = "can only manually select cells when the labels are visible!"
                 return 
+            
             # if not looking at manual annotations, don't allow manual selection...
             if not(self.useManualLabel):
                 self.viewer.status = "can only manually select cells when the manual labels are being used!"
@@ -255,8 +283,13 @@ class redSelectionGUI:
                     self.manualLabelActive[planeIdx][inPlaneIdx] = True
                     self.viewer.status = f"you just labeled roi: {roiIdx} with the identity: {newLabel}"
                 self.regenerateMaskData()
-                
+        
+        def wrongDoubleClick(layer, event):
+            self.viewer.status = "select labels tab to perform manual selection"
+            
         self.labels.mouse_double_click_callbacks.append(doubleClickLabel)
+        self.masks.mouse_double_click_callbacks.append(wrongDoubleClick)
+        self.reference.mouse_double_click_callbacks.append(wrongDoubleClick)
         
         # add callback for dimension slider
         def updatePlaneIdx(event):
@@ -378,7 +411,16 @@ class redSelectionGUI:
         self.redCell.saveone(fullManualLabels, 'mpciROIs.redCellManualAssignments')
         for idx,name in enumerate(self.featureNames):
             self.redCell.saveone(self.featureCutoffs[idx], self.oneNameFeatureCutoffs(name))
-    
+        print(f"Red Cell curation choices are saved for session {self.redCell.sessionPrint()}")
+        
+    def updateDatabase(self, state):
+        vrdb = database.vrDatabase()
+        success = vrdb.setRedCellQC(self.redCell.mouseName, self.redCell.dateString, self.redCell.session, state=state)
+        if success:
+            print(f"Successfully updated the redCellQC field of the database to {state} for session {self.redCell.sessionPrint()}")
+        else:
+            print(f"Failed to update the redCellQC field of the database for session {self.redCell.sessionPrint()}")
+            
     def oneNameFeatureCutoffs(self, name):
         return 'parameters'+'Red'+name[0].upper()+name[1:]+'.minMaxCutoff'
     
