@@ -21,7 +21,7 @@ from .. import session
 from .. import helpers
 from .. import database
 
-def compareFeatureCutoffs(*vrexp):
+def compareFeatureCutoffs(*vrexp, roundValue=None):
     features = [
         'parametersRedDotProduct.minMaxCutoff',
         'parametersRedPearson.minMaxCutoff',
@@ -37,17 +37,12 @@ def compareFeatureCutoffs(*vrexp):
     
     for feat in features:
         dfDict[getFeatName(feat)]=[None]*len(vrexp)
-        #cmin, cmax = getFeatName(feat)
-        #dfDict[cmin]=np.zeros(len(vrexp))
-        #dfDict[cmax]=np.zeros(len(vrexp))
         
     for idx, ses in enumerate(vrexp):
         for feat in features:
             cdata = ses.loadone(feat)
+            if roundValue is not None: cdata = np.round(cdata, roundValue)
             dfDict[getFeatName(feat)][idx]=cdata
-            # cmin, cmax = getFeatName(feat)
-            # dfDict[cmin][idx]=cdata[0]
-            # dfDict[cmax][idx]=cdata[1]
     
     print(pd.DataFrame(dfDict))
             

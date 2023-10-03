@@ -67,7 +67,7 @@ and only looking at sessions where you've done red cell QC. It'll print a
 pandas dataframe showing the min/max cutoffs for each feature value used in 
 the red cell detection. 
 ```python
-rgui.compareFeatureCutoffs(*vrdb.iterSessions(mouseName='ATL027', redCellQC=True))
+rgui.compareFeatureCutoffs(*vrdb.iterSessions(mouseName='ATL027', redCellQC=True), roundValue=3)
 ```
 
 
