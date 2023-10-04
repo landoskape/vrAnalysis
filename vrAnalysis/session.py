@@ -26,6 +26,7 @@ dataPath = fm.localDataPath()
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 class vrSession:
+    name = 'vrSession'
     def __init__(self,mouseName,dateString,session):
         # initialize vrSession object -- this is a top level object which can be used to point to folders and identify basic aspects about the session. 
         # it can't do any real data handling
@@ -77,6 +78,7 @@ class vrExperiment(vrSession):
     It accepts three required arguments as strings - the mouseName, dateString, and session, which it uses to identify the directory of the data (w/ Alyx conventions and a method specified local data path)
     vrExperiment is meant to be called after vrRegistration is already run. From the output of vrRegistration, vrExperiment can quickly and efficiently manage a recording session.
     """
+    name = 'vrExperiment'
     def __init__(self,*inputs):
         # use createObject to create vrExperiment
         # requires the vrRegistration to have already been run for this session!
@@ -110,6 +112,8 @@ class vrExperiment(vrSession):
             
         else:
             raise TypeError("input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session")
+        
+        # print(f"{self.name} object created for session {self.sessionPrint()} at path {self.sessionPath()}")
         
     def loadRegisteredExperiment(self):
         # load registered experiment -- including options (see below), list of completed preprocessing steps, and any useful values saved to the vrExp object
@@ -313,6 +317,7 @@ class vrRegistration(vrExperiment):
     vrReg.doPreprocessing()
     vrReg.saveParams()
     """
+    name = 'vrRegistration'
     def __init__(self,*inputs,**userOpts):
         if len(inputs)==1 and isinstance(inputs[0], vrExperiment):
             # This means we are creating a vrRegistration object from an existing vrExperiment
@@ -649,7 +654,7 @@ class vrRegistration(vrExperiment):
             print(f"In session {self.sessionPrint()}, 'redcell' is not an available suite2p output, although 'redCellProcessing' was requested.")
             return 
         
-        # create redCell objects
+        # create redCell object
         redCell = redCellProcessing(self) 
         
         # compute red-features
@@ -752,17 +757,25 @@ class redCellProcessing(vrExperiment):
     It accepts as input either a preprocessed vrExperiment object, or three strings indicating the mouseName, dateString, and session.
     This is built to be used as a standalone object, but can be controlled with a Napari based GUI that is currently being written (230526-ATL)
     """
-    def __init__(self,*inputs,umPerPixel=1.3):
+    name = 'redCellProcessing'
+    def __init__(self,*inputs, umPerPixel=1.3, autoload=True):
         # Create object
         self.createObject(*inputs)
         
         # Make sure redcell is available...
         assert 'redcell' in self.value['available'], "redcell is not an available suite2p output. That probably means there is no data on the red channel, so you can't do redCellProcessing."
         
+        # standard names of the features used to determine red cell criterion
+        self.featureNames = ['S2P','dotProduct','pearson','phaseCorrelation']
+        
         # load some critical values for easy readable access
         self.numPlanes = len(self.value['planeNames'])
         self.umPerPixel = umPerPixel # store this for generating correct axes and measuring distances
-        self.loadReferenceAndMasks() # prepare reference images and ROI mask data
+        
+        self.data_loaded = False # initialize to false in case data isn't loaded
+        if autoload:
+            self.loadReferenceAndMasks() # prepare reference images and ROI mask data
+            
         
     # ------------------------------
     # -- initialization functions --
@@ -789,8 +802,62 @@ class redCellProcessing(vrExperiment):
         self.xBaseRef = np.arange(self.lx)
         self.yDistRef = self.createCenteredAxis(self.ly, self.umPerPixel)
         self.xDistRef = self.createCenteredAxis(self.lx, self.umPerPixel)
+        
+        # update data_loaded field
+        self.data_loaded = True
     
+    # ---------------------------------
+    # -- updating one data functions --
+    # ---------------------------------
+    def oneNameFeatureCutoffs(self, name):
+        """standard method for naming the features used to define redCellIdx cutoffs"""
+        return 'parameters'+'Red'+name[0].upper()+name[1:]+'.minMaxCutoff'
     
+    def updateRedIdx(self, s2p_cutoff=None, dotProd_cutoff=None, corrCoef_cutoff=None, pxcValues_cutoff=None):
+        """method for updating the red index given new cutoff values"""
+        # create initial all true red cell idx
+        redCellIdx = np.full(self.loadone('mpciROIs.redCellIdx').shape, True)
+        
+        # load feature values for each ROI
+        redS2P = self.loadone('mpciROIs.redS2P')
+        dotProduct = self.loadone('mpciROIs.redDotProduct')
+        corrCoef = self.loadone('mpciROIs.redPearson')
+        phaseCorr = self.loadone('mpciROIs.redPhaseCorrelation')
+        
+        # create lists for zipping through each feature/cutoff combination
+        features = [redS2P, dotProduct, corrCoef, phaseCorr]
+        cutoffs = [s2p_cutoff, dotProd_cutoff, corrCoef_cutoff, pxcValues_cutoff]
+        usecutoff = [False]*len(cutoffs)
+        
+        # check validity of each cutoff and identify whether it should be used
+        for name, use, cutoff in zip(self.featureNames, usecutoff, cutoffs):
+            if cutoff is not None:
+                assert isinstance(cutoff, list) or isinstance(cutoff, np.ndarray), f"{name} cutoff is not a list or numpy ndarray"
+                assert len(cutoff)==2, f"{name} cutoff does not have 2 elements"
+                assert cutoff[0]<cutoff[1], f"{name} cutoff does not have a valid min/max (min must be < max)"
+                use = True
+        
+        # add feature cutoffs to redCellIdx (sets any to False that don't meet the cutoff)
+        for feature, use, cutoff in zip(features, usecutoff, cutoffs):
+            if use:
+                redCellIdx &= feature >= cutoff[0]
+                redCellIdx &= feature <= cutoff[1]
+        
+        # save new red cell index to one data
+        self.saveone(redCellIdx, 'mpciROIs.redCellIdx')
+        
+        # save feature cutoffs to one data 
+        for idx,name in enumerate(self.featureNames):
+            self.saveone(cutoffs[idx], self.oneNameFeatureCutoffs(name))
+        print(f"Red Cell curation choices are saved for session {self.sessionPrint()}")
+        
+    def updateFromSession(self, redCell):
+        """method for updating the red cell cutoffs from another session"""
+        assert isinstance(redCell, redCellProcessing), "redCell is not a redCellProcessing object"
+        cutoffs = [redCell.loadone(redCell.oneNameFeatureCutoffs(name)) for name in self.featureNames]
+        self.updateRedIdx(s2p_cutoff=cutoffs[0], dotProd_cutoff=cutoffs[1], corrCoef_cutoff=cutoffs[2], pxcValues_cutoff=cutoffs[3])
+        
+        
     # ------------------------------
     # -- classification functions --
     # ------------------------------
@@ -802,6 +869,7 @@ class redCellProcessing(vrExperiment):
         """
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         
         # start with filtered reference stack (by inspection, the phase correlation is minimally dependent on pre-filtering, and we like these filtering parameters anyway!!!)
         print("Creating centered reference images...")
@@ -841,6 +909,7 @@ class redCellProcessing(vrExperiment):
         The default parameters (width=40um, eps=1e6, and a hamming window function) were tested on a few sessions and is purely subjective. 
         I recommend that if you use this function to determine which of your cells are red, you do manual curation and potentially update some of these parameters. 
         """
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         if winFunc=='hamming': winFunc = lambda x : np.hamming(x.shape[-1])
         refStack = self.centeredReferenceStack(planeIdx=planeIdx,width=width) # get stack of reference image centered on each ROI
         maskStack = self.centeredMaskStack(planeIdx=planeIdx,width=width) # get stack of mask value centered on each ROI
@@ -852,6 +921,7 @@ class redCellProcessing(vrExperiment):
     def computeDot(self, planeIdx=None, lowcut=12, highcut=250, order=3, fs=512):
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         
         dotProd = []
         for plane in planeIdx:
@@ -867,6 +937,7 @@ class redCellProcessing(vrExperiment):
     def computeCorr(self, planeIdx=None, width=20, lowcut=12, highcut=250, order=3, fs=512):
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         
         corrCoef = []
         for plane in planeIdx:
@@ -894,12 +965,16 @@ class redCellProcessing(vrExperiment):
         return scale*(np.arange(numElements)-(numElements-1)/2)
     
     def getyref(self, yCenter):
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         return self.umPerPixel * (self.yBaseRef - xCenter)
     
     def getxref(self, xCenter):
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         return self.umPerPixel * (self.xBaseRef - xCenter)
     
     def getRoiCentroid(self,idx,mode='weightedmean'):
+        if not(self.data_loaded): self.loadReferenceAndMasks()
+        
         if mode=='weightedmean':
             yc = np.sum(self.lam[idx]*self.ypix[idx])/np.sum(self.lam[idx])
             xc = np.sum(self.lam[idx]*self.xpix[idx])/np.sum(self.lam[idx])
@@ -909,12 +984,14 @@ class redCellProcessing(vrExperiment):
         return yc,xc
     
     def getRoiRange(self,idx):
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         # get range of x and y pixels for a particular ROI
         yr = np.ptp(self.ypix[idx])
         xr = np.ptp(self.xpix[idx])
         return yr,xr
     
     def getRoiInPlaneIdx(self,idx): 
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         # return index of ROI within it's own plane
         planeIdx = self.roiPlaneIdx[idx]
         return idx - np.sum(self.roiPlaneIdx<planeIdx)
@@ -926,6 +1003,7 @@ class redCellProcessing(vrExperiment):
         # if filterPrms=None, then just returns centered reference stack. otherwise, filterPrms requires a tuple of 4 parameters which define a butterworth filter
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         numPixels = int(np.round(width / self.umPerPixel)) # numPixels to each side around the centroid
         refStack = []
         for plane in planeIdx:
@@ -948,6 +1026,7 @@ class redCellProcessing(vrExperiment):
         # fill determines what value to use as the background (should either be 0 or nan)
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make planeIdx iterable
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         numPixels = int(np.round(width / self.umPerPixel)) # numPixels to each side around the centroid
         maskStack = []
         for plane in planeIdx:
@@ -967,6 +1046,7 @@ class redCellProcessing(vrExperiment):
         if planeIdx is None: planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx,(int,np.integer)): planeIdx=(planeIdx,) # make it iterable
         assert all([0<=plane<self.numPlanes for plane in planeIdx]), f"in session: {self.sessionPrint()}, there are only {self.numPlanes} planes!"
+        if not(self.data_loaded): self.loadReferenceAndMasks()
         roiMaskVolume = []
         for plane in planeIdx:
             roiMaskVolume.append(np.zeros((self.value['roiPerPlane'][plane],self.ly,self.lx)))
