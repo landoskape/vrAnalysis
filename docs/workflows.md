@@ -104,11 +104,11 @@ for ses in vrdb.iterSessionRedCell(mouseName='ATL027'):
 ### Additional Features
 Sometimes you'll want to compare the cutoffs you chose for sessions in the 
 same (or different) mice. To do so, use this block. Make a session iterable to
-go through target list of sessions, generally with a filter on the mouseName 
-and only looking at sessions where you've done red cell QC. It'll print a 
-pandas dataframe showing the min/max cutoffs for each feature value used in 
-the red cell detection. You may want to increase the display width of pandas
-before doing this in whatever notebook you're working in.
+go through a target list of sessions, generally with a filter on the 
+`<mouseName>` and only looking at sessions where you've done red cell QC. 
+It'll print a pandas dataframe showing the min/max cutoffs for each feature 
+value used in the red cell detection. You may want to increase the display 
+width of pandas before doing this in whatever notebook you're working in.
 ```python
 import pandas as pd
 pd.options.display.width = 1000
