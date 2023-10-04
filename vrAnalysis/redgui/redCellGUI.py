@@ -51,8 +51,42 @@ def compareFeatureCutoffs(*vrexp, roundValue=None):
             dfDict[getFeatName(feat)][idx]=cdata
     
     print(pd.DataFrame(dfDict))
-            
-        
+    return None
+
+basicButtonStyle = """
+QWidget {
+    background-color: #1F1F1F;
+    color: #F0F0F0;
+    font-family: Arial, sans-serif;
+}
+
+QPushButton:hover {
+    background-color: #45a049;
+    font-size: 10px;
+    font-weight: bold;
+    border: none;
+    border-radius: 5px;
+    padding: 5px 5px;
+}
+"""
+
+qCheckedStyle = """
+QWidget {
+    background-color: #1F1F1F;
+    color: red;
+    font-family: Arial, sans-serif;
+}
+"""
+
+qNotCheckedStyle = """
+QWidget {
+    background-color: #1F1F1F;
+    color: #F0F0F0;
+    font-family: Arial, sans-serif;
+}
+"""
+
+
         
 class redSelectionGUI:
     def __init__(self, redCellObj, numBins=50):
@@ -67,7 +101,7 @@ class redSelectionGUI:
         self.idxRoi = [None]*self.numPlanes
         self.featureNames = self.redCell.featureNames
         self.numFeatures = len(self.featureNames)
-        self.featureActive = [True]*self.numFeatures
+        self.featureActive = [[True, True] for _ in range(self.numFeatures)]
         self.features = [None]*self.numPlanes
         self.hvalues = [None]*self.numPlanes
         self.hvalred = [None]*self.numPlanes
@@ -119,19 +153,40 @@ class redSelectionGUI:
             self.histGraphs[feature] = pg.BarGraphItem(x=helpers.edge2center(self.hedges[feature]), height=self.hvalues[self.planeIdx][feature], width=barWidth)
             self.histReds[feature] = pg.BarGraphItem(x=helpers.edge2center(self.hedges[feature]), height=self.hvalred[self.planeIdx][feature], width=barWidth, brush='r')
         
+        # keep y-range of feature plots in useful regime
+        def preserveYRange0(): preserveYRange(0)
+        def preserveYRange1(): preserveYRange(1)
+        def preserveYRange2(): preserveYRange(2)
+        def preserveYRange3(): preserveYRange(3)
+        preserveMethods = [preserveYRange0, preserveYRange1, preserveYRange2, preserveYRange3]
+        
+        def preserveYRange(idx):
+            #for idx in range(self.numFeatures):
+            self.histPlots[idx].getViewBox().sigYRangeChanged.disconnect(preserveMethods[idx])#preserveYRange)
+            current_min, current_max = self.histPlots[idx].viewRange()[1]
+            current_range = current_max - current_min
+            current_max = min(current_range, self.hvaluesMaximum[idx])
+            self.histPlots[idx].setYRange(0, current_max)
+            self.histPlots[idx].getViewBox().sigYRangeChanged.connect(preserveMethods[idx])#preserveYRange)
+
         # add bargraphs to plotArea
         self.histPlots = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             self.histPlots[feature] = self.plotArea.addPlot(row=0,col=feature,title=self.featureNames[feature])
             self.histPlots[feature].setMouseEnabled(x=False)
+            self.histPlots[feature].setYRange(0, self.hvaluesMaximum[feature])
             self.histPlots[feature].addItem(self.histGraphs[feature])
             self.histPlots[feature].addItem(self.histReds[feature])
+            self.histPlots[feature].getViewBox().sigYRangeChanged.connect(preserveMethods[feature])#preserveYRange)
         
         # create cutoffLines (vertical infinite lines) for determining the range within feature values that qualify as red
         def updateCutoffFinished(event, feature):
             cutoffValues = [self.cutoffLines[feature][0].pos()[0], self.cutoffLines[feature][1].pos()[0]]
-            self.featureCutoffs[feature][0] = min(cutoffValues)
-            self.featureCutoffs[feature][1] = max(cutoffValues)
+            minCutoff, maxCutoff = min(cutoffValues), max(cutoffValues)
+            self.featureCutoffs[feature][0] = minCutoff
+            self.featureCutoffs[feature][1] = maxCutoff
+            self.cutoffLines[feature][0].setValue(minCutoff)
+            self.cutoffLines[feature][1].setValue(maxCutoff)
             self.updateRedIdx()
         
         self.featureRange = [None]*self.numFeatures
@@ -139,17 +194,20 @@ class redSelectionGUI:
         self.cutoffLines = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             self.featureRange[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
-            self.featureCutoffs[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
+            self.featureCutoffs[feature] = np.array([np.nan, np.nan])
             # check if feature cutoffs have been created and stored already, if so, use them
             if self.redCell.oneNameFeatureCutoffs(self.featureNames[feature]) in self.redCell.printSavedOne():
                 cFeatureCutoff = self.redCell.loadone(self.redCell.oneNameFeatureCutoffs(self.featureNames[feature]))
-                if cFeatureCutoff.dtype==object and cFeatureCutoff.item() is None:
-                    self.featureActive[feature] = False
-                else:
-                    self.featureCutoffs[feature] = cFeatureCutoff
+                self.featureCutoffs[feature] = cFeatureCutoff
+                if np.isnan(cFeatureCutoff[0]):
+                    self.featureActive[feature][0] = False
+                    self.featureCutoffs[feature][0] = self.featureRange[feature][0]
+                if np.isnan(cFeatureCutoff[1]):
+                    self.featureActive[feature][1] = False
+                    self.featureCutoffs[feature][1] = self.featureRange[feature][1]
             self.cutoffLines[feature] = [None]*2 # one for minimum, one for maximum
             for ii in range(2):
-                if self.featureActive[feature]:
+                if self.featureActive[feature][ii]:
                     self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureCutoffs[feature][ii], movable=True)
                 else:
                     self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureRange[feature][ii], movable=False)
@@ -163,36 +221,49 @@ class redSelectionGUI:
         # ---------------------
         # -- now add toggles --
         # ---------------------
-        def toggleFeature(event, name, idx):
+        minMaxName = ['min','max']
+        maxLengthName = max([len(name) for name in self.featureNames])+9
+        def toggleFeature(event, name, idx, minmax):
             # set feature active based on whether toggle is checked
-            self.featureActive[idx] = self.useFeatureButtons[idx].isChecked()
-            if self.featureActive[idx]:
+            self.featureActive[idx][minmax] = self.useFeatureButtons[idx][minmax].isChecked()
+            if self.featureActive[idx][minmax]:
                 # if feature is active, set value to cutoffs and make infinite line movable
-                for ii in range(2):
-                    self.cutoffLines[idx][ii].setValue(self.featureCutoffs[idx][ii])
-                    self.cutoffLines[idx][ii].setMovable(True)
+                text_to_use = f"using {minMaxName[minmax]} {name}".center(maxLengthName, ' ')
+                self.cutoffLines[idx][minmax].setValue(self.featureCutoffs[idx][minmax])
+                self.cutoffLines[idx][minmax].setMovable(True)
+                self.useFeatureButtons[idx][minmax].setText(text_to_use)
+                self.useFeatureButtons[idx][minmax].setStyleSheet(qNotCheckedStyle)
             else:
                 # if feature isn't active, set value to bounds and make infinite line unmovable
-                for ii in range(2):
-                    self.cutoffLines[idx][ii].setValue(self.featureRange[idx][ii])
-                    self.cutoffLines[idx][ii].setMovable(False)
-            
+                text_to_use = f"ignore {minMaxName[minmax]} {name}".center(maxLengthName, ' ')
+                self.cutoffLines[idx][minmax].setValue(self.featureRange[idx][minmax])
+                self.cutoffLines[idx][minmax].setMovable(False)
+                self.useFeatureButtons[idx][minmax].setText(text_to_use)
+                self.useFeatureButtons[idx][minmax].setStyleSheet(qCheckedStyle)
+                
             # then update red idx, which'll replot everything
             self.updateRedIdx()
             
         
-        self.useFeatureButtons = [None]*self.numFeatures
-        self.useFeatureButtonsProxy = [None]*self.numFeatures
-        maxLengthName = max([len(name) for name in self.featureNames])+4
+        self.useFeatureButtons = [[None,None] for _ in range(self.numFeatures)]
+        self.useFeatureButtonsProxy = [None]*(self.numFeatures*2)
         for featidx, featname in enumerate(self.featureNames):
-            text_to_use = f"use {featname}".center(maxLengthName, ' ')
-            self.useFeatureButtons[featidx] = QPushButton('toggle',text=text_to_use)
-            self.useFeatureButtons[featidx].setCheckable(True)
-            self.useFeatureButtons[featidx].setChecked(self.featureActive[featidx])
-            self.useFeatureButtons[featidx].clicked.connect(functools.partial(toggleFeature, name=featname, idx=featidx))
-            self.useFeatureButtonsProxy[featidx] = QGraphicsProxyWidget()
-            self.useFeatureButtonsProxy[featidx].setWidget(self.useFeatureButtons[featidx])
-            self.toggleArea.addItem(self.useFeatureButtonsProxy[featidx], row=0, col=featidx)
+            for i, name in enumerate(minMaxName):
+                proxy_idx = 2*featidx + i
+                if self.featureActive[featidx][i]:
+                    text_to_use = f"using {minMaxName[i]} {featname}".center(maxLengthName, ' ')
+                    style_to_use = qNotCheckedStyle
+                else:
+                    text_to_use = f"ignore {minMaxName[i]} {featname}".center(maxLengthName, ' ')
+                    style_to_use = qCheckedStyle
+                self.useFeatureButtons[featidx][i] = QPushButton('toggle',text=text_to_use)
+                self.useFeatureButtons[featidx][i].setCheckable(True)
+                self.useFeatureButtons[featidx][i].setChecked(self.featureActive[featidx][i])
+                self.useFeatureButtons[featidx][i].clicked.connect(functools.partial(toggleFeature, name=featname, idx=featidx, minmax=i))
+                self.useFeatureButtons[featidx][i].setStyleSheet(style_to_use)
+                self.useFeatureButtonsProxy[proxy_idx] = QGraphicsProxyWidget()
+                self.useFeatureButtonsProxy[proxy_idx].setWidget(self.useFeatureButtons[featidx][i])
+                self.toggleArea.addItem(self.useFeatureButtonsProxy[proxy_idx], row=0, col=proxy_idx)
             
         # ---------------------
         # -- now add buttons --
@@ -204,6 +275,7 @@ class redSelectionGUI:
             
         self.saveButton = QPushButton('button',text='save red selection')
         self.saveButton.clicked.connect(saveROIs)
+        self.saveButton.setStyleSheet(basicButtonStyle)
         self.saveButtonProxy = QGraphicsProxyWidget()
         self.saveButtonProxy.setWidget(self.saveButton)
         
@@ -213,6 +285,7 @@ class redSelectionGUI:
             
         self.updateDatabaseButton = QPushButton('button',text='update database (QC=True)')
         self.updateDatabaseButton.clicked.connect(updateDatabase)
+        self.updateDatabaseButton.setStyleSheet(basicButtonStyle)
         self.updateDatabaseButtonProxy = QGraphicsProxyWidget()
         self.updateDatabaseButtonProxy.setWidget(self.updateDatabaseButton)
         
@@ -222,6 +295,7 @@ class redSelectionGUI:
             
         self.updateDatabaseFalseButton = QPushButton('button',text='update database (QC=False)')
         self.updateDatabaseFalseButton.clicked.connect(updateDatabaseFalse)
+        self.updateDatabaseFalseButton.setStyleSheet(basicButtonStyle)
         self.updateDatabaseFalseButtonProxy = QGraphicsProxyWidget()
         self.updateDatabaseFalseButtonProxy.setWidget(self.updateDatabaseFalseButton)
         
@@ -236,6 +310,7 @@ class redSelectionGUI:
         
         self.toggleCellButton = QPushButton(text='control cells' if self.controlCellToggle else 'red cells')
         self.toggleCellButton.clicked.connect(toggleCellsToView)
+        self.toggleCellButton.setStyleSheet(basicButtonStyle)
         self.toggleCellButtonProxy = QGraphicsProxyWidget()
         self.toggleCellButtonProxy.setWidget(self.toggleCellButton)
         
@@ -248,6 +323,7 @@ class redSelectionGUI:
             
         self.useManualLabelButton = QPushButton(text='using manual labels' if self.useManualLabel else 'ignoring manual labels')
         self.useManualLabelButton.clicked.connect(useManualLabel)
+        self.useManualLabelButton.setStyleSheet(basicButtonStyle)
         self.useManualLabelProxy = QGraphicsProxyWidget()
         self.useManualLabelProxy.setWidget(self.useManualLabelButton)
         
@@ -262,6 +338,7 @@ class redSelectionGUI:
                 
         self.clearManualLabelButton = QPushButton(text='clear manual labels')
         self.clearManualLabelButton.clicked.connect(clearManualLabels)
+        self.clearManualLabelButton.setStyleSheet(basicButtonStyle)
         self.clearManualLabelProxy = QGraphicsProxyWidget()
         self.clearManualLabelProxy.setWidget(self.clearManualLabelButton)
         
@@ -274,6 +351,7 @@ class redSelectionGUI:
             
         self.showManualLabelButton = QPushButton(text='all labels')
         self.showManualLabelButton.clicked.connect(showManualLabels)
+        self.showManualLabelButton.setStyleSheet(basicButtonStyle)
         self.showManualLabelProxy = QGraphicsProxyWidget()
         self.showManualLabelProxy.setWidget(self.showManualLabelButton)
         
@@ -287,6 +365,7 @@ class redSelectionGUI:
         self.colorButton = QPushButton(text=self.colorButtonNames[self.colorState])
         self.colorButton.setCheckable(False)
         self.colorButton.clicked.connect(nextColorState)
+        self.colorButton.setStyleSheet(basicButtonStyle)
         self.colorButtonProxy = QGraphicsProxyWidget()
         self.colorButtonProxy.setWidget(self.colorButton)
         
@@ -298,6 +377,7 @@ class redSelectionGUI:
             
         self.colormapSelection = QPushButton(text=self.listColormaps[self.idxColormap])
         self.colormapSelection.clicked.connect(nextColormap)
+        self.colormapSelection.setStyleSheet(basicButtonStyle)
         self.colormapSelectionProxy = QGraphicsProxyWidget()
         self.colormapSelectionProxy.setWidget(self.colormapSelection)
                                              
@@ -426,7 +506,11 @@ class redSelectionGUI:
             for feature in range(self.numFeatures):
                 self.hvalues[planeIdx][feature] = np.histogram(self.features[planeIdx][feature], bins=self.hedges[feature])[0]
                 self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx[planeIdx]], bins=self.hedges[feature])[0]
-                
+        
+        # establish maximum for the yranges
+        maxValue = [[max(hval) for hval in hvalue] for hvalue in self.hvalues]
+        self.hvaluesMaximum = [max(x) for x in zip(*maxValue)]
+        
     def maskLabels(self):
         # note that labelData handles indices in a complicated way so that it's easy to interface with Napari. Key points:
         # 1. ROIs are assigned an index that is unique across all ROIs independent of plane (the first ROI in plane 1 isn't ROI 0, it's 1 + the number of ROIs in plane 0)
@@ -465,8 +549,10 @@ class redSelectionGUI:
         for planeIdx in range(self.numPlanes):
             self.redIdx[planeIdx] = np.full(self.roiPerPlane[planeIdx], True) # start with all as red... 
             for feature in range(self.numFeatures):
-                self.redIdx[planeIdx] &= self.features[planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
-                self.redIdx[planeIdx] &= self.features[planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
+                if not(np.isnan(self.featureCutoffs[feature][0])):
+                    self.redIdx[planeIdx] &= self.features[planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
+                if not(np.isnan(self.featureCutoffs[feature][1])):
+                    self.redIdx[planeIdx] &= self.features[planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
         
         for planeIdx in range(self.numPlanes):
             for feature in range(self.numFeatures):
@@ -488,10 +574,11 @@ class redSelectionGUI:
         self.redCell.saveone(fullRedIdx, 'mpciROIs.redCellIdx')
         self.redCell.saveone(fullManualLabels, 'mpciROIs.redCellManualAssignments')
         for idx,name in enumerate(self.featureNames):
-            if self.featureActive[idx]:
-                self.redCell.saveone(self.featureCutoffs[idx], self.redCell.oneNameFeatureCutoffs(name))
-            else:
-                self.redCell.saveone(None, self.redCell.oneNameFeatureCutoffs(name))
+            cFeatureCutoffs = self.featureCutoffs[idx]
+            if not(self.featureActive[idx][0]): cFeatureCutoffs[0]=np.nan
+            if not(self.featureActive[idx][1]): cFeatureCutoffs[1]=np.nan
+            self.redCell.saveone(self.featureCutoffs[idx], self.redCell.oneNameFeatureCutoffs(name))
+            
         print(f"Red Cell curation choices are saved for session {self.redCell.sessionPrint()}")
         
     def updateDatabase(self, state):

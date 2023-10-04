@@ -827,20 +827,20 @@ class redCellProcessing(vrExperiment):
         # create lists for zipping through each feature/cutoff combination
         features = [redS2P, dotProduct, corrCoef, phaseCorr]
         cutoffs = [s2p_cutoff, dotProd_cutoff, corrCoef_cutoff, pxcValues_cutoff]
-        usecutoff = [False]*len(cutoffs)
+        usecutoff = [[False,False] for _ in range(len(cutoffs))]
         
         # check validity of each cutoff and identify whether it should be used
         for name, use, cutoff in zip(self.featureNames, usecutoff, cutoffs):
-            if cutoff is not None:
-                assert isinstance(cutoff, list) or isinstance(cutoff, np.ndarray), f"{name} cutoff is not a list or numpy ndarray"
-                assert len(cutoff)==2, f"{name} cutoff does not have 2 elements"
-                assert cutoff[0]<cutoff[1], f"{name} cutoff does not have a valid min/max (min must be < max)"
-                use = True
-        
+            assert isinstance(cutoff, np.ndarray), f"{name} cutoff is an numpy ndarray"
+            assert len(cutoff)==2, f"{name} cutoff does not have 2 elements"
+            if not(np.isnan(cutoff[0])): use[0]=True
+            if not(np.isnan(cutoff[1])): use[1]=True
+            
         # add feature cutoffs to redCellIdx (sets any to False that don't meet the cutoff)
         for feature, use, cutoff in zip(features, usecutoff, cutoffs):
-            if use:
+            if use[0]:
                 redCellIdx &= feature >= cutoff[0]
+            if use[1]:
                 redCellIdx &= feature <= cutoff[1]
         
         # save new red cell index to one data
