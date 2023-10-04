@@ -16,12 +16,23 @@ from vrAnalysis.redgui import redCellGUI as rgui
 vrdb = database.vrDatabase()
 ```
 
+Red cell quality control uses four features computed automatically during 
+registration, along with additional manual curation. There is a nice GUI that
+you can use to choose thresholds for each feature and to manually toggle 
+whether a cell is red or not in addition to the feature criterion. The 
+full documentation page for the GUI is [here](redCellGUI.md). 
+
 There are two general workflows for curation of red cell assignment. The first
 is to go through each session and do the curation independently of all other 
 sessions. I refer to this as the "Primary Worklow", because it's pretty 
-efficient and I think I'll probably use it this way. Alternatively, you can do
-the curation for one or a few sessions and apply it to other sessions, usually
-from the same mouse. 
+efficient and you always have to start with this. 
+
+The second method is to do the curation for one session and then apply it to 
+other sessions automatically, (usually to sessions from the same mouse). This 
+is obviously efficient, because it only requires direct curation from one 
+session, but I recommend at least checking all sessions, especially because 
+you can do a little extra manual curation after choosing the feature 
+thresholds. 
 
 ### Primary Workflow
 
@@ -30,7 +41,7 @@ The database can create an iterable list of sessions that require red cell
 quality control, along with any other filters. I usually start by iterating
 through this list and printing the session names. Here, I'm filtering to only
 include sessions from one mouse, to focus curation on a single brain. 
-```
+```python
 for ses in vrdb.iterSessionRedCell(mouseName='ATL027'):
     print(ses.sessionPrint())
 ```
@@ -67,16 +78,45 @@ for ses in vrdb.iterSessions(mouseName='ATL027', redCellQC=True):
     print(ses.sessionPrint())
 ```
 
+### Secondary Workflow
+1. Perform the primary workflow for at least one session, then save.
+Once you do this, the threshold values for each feature will be stored in the
+one-data for the session you loaded. 
+
+2. Apply the features to other sessions.
+Now, you can apply those threshold values you selected to other sessions. 
+First, create a `redCellProcessing` object for the session you already 
+curated. In the example, I curated session 'ATL027/2023-08-01/701'. Then, go
+through all sessions you want to copy the thresholds to with an iterator of 
+sessions that need red cell QC (usually from the same mouse). Make a
+`redCellProcessing` object for each session, then use the `updateFromSession`
+method to copy threshold from one session to another. Note that I'm using 
+`autoload=False` because `redCellProcessing` objects load data by default,
+which takes a few seconds, and we only need the class methods for this 
+purpose.
+```python
+copyCriterionFrom = session.redCellProcessing('ATL027','2023-08-01','701', autoload=False)
+for ses in vrdb.iterSessionRedCell(mouseName='ATL027'):
+    redCell = session.redCellProcessing(ses, autoload=False)
+    redCell.updateFromSession(copyCriterionFrom)
+```
+
 ### Additional Features
 Sometimes you'll want to compare the cutoffs you chose for sessions in the 
 same (or different) mice. To do so, use this block. Make a session iterable to
 go through target list of sessions, generally with a filter on the mouseName 
 and only looking at sessions where you've done red cell QC. It'll print a 
 pandas dataframe showing the min/max cutoffs for each feature value used in 
-the red cell detection. 
+the red cell detection. You may want to increase the display width of pandas
+before doing this in whatever notebook you're working in.
 ```python
+import pandas as pd
+pd.options.display.width = 1000
 rgui.compareFeatureCutoffs(*vrdb.iterSessions(mouseName='ATL027', redCellQC=True), roundValue=3)
 ```
+
+Note that if you use the secondary workflow, then the feature cutoffs should 
+be the same for every session. It's a good way to check your work!
 
 
 

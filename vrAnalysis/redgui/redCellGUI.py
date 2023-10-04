@@ -21,6 +21,8 @@ from .. import session
 from .. import helpers
 from .. import database
 
+pd.options.display.width = 1000
+
 def compareFeatureCutoffs(*vrexp, roundValue=None):
     features = [
         'parametersRedDotProduct.minMaxCutoff',
@@ -59,8 +61,9 @@ class redSelectionGUI:
         
         self.refImage = [None]*self.numPlanes
         self.idxRoi = [None]*self.numPlanes
-        self.featureNames = ['S2P','dotProduct','pearson','phaseCorrelation']
+        self.featureNames = self.redCell.featureNames
         self.numFeatures = len(self.featureNames)
+        self.featureActive = [True]*self.numFeatures
         self.features = [None]*self.numPlanes
         self.hvalues = [None]*self.numPlanes
         self.hvalred = [None]*self.numPlanes
@@ -96,10 +99,12 @@ class redSelectionGUI:
         self.featureWindow = pg.GraphicsLayoutWidget()
         
         # create components of the feature window (the top row is a sequence of histograms, the bottom row is some buttons and edit fields etc.)
+        self.toggleArea = pg.GraphicsLayout()
         self.plotArea = pg.GraphicsLayout()
         self.buttonArea = pg.GraphicsLayout()
-        self.featureWindow.addItem(self.plotArea,row=0,col=0)
-        self.featureWindow.addItem(self.buttonArea,row=1,col=0)
+        self.featureWindow.addItem(self.toggleArea,row=0,col=0)
+        self.featureWindow.addItem(self.plotArea,row=1,col=0)
+        self.featureWindow.addItem(self.buttonArea,row=2,col=0)
         
         # start by making a specific layout for the histograms of the features
         self.histLayout = pg.GraphicsLayout()
@@ -130,13 +135,20 @@ class redSelectionGUI:
         self.cutoffLines = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             self.featureRange[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
-            self.featureCutoffs[feature] = [np.min(self.features[self.planeIdx][feature]), np.max(self.features[self.planeIdx][feature])]
+            self.featureCutoffs[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
             # check if feature cutoffs have been created and stored already, if so, use them
-            if self.oneNameFeatureCutoffs(self.featureNames[feature]) in self.redCell.printSavedOne():
-                self.featureCutoffs[feature] = self.redCell.loadone(self.oneNameFeatureCutoffs(self.featureNames[feature]))
+            if self.redCell.oneNameFeatureCutoffs(self.featureNames[feature]) in self.redCell.printSavedOne():
+                cFeatureCutoff = self.redCell.loadone(self.redCell.oneNameFeatureCutoffs(self.featureNames[feature]))
+                if cFeatureCutoff.dtype==object and cFeatureCutoff.item() is None:
+                    self.featureActive[feature] = False
+                else:
+                    self.featureCutoffs[feature] = cFeatureCutoff
             self.cutoffLines[feature] = [None]*2 # one for minimum, one for maximum
             for ii in range(2):
-                self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureCutoffs[feature][ii], movable=True)
+                if self.featureActive[feature]:
+                    self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureCutoffs[feature][ii], movable=True)
+                else:
+                    self.cutoffLines[feature][ii] = pg.InfiniteLine(pos=self.featureRange[feature][ii], movable=False)
                 self.cutoffLines[feature][ii].setBounds(self.featureRange[feature])
                 self.cutoffLines[feature][ii].sigPositionChangeFinished.connect(functools.partial(updateCutoffFinished, feature=feature))
                 self.histPlots[feature].addItem(self.cutoffLines[feature][ii])
@@ -144,6 +156,40 @@ class redSelectionGUI:
         # once cutoff lines are established, reset redIdx to prevent silly behavior
         self.updateRedIdx()
         
+        # ---------------------
+        # -- now add toggles --
+        # ---------------------
+        def toggleFeature(event, name, idx):
+            # set feature active based on whether toggle is checked
+            self.featureActive[idx] = self.useFeatureButtons[idx].isChecked()
+            if self.featureActive[idx]:
+                # if feature is active, set value to cutoffs and make infinite line movable
+                for ii in range(2):
+                    self.cutoffLines[idx][ii].setValue(self.featureCutoffs[idx][ii])
+                    self.cutoffLines[idx][ii].setMovable(True)
+            else:
+                # if feature isn't active, set value to bounds and make infinite line unmovable
+                for ii in range(2):
+                    self.cutoffLines[idx][ii].setValue(self.featureRange[idx][ii])
+                    self.cutoffLines[idx][ii].setMovable(False)
+            
+            # then update red idx, which'll replot everything
+            self.updateRedIdx()
+            
+        
+        self.useFeatureButtons = [None]*self.numFeatures
+        self.useFeatureButtonsProxy = [None]*self.numFeatures
+        maxLengthName = max([len(name) for name in self.featureNames])+4
+        for featidx, featname in enumerate(self.featureNames):
+            text_to_use = f"use {featname}".center(maxLengthName, ' ')
+            self.useFeatureButtons[featidx] = QPushButton('toggle',text=text_to_use)
+            self.useFeatureButtons[featidx].setCheckable(True)
+            self.useFeatureButtons[featidx].setChecked(self.featureActive[featidx])
+            self.useFeatureButtons[featidx].clicked.connect(functools.partial(toggleFeature, name=featname, idx=featidx))
+            self.useFeatureButtonsProxy[featidx] = QGraphicsProxyWidget()
+            self.useFeatureButtonsProxy[featidx].setWidget(self.useFeatureButtons[featidx])
+            self.toggleArea.addItem(self.useFeatureButtonsProxy[featidx], row=0, col=featidx)
+            
         # ---------------------
         # -- now add buttons --
         # ---------------------
@@ -438,7 +484,10 @@ class redSelectionGUI:
         self.redCell.saveone(fullRedIdx, 'mpciROIs.redCellIdx')
         self.redCell.saveone(fullManualLabels, 'mpciROIs.redCellManualAssignments')
         for idx,name in enumerate(self.featureNames):
-            self.redCell.saveone(self.featureCutoffs[idx], self.oneNameFeatureCutoffs(name))
+            if self.featureActive[idx]:
+                self.redCell.saveone(self.featureCutoffs[idx], self.redCell.oneNameFeatureCutoffs(name))
+            else:
+                self.redCell.saveone(None, self.redCell.oneNameFeatureCutoffs(name))
         print(f"Red Cell curation choices are saved for session {self.redCell.sessionPrint()}")
         
     def updateDatabase(self, state):
@@ -449,21 +498,10 @@ class redSelectionGUI:
         else:
             print(f"Failed to update the redCellQC field of the database for session {self.redCell.sessionPrint()}")
             
-    def oneNameFeatureCutoffs(self, name):
-        return 'parameters'+'Red'+name[0].upper()+name[1:]+'.minMaxCutoff'
+    # def oneNameFeatureCutoffs(self, name):
+    #     return 'parameters'+'Red'+name[0].upper()+name[1:]+'.minMaxCutoff'
     
-        # ----------------
-        # and that's it...
-        # ----------------
-        
-        
-        
-        
-        
-        
-        
-        
-        
+    
         
         
         
