@@ -25,10 +25,10 @@ pd.options.display.width = 1000
 
 def compareFeatureCutoffs(*vrexp, roundValue=None):
     features = [
+        'parametersRedS2P.minMaxCutoff',
         'parametersRedDotProduct.minMaxCutoff',
         'parametersRedPearson.minMaxCutoff',
         'parametersRedPhaseCorrelation.minMaxCutoff',
-        'parametersRedS2P.minMaxCutoff'
     ]
     dfDict = {
         'session': [ses.sessionPrint() for ses in vrexp]
@@ -43,7 +43,11 @@ def compareFeatureCutoffs(*vrexp, roundValue=None):
     for idx, ses in enumerate(vrexp):
         for feat in features:
             cdata = ses.loadone(feat)
-            if roundValue is not None: cdata = np.round(cdata, roundValue)
+            if cdata.dtype==object and cdata.item() is None:
+                cdata = [None, None]
+            else:
+                if roundValue is not None: 
+                    cdata = np.round(cdata, roundValue)
             dfDict[getFeatName(feat)][idx]=cdata
     
     print(pd.DataFrame(dfDict))
