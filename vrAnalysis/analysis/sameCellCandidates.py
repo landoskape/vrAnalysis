@@ -62,7 +62,8 @@ def getConnectedGroups(G):
 
 
 class sameCellCandidates(standardAnalysis):
-    '''Measures cross-correlation of pairs of ROI activity with spatial distance
+    """
+    Measures cross-correlation of pairs of ROI activity with spatial distance
     
     Takes as required input a vrexp object. Optional inputs define parameters of analysis, 
     including which activity to run measurement on (could be deconvolvedOasis, or neuropilF, for example).
@@ -85,7 +86,7 @@ class sameCellCandidates(standardAnalysis):
     scc.scatterForThresholds(keepPlanes=[1,2,3,4], distanceCutoff=250);
     
     The other makes a cumulative distribution plot for ROIs of two different distance ranges...
-    '''
+    """
     def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4]):
         self.name = 'sameCellCandidates'
         self.onefile = onefile

@@ -44,4 +44,4 @@ what using this repository will look like.
 2. Components
    - [Database](docs/database.md)
    - [Red Cell Curation Interface](docs/redCellGUI.md)
-
+   - [Analyzing Data](docs/analysis.md)
