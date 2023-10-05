@@ -53,7 +53,7 @@ up a GUI based on PyQt5 and Napari.
 ```python
 mouseName = 'ATL027'
 dateString = '2023-08-04'
-sessionid = '701'
+sessionid = '702'
 
 # Load registered vrExperiment
 vrexp = session.vrExperiment(mouseName, dateString, sessionid)
