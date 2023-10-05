@@ -70,6 +70,14 @@ referenced in the desired dataframe, you can use this:
 vrdb.iterSessions(imaging=True, vrRegistration=True)
 ```
 
+There's also a useful helper function that prints a list of unique mouse names
+contained in a session iterable. This is great if you need to figure out what 
+work still needs to be done on a mouse by mouse basis (e.g. for red cell QC)
+and want to quickly and simply which mice need work. 
+```python
+vrdb.printMiceInSession(vrdb.iterSessions(imaging=True, vrRegistration=True, redCellQC=False))
+```
+
 ### Registering Sessions
 You can register sessions from the `database` object, which is good practice
 because it automatically updates the SQL database appropriately. To update a

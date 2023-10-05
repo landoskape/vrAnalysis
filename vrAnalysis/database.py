@@ -183,22 +183,35 @@ class vrDatabase:
     
     # == vrExperiment related methods ==
     def sessionName(self, row):
+        """get session identifiers from record of database"""
         mouseName = row['mouseName']
         sessionDate = row['sessionDate'].strftime('%Y-%m-%d')
         sessionID = str(row['sessionID'])
         return mouseName, sessionDate, sessionID
 
     def vrSession(self, row):
+        """create vrSession object from record in database"""
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return session.vrSession(mouseName, sessionDate, sessionID)
     
     def vrExperiment(self, row):
+        """create vrExperiment object from record in database"""
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return session.vrExperiment(mouseName, sessionDate, sessionID)
         
     def vrRegistration(self, row, **opts):
+        """create vrRegistration object from record in database"""
         mouseName, sessionDate, sessionID = self.sessionName(row)
         return session.vrRegistration(mouseName, sessionDate, sessionID, **opts)
+    
+    def miceInSessions(self, iterSession):
+        """get list of unique mice names in session iterable"""
+        mouseNames = [ses.mouseName for ses in iterSession] 
+        return list(set(mouseNames))
+    
+    def printMiceInSessions(self, iterSession):
+        """print list of unique mice names in session iterable"""
+        print(self.miceInSessions(iterSession))
         
     # == retrieve table data ==
     def tableData(self):
