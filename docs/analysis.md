@@ -49,6 +49,8 @@ same cell. This can happen for two reasons:
 To open a sameCellCandidate analysis object, create a vrExperiment object and
 choose whatever filters you want. 
 ```python
+import random
+
 # choose a session randomly using the vrDatabase module
 vrexp = random.choice(vrdb.iterSessions(imaging=True, vrRegistration=True))
 print(vrexp.sessionPrint()) # show which session you chose
