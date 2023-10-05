@@ -75,7 +75,7 @@ contained in a session iterable. This is great if you need to figure out what
 work still needs to be done on a mouse by mouse basis (e.g. for red cell QC)
 and want to quickly and simply which mice need work. 
 ```python
-vrdb.printMiceInSession(vrdb.iterSessions(imaging=True, vrRegistration=True, redCellQC=False))
+vrdb.printMiceInSessions(vrdb.iterSessions(imaging=True, vrRegistration=True, redCellQC=False))
 ```
 
 ### Registering Sessions
