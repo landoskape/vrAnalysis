@@ -29,7 +29,8 @@ deps_registration = [
     "cvxpy",
 ]
 
-# Extra packages for managing the GUI
+# Extra packages for managing the redCellQC GUI
+# sometimes these can get weird with other plotting and visualization requirements, so I'm keeping them separate
 deps_gui = [
     "pyqt5",
     "pyqtgraph",
