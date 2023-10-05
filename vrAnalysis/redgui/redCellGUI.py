@@ -194,7 +194,7 @@ class redSelectionGUI:
         self.cutoffLines = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             self.featureRange[feature] = [np.min(self.hedges[feature]), np.max(self.hedges[feature])]
-            self.featureCutoffs[feature] = np.array([np.nan, np.nan])
+            self.featureCutoffs[feature] = copy(self.featureRange[feature]) # initialize to range
             # check if feature cutoffs have been created and stored already, if so, use them
             if self.redCell.oneNameFeatureCutoffs(self.featureNames[feature]) in self.redCell.printSavedOne():
                 cFeatureCutoff = self.redCell.loadone(self.redCell.oneNameFeatureCutoffs(self.featureNames[feature]))
@@ -478,6 +478,8 @@ class redSelectionGUI:
                     self.regenerateMaskData()
         
         self.labels.mouse_drag_callbacks.append(singleClickLabel)
+        self.masks.mouse_drag_callbacks.append(singleClickLabel)
+        self.reference.mouse_drag_callbacks.append(singleClickLabel)
         self.labels.mouse_double_click_callbacks.append(doubleClickLabel)
         self.masks.mouse_double_click_callbacks.append(doubleClickLabel)
         self.reference.mouse_double_click_callbacks.append(doubleClickLabel)
