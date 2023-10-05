@@ -52,7 +52,10 @@ choose whatever filters you want.
 # choose a session randomly using the vrDatabase module
 vrexp = random.choice(vrdb.iterSessions(imaging=True, vrRegistration=True))
 print(vrexp.sessionPrint()) # show which session you chose
-scc = analysis.sameCellCandidates(vrexp, keepPlanes=[1,2,3,4]) # keepPlanes determines which planes to use, others will be considered the flyback and ignored in all further analyses
+
+# create sameCellCandidates object
+# keepPlanes determines which planes to use, others will be considered the flyback and ignored in all further analyses
+scc = analysis.sameCellCandidates(vrexp, keepPlanes=[1,2,3,4]) 
 ```
 
 To observe clusters of cells based on a variety of criteria, use this block. 
@@ -64,7 +67,8 @@ clusterExplorer = analysis.clusterExplorer(scc, corrCutoff=0.5, maxCutoff=None, 
 To look at how many pairs of ROIs are found across planes that are near each
 other and above a certain correlation, use this:
 ```python
-scc.planePairHistograms(corrCutoff=[0.5, 0.6, 0.7, 0.8], distanceCutoff=50, withSave=False, withShow=True) # withSave and withShow can be reversed if doing this programmatically to save figures for many sessions
+# withSave and withShow can be reversed if doing this programmatically to save figures for many sessions
+scc.planePairHistograms(corrCutoff=[0.5, 0.6, 0.7, 0.8], distanceCutoff=50, withSave=False, withShow=True) 
 ```        
 
 To look at a scatter plot of the distance between ROIs vs. their correlation 
