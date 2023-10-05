@@ -127,7 +127,7 @@ class redSelectionGUI:
         
     def initializeNapariViewer(self):
         # generate napari viewer
-        self.viewer = napari.Viewer()
+        self.viewer = napari.Viewer(title=f"Red Cell Curation from session: {self.redCell.sessionPrint()}")
         self.reference = self.viewer.add_image(np.stack(self.redCell.reference), name='reference', blending='additive', opacity=0.6)
         self.masks = self.viewer.add_image(self.maskImage(), name='masksImage', blending='additive', colormap='red', visible=self.showMaskImage)
         self.labels = self.viewer.add_labels(self.maskLabels(), name='maskLabels', blending='additive', visible=not(self.showMaskImage))
@@ -318,7 +318,7 @@ class redSelectionGUI:
         def useManualLabel(event):
             self.useManualLabel = not(self.useManualLabel)
             self.useManualLabelButton.setText('using manual labels' if self.useManualLabel else 'ignoring manual labels')
-            # replot masks with new setting activated
+            # update replot masks and recompute histograms
             self.regenerateMaskData()
             
         self.useManualLabelButton = QPushButton(text='using manual labels' if self.useManualLabel else 'ignoring manual labels')
@@ -402,12 +402,44 @@ class redSelectionGUI:
             self.maskVisibility = not(self.maskVisibility)
             self.updateVisibility()
             
+        def updateReferenceVisibility(viewer):
+            self.reference.visible = not(self.reference.visible)
+            
         self.viewer.bind_key('t', toggleCellsToView, overwrite=True)
         self.viewer.bind_key('s', switchImageLabel, overwrite=True)
         self.viewer.bind_key('v', updateMaskVisibility, overwrite=True)
+        self.viewer.bind_key('r', updateReferenceVisibility, overwrite=True)
         self.viewer.bind_key('c', nextColorState, overwrite=True)
         self.viewer.bind_key('a', nextColormap, overwrite=True)
         
+        # create single-click callback for printing data about ROI features
+        def singleClickLabel(layer, event):
+            if not(self.labels.visible):
+                self.viewer.status = "can only manually select cells when the labels are visible!"
+                return 
+            
+            # get click data
+            planeIdx, yidx, xidx = [int(pos) for pos in event.position]
+            labelIdx = self.labels.data[planeIdx, yidx, xidx]
+            if labelIdx==0:
+                self.viewer.status = "single-click on background, no ROI selected"
+                return 
+            
+            # get ROI data
+            roiIdx = labelIdx-1  # oh napari, oh napari
+            inPlaneIdx = np.where(self.idxRoi[planeIdx]==(roiIdx))[0][0]
+            featurePrint = [f"{featname}={featdata[inPlaneIdx]:.3f}" for featname, featdata in zip(self.featureNames, self.features[planeIdx])]
+            
+            stringToPrint = f"ROI: {roiIdx}, Plane Idx: {planeIdx}, (inPlane)ROI: {inPlaneIdx}, " + ' '.join(featurePrint)
+            
+            # only print single click data if alt is held down
+            if 'Alt' in event.modifiers:
+                print(stringToPrint)
+            
+            # always show message in viewer status
+            self.viewer.status = stringToPrint
+            
+            
         def doubleClickLabel(layer, event):
             self.viewer.status = "you just double clicked!"
             
@@ -426,28 +458,29 @@ class redSelectionGUI:
             if labelIdx==0:
                 self.viewer.status = "double-click on background, no ROI identity toggled"
             else:
-                roiIdx = labelIdx-1
-                inPlaneIdx = np.where(self.idxRoi[planeIdx]==(roiIdx))[0][0]
-                if 'Control' in event.modifiers: 
-                    if self.onlyManualLabels:
-                        self.manualLabelActive[planeIdx][inPlaneIdx] = False
-                        self.viewer.status = f"you just removed the manual label from roi: {roiIdx}"
-                    else:
-                        self.viewer.status = f"you can only remove a label if you are only looking at manualLabels!"
+                if 'Alt' in event.modifiers:
+                    self.viewer.status = "Alt was used, assuming you are trying to single click and not doing a manual label!"
                 else:
-                    # manual annotation: if plotting control cells, then annotate as red (1), if plotting red cells, annotate as control (0)
-                    newLabel = copy(self.controlCellToggle) 
-                    self.manualLabel[planeIdx][inPlaneIdx] = newLabel
-                    self.manualLabelActive[planeIdx][inPlaneIdx] = True
-                    self.viewer.status = f"you just labeled roi: {roiIdx} with the identity: {newLabel}"
-                self.regenerateMaskData()
+                    roiIdx = labelIdx-1
+                    inPlaneIdx = np.where(self.idxRoi[planeIdx]==(roiIdx))[0][0]
+                    if 'Control' in event.modifiers: 
+                        if self.onlyManualLabels:
+                            self.manualLabelActive[planeIdx][inPlaneIdx] = False
+                            self.viewer.status = f"you just removed the manual label from roi: {roiIdx}"
+                        else:
+                            self.viewer.status = f"you can only remove a label if you are only looking at manualLabels!"
+                    else:
+                        # manual annotation: if plotting control cells, then annotate as red (1), if plotting red cells, annotate as control (0)
+                        newLabel = copy(self.controlCellToggle) 
+                        self.manualLabel[planeIdx][inPlaneIdx] = newLabel
+                        self.manualLabelActive[planeIdx][inPlaneIdx] = True
+                        self.viewer.status = f"you just labeled roi: {roiIdx} with the identity: {newLabel}"
+                    self.regenerateMaskData()
         
-        def wrongDoubleClick(layer, event):
-            self.viewer.status = "select labels tab to perform manual selection"
-            
+        self.labels.mouse_drag_callbacks.append(singleClickLabel)
         self.labels.mouse_double_click_callbacks.append(doubleClickLabel)
-        self.masks.mouse_double_click_callbacks.append(wrongDoubleClick)
-        self.reference.mouse_double_click_callbacks.append(wrongDoubleClick)
+        self.masks.mouse_double_click_callbacks.append(doubleClickLabel)
+        self.reference.mouse_double_click_callbacks.append(doubleClickLabel)
         
         # add callback for dimension slider
         def updatePlaneIdx(event):
@@ -554,19 +587,26 @@ class redSelectionGUI:
                 if not(np.isnan(self.featureCutoffs[feature][1])):
                     self.redIdx[planeIdx] &= self.features[planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
         
-        for planeIdx in range(self.numPlanes):
-            for feature in range(self.numFeatures):
-                self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][self.redIdx[planeIdx]], bins=self.hedges[feature])[0]
-                
-        # now that the redIdx has been updated, regenerate histograms
-        for feature in range(self.numFeatures):
-            self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
-            
+        # now that the red idx has been updated, we need new mask data and new histograms
         self.regenerateMaskData()
     
     def regenerateMaskData(self):
         self.masks.data = self.maskImage()
         self.labels.data = self.maskLabels()
+        for planeIdx in range(self.numPlanes):
+            for feature in range(self.numFeatures):
+                if self.onlyManualLabels:
+                    cRedIdx = np.full(self.redIdx[planeIdx].shape, False)
+                else:
+                    cRedIdx = np.copy(self.redIdx[planeIdx])
+                if self.useManualLabel:
+                    # if using manual label, any manual labels will overwrite red idx if manual label is active 
+                    cRedIdx[self.manualLabelActive[planeIdx]] = self.manualLabel[planeIdx][self.manualLabelActive[planeIdx]]
+                self.hvalred[planeIdx][feature] = np.histogram(self.features[planeIdx][feature][cRedIdx], bins=self.hedges[feature])[0]
+                
+        # regenerate histograms
+        for feature in range(self.numFeatures):
+            self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
         
     def saveSelection(self):
         fullRedIdx = np.concatenate(self.redIdx)

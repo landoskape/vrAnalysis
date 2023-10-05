@@ -718,7 +718,7 @@ class vrRegistration(vrExperiment):
         vrFileName = self.sessionPath() / f"{self.dateString}_{self.session}_{self.mouseName}_VRBehavior_trial.mat" # vrBehavior output file name
         self.vrFile = scio.loadmat(vrFileName,struct_as_record=False,squeeze_me=True)
         if 'rigInfo' not in self.vrFile.keys():
-            print(f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2!")
+            print(f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2! using `defaultRigInfo()`")
             self.vrFile['rigInfo'] = defaultRigInfo()
             #{'computerName':'ZINKO','rotEncPos':'left','rotEncSign':-1,'wheelToVR':4000,'wheelRadius':9.75,'rotaryRange':32} # save dictionary with default B2 settings
         if not(hasattr(self.vrFile['rigInfo'], 'rotaryRange')):
