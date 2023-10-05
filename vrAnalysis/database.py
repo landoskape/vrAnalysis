@@ -423,7 +423,7 @@ class vrDatabase:
         for idx, row in need.iterrows():
             print(f"Database indicates that redCellQC has not been performed for session: {self.vrSession(row).sessionPrint()}")
     
-    def iterSessionRedCell(self, **kwConditions):
+    def iterSessionNeedRedCellQC(self, **kwConditions):
         """Creates list of sessions that can be iterated through that require red cell quality control"""
         df = self.needsRedCellQC(**kwConditions)
         ises = []

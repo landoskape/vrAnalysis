@@ -182,7 +182,7 @@ relevant_one_files = [
 If you'd like an iterator for vrExperiment session objects of the specific
 sessions that need red cell QC, use this: 
 ```python
-ises = vrdb.iterSessionRedCell()
+ises = vrdb.iterSessionNeedRedCellQC()
 ```
 
 Finally, if you want to update the QC field (and date/time) of the database,

@@ -404,6 +404,10 @@ class redSelectionGUI:
             
         def updateReferenceVisibility(viewer):
             self.reference.visible = not(self.reference.visible)
+        
+        def saveCuration_updateDatabase(viewer):
+            self.saveSelection()
+            self.updateDatabase(True)
             
         self.viewer.bind_key('t', toggleCellsToView, overwrite=True)
         self.viewer.bind_key('s', switchImageLabel, overwrite=True)
@@ -411,6 +415,7 @@ class redSelectionGUI:
         self.viewer.bind_key('r', updateReferenceVisibility, overwrite=True)
         self.viewer.bind_key('c', nextColorState, overwrite=True)
         self.viewer.bind_key('a', nextColormap, overwrite=True)
+        self.viewer.bind_key('Control-c', saveCuration_updateDatabase, overwrite=False)
         
         # create single-click callback for printing data about ROI features
         def singleClickLabel(layer, event):

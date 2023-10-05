@@ -42,7 +42,7 @@ quality control, along with any other filters. I usually start by iterating
 through this list and printing the session names. Here, I'm filtering to only
 include sessions from one mouse, to focus curation on a single brain. 
 ```python
-for ses in vrdb.iterSessionRedCell(mouseName='ATL027'):
+for ses in vrdb.iterSessionNeedRedCellQC(mouseName='ATL027'):
     print(ses.sessionPrint())
 ```
 
@@ -96,7 +96,7 @@ which takes a few seconds, and we only need the class methods for this
 purpose.
 ```python
 copyCriterionFrom = session.redCellProcessing('ATL027','2023-08-01','701', autoload=False)
-for ses in vrdb.iterSessionRedCell(mouseName='ATL027'):
+for ses in vrdb.iterSessionNeedRedCellQC(mouseName='ATL027'):
     redCell = session.redCellProcessing(ses, autoload=False)
     redCell.updateFromSession(copyCriterionFrom)
 ```
