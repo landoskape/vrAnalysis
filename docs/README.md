@@ -16,3 +16,6 @@ help you get it working.
 - [Basic workflows with vrAnalysis](workflows.md)
 - [Working with the database](database.md)
 - [Using the redCellGUI for manual curation](redCellGUI.md)
+- [Analyzing data](analysis.md)
+
+
