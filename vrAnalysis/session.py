@@ -11,12 +11,14 @@ from numpyencoder import NumpyEncoder
 from oasis.functions import deconvolve
 from . import functions
 from . import helpers
+from . import database
 from . import fileManagement as fm
 
 
 # Variables that might need to be changed for different users
 # if anyone other than me uses this, let me know and I can make it smarter by using a user dictionary or storing a file somewhere else...
 dataPath = fm.localDataPath()
+vrdb = database.vrDatabase()
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -52,9 +54,12 @@ class vrSession:
         # Return all names of one variables stored in this experiment's directory
         return [name.stem for name in self.getSavedOne()] 
     
-    def clearOneData(self, oneFileNames=None):
+    def clearOneData(self, oneFileNames=None, certainty=False):
         # clears any oneData in session folder
         # oneFileNames is an optional list of files to clear, otherwise it will clear all of them
+        if not(certainty):
+            print(f"You have to be certain!")
+            return None
         oneFiles = self.getSavedOne()
         if oneFileNames: 
             oneFiles = [file for file in oneFiles if file.stem in oneFileNames]
@@ -167,7 +172,12 @@ class vrExperiment(vrSession):
         else:
             for name in names:
                 if name in self.loadBuffer.keys(): del self.loadBuffer[name]
-        
+    
+    # -------------------------------------------------------------- database communication --------------------------------------------------------------------
+    def printSessionNotes(self):
+        record = vrdb.getRecord(self.mouseName, self.dateString, self.session)
+        print(record['sessionNotes'])
+    
     # ------------------------------------------ special loading functions for data not stored directly in one format ------------------------------------------
     def loadfcorr(self,meanAdjusted=True,loadFromOne=True):
         # corrected fluorescence requires a special loading function because it isn't saved directly
@@ -851,9 +861,11 @@ class redCellProcessing(vrExperiment):
             self.saveone(cutoffs[idx], self.oneNameFeatureCutoffs(name))
         print(f"Red Cell curation choices are saved for session {self.sessionPrint()}")
         
-    def updateFromSession(self, redCell):
+    def updateFromSession(self, redCell, force_update=False):
         """method for updating the red cell cutoffs from another session"""
         assert isinstance(redCell, redCellProcessing), "redCell is not a redCellProcessing object"
+        if not(force_update):
+            assert redCell.mouseName == self.mouseName, "session to copy from is from a different mouse, this isn't allowed without the force_update=True input"
         cutoffs = [redCell.loadone(redCell.oneNameFeatureCutoffs(name)) for name in self.featureNames]
         self.updateRedIdx(s2p_cutoff=cutoffs[0], dotProd_cutoff=cutoffs[1], corrCoef_cutoff=cutoffs[2], pxcValues_cutoff=cutoffs[3])
         

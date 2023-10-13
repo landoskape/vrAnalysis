@@ -115,7 +115,7 @@ class redSelectionGUI:
         self.processPlanes() # compute reference / maskVolume / featureArrays for each plane 
         
         # open napari viewer and associated GUI features
-        self.showMaskImage = True # if true, will show mask image, if false, will show mask labels
+        self.showMaskImage = False # if true, will show mask image, if false, will show mask labels
         self.maskVisibility = True # if true, will show either mask image or label, otherwise will not show either!
         self.useManualLabel = True # if true, then will apply manual labels after using features to compute redIdx
         self.onlyManualLabels = False # if true, only show manual labels of selected category...
