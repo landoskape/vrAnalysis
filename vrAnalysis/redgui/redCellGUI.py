@@ -89,12 +89,13 @@ QWidget {
 
         
 class redSelectionGUI:
-    def __init__(self, redCellObj, numBins=50):
+    def __init__(self, redCellObj, numBins=50, init_yzoom=None):
         assert type(redCellObj)==session.redCellProcessing, "redCellObj must be an instance of the redCellProcessing class inherited from session"
         self.redCell = redCellObj
         self.numPlanes = self.redCell.numPlanes
         self.roiPerPlane = self.redCell.value['roiPerPlane']
         self.numBins = numBins
+        self.init_yzoom = init_yzoom
         self.planeIdx = 0 # keep track of which plane to observe
         
         self.refImage = [None]*self.numPlanes
@@ -162,19 +163,23 @@ class redSelectionGUI:
         
         def preserveYRange(idx):
             #for idx in range(self.numFeatures):
-            self.histPlots[idx].getViewBox().sigYRangeChanged.disconnect(preserveMethods[idx])#preserveYRange)
+            self.histPlots[idx].getViewBox().sigYRangeChanged.disconnect(preserveMethods[idx])
             current_min, current_max = self.histPlots[idx].viewRange()[1]
             current_range = current_max - current_min
             current_max = min(current_range, self.hvaluesMaximum[idx])
             self.histPlots[idx].setYRange(0, current_max)
-            self.histPlots[idx].getViewBox().sigYRangeChanged.connect(preserveMethods[idx])#preserveYRange)
-
+            self.histPlots[idx].getViewBox().sigYRangeChanged.connect(preserveMethods[idx])
+        
         # add bargraphs to plotArea
         self.histPlots = [None]*self.numFeatures
         for feature in range(self.numFeatures):
             self.histPlots[feature] = self.plotArea.addPlot(row=0,col=feature,title=self.featureNames[feature])
             self.histPlots[feature].setMouseEnabled(x=False)
-            self.histPlots[feature].setYRange(0, self.hvaluesMaximum[feature])
+            # allow user to optionally initialize y zoom to be zoomed
+            if self.init_yzoom is not None:
+                self.histPlots[feature].setYRange(0, self.init_yzoom)
+            else:
+                self.histPlots[feature].setYRange(0, self.hvaluesMaximum[feature])
             self.histPlots[feature].addItem(self.histGraphs[feature])
             self.histPlots[feature].addItem(self.histReds[feature])
             self.histPlots[feature].getViewBox().sigYRangeChanged.connect(preserveMethods[feature])#preserveYRange)
@@ -589,9 +594,9 @@ class redSelectionGUI:
         for planeIdx in range(self.numPlanes):
             self.redIdx[planeIdx] = np.full(self.roiPerPlane[planeIdx], True) # start with all as red... 
             for feature in range(self.numFeatures):
-                if not(np.isnan(self.featureCutoffs[feature][0])):
+                if self.featureActive[feature][0]:
                     self.redIdx[planeIdx] &= self.features[planeIdx][feature] >= self.featureCutoffs[feature][0] # only keep in redIdx if above minimum 
-                if not(np.isnan(self.featureCutoffs[feature][1])):
+                if self.featureActive[feature][1]:
                     self.redIdx[planeIdx] &= self.features[planeIdx][feature] <= self.featureCutoffs[feature][1] # only keep in redIdx if below maximum
         
         # now that the red idx has been updated, we need new mask data and new histograms
