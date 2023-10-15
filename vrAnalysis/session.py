@@ -112,6 +112,7 @@ class vrExperiment(vrSession):
             self.mouseName = inputs[0]
             self.dateString = inputs[1]
             self.session = inputs[2]
+            assert self.sessionPath().exists(), "session folder does not exist!"
             self.loadRegisteredExperiment()
             self.loadBuffer = {}
             
@@ -122,6 +123,7 @@ class vrExperiment(vrSession):
         
     def loadRegisteredExperiment(self):
         # load registered experiment -- including options (see below), list of completed preprocessing steps, and any useful values saved to the vrExp object
+        assert (self.sessionPath()/'vrExperimentOptions.json').exists(), "session json files were not found! you need to register the session first."
         self.opts = json.load(open(self.sessionPath()/'vrExperimentOptions.json'))
         self.preprocessing = json.load(open(self.sessionPath()/'vrExperimentPreprocessing.json'))
         self.value = json.load(open(self.sessionPath()/'vrExperimentValues.json'))    
