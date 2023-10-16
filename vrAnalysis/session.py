@@ -252,6 +252,18 @@ class vrExperiment(vrSession):
         stackPosition = np.stack((xc,yc,planeIdx)).T
         return stackPosition
     
+    def getRedIdx(self, include_manual=True):
+        """special loading method for getting red cell index (for handling manual assignment)"""
+        assert 'mpciROIs.redCellIdx' in self.printSavedOne(), "mpciROIs.redCellIdx is not a saved one variable, this is required for loading the red index!"
+        redidx = self.loadone('mpciROIs.redCellIdx')
+        if include_manual:
+            assert 'mpciROIs.redCellManualAssignments' in self.printSavedOne(), "mpciROIs.redCellManualAssignments is not a saved one variable, this is required for loading the red index and including manual assignments!"
+            redmanual = self.loadone('mpciROIs.redCellManualAssignments')
+            redmanual_assignment = redmanual[0]
+            redmanual_active = redmanual[1]
+            redidx[redmanual_active] = redmanual_assignment[redmanual_active]
+        return redidx
+            
     
     # ---------------------------------------- postprocessing functions for translating behavior to imaging time frame -----------------------------------------------------
     def getFrameBehavior(self):
