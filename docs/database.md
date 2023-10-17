@@ -84,7 +84,10 @@ because it automatically updates the SQL database appropriately. To update a
 single session, use this command, where the three arguments are the mousename, 
 datestring, and sessionid:
 ```python
-vrdb.registerSingleSession('ATL022','2023-04-26','701')
+mouseName = 'ATL022'
+dateString = '2023-04-26'
+sessionid = '701'
+vrdb.registerSingleSession(mouseName, dateString, sessionid)
 ```
 
 To determine which sessions need registration, use this line. Note that 

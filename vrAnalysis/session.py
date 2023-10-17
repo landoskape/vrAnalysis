@@ -58,7 +58,7 @@ class vrSession:
         # clears any oneData in session folder
         # oneFileNames is an optional list of files to clear, otherwise it will clear all of them
         if not(certainty):
-            print(f"You have to be certain!")
+            print(f"You have to be certain to clear oneData! (This means set kwarg certainty=True).")
             return None
         oneFiles = self.getSavedOne()
         if oneFileNames: 
@@ -395,7 +395,7 @@ class vrRegistration(vrExperiment):
         
         
     def doPreprocessing(self):
-        if self.opts['clearOne']: self.clearOneData()
+        if self.opts['clearOne']: self.clearOneData(certainty=True)
         self.processTimeline()
         self.processBehavior()
         self.processImaging()

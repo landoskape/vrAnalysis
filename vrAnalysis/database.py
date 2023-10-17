@@ -513,7 +513,7 @@ class vrDatabase:
                 cursor.execute(self.createUpdateStatement('vrRegistrationError',record['uSessionID']), True)
                 cursor.execute(self.createUpdateStatement('vrRegistrationException',record['uSessionID']), str(ex))
             print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
-            vrExpReg.clearOneData()
+            vrExpReg.clearOneData(certainty=True)
             errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
             errorPrint(f"Exception: {ex}")
             # If failed, return (False, 0B)
