@@ -89,7 +89,10 @@ vrdb.registerSingleSession('ATL022','2023-04-26','701')
 
 To determine which sessions need registration, use this line. Note that 
 default behavior is to skip sessions that have already experienced an error in
-registration. You can add kwargs to filter the table even further. 
+registration. You can add kwargs to filter the table even further. Also note
+that the default behavior is to produce a session iterable (a list of 
+vrExperiment objects). You can return a dataframe directly by setting the 
+optional argument ``as_iterable=False``.
 ```python
 vrdb.needsRegistration(skipErrors=True)
 ```
