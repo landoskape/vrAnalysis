@@ -26,7 +26,14 @@ def getCopyString(mouseName, datestr='', session='', server=serverPath(), toClip
         tkManager.destroy()
     print(cmdPromptCommand)
 
-def s2pTargets(mouseName, dateString='', session='', server=serverPath()):
+def s2pTargets(*inputs, server=serverPath()):
+    if len(inputs)==3:
+        mouseName, dateString, session = inputs
+    else:
+        mouseName = inputs[0].mouseName
+        dateString = inputs[0].dateString
+        session = inputs[0].session
+        
     sourceString = Path(serverPath() / mouseName / dateString / session)
     targetString = Path(localDataPath() / mouseName / dateString / session)
     print(sourceString)

@@ -314,6 +314,9 @@ class vrDatabase:
     def iterSessions(self, ignoreScratched=True, **kwConditions):
         """Creates list of sessions that can be iterated through"""
         df = self.getTable(ignoreScratched=ignoreScratched, **kwConditions)
+        return self.createSessionIterable(df)
+
+    def createSessionIterable(self, df):
         ises = []
         for idx, row in df.iterrows():
             ises.append(self.vrExperiment(row))
@@ -331,10 +334,15 @@ class vrDatabase:
             print(self.vrSession(row).sessionPrint())
     
     # == helper functions for figuring out what needs work ==
-    def needsRegistration(self, skipErrors=True, **kwargs): 
+    def needsRegistration(self, skipErrors=True, as_iterable=True, **kwargs): 
         df = self.getTable(**kwargs)
-        if skipErrors: df = df[df['vrRegistrationError']==False]
-        return df[df['vrRegistration']==False]
+        if skipErrors: 
+            df = df[df['vrRegistrationError']==False]
+        df = df[df['vrRegistration']==False]
+        if as_iterable: 
+            return self.createSessionIterable(df)
+        else:
+            return df
     
     def updateSuite2pDateTime(self):
         df = self.getTable()
