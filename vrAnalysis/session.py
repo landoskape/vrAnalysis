@@ -251,7 +251,11 @@ class vrExperiment(vrSession):
             xc = np.array([np.median(x) for x in xpix])
         stackPosition = np.stack((xc,yc,planeIdx)).T
         return stackPosition
-    
+
+    def getNumROIs(self, keepPlanes=None):
+        keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(self.value['roiPerPlane']))]
+        return sum([self.value['roiPerPlane'][p] for p in keepPlanes])
+        
     def getRedIdx(self, include_manual=True):
         """special loading method for getting red cell index (for handling manual assignment)"""
         assert 'mpciROIs.redCellIdx' in self.printSavedOne(), "mpciROIs.redCellIdx is not a saved one variable, this is required for loading the red index!"
