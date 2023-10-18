@@ -173,7 +173,10 @@ class vrExperiment(vrSession):
             self.loadBuffer = {}
         else:
             for name in names:
-                if name in self.loadBuffer.keys(): del self.loadBuffer[name]
+                if name in self.loadBuffer.keys(): 
+                    del self.loadBuffer[name]
+                if self.oneFilename(name) in self.loadBuffer.keys():
+                    del self.loadBuffer[self.oneFilename(name)]
     
     # -------------------------------------------------------------- database communication --------------------------------------------------------------------
     def printSessionNotes(self):
