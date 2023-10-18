@@ -3,6 +3,18 @@ import scipy as sp
 import numba as nb
 from . import helpers
 
+# ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
+def environmentRewardZone(vrexp):
+    environmentIndex = vrexp.loadone('trials.environmentIndex')
+    environments = np.unique(environmentIndex)
+    rewardPosition = vrexp.loadone('trials.rewardPosition')
+    rewardZoneHalfwidth = vrexp.loadone('trials.rewardZoneHalfwidth')
+    envRewPos = [np.unique(rewardPosition[environmentIndex==env]) for env in environments]
+    envRewHW = [np.unique(rewardZoneHalfwidth[environmentIndex==env]) for env in environments]
+    assert all([len(erp)==1 for erp in envRewPos]), f"reward position wasn't the same within each environment in session: {vrexp.sessionPrint()}"
+    assert all([len(erhw)==1 for erhw in envRewHW]), f"reward zone halfwidth wasn't the same within each environment in session: {vrexp.sessionPrint()}"
+    return [erp[0] for erp in envRewPos], [erhw[0] for erhw in envRewHW]
+    
 # ------------------------------------------------- postprocessing functions for creating spatial maps -----------------------------------------------------
 def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     # Produce occupancy map and speed map using numba speed ups
@@ -17,15 +29,15 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
     assert np.unique(roomLength).size==1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
     roomLength = roomLength[0]
     numPosition = int(roomLength/distStep[0])
-    distvec = np.linspace(0,roomLength,numPosition+1)
-    distcenter = helpers.edge2center(distvec)
+    distedges = np.linspace(0,roomLength,numPosition+1)
+    distcenter = helpers.edge2center(distedges)
     
     trialStartSample = vrexp.loadone('trials.positionTracking')
     behaveTimeStamps = vrexp.loadone('positionTracking.times')
     behavePosition = vrexp.loadone('positionTracking.position')
     lickSamples = vrexp.loadone('licksTracking.positionTracking') # list of behave sample for each lick
 
-    behavePositionBin = np.digitize(behavePosition,distvec)-1 # index of position bin for each sample
+    behavePositionBin = np.digitize(behavePosition,distedges)-1 # index of position bin for each sample
     lickPositionBin = behavePositionBin[lickSamples] # index of position bin for each lick
     behaveTrialIdx = vrexp.getBehaveTrialIdx(trialStartSample) # array of trial index for each sample
     lickTrialIdx = behaveTrialIdx[lickSamples] # trial index of each lick
@@ -68,38 +80,45 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
         speedmap = helpers.convolveToeplitz(speedmap, kk, axis=1)
         correctMap(occmap, speedmap)
 
-        # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins) -- do this after convolution!
-        for trial,fvb in enumerate(firstValidBin):
-            occmap[trial,:fvb] = np.nan
-            speedmap[trial,:fvb] = np.nan
-        for trial,lvb in enumerate(lastValidBin):
-            occmap[trial,lvb+1:] = np.nan
-            speedmap[trial,lvb+1:] = np.nan            
+        # True if a bin wasn't visited
+        didnt_visit = np.zeros_like(occmap, dtype=bool)
+        for trial, (fvb, lvb) in enumerate(zip(firstValidBin, lastValidBin)):
+            didnt_visit[trial, :fvb] = True
+            didnt_visit[trial, lvb+1:] = True   
 
+        # get downsampled maps
         dsFactor = int(distStep[1]/distStep[0])
         occmap = np.mean(np.reshape(occmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
         speedmap = np.mean(np.reshape(speedmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
         lickmap = np.sum(np.reshape(lickmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2) # sum licks for each position (don't take average)
-        distvec = np.linspace(0,roomLength,int(numPosition/dsFactor)+1)
+        distedges = np.linspace(0,roomLength,int(numPosition/dsFactor)+1)
 
-    return occmap, speedmap, lickmap, distvec
+        # True if every bin in a down-sampled sample wasn't visited
+        all_didnt_visit = np.all(np.isnan(np.reshape(didnt_visit, (vrexp.value['numTrials'], -1, dsFactor))), axis=2)
 
-def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distvec, omap, correctNan=True, speedThreshold=0, useAverage=True, standardizeSpks=True, doSmoothing=None):
+        # set nan where mouse didn't visit at all
+        occmap[all_didnt_visit] = np.nan
+        speedmap[all_didnt_visit] = np.nan
+        lickmap[all_didnt_visit] = np.nan
+
+    return occmap, speedmap, lickmap, distedges
+
+def getSpikeMap(vrexp, frameTrialIdx, framePosition, frameSpeed, distedges, omap, correctNan=True, speedThreshold=0, useAverage=True, standardizeSpks=True, doSmoothing=None):
     # frameTrialIdx, framePosition, frameSpeed = vrexp.getFrameBehavior()
-    framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distvec)-1, np.nan)
+    framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distedges)-1, np.nan)
 
     # Now make spike map using frame position
     spks = vrexp.loadone('mpci.roiActivityDeconvolved').T
     if standardizeSpks:
         spks = (spks - np.median(spks,axis=1,keepdims=True)) / np.std(spks,axis=1,keepdims=True)
-    spkmap = np.zeros((vrexp.value['numTrials'],len(distvec)-1,vrexp.value['numROIs']))
-    count = np.zeros((vrexp.value['numTrials'],len(distvec)-1))
+    spkmap = np.zeros((vrexp.value['numTrials'],len(distedges)-1,vrexp.value['numROIs']))
+    count = np.zeros((vrexp.value['numTrials'],len(distedges)-1))
 
     getSpkMap(spks.T, frameTrialIdx, framePositionBin, spkmap, count, useAverage=useAverage)
     spkmap = np.transpose(spkmap,(2,0,1)) # convert to smart indices
 
     if doSmoothing:
-        kk = helpers.getGaussKernel(helpers.edge2center(distvec),doSmoothing)
+        kk = helpers.getGaussKernel(helpers.edge2center(distedges),doSmoothing)
         idxnan = np.isnan(spkmap)
         spkmap[idxnan]=0
         spkmap = helpers.convolveToeplitz(spkmap, kk, mode='same')
@@ -208,6 +227,15 @@ def behaveToFrame(behavePosition,behaveTrialIdx,idxBehaveToFrame,distBehaveToFra
             framePosition[sample] /= count[sample]
             frameTrialIdx[sample] /= count[sample]
 
+
+@nb.njit(parallel=True)
+def timelineToFrame(timelineIndex, timelineVariable, output, count):
+    for idx in nb.prange(len(timelineIndex)):
+        output[timelineIndex[idx]] += timelineVariable[idx]
+        count[timelineIndex[idx]] += 1
+    for idx in nb.prange(len(count)):
+        if count[idx]>0:
+            output[idx] /= count[idx]
 
 @nb.njit(parallel=True)
 def getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap, count, useAverage=True):
