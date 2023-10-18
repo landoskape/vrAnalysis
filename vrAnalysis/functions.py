@@ -94,7 +94,11 @@ def loadSpikeMap(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeconvolved', s
     spks = vrexp.loadone(onefile).T
     spks *= idxAboveSpeedThreshold # set spks to 0 unless above speed threshold
     if standardizeSpks: 
-        spks = (spks - np.median(spks,axis=1,keepdims=True)) / np.std(spks,axis=1,keepdims=True)
+        std = np.std(spks, axis=1, keepdims=True)
+        median = np.median(spks, axis=1, keepdims=True)
+        idx_with_activity = (std>0).squeeze()
+        spks[idx_with_activity] = (spks[idx_with_activity] - median[idx_with_activity]) / std[idx_with_activity]
+        spks[~idx_with_activity] = 0
 
     # back to frames x ROIs for getSpkMap method
     spks = spks.T 
@@ -232,8 +236,8 @@ def measureReliability(spkmap, numcv=3, numRepeats=1):
             numerator = np.sum((testProfile-trainProfile)**2,axis=0)
             denominator = np.sum((testProfile-meanTrain)**2,axis=0)
 
-            # only measure reliability if it has activity
-            idxHasActivity = np.any(spkmap!=0, axis=(0,1))
+            # only measure reliability if it has activity (if denominator is 0, it doesn't have enough activity :) )
+            idxHasActivity = np.any(spkmap!=0, axis=(0,1)) & (denominator!=0)
             relmse[idxHasActivity] += (1 - numerator[idxHasActivity]/denominator[idxHasActivity])
             relmse[~idxHasActivity] = np.nan # otherwise set to nan
             relcor += helpers.vectorCorrelation(trainProfile, testProfile) # vectorCorrelation returns 0 if data has 0 standard deviation
