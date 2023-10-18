@@ -144,10 +144,10 @@ def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeco
         didnt_visit = replaceMissingData(np.zeros_like(occmap, dtype=bool), firstValidBin, lastValidBin, replaceWith=True)
         
         # True if every bin in a down-sampled sample wasn't visited
+        dsFactor = int(distStep[1]/distStep[0])
         all_didnt_visit = np.all(np.isnan(np.reshape(didnt_visit, (vrexp.value['numTrials'], -1, dsFactor))), axis=2)
 
         # get downsampled maps
-        dsFactor = int(distStep[1]/distStep[0])
         occmap = np.mean(np.reshape(occmap,(vrexp.value['numTrials'], -1, dsFactor)), axis=2)
         speedmap = np.mean(np.reshape(speedmap,(vrexp.value['numTrials'], -1, dsFactor)), axis=2)
         lickmap = np.sum(np.reshape(lickmap,(vrexp.value['numTrials'], -1, dsFactor)), axis=2) # sum licks for each position (don't take average)
@@ -191,10 +191,10 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
         didnt_visit = replaceMissingData(np.zeros_like(occmap, dtype=bool), firstValidBin, lastValidBin, replaceWith=True)
         
         # True if every bin in a down-sampled sample wasn't visited
+        dsFactor = int(distStep[1]/distStep[0])
         all_didnt_visit = np.all(np.isnan(np.reshape(didnt_visit, (vrexp.value['numTrials'], -1, dsFactor))), axis=2)
 
         # get downsampled maps
-        dsFactor = int(distStep[1]/distStep[0])
         occmap = np.mean(np.reshape(occmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
         speedmap = np.mean(np.reshape(speedmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2)
         lickmap = np.sum(np.reshape(lickmap,(vrexp.value['numTrials'],-1,dsFactor)),axis=2) # sum licks for each position (don't take average)

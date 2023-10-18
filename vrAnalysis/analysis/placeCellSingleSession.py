@@ -282,24 +282,12 @@ class placeCellSingleSession(standardAnalysis):
         self.numROIs = self.vrexp.getNumROIs(self.keepPlanes)
         
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
-        #self.omap, self.smap, _, self.distedges = functions.getBehaviorMaps(self.vrexp, speedThreshold=self.speedThreshold) 
-        self.omap, self.smap, _, self.spkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, 
-                                                                                                 distStep=self.distStep, 
-                                                                                                 onefile=self.onefile, 
-                                                                                                 speedThreshold=self.speedThreshold, 
-                                                                                                 standardizeSpks=self.standardizeSpks, 
-                                                                                                 doSmoothing=self.doSmoothing)
+        kwargs = {'distStep':self.distStep, 'onefile':self.onefile, 'speedThreshold':self.speedThreshold, 'standardizeSpks':self.standardizeSpks, 'doSmoothing':self.doSmoothing}
+        self.omap, self.smap, _, self.spkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
         
         self.distcenters = helpers.edge2center(self.distedges)
         
         self.numTrials = self.omap.shape[0]
-        
-        # # convert behavioral data into timeframe of spiking data
-        # self.frameTrialIdx, self.framePosition, self.frameSpeed = self.vrexp.getFrameBehavior() 
-
-        # # produce the spkmap (activity vs position)
-        # self.spkmap = functions.getSpikeMap(self.vrexp, self.frameTrialIdx, self.framePosition, self.frameSpeed, self.distedges, self.omap, onefile=self.onefile,
-        #                                     speedThreshold=self.speedThreshold, standardizeSpks=self.standardizeSpks, doSmoothing=self.doSmoothing)[self.idxUseROI]
         
         # find out which trials the mouse explored the whole environment
         self.boolFullTrials = np.all(~np.isnan(self.omap),axis=1) 
