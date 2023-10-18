@@ -242,7 +242,7 @@ class placeCellSingleSession(standardAnalysis):
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
-    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5), speedThreshold=5, numcv=2, standardizeSpks=True, doSmoothing=0):
+    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5,2), speedThreshold=5, numcv=2, standardizeSpks=True, doSmoothing=0):
         self.name = 'placeCellSingleSession'
         self.onefile = onefile
         self.vrexp = vrexp

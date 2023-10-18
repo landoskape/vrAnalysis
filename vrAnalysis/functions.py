@@ -20,7 +20,8 @@ def environmentRewardZone(vrexp):
 def checkDistStep(distStep):
     """distStep has particular requirements for the functions that use it!"""
     if len(distStep)>1:
-        assert len(distStep)==2 and distStep[1]>distStep[0] and isinstance(distStep[0],int) and isinstance(distStep[1],int), "distStep should be a two element tuple of ints increasing in size"
+        message = "distStep should be a two(or 3) element tuple of ints increasing in size, with an optional third argument describing the standard deviation of the smoothing kernel"
+        assert len(distStep)<=3 and distStep[1]>distStep[0] and isinstance(distStep[0],int) and isinstance(distStep[1],int), message
     else:
         if not isinstance(distStep, tuple): 
             distStep = (distStep)
@@ -128,7 +129,7 @@ def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeco
         
     else:
         # Create spatial smoothing kernel 
-        kk = helpers.getGaussKernel(distcenter, distStep[1])
+        kk = helpers.getGaussKernel(distcenter, distStep[-1]) # standard deviation = dsFactor if len(distStep)==2, and specified kernel width if len(distStep)==3
 
         # Smooth maps with convolution (gauss kernel has unit norm so no correction needed)
         occmap = helpers.convolveToeplitz(occmap, kk, axis=1)
@@ -181,7 +182,7 @@ def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
         
     else:
         # Create spatial smoothing kernel 
-        kk = helpers.getGaussKernel(distcenter, distStep[1])
+        kk = helpers.getGaussKernel(distcenter, distStep[-1]) # standard deviation = dsFactor if len(distStep)==2, and specified kernel width if len(distStep)==3
 
         # Smooth maps with convolution (gauss kernel has unit norm so no correction needed)
         occmap = helpers.convolveToeplitz(occmap, kk, axis=1)
