@@ -49,3 +49,14 @@ class standardAnalysis:
         print(f"{self.name} is saving a {name} figure for session: {self.vrexp.sessionPrint()}")
         plt.figure(figNumber)
         plt.savefig(self.saveDirectory(name) / str(self.vrexp))
+
+
+
+
+
+
+
+
+
+
+
