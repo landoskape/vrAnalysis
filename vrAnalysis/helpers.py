@@ -65,6 +65,7 @@ def getGaussKernel(timestamps, width, nonzero=True):
     kk = np.exp(-kx**2/(2*width)**2)
     kk = kk / np.sum(kk)
     if nonzero:
+        # since sp.linalg.convolution_matrix only needs nonzero values, this is way faster
         kk = kk[kk>0]
     return kk
 
@@ -249,10 +250,14 @@ def vectorCorrelation(x,y):
     yDev = y - np.mean(y,axis=0)
     xSampleStd = np.sqrt(np.sum(xDev**2,axis=0)/(N-1))
     ySampleStd = np.sqrt(np.sum(yDev**2,axis=0)/(N-1))
-    xStandard = xDev/xSampleStd
-    yStandard = yDev/ySampleStd
-    return np.sum(xStandard * yStandard,axis=0) / (N-1) 
-
+    xIdxValid = xSampleStd > 0
+    yIdxValid = ySampleStd > 0
+    xDev[:,xIdxValid] /= xSampleStd[xIdxValid]
+    yDev[:,yIdxValid] /= ySampleStd[yIdxValid]
+    std = np.sum(xDev * yDev, axis=0) / (N-1)
+    std *= 1*(xIdxValid & yIdxValid)
+    return std
+    
 def cvFoldSplit(samples, numFold):
     if type(samples)==int:
         numSamples = copy(samples)
