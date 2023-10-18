@@ -1,10 +1,19 @@
 import sys
 import inspect
 import math
+from copy import copy
 import numpy as np
 import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
+
+def checkIterable(val):
+    try:
+        _ = iter(val)
+    except:
+        return False
+    else:
+        return True
 
 def scale(data, vmin=0, vmax=1, prctile=(0,100)):
     '''scale data to arbitrary range using conservative percentile estimate'''
@@ -244,13 +253,18 @@ def vectorCorrelation(x,y):
     yStandard = yDev/ySampleStd
     return np.sum(xStandard * yStandard,axis=0) / (N-1) 
 
-def cvFoldSplit(numSamples, numFold):
+def cvFoldSplit(samples, numFold):
+    if type(samples)==int:
+        numSamples = copy(samples)
+        samples = np.arange(samples)
+    else:
+        numSamples = len(samples)
     # generates list of indices of equally sized randomly selected samples to be used in numFold-crossvalidation for a given number of samples
     minimumSamples = np.floor(numSamples / numFold) 
     remainder = numSamples - numFold*minimumSamples 
     samplesPerFold = [int(minimumSamples + 1*(f<remainder)) for f in range(numFold)] # each fold gets minimum number of samples, assign remainder evenly to as many as necessary
     sampleIdxPerFold = [0, *np.cumsum(samplesPerFold)] # defines where to start and stop for each fold
-    randomOrder = np.random.permutation(numSamples) # random permutation of samples
+    randomOrder = samples[np.random.permutation(numSamples)] # random permutation of samples
     foldIdx = [randomOrder[sampleIdxPerFold[i]:sampleIdxPerFold[i+1]] for i in range(numFold)] # assign samples to each cross-validation fold
     return foldIdx
 
