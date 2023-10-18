@@ -207,7 +207,7 @@ class vrDatabase:
     def miceInSessions(self, iterSession):
         """get list of unique mice names in session iterable"""
         mouseNames = [ses.mouseName for ses in iterSession] 
-        return list(set(mouseNames))
+        return sorted(list(set(mouseNames)))
     
     def printMiceInSessions(self, iterSession):
         """print list of unique mice names in session iterable"""
