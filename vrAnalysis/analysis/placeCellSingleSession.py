@@ -284,6 +284,7 @@ class placeCellSingleSession(standardAnalysis):
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
         kwargs = {'distStep':self.distStep, 'onefile':self.onefile, 'speedThreshold':self.speedThreshold, 'standardizeSpks':self.standardizeSpks, 'doSmoothing':self.doSmoothing}
         self.omap, self.smap, _, self.spkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
+        self.spkmap = self.spkmap[self.idxUseROI]
         
         self.distcenters = helpers.edge2center(self.distedges)
         
@@ -378,7 +379,7 @@ class placeCellSingleSession(standardAnalysis):
         
         return train_snake, test_snake
 
-    def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='com', normalize=0, rewzone=True):
+    def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='com', normalize=0, rewzone=True, withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
         # default environment is all of them
         if envnum is None: envnum = copy(self.environments)
@@ -439,11 +440,16 @@ class placeCellSingleSession(standardAnalysis):
 
             fig.colorbar(cim, ticks=cb_ticks, orientation='vertical', cax=ax[idx, 2])
             ax[idx, 2].set_ylabel('Activity', fontsize=labelSize)
-            
-        plt.show()
-        
-        return fig, ax
 
+        if withSave: 
+            if len(envnum)==len(self.environments):
+                self.saveFigure(fig.number, f'snake_plot')
+            else:
+                print("If envnum is less than all the environments, you can't save with this program!")
+        
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+        
 
 
 
