@@ -1,15 +1,15 @@
 from pathlib import Path
 from tkinter import Tk
 
-def hello():
-    print('hello world')
-    
 def codePath():
     return Path('C:/Users/andrew/Documents/GitHub/vrAnalysis')
 
 def localDataPath():
     return Path("C:/Users/andrew/Documents/localData")
 
+def sharedDataPath():
+    return localDataPath() / 'sharedData'
+    
 def analysisPath():
     return localDataPath() / 'analysis'
     
