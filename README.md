@@ -39,7 +39,7 @@ repository with lots of code blocks indicating standard usage. So, hopefully
 that's useful to anyone trying to use the repository or at least just to see
 what using this repository will look like.
 
-[Documentation Pages](docs)
+Documentation Pages
 1. [Standard Workflows](docs/workflows.md)
 2. Components
    - [Database](docs/database.md)
