@@ -12,6 +12,9 @@ from .. import functions
 from .. import helpers
 from .standardAnalysis import standardAnalysis
 
+def redReliability(ignoreScratched=True, **kwConditions):
+    """Method for returning a list of 
+    
 class placeCellSingleSession(standardAnalysis):
     """
     Performs basic place cell (and behavioral) analysis on single sessions.
@@ -21,7 +24,7 @@ class placeCellSingleSession(standardAnalysis):
     
     Standard usage:
     ---------------
-    == I just started this file, will populate later! ==
+    == I just started this file, will populate standard usage later! ==
     """
     def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], speedThreshold=5, numcv=2, standardizeSpks=True, doSmoothing=0):
         self.name = 'placeCellSingleSession'

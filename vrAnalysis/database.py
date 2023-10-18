@@ -252,6 +252,8 @@ class vrDatabase:
         **kwConditions : dict
             Additional filtering conditions as keyword arguments.
             Each condition should match a column name in the table.    
+            Value can either be a variable (e.g. 0 or 'ATL000'), or a (value, operation) pair.
+            The operation defaults to '==', but you can use anything that works as a df query.
             Note: this is limited in the sense that empty data can't be identified with key:None.
             (using the pd.isnull() is a valid work around, but needs to be coded outside of getTable())
         
@@ -270,9 +272,11 @@ class vrDatabase:
         df = pd.DataFrame.from_records(tableData, columns=fieldNames)
         if ignoreScratched: df = df[df['sessionQC']]
         if kwConditions:
-            for key in kwConditions.keys(): 
+            for key, val in kwConditions.items(): 
                 assert key in fieldNames, f"{key} is not a column name in {self.tableName}"
-            query = " & ".join([f"`{key}`=={val!r}" for key, val in kwConditions.items()])
+                if not isinstance(val, tuple):
+                    kwConditions[key] = (val, '==') # value, operation pair
+            query = " & ".join([f"`{key}`{op}{val!r}" for key, (val, op) in kwConditions.items()])
             df = df.query(query)
         return df
     
