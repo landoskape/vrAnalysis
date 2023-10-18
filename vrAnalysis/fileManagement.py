@@ -7,6 +7,9 @@ def codePath():
 def localDataPath():
     return Path("C:/Users/andrew/Documents/localData")
 
+def storagePath():
+    return Path("D:/localData")
+    
 def sharedDataPath():
     return localDataPath() / 'sharedData'
     
@@ -20,6 +23,16 @@ def getCopyString(mouseName, datestr='', session='', server=serverPath(), toClip
     sourceString = Path(server / mouseName / datestr / session)
     targetString = Path(localDataPath() / mouseName / datestr / session)
     cmdPromptCommand = f"robocopy {sourceString} {targetString} /s /xf *.tif *.mj2" 
+    if toClipboard:
+        tkManager = Tk()
+        tkManager.clipboard_append(cmdPromptCommand)
+        tkManager.destroy()
+    print(cmdPromptCommand)
+
+def copyDataToStorage(mouseName, datestr='', session='', toClipboard=True):
+    sourceString = Path(localDataPath() / mouseName / datestr / session)
+    targetString = Path(storagePath() / mouseName / datestr / session)
+    cmdPromptCommand = f"robocopy {sourceString} {targetString} /s" 
     if toClipboard:
         tkManager = Tk()
         tkManager.clipboard_append(cmdPromptCommand)
