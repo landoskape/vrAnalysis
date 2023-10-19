@@ -242,7 +242,7 @@ class placeCellSingleSession(standardAnalysis):
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
-    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5,2), speedThreshold=5, numcv=2, standardizeSpks=True, doSmoothing=0):
+    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5,2), speedThreshold=5, numcv=2, standardizeSpks=True):
         self.name = 'placeCellSingleSession'
         self.onefile = onefile
         self.vrexp = vrexp
@@ -250,13 +250,20 @@ class placeCellSingleSession(standardAnalysis):
         self.speedThreshold = speedThreshold
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
-        self.doSmoothing = doSmoothing
         self.keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(vrexp.value['roiPerPlane']))]
         
         # automatically load data
         self.dataloaded = False
         if autoload: self.load_data()
-    
+
+    def envnum_to_idx(self, envnum):
+        """
+        convert list of environment numbers to indices of environment within this session
+        e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
+        """
+        envnum = helpers.check_iterable(envnum)
+        return [np.where(self.environments==ev)[0][0] for ev in envnum]
+        
     def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
@@ -282,7 +289,7 @@ class placeCellSingleSession(standardAnalysis):
         self.numROIs = self.vrexp.getNumROIs(self.keepPlanes)
         
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
-        kwargs = {'distStep':self.distStep, 'onefile':self.onefile, 'speedThreshold':self.speedThreshold, 'standardizeSpks':self.standardizeSpks, 'doSmoothing':self.doSmoothing}
+        kwargs = {'distStep':self.distStep, 'onefile':self.onefile, 'speedThreshold':self.speedThreshold, 'standardizeSpks':self.standardizeSpks}
         self.omap, self.smap, _, self.spkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
         self.spkmap = self.spkmap[self.idxUseROI]
         
@@ -319,7 +326,15 @@ class placeCellSingleSession(standardAnalysis):
             # Alert the user that the training data was recalculated without testing
             self.test_relmse = None
 
-    def get_place_field(self, roi_idx=None, trial_idx=None, method='com'):
+    def get_reliable(self, envnum, cutoffs=None):
+        """central method for getting reliable cells from list of environments (by environment index)"""
+        envnum = helpers.check_iterable(envnum) # make sure it's an iterable
+        envidx = self.envnum_to_idx(envnum) # convert environment numbers to indices
+        cutoffs = (-np.inf, -np.inf) if cutoffs is None else cutoffs
+        idx_reliable = [(self.relmse[ii] >= cutoffs[0]) & (self.relcor[ii] >= cutoffs[1]) for ii in envidx]
+        return idx_reliable
+        
+    def get_place_field(self, roi_idx=None, trial_idx=None, method='max'):
         """get sorting index based on spikemap, roi index, and trial index"""
         assert method=='com' or method=='max', f"invalid method ({method}), must be either 'com' or 'max'"
         if roi_idx is None: roi_idx = np.ones(numROIs, dtype=bool)            
@@ -344,48 +359,81 @@ class placeCellSingleSession(standardAnalysis):
 
         return pfloc, pfidx
     
-    def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='com'):
+    def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max'):
         """make snake data from train and test sessions, for particular environment if requested"""
         # default environment is all of them
         if envnum is None: envnum = copy(self.environments)
 
         # envnum must be an iterable
-        if not(helpers.checkIterable(envnum)): envnum = [envnum]
+        envnum = helpers.check_iterable(envnum)
 
         # convert environment numbers to indices
-        envidx = [np.where(self.environments==ev)[0][0] for ev in envnum]
-        numEnv = len(envnum)
+        envidx = self.envnum_to_idx(envnum)
         
         # get specific trial indices for given environment(s)
         ctrain_idx = [self.train_idx[ii] for ii in envidx]
         ctest_idx = [self.test_idx[ii] for ii in envidx]
         
         # get roi indices to use
-        if with_reliable:
-            self.idx_in_snake = [(self.relmse[ii] >= cutoffs[0]) & (self.relcor[ii] >= cutoffs[1]) for ii in envidx]
-        else:
-            self.idx_in_snake = [np.ones(self.numROIs, dtype=bool) for ii in envidx]
+        self.idx_in_snake = self.get_reliable(envnum, cutoffs=cutoffs if with_reliable else None)
         
         # get pf sort indices
         train_pfidx = [self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtrain, method=method)[1] for idxroi, idxenvtrain in zip(self.idx_in_snake, ctrain_idx)]
-        test_pfidx = [self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtest, method=method)[1] for idxroi, idxenvtest in zip(self.idx_in_snake, ctest_idx)]
-
-        # get snakes
-        spkmap = [self.spkmap[idxroi] for idxroi in self.idx_in_snake]
-        trainProfile = [np.mean(sm[:, idxenvtrain], axis=1) for sm, idxenvtrain in zip(spkmap, ctrain_idx)]
-        testProfile = [np.mean(sm[:, idxenvtest], axis=1) for sm, idxenvtest in zip(spkmap, ctest_idx)]
-        train_snake = [trainProf[pfidx] for trainProf, pfidx in zip(trainProfile, train_pfidx)]
-        test_snake = [testProf[pfidx] for testProf, pfidx in zip(testProfile, test_pfidx)]
         
+        # get spkmap of only reliable ROIs in each environment
+        spkmap = [self.spkmap[idxroi] for idxroi in self.idx_in_snake] 
+        
+        # average (ROI x position) activity for each environment in training and testing trials
+        trainProfile = [np.mean(sm[:, idxenvtrain], axis=1) for sm, idxenvtrain in zip(spkmap, ctrain_idx)] 
+        testProfile = [np.mean(sm[:, idxenvtest], axis=1) for sm, idxenvtest in zip(spkmap, ctest_idx)]
+
+        # average activity for each environment sorted by order on training trials
+        train_snake = [trainProf[pfidx] for trainProf, pfidx in zip(trainProfile, train_pfidx)]
+        test_snake = [testProf[pfidx] for testProf, pfidx in zip(testProfile, train_pfidx)]
+
+        # :)
         return train_snake, test_snake
 
-    def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='com', normalize=0, rewzone=True, withShow=True, withSave=False):
+    def make_remap_data(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max'):
+        """make snake data across environments with remapping indices (for N environments, an NxN grid of snakes and indices)"""
+        envnum = helpers.check_iterable(copy(self.environments)) # always use all environments (as an iterable)
+        envidx = self.envnum_to_idx(envnum)
+        
+        # get roi indices to use
+        self.idx_in_snake = self.get_reliable(envnum, cutoffs=cutoffs if with_reliable else None)
+
+        # get pf sort indices
+        train_pfidx = [self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtrain, method=method)[1] for idxroi, idxenvtrain in zip(self.idx_in_snake, self.train_idx)]
+
+        # get spkmap of only reliable ROIs in each environment
+        spkmap = [self.spkmap[idxroi] for idxroi in self.idx_in_snake] 
+        
+        # make c-v snake plots across all environment combinations
+        snake_plots = []
+        for ii, env in enumerate(envidx):
+            # choose ROIs and sort by environment ii (on test trials if ii==jj and full trials if ii!=jj)
+            c_plots = []
+            for jj, env in enumerate(envidx):
+                if ii==jj:
+                    # snake of reliable in env @ii, on test trials for env @jj, sorted by pf on train trials in env @ii
+                    c_snake = np.mean(spkmap[ii][:,self.test_idx[jj]], axis=1)[train_pfidx[ii]]
+                    c_plots.append(c_snake)
+                else:
+                    # snake of reliable in env @ii, on full trials for env @jj, sorted by pf on train trials in env @ii
+                    c_snake = np.mean(spkmap[ii][:,self.idxFullTrialEachEnv[jj]], axis=1)[train_pfidx[ii]]
+                    c_plots.append(c_snake)
+            snake_plots.append(c_plots)
+
+        # :)
+        return snake_plots
+    
+    def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
         # default environment is all of them
         if envnum is None: envnum = copy(self.environments)
 
         # envnum must be an iterable
-        if not(helpers.checkIterable(envnum)): envnum = [envnum]
+        envnum = helpers.check_iterable(envnum)
         assert all([e in self.environments for e in envnum]), "envnums must be valid environment numbers within self.environments"
 
         # get number of environments
@@ -402,6 +450,8 @@ class placeCellSingleSession(standardAnalysis):
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax)-np.fix(vmin)+1)))
         labelSize = 12
+        cb_unit = r'$\sigma$' if self.standardizeSpks else 'au'
+        cb_label = f"Activity ({cb_unit})"
         
         # load reward zone information
         if rewzone:
@@ -420,14 +470,14 @@ class placeCellSingleSession(standardAnalysis):
         if numEnv==1: ax = np.reshape(ax, (1, -1))
             
         for idx, env in enumerate(envnum):
-            cim = ax[idx, 0].imshow(train_snake[idx], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent[idx], aspect='auto')
+            cim = ax[idx, 0].imshow(train_snake[idx], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent[idx], aspect='auto', interpolation=interpolation)
             if idx==numEnv-1:
                 ax[idx,0].set_xlabel('Virtual Position (cm)', fontsize=labelSize)
             ax[idx,0].set_ylabel(f'Env:{env}, ROIs', fontsize=labelSize)
             if idx==0:
                 ax[idx,0].set_title('Train Trials', fontsize=labelSize)
 
-            ax[idx,1].imshow(test_snake[idx], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent[idx], aspect='auto')
+            ax[idx,1].imshow(test_snake[idx], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent[idx], aspect='auto', interpolation=interpolation)
             if idx==numEnv-1:
                 ax[idx,1].set_xlabel('Virtual Position (cm)', fontsize=labelSize)
             ax[idx,1].set_ylabel('ROIs', fontsize=labelSize)
@@ -439,7 +489,7 @@ class placeCellSingleSession(standardAnalysis):
                 ax[idx,1].add_patch(rect_test[idx])
 
             fig.colorbar(cim, ticks=cb_ticks, orientation='vertical', cax=ax[idx, 2])
-            ax[idx, 2].set_ylabel('Activity', fontsize=labelSize)
+            ax[idx, 2].set_ylabel(cb_label, fontsize=labelSize)
 
         if withSave: 
             if len(envnum)==len(self.environments):
@@ -447,6 +497,76 @@ class placeCellSingleSession(standardAnalysis):
             else:
                 print("If envnum is less than all the environments, you can't save with this program!")
         
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+
+    
+    def plot_remap_snakes(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', force_single_env=False, withShow=True, withSave=False):
+        """method for plotting cross-validated snake plot"""
+        # plotting remap snakes always uses all environments
+        envnum = helpers.check_iterable(copy(self.environments)) # always use all environments (as an iterable)
+        envidx = self.envnum_to_idx(envnum)
+        numEnv = len(envnum)
+
+        if numEnv==1 and not(force_single_env):
+            print(f"Session {self.vrexp.sessionPrint()} only uses 1 environment, not plotting remap snakes")
+            return None
+
+        # make snakes
+        snake_remap = self.make_remap_data(with_reliable=with_reliable, cutoffs=cutoffs, method=method)
+
+        # prepare plotting data
+        extent = lambda ii, jj : [self.distedges[0], self.distedges[-1], 0, snake_remap[ii][jj].shape[0]]
+        if normalize:
+            vmin, vmax = -np.abs(normalize), np.abs(normalize)
+        else:
+            magnitude = np.max(np.abs(np.vstack([np.concatenate(srp) for srp in snake_remap_plots])))
+            vmin, vmax = -magnitude, magnitude
+
+        cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax)-np.fix(vmin)+1)))
+        labelSize = 12
+        cb_unit = r'$\sigma$' if self.standardizeSpks else 'au'
+        cb_label = f"Activity ({cb_unit})"
+        
+        # load reward zone information
+        if rewzone:
+            # get reward zone start and stop, and filter to requested environments
+            rewPos, rewHalfwidth = functions.environmentRewardZone(self.vrexp)
+            rewPos = [rewPos[np.where(self.environments==ev)[0][0]] for ev in envnum]
+            rewHalfwidth = [rewHalfwidth[np.where(self.environments==ev)[0][0]] for ev in envnum]
+            rect = lambda ii, jj : mpl.patches.Rectangle((rewPos[jj], 0), rewHalfwidth[jj]*2, snake_remap[ii][jj].shape[0], edgecolor='none', facecolor='k', alpha=0.2)
+            
+        plt.close('all')
+        cmap = mpl.colormaps['bwr']
+
+        fig_dim = 3
+        width_ratios = [*[fig_dim for _ in range(numEnv)], fig_dim/10]
+        fig, ax = plt.subplots(numEnv, numEnv+1, width_ratios=width_ratios, figsize=(sum(width_ratios), fig_dim*numEnv), layout='constrained')
+
+        if numEnv==1: ax = np.reshape(ax, (1,2))
+            
+        for ii in range(numEnv):
+            for jj in range(numEnv):
+                # make image
+                aim = ax[ii, jj].imshow(snake_remap[ii][jj], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent(ii,jj), aspect='auto', interpolation=interpolation)
+
+                # label images
+                if ii==numEnv-1:
+                    ax[ii, jj].set_xlabel('Virtual Position (cm)', fontsize=labelSize)
+
+                ax[ii, jj].set_ylabel(f"ROIs (Train/Sort) by Env:{envnum[ii]}", fontsize=labelSize)
+                if ii==0:
+                    ax[ii, jj].set_title(f"Test on Env:{envnum[jj]}", fontsize=labelSize)
+
+                if rewzone:
+                    ax[ii, jj].add_patch(rect(ii, jj))
+
+            fig.colorbar(aim, ticks=cb_ticks, orientation='vertical', cax=ax[ii, numEnv])
+            ax[ii, numEnv].set_ylabel(cb_label, fontsize=labelSize)
+
+        if withSave: 
+            self.saveFigure(fig.number, f'remap_snake_plot')
+            
         # Show figure if requested
         plt.show() if withShow else plt.close()
         
