@@ -134,14 +134,10 @@ measures of reliability, one based on mean-square error and one based on
 correlation. For both methods, the trials are divided into training and 
 testing sets, and the average activity (across trials) is compared. 
 For MSE, a measure based on deviance is used:
-$
-relmse = 1 - \frac{\sum_i(testProfile_i - trainProfile_i)^2)}{\sum_i(testProfile_i - \frac{1}{N}\sum_jtrainProfile_j)^2}
-$
+$$\large relmse = 1 - \frac{\sum_i(testProfile_i - trainProfile_i)^2)}{\sum_i(testProfile_i - \frac{1}{N}\sum_jtrainProfile_j)^2}$$
 
 For COR, the pearson correlation is used:
-$
-relcor = correlation_{pearson}(trainProfile, testProfile)
-$
+$$\large relcor = correlation_{pearson}(trainProfile, testProfile)$$
 
 To retrieve indices of reliable cells in each environment, use this:
 ```python
