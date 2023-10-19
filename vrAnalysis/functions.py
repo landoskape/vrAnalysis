@@ -75,7 +75,12 @@ def loadBehavioralData(vrexp, distStep, speedThreshold):
 
     # Figure out the valid range (outside of this range, set the maps to nan, because their values are not meaningful)
     bpbPerTrial = vrexp.groupBehaveByTrial(behavePositionBin, trialStartSample)
-    firstValidBin = [np.min(bpb) for bpb in bpbPerTrial]
+
+    # offsetting by 1 because there is a bug in the vrControl software where the first sample is always set 
+    # to the minimum position (which is 0), but if there is a built-up buffer in the rotary encoder, the position
+    # will jump at the second sample. In general this will always work unless the mice have a truly ridiculous
+    # speed at the beginning of the trial...
+    firstValidBin = [np.min(bpb[1:] if len(bpb)>1 else bpb) for bpb in bpbPerTrial] 
     lastValidBin = [np.max(bpb) for bpb in bpbPerTrial]
 
     return occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength
@@ -110,9 +115,9 @@ def loadSpikeMap(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeconvolved', s
     
     return spkmap, count
 
-def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeconvolved', speedThreshold=0, standardizeSpks=True, doSmoothing=None):
+def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeconvolved', speedThreshold=0, standardizeSpks=True):
     distStep = checkDistStep(distStep)
-
+    
     # load key behavioral data (at higher resolution if distStep has multiple values)
     occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = loadBehavioralData(vrexp, distStep, speedThreshold)
     numPosition = int(roomLength/distStep[0])
@@ -150,7 +155,7 @@ def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeco
         
         # True if every bin in a down-sampled sample wasn't visited
         dsFactor = int(distStep[1]/distStep[0])
-        all_didnt_visit = np.all(np.isnan(np.reshape(didnt_visit, (vrexp.value['numTrials'], -1, dsFactor))), axis=2)
+        all_didnt_visit = np.all(np.reshape(didnt_visit, (vrexp.value['numTrials'], -1, dsFactor)), axis=2)
 
         # get downsampled maps
         occmap = np.mean(np.reshape(occmap,(vrexp.value['numTrials'], -1, dsFactor)), axis=2)
