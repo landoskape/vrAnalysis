@@ -147,8 +147,52 @@ idx_reliable = get_reliable(envnum, cutoffs=None)
 ```
 
 There are additional tools for analyzing data across sessions that are in the 
-[module](../vrAnalysis/analysis/placeCellSingleSession.py) that I evidently 
-haven't documented yet. 
+[module](../vrAnalysis/analysis/placeCellSingleSession.py). Generally, these 
+tools require `pcss` objects for many sessions. This can take a bit of time 
+and memory, so I start by doing the following:
+```python
+# this is a session iterable (a list of vrExperiment objects) that I want to 
+# analyze, in this case I'm ignoring mouse ATL023 and only getting sessions 
+# that used an experimentID > 0. 
+ises = vrdb.iterSessions(imaging=True, vrRegistration=True, mouseName=('ATL023','!='), experimentID=(0, '>'))
+
+# then for each session, I make a `pcss` object. 
+ipcss = []
+for ses in tqdm(ises):
+    ipcss.append(analysis.placeCellSingleSession(ses))
+    ses.clearBuffer() # clearing the buffer removes data loaded in each session object which is unnecessary and usually quite large
+```
+
+To plot the difference in the fraction of reliable cells between red cells 
+(that express tdTomato and have a conditional KO) and control cells, use this:
+```python
+# make sure to feed in the preloaded `ises` and `ipcss` objects. 
+# cutoffs determine the reliability cutoff (see above)
+# include_manual determines whether to use manually annotated cells in the red idx. 
+# note: you can also request to only use the suite2p index -- see the module for details
+analysis.plot_reliable_difference(ises=ises, ipcss=ipcss, cutoffs=(0.5, 0.8), include_manual=True, withSave=False, withShow=True)
+```
+
+To plot the difference in the fraction of reliable cells between red cells 
+(that express tdTomato and have a conditional KO) and control cells, use this.
+This will make a separate plot for each mouse in `ises`/`ipcss` and 
+automatically make different curves for each environment.
+```python
+# make sure to feed in the preloaded `ises` and `ipcss` objects. 
+# cutoffs determine the reliability cutoff (see above)
+# include_manual determines whether to use manually annotated cells in the red idx. 
+# note: you can also request to only use the suite2p index -- see the module for details
+analysis.plot_reliable_difference(ises=ises, ipcss=ipcss, cutoffs=(0.5, 0.8), include_manual=True, withSave=False, withShow=True)
+```
+
+To plot the fraction of red reliable cells and control reliable cells for each
+environment, use this:
+```python
+# same input structure as above
+analysis.plot_reliable_fraction(ises=ises, ipcss=ipcss, cutoffs=(0.5, 0.8), include_manual=True, withSave=False, withShow=True)
+```
+
+
 
 ## Same Cell Candidates -- [link to module](../vrAnalysis/analysis/sameCellCandidates.py)
 

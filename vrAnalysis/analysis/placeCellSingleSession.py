@@ -21,12 +21,15 @@ def save_directory(name=''):
     if not(dirName.is_dir()): dirName.mkdir(parents=True)
     return dirName
     
-def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=True, **kwConditions):
+def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     """
     Method for returning a list of reliability indices and red cell assignments
 
     If ises (session iterable) and ipcss (placeCellSingleSession iterable) are not
     passed it will create them using the kwConditions
+
+    If use_s2p=True, ignores the standard red cell detection indexing and determines
+    red cell identity by whether the s2p red cell method exceeds s2p_cutoff!
     
     include_manual determines if red cell indices include manual annotations
     kwConditions are passed to vrAnalysis/database/getTable via vrdb.iterSessions()
@@ -62,7 +65,12 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
         c_use_rois = pcss.idxUseROI # boolean array of ROIs within target planes
         ses_name.append(str(ses))
         ses_per_mouse.append(mouseCounter[ses.mouseName])
-        red_idx.append(ses.getRedIdx(include_manual=include_manual)[c_use_rois]) # get red cell indices for this session (within target planes)
+        if use_s2p:
+            # get red cell indices for this session (within target planes) using s2p output only
+            red_idx.append(ses.loadone('mpciROIs.redS2P')[c_use_rois] >= s2p_cutoff)
+        else:
+            # get red cell indices for this session (within target planes) using standard red cell indices
+            red_idx.append(ses.getRedIdx(include_manual=include_manual)[c_use_rois]) 
         env_nums.append(pcss.environments)
         relmse.append(pcss.relmse)
         relcor.append(pcss.relcor)
@@ -140,12 +148,12 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
     return miceInSession, env_sort, ctl_reliable, red_reliable #ses_name, ses_per_mouse, inenv_per_mouse, red_idx, env_nums, relmse, relcor
 
 
-def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, ises=None, ipcss=None, include_manual=True, **kwConditions):
+def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, ises=None, ipcss=None, include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     """plot difference in reliability for red and control cells across environments for all mice"""
 
     # get measurements of red reliability
-    # ses_name, ses_per_mouse, inenv_per_mouse, red_idx, env_nums, relmse, relcor = 
-    miceInSession, env_sort, ctl_reliable, red_reliable = red_reliability(cutoffs=cutoffs, ises=ises, ipcss=ipcss, include_manual=include_manual, **kwConditions)
+    arguments = {'cutoffs':cutoffs, 'ises':ises, 'ipcss':ipcss, 'include_manual':include_manual, 'use_s2p':use_s2p, 's2p_cutoff':s2p_cutoff}
+    miceInSession, env_sort, ctl_reliable, red_reliable = red_reliability(**arguments, **kwConditions)
     
     numMice = len(miceInSession)
     numEnvs = ctl_reliable[0].shape[1]
@@ -177,18 +185,19 @@ def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, 
     # Save figure if requested
     if withSave: 
         print(f"Saving a plot of difference in reliable fraction of cells (all mice all environments)")
-        plt.savefig(save_directory() / 'difference_reliable_fraction')
+        append_string = 'wS2P' if use_s2p else ''
+        plt.savefig(save_directory() / 'difference_reliable_fraction'+append_string)
     
     # Show figure if requested
     plt.show() if withShow else plt.close()
 
 
-def plot_reliable_fraction(cutoffs=(0.5, 0.8), withSave=False, withShow=True, ises=None, ipcss=None, include_manual=True, **kwConditions):
+def plot_reliable_fraction(cutoffs=(0.5, 0.8), withSave=False, withShow=True, ises=None, ipcss=None, include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     """plot difference in reliability for red and control cells across environments for all mice"""
 
     # get measurements of red reliability
-    # ses_name, ses_per_mouse, inenv_per_mouse, red_idx, env_nums, relmse, relcor = 
-    miceInSession, env_sort, ctl_reliable, red_reliable = red_reliability(cutoffs=cutoffs, ises=ises, ipcss=ipcss, include_manual=include_manual, **kwConditions)
+    arguments = {'cutoffs':cutoffs, 'ises':ises, 'ipcss':ipcss, 'include_manual':include_manual, 'use_s2p':use_s2p, 's2p_cutoff':s2p_cutoff}
+    miceInSession, env_sort, ctl_reliable, red_reliable = red_reliability(**arguments, **kwConditions)
     
     numMice = len(miceInSession)
     numEnvs = ctl_reliable[0].shape[1]
@@ -225,7 +234,8 @@ def plot_reliable_fraction(cutoffs=(0.5, 0.8), withSave=False, withShow=True, is
     # Save figure if requested
     if withSave: 
         print(f"Saving a plot of reliable fraction of cells (all mice all environments)")
-        plt.savefig(save_directory() / 'reliable_fraction')
+        append_string = 'wS2P' if use_s2p else ''
+        plt.savefig(save_directory() / 'reliable_fraction'+append_string)
     
     # Show figure if requested
     plt.show() if withShow else plt.close()
