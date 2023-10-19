@@ -21,6 +21,7 @@ deps_core = [
     "pyodbc",
     "pandas",
     "numpyencoder",
+    "vrAnalysis.analysis",
 ]
     
 # Extra code for performing registration (these things are extras specifically for oasis)
