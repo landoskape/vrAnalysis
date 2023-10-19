@@ -135,7 +135,7 @@ correlation. For both methods, the trials are divided into training and
 testing sets, and the average activity (across trials) is compared. 
 For MSE, a measure based on deviance is used:
 
-$relmse = 1 - \frac{\Sum_i(testProfile_i - trainProfile_i)^2)}{\Sum_i(testProfile_i - \frac{1}{N}\Sum_jtrainProfile_j)^2}$
+$relmse = 1 - \frac{\sum_i(testProfile_i - trainProfile_i)^2)}{\sum_i(testProfile_i - \frac{1}{N}\sum_jtrainProfile_j)^2}$
 
 For COR, the pearson correlation is used:
 
