@@ -7,18 +7,6 @@ import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
 
-def check_iterable(val):
-    """duck-type check if val is iterable, if so return, if not, make it a list"""
-    try:
-        # I am a duck and ducks go quack quack quack quack... quack... quack...
-        _ = iter(val)
-    except:
-        # not an iterable, woohoo! now it is!
-        return [val]
-    else:
-        # it's 5pm somewhere
-        return val
-
 def scale(data, vmin=0, vmax=1, prctile=(0,100)):
     '''scale data to arbitrary range using conservative percentile estimate'''
     xmin = np.percentile(data, prctile[0])
@@ -29,8 +17,12 @@ def scale(data, vmin=0, vmax=1, prctile=(0,100)):
     return sdata
     
 def errorPlot(x, data, axis=-1, se=False, ax=None, **kwargs):
-    '''convenience method for making a plot with errorbars
-    kwargs go into fill_between and plot, so they have to work for both'''
+    '''
+    convenience method for making a plot with errorbars
+    kwargs go into fill_between and plot, so they have to work for both...
+    to make that more flexible, we could add a list of kwargs that work for
+    one but not the other and pop them out as I did with the 'label'...
+    '''
     if ax is None: ax=plt.gca()
     meanData = np.mean(data,axis=axis)
     correction = data.shape[axis] if se else 1
@@ -277,7 +269,18 @@ def cvFoldSplit(samples, numFold):
     foldIdx = [randomOrder[sampleIdxPerFold[i]:sampleIdxPerFold[i+1]] for i in range(numFold)] # assign samples to each cross-validation fold
     return foldIdx
 
-
+def check_iterable(val):
+    """duck-type check if val is iterable, if so return, if not, make it a list"""
+    try:
+        # I am a duck and ducks go quack
+        _ = iter(val)
+    except:
+        # not an iterable, woohoo! 
+        return [val] # now it is ha ha ha ha!
+    else:
+        # it's 5pm somewhere
+        return val
+        
 def readableBytes(numBytes):
     if numBytes==0: return "0B"
     sizeUnits = ("B", "KB", "MB", "GB", "TB")

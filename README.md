@@ -22,12 +22,11 @@ database structure.
 
 ## Capabilities
 vrAnalysis can do the following things: 
-- Manage a database (in conjunction with Microsoft Access tables, but can work
-  with any SQL database with a few adjustments). 
-- Register and preprocess experimental data including behavior, imaging, and 
-  potentially facecam data (not coded yet). 
+- Manage a database (can work with any SQL database with a few adjustments). 
+- Register and preprocess experimental data including behavior, and imaging. 
 - Manually annotate results, especially related to whether cells express
-  a counter-fluorophore and for annotating tracked ROIs (not coded yet). 
+  a counter-fluorophore (finished) and for annotating tracked ROIs (not coded
+  yet). 
 - Analyzing data using organized analysis objects that make it easy to do an
   analysis across groups of sessions from the database.
   
