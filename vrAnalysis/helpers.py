@@ -7,13 +7,17 @@ import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
 
-def checkIterable(val):
+def check_iterable(val):
+    """duck-type check if val is iterable, if so return, if not, make it a list"""
     try:
+        # I am a duck and ducks go quack quack quack quack... quack... quack...
         _ = iter(val)
     except:
-        return False
+        # not an iterable, woohoo! now it is!
+        return [val]
     else:
-        return True
+        # it's 5pm somewhere
+        return val
 
 def scale(data, vmin=0, vmax=1, prctile=(0,100)):
     '''scale data to arbitrary range using conservative percentile estimate'''

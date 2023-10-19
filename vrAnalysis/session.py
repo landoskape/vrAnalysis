@@ -74,9 +74,7 @@ class vrSession:
     def __str__(self):
         return f"{self.mouseName}_{self.dateString}_{self.session}"
     
-        
-        
-        
+
 class vrExperiment(vrSession):
     """
     The vrExperiment object is a postprocessing object used to load and buffer data, and store highly used methods for analyzing data in vr experiments.
