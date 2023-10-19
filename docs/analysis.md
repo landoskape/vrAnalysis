@@ -39,7 +39,7 @@ from vrAnalysis import database # this is also used
 vrdb = database.vrDatabase() # open a database manager
 ```
 
-### Place Cell Single Session [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
+### Place Cell Single Session -- [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
 This analysis module is used for analyzing place fields in single sessions
 (with some support for cross-session analysis as methods). The `pcss` object
 loads behavioral and spiking data, remaps it to a spatial map (rather than the
@@ -149,8 +149,7 @@ There are additional tools for analyzing data across sessions that are in the
 [module](../vrAnalysis/analysis/placeCellSingleSession.py) that I evidently 
 haven't documented yet. 
 
-### Same Cell Candidates 
-[link to module](../vrAnalysis/analysis/sameCellCandidates.py)
+### Same Cell Candidates -- [link to module](../vrAnalysis/analysis/sameCellCandidates.py)
 
 This analysis module attempts to identify imaging ROIs that are probably the
 same cell. This can happen for two reasons: 
