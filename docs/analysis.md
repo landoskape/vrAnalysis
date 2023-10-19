@@ -41,6 +41,7 @@ vrdb = database.vrDatabase() # open a database manager
 
 ### Place Cell Single Session
 [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
+
 This analysis module is used for analyzing place fields in single sessions
 (with some support for cross-session analysis as methods). The `pcss` object
 loads behavioral and spiking data, remaps it to a spatial map (rather than the
@@ -152,6 +153,7 @@ haven't documented yet.
 
 ### Same Cell Candidates 
 [link to module](../vrAnalysis/analysis/sameCellCandidates.py)
+
 This analysis module attempts to identify imaging ROIs that are probably the
 same cell. This can happen for two reasons: 
 1. Suite2p sometimes oversplits cells within a plane - either erroneously or 
