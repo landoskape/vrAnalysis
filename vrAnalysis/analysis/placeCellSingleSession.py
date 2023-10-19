@@ -185,8 +185,8 @@ def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, 
     # Save figure if requested
     if withSave: 
         print(f"Saving a plot of difference in reliable fraction of cells (all mice all environments)")
-        append_string = 'wS2P' if use_s2p else ''
-        plt.savefig(save_directory() / 'difference_reliable_fraction'+append_string)
+        append_string = '_wS2P' if use_s2p else ''
+        plt.savefig(save_directory() / ('difference_reliable_fraction'+append_string))
     
     # Show figure if requested
     plt.show() if withShow else plt.close()
@@ -234,8 +234,8 @@ def plot_reliable_fraction(cutoffs=(0.5, 0.8), withSave=False, withShow=True, is
     # Save figure if requested
     if withSave: 
         print(f"Saving a plot of reliable fraction of cells (all mice all environments)")
-        append_string = 'wS2P' if use_s2p else ''
-        plt.savefig(save_directory() / 'reliable_fraction'+append_string)
+        append_string = '_wS2P' if use_s2p else ''
+        plt.savefig(save_directory() / ('reliable_fraction'+append_string))
     
     # Show figure if requested
     plt.show() if withShow else plt.close()
