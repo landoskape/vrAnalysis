@@ -2,8 +2,8 @@ modules = [
     'fileManagement',
     'helpers',
     'functions',
-    'database',
     'session',
+    'database',
     'tracking',
     'analysis',
 ]

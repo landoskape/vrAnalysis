@@ -10,14 +10,11 @@ import numba as nb
 from numpyencoder import NumpyEncoder
 from . import functions
 from . import helpers
-from . import database
 from . import fileManagement as fm
-
 
 # Variables that might need to be changed for different users
 # if anyone other than me uses this, let me know and I can make it smarter by using a user dictionary or storing a file somewhere else...
 dataPath = fm.localDataPath()
-vrdb = database.vrDatabase()
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -176,7 +173,8 @@ class vrExperiment(vrSession):
                     del self.loadBuffer[self.oneFilename(name)]
     
     # -------------------------------------------------------------- database communication --------------------------------------------------------------------
-    def printSessionNotes(self):
+    def printSessionNotes(self, vrdb):
+        """you must pass a vrdatabase object for this to work"""
         record = vrdb.getRecord(self.mouseName, self.dateString, self.session)
         print(record['sessionNotes'])
     
