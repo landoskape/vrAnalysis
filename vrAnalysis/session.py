@@ -8,7 +8,6 @@ import scipy as sp
 import scipy.io as scio
 import numba as nb
 from numpyencoder import NumpyEncoder
-from oasis.functions import deconvolve
 from . import functions
 from . import helpers
 from . import database
@@ -643,6 +642,11 @@ class vrRegistration(vrExperiment):
         # recompute deconvolution if requested
         spks = self.loadS2P('spks')
         if self.opts['oasis']:
+            try:
+                from oasis.functions import deconvolve
+            except ImportError as error:
+                print("Failed to import deconvolve from oasis -- this probably means you only installed the core requirements")
+                raise error
             g = np.exp(-1/self.opts['tau']/self.opts['fs'])
             fcorr = self.loadfcorr(loadFromOne=False)
             ospks = []
