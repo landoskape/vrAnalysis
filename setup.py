@@ -21,7 +21,6 @@ deps_core = [
     "pyodbc",
     "pandas",
     "numpyencoder",
-    "vrAnalysis.analysis",
 ]
     
 # Extra code for performing registration (these things are extras specifically for oasis)
@@ -48,7 +47,10 @@ setup(
     url="https://github.com/landoskape/vrAnalysis",
     author="Andrew T. Landau",
     license='LICENSE',
-    packages=["vrAnalysis",],
+    packages=[
+        "vrAnalysis",
+        "vrAnalysis.analysis",
+    ],
     python_requires=">=3.9, <=4",
     install_requires=deps_core,  
     extras_require={
