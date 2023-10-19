@@ -134,8 +134,11 @@ measures of reliability, one based on mean-square error and one based on
 correlation. For both methods, the trials are divided into training and 
 testing sets, and the average activity (across trials) is compared. 
 For MSE, a measure based on deviance is used:
+
 $relmse = 1 - sum((testProfile - trainProfile)^2)/sum((testProfile - mean(trainProfile))^2)$
+
 For COR, the pearson correlation is used:
+
 $relcor = correlation_{pearson}(trainProfile, testProfile)$
 
 To retrieve indices of reliable cells in each environment, use this:
