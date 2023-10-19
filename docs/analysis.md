@@ -39,9 +39,7 @@ from vrAnalysis import database # this is also used
 vrdb = database.vrDatabase() # open a database manager
 ```
 
-### Place Cell Single Session
-[link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
-
+### Place Cell Single Session [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
 This analysis module is used for analyzing place fields in single sessions
 (with some support for cross-session analysis as methods). The `pcss` object
 loads behavioral and spiking data, remaps it to a spatial map (rather than the
