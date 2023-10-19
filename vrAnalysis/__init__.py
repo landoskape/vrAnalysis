@@ -1,12 +1,12 @@
-# modules = [
-#     'analysis',
-#     'database',
-#     'fileManagement',
-#     'functions',
-#     'helpers',
-#     'session',
-#     'tracking',
-# ]
+modules = [
+    'fileManagement',
+    'helpers',
+    'functions',
+    'database',
+    'session',
+    'tracking',
+    'analysis',
+]
 
-# for pkg in modules:
-#     exec('from . import ' + pkg)
+for pkg in modules:
+    exec('from . import ' + pkg)
