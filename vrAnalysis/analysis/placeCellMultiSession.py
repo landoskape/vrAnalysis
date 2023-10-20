@@ -12,13 +12,13 @@ from .. import functions
 from .. import helpers
 from .. import database
 from .. import fileManagement as fm
-from .standardAnalysis import standardAnalysis
+from .standardAnalysis import multipleAnalysis
 from . import placeCellSingleSession
 
 vrdb = database.vrDatabase()
 
 
-class placeCellMultiSession(standardAnalysis):
+class placeCellMultiSession(multipleAnalysis):
     """
     Performs basic place cell (and behavioral) analysis on multiple sessions.
     
@@ -187,12 +187,11 @@ class placeCellMultiSession(standardAnalysis):
         fig.colorbar(cim, ticks=cb_ticks, orientation='vertical', cax=ax[self.num_ses])
         ax[self.num_ses].set_ylabel(cb_label, fontsize=labelSize)
 
-        # if withSave: 
-        #     if len(envnum)==len(self.environments):
-        #         self.saveFigure(fig.number, f'snake_plot')
-        #     else:
-        #         print("If envnum is less than all the environments, you can't save with this program!")
-        
+        if withSave: 
+            sesidx = '_'.join([str(i) for i in idx_ses])
+            save_name = f"tracked_snake_env{envnum}_ses_{sesidx}"
+            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
         # Show figure if requested
         plt.show() if withShow else plt.close()
     

@@ -50,6 +50,29 @@ class standardAnalysis:
         plt.figure(figNumber)
         plt.savefig(self.saveDirectory(name) / str(self.vrexp))
 
+class multipleAnalysis(standardAnalysis):
+    '''
+    Class for multi-session analyses in the vrAnalysis repository.
+    '''
+    def __init__(self):
+        """
+        init function for analysis
+        
+        requires a vrExperiment object, which is loaded into the object instance.
+        Also names the analysis type, this should be overwritten!!
+        """
+        self.name = 'multipleAnalysis'
+    
+    def saveFigure(self, figNumber, multiname, name):
+        """
+        save a figure currently open in matplotlib
+        
+        attempts to save matplotlib figure(figNumber) in the save directory with a particular name
+        """
+        print(f"{self.name} is saving a {multiname} figure for {name}")
+        plt.figure(figNumber)
+        plt.savefig(self.saveDirectory(multiname) / name)
+
 
 
 
