@@ -272,7 +272,7 @@ class placeCellSingleSession(standardAnalysis):
         e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
         """
         envnum = helpers.check_iterable(envnum)
-        return [np.where(self.environments==ev)[0][0] for ev in envnum]
+        return [np.where(self.environments==ev)[0][0] if ev in self.environments else -1 for ev in envnum]
         
     def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None):
         """load standard data for basic place cell analysis"""
@@ -312,14 +312,40 @@ class placeCellSingleSession(standardAnalysis):
         self.idxFullTrials = np.where(self.boolFullTrials)[0]
         self.idxFullTrialEachEnv = [np.where(self.boolFullTrials & (self.trial_envnum==env))[0] for env in self.environments]
         
-        # measure reliability 
-        self.measure_reliability()
-        
         # report that data has been loaded
         self.dataloaded = True
 
+        # measure reliability 
+        self.measure_reliability()
+        
+    def clear_data(self):
+        """method for clearing data to free up memory"""
+        del self.trial_envnum
+        del self.environments
+        del self.numEnvironments
+        del self.idxUseROI
+        del self.numROIs
+        del self.omap
+        del self.smap
+        del self.spkmap
+        del self.distedges
+        del self.distcenters
+        del self.numTrials
+        del self.boolFullTrials
+        del self.idxFullTrials
+        del self.idxFullTrialEachEnv
+        del self.train_idx
+        del self.test_idx
+        del self.relmse
+        del self.relcor
+        del self.test_relmse
+        del self.test_relcor
+        self.dataloaded = False
+        
     def measure_reliability(self, with_test=False):
         """method for measuring reliability in each environment"""
+        if not(self.dataloaded): self.load_data()
+        
         foldIdx = [helpers.cvFoldSplit(idxTrialEnv, 3) for idxTrialEnv in self.idxFullTrialEachEnv]
         self.train_idx = [np.concatenate(fidx[:2]) for fidx in foldIdx]
         self.test_idx = [fidx[2] for fidx in foldIdx]
@@ -336,8 +362,10 @@ class placeCellSingleSession(standardAnalysis):
             # Alert the user that the training data was recalculated without testing
             self.test_relmse = None
 
-    def get_reliable(self, envnum, cutoffs=None):
+    def get_reliable(self, envnum=None, cutoffs=None):
         """central method for getting reliable cells from list of environments (by environment index)"""
+        if not(self.dataloaded): self.load_data()
+        if envnum is None: envnum = copy(self.environments) # default environment is all of them
         envnum = helpers.check_iterable(envnum) # make sure it's an iterable
         envidx = self.envnum_to_idx(envnum) # convert environment numbers to indices
         cutoffs = (-np.inf, -np.inf) if cutoffs is None else cutoffs
@@ -346,6 +374,8 @@ class placeCellSingleSession(standardAnalysis):
         
     def get_place_field(self, roi_idx=None, trial_idx=None, method='max'):
         """get sorting index based on spikemap, roi index, and trial index"""
+        if not(self.dataloaded): self.load_data()
+        
         assert method=='com' or method=='max', f"invalid method ({method}), must be either 'com' or 'max'"
         if roi_idx is None: roi_idx = np.ones(numROIs, dtype=bool)            
         if trial_idx is None: trial_idx = np.ones(numTrials, dtype=bool)
@@ -371,6 +401,8 @@ class placeCellSingleSession(standardAnalysis):
     
     def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max'):
         """make snake data from train and test sessions, for particular environment if requested"""
+        if not(self.dataloaded): self.load_data()
+        
         # default environment is all of them
         if envnum is None: envnum = copy(self.environments)
 
@@ -406,6 +438,8 @@ class placeCellSingleSession(standardAnalysis):
 
     def make_remap_data(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max'):
         """make snake data across environments with remapping indices (for N environments, an NxN grid of snakes and indices)"""
+        if not(self.dataloaded): self.load_data()
+        
         envnum = helpers.check_iterable(copy(self.environments)) # always use all environments (as an iterable)
         envidx = self.envnum_to_idx(envnum)
         
@@ -439,6 +473,8 @@ class placeCellSingleSession(standardAnalysis):
     
     def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
+        if not(self.dataloaded): self.load_data()
+        
         # default environment is all of them
         if envnum is None: envnum = copy(self.environments)
 
@@ -469,8 +505,8 @@ class placeCellSingleSession(standardAnalysis):
             rewPos, rewHalfwidth = functions.environmentRewardZone(self.vrexp)
             rewPos = [rewPos[np.where(self.environments==ev)[0][0]] for ev in envnum]
             rewHalfwidth = [rewHalfwidth[np.where(self.environments==ev)[0][0]] for ev in envnum]
-            rect_train = [mpl.patches.Rectangle((rp, 0), rhw*2, ts.shape[0], edgecolor='none', facecolor='k', alpha=0.2) for rp, rhw, ts in zip(rewPos, rewHalfwidth, train_snake)]
-            rect_test = [mpl.patches.Rectangle((rp, 0), rhw*2, ts.shape[0], edgecolor='none', facecolor='k', alpha=0.2) for rp, rhw, ts in zip(rewPos, rewHalfwidth, train_snake)]
+            rect_train = [mpl.patches.Rectangle((rp-rhw, 0), rhw*2, ts.shape[0], edgecolor='none', facecolor='k', alpha=0.2) for rp, rhw, ts in zip(rewPos, rewHalfwidth, train_snake)]
+            rect_test = [mpl.patches.Rectangle((rp-rhw, 0), rhw*2, ts.shape[0], edgecolor='none', facecolor='k', alpha=0.2) for rp, rhw, ts in zip(rewPos, rewHalfwidth, train_snake)]
             
         plt.close('all')
         cmap = mpl.colormaps['bwr']
@@ -544,7 +580,7 @@ class placeCellSingleSession(standardAnalysis):
             rewPos, rewHalfwidth = functions.environmentRewardZone(self.vrexp)
             rewPos = [rewPos[np.where(self.environments==ev)[0][0]] for ev in envnum]
             rewHalfwidth = [rewHalfwidth[np.where(self.environments==ev)[0][0]] for ev in envnum]
-            rect = lambda ii, jj : mpl.patches.Rectangle((rewPos[jj], 0), rewHalfwidth[jj]*2, snake_remap[ii][jj].shape[0], edgecolor='none', facecolor='k', alpha=0.2)
+            rect = lambda ii, jj : mpl.patches.Rectangle((rewPos[jj]-rewHalfwidth[jj], 0), rewHalfwidth[jj]*2, snake_remap[ii][jj].shape[0], edgecolor='none', facecolor='k', alpha=0.2)
             
         plt.close('all')
         cmap = mpl.colormaps['bwr']
