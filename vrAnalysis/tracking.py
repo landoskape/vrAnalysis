@@ -5,6 +5,7 @@ from tqdm import tqdm
 import pickle
 from pathlib import Path 
 import numpy as np
+import pandas as pd
 
 # import package
 from . import session
@@ -55,6 +56,17 @@ class tracker():
         """path to mouse folder (assuming Alyx format)"""
         return self.data_path() / self.mouse_name
 
+    # database utilities
+    def session_table(self, idx_ses=None, reset_index=True):
+        """return dataframe of requested sessions from database"""
+        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
+        num_ses = len(idx_ses)
+        records = [vrdb.getRecord(*self.sessions[ii].sessionName()) for ii in idx_ses]
+        df = pd.concat(records, axis=1).T
+        if reset_index: 
+            df = df.reset_index(drop=True)
+        return df
+        
     # methods for loading tracking data
     def process_file_name(self, filename, filetype):
         assert (filetype=='results') or (filetype=='rundata'), f"did not recognize filetype ({filetype}), should be either 'results' or 'rundata'"
@@ -78,6 +90,7 @@ class tracker():
         self.rundata_files = [p.stem for p in self.list_tracking_files(self.rundata_string)]
         self.plane_names = [self.process_file_name(f, 'results') for f in self.results_files]
         assert all([pn == self.process_file_name(f, 'rundata') for pn, f in zip(self.plane_names, self.rundata_files)]), "plane names don't match in results and rundata"
+        assert self.plane_names == sorted(self.plane_names), f"plane_names are not sorted properly.. ({self.plane_names})"
         
         suffices = np.unique([p.suffix for p in self.list_tracking_files(self.results_string)] + [p.suffix for p in self.list_tracking_files(self.rundata_string)])
         assert len(suffices)==1, f"suffices are multifarious... rename files so there's only 1! suffices found: {suffices}"
@@ -140,17 +153,61 @@ class tracker():
         return [session_name for session_name in zip(tracked_mouse_name, tracked_date_string, tracked_session_id)]
 
     def check_num_rois_per_plane(self):
-        """checks if number of ROIs in ROICaT labels matches number of ROIs in each session for each plane"""
+        """
+        get number of rois per plane
+        and also checks if number of ROIs in ROICaT labels matches number of ROIs in each session for each plane
+        """
         def assertion_message(planeidx, label, session):
             return f"For session {session.sessionPrint()} and plane {planeidx}, # ROICaT ROIs ({len(label)}) doesn't match session ({session.value['roiPerPlane'][planeidx]})"
+
+        self.roi_per_plane = np.zeros((self.num_planes, self.num_sessions), dtype=int)
         for planeidx, results in enumerate(self.results):
-            for labels, session in zip(results['clusters']['labels_bySession'], self.sessions):
+            for sesidx, (labels, session) in enumerate(zip(results['clusters']['labels_bySession'], self.sessions)):
                 assert len(labels)==session.value['roiPerPlane'][planeidx], assertion_message(planeidx, labels, session)
+                self.roi_per_plane[planeidx, sesidx] = session.value['roiPerPlane'][planeidx]
 
-                
+    def prepare_tracking_idx(self, idx_ses=None):
+        """get index to tracked ROIs for a list of sessions"""
+        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
+        num_ses = len(idx_ses)
+        
+        # ucids in list of lists for requested sessions
+        ucids = [[[] for _ in range(num_ses)] for _ in range(self.num_planes)]
+        for planeidx, results in enumerate(self.results):
+            for sesidx, idx in enumerate(idx_ses):
+                ucids[planeidx][sesidx] = results['clusters']['labels_bySession'][idx]
 
+        # this is the number of unique IDs per plane
+        num_ucids = [max([np.max(u) for u in ucid])+1 for ucid in ucids]
 
+        # this is a boolean array of size (number unique IDs x num sessions) where there is a 1 if a unique ROI is found in each session
+        roicat_index = [np.zeros((nucids, num_ses), dtype=bool) for nucids in num_ucids]
+        for planeidx, ucid in enumerate(ucids):
+            for sesidx, uc in enumerate(ucid):
+                cindex = uc[uc >= 0] # index of ROIs found in this session
+                roicat_index[planeidx][cindex, sesidx] = True # label found ROI with True
 
+        return ucids, roicat_index
+    
+    def get_tracked_idx(self, idx_ses=None):
+        """retrieve indices to tracked ROIs for list of sessions"""
+        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
+        num_ses = len(idx_ses)
 
+        # get ucids and 1s index for requested sessions
+        ucids, roicat_index = self.prepare_tracking_idx(idx_ses=idx_ses)
+        
+        # list of UCIDs in all requested sessions (a list of the UCIDs...)
+        idx_in_ses = [np.where(np.all(rindex, axis=1))[0] for rindex in roicat_index]
+        
+        # For each plane & session, a sorted index to the suite2p ROI to recreate the list of UCIDs
+        idx_to_ucid = [[helpers.index_in_target(iis, uc)[1] for uc in ucid] for (iis, ucid) in zip(idx_in_ses, ucids)]
 
+        # cumulative number of ROIs before eacg plane (in numeric order of planes using sorted(self.plane_names))
+        roi_plane_offset = np.cumsum(np.vstack((np.zeros((1,num_ses),dtype=int), self.roi_per_plane[:-1, idx_ses])), axis=0)
+
+        # A straightforward numpy array of (numROIs, numSessions) containing the indices to retrieve tracked and sorted ROIs
+        return np.concatenate([np.stack([offset+ucid for offset, ucid in zip(offsets, ucids)], axis=1) for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)], axis=0)
+
+    
 
