@@ -39,6 +39,21 @@ from vrAnalysis import database # this is also used
 vrdb = database.vrDatabase() # open a database manager
 ```
 
+## Place Cell Multi Session -- [link to module](../vrAnalysis/analysis/placeCellMultiSession.py)
+Just some quick key workflows:
+```python
+track = tracking.tracker('ATL022') # get tracker object for mouse
+pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
+pcm.track.session_table() # this prints a dataframe of the sessions in the tracker!
+
+# choose range of sessions based on dataframe, pick environment, and plot snake
+envnum = 4
+idx_ses = range(12,17)
+sortby = 16 # which session to sort by
+pcm.plot_snake(envnum, idx_ses=idx_ses, sortby=sortby, cutoffs=(0.5, 0.8), method='max', normalize=10, rewzone=True, interpolation='none', withShow=True, withSave=False)
+```
+
+
 ## Place Cell Single Session -- [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
 This analysis module is used for analyzing place fields in single sessions
 (with some support for cross-session analysis as methods). The `pcss` object
