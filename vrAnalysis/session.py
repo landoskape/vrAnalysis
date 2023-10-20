@@ -63,12 +63,18 @@ class vrSession:
             file.unlink()
         print(f"Cleared oneData from session: {self.sessionPrint()}")
         
+    def sessionName(self):
+        # function for returning mousename, datestring, and sessionid
+        return self.mouseName, self.dateString, self.session
+    
     def sessionPrint(self): 
         # useful function for generating string of session name for useful feedback to user 
-        return f"{self.mouseName}/{self.dateString}/{self.session}"   
-    
+        mouseName, dateString, sessionid = self.sessionName()
+        return "/".join(self.sessionName())
+
     def __str__(self):
-        return f"{self.mouseName}_{self.dateString}_{self.session}"
+        # use _ to avoid string complications with backslash used in 'sessionPrint()'
+        return '_'.join(self.sessionName())
     
 
 class vrExperiment(vrSession):
