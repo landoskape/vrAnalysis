@@ -56,11 +56,21 @@ class tracker():
         """path to mouse folder (assuming Alyx format)"""
         return self.data_path() / self.mouse_name
 
+    # basic utilities 
+    def get_keepPlanes(self, keepPlanes=None):
+        keepPlanes = keepPlanes if keepPlanes is not None else np.arange(self.num_planes)
+        num_planes = len(keepPlanes)
+        return keepPlanes, num_planes
+        
+    def get_idx_session(self, idx_ses=None):
+        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
+        num_ses = len(idx_ses)
+        return idx_ses, num_ses
+        
     # database utilities
     def session_table(self, idx_ses=None, reset_index=True):
         """return dataframe of requested sessions from database"""
-        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
-        num_ses = len(idx_ses)
+        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
         records = [vrdb.getRecord(*self.sessions[ii].sessionName()) for ii in idx_ses]
         df = pd.concat(records, axis=1).T
         if reset_index: 
@@ -166,14 +176,17 @@ class tracker():
                 assert len(labels)==session.value['roiPerPlane'][planeidx], assertion_message(planeidx, labels, session)
                 self.roi_per_plane[planeidx, sesidx] = session.value['roiPerPlane'][planeidx]
 
-    def prepare_tracking_idx(self, idx_ses=None):
+    def prepare_tracking_idx(self, idx_ses=None, keepPlanes=None):
         """get index to tracked ROIs for a list of sessions"""
-        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
-        num_ses = len(idx_ses)
+        # which planes to keep
+        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
+        
+        # get session index
+        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
         
         # ucids in list of lists for requested sessions
-        ucids = [[[] for _ in range(num_ses)] for _ in range(self.num_planes)]
-        for planeidx, results in enumerate(self.results):
+        ucids = [[[] for _ in range(num_ses)] for _ in range(num_planes)]
+        for planeidx, results in enumerate([self.results[p] for p in keepPlanes]):
             for sesidx, idx in enumerate(idx_ses):
                 ucids[planeidx][sesidx] = results['clusters']['labels_bySession'][idx]
 
@@ -189,13 +202,16 @@ class tracker():
 
         return ucids, roicat_index
     
-    def get_tracked_idx(self, idx_ses=None):
+    def get_tracked_idx(self, idx_ses=None, keepPlanes=None):
         """retrieve indices to tracked ROIs for list of sessions"""
-        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
-        num_ses = len(idx_ses)
+        # which planes to keep
+        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
 
+        # get session idx
+        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
+        
         # get ucids and 1s index for requested sessions
-        ucids, roicat_index = self.prepare_tracking_idx(idx_ses=idx_ses)
+        ucids, roicat_index = self.prepare_tracking_idx(idx_ses=idx_ses, keepPlanes=keepPlanes)
         
         # list of UCIDs in all requested sessions (a list of the UCIDs...)
         idx_in_ses = [np.where(np.all(rindex, axis=1))[0] for rindex in roicat_index]
@@ -204,10 +220,11 @@ class tracker():
         idx_to_ucid = [[helpers.index_in_target(iis, uc)[1] for uc in ucid] for (iis, ucid) in zip(idx_in_ses, ucids)]
 
         # cumulative number of ROIs before eacg plane (in numeric order of planes using sorted(self.plane_names))
-        roi_plane_offset = np.cumsum(np.vstack((np.zeros((1,num_ses),dtype=int), self.roi_per_plane[:-1, idx_ses])), axis=0)
+        roi_per_plane = self.roi_per_plane[keepPlanes][:, idx_ses]
+        roi_plane_offset = np.cumsum(np.vstack((np.zeros((1,num_ses),dtype=int), roi_per_plane[:-1])), axis=0)
 
-        # A straightforward numpy array of (numROIs, numSessions) containing the indices to retrieve tracked and sorted ROIs
-        return np.concatenate([np.stack([offset+ucid for offset, ucid in zip(offsets, ucids)], axis=1) for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)], axis=0)
+        # A straightforward numpy array of (numSessions, numROIs) containing the indices to retrieve tracked and sorted ROIs
+        return np.concatenate([np.stack([offset+ucid for offset, ucid in zip(offsets, ucids)], axis=1) for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)], axis=0).T
 
     
 
