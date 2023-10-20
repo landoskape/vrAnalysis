@@ -2,11 +2,14 @@ import sys
 import inspect
 import math
 from copy import copy
+from itertools import chain, combinations
 import numpy as np
 import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
 
+
+# ---------------------------------- plotting helpers ----------------------------------
 def scale(data, vmin=0, vmax=1, prctile=(0,100)):
     '''scale data to arbitrary range using conservative percentile estimate'''
     xmin = np.percentile(data, prctile[0])
@@ -49,21 +52,41 @@ def ncmap(name='Spectral', vmin=10, vmax=None):
 
     return getcolor
 
-def diffsame(data, zero=0):
-    # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back. 
-    # zero=0 means front, zero=1 means back
-    assert isinstance(data, np.ndarray) and data.ndim==1, "data must be a 1-d numpy array"
-    if zero==0: return np.append(0, np.diff(data))
-    else: return np.append(np.diff(data),0)
+def edge2center(edges):
+    assert isinstance(edges, np.ndarray) and edges.ndim==1, "edges must be a 1-d numpy array"
+    return edges[:-1] + np.diff(edges)/2
 
-def getGaussKernel(timestamps, width, nonzero=True):
-    kx = timestamps - np.mean(timestamps)
-    kk = np.exp(-kx**2/(2*width)**2)
-    kk = kk / np.sum(kk)
-    if nonzero:
-        # since sp.linalg.convolution_matrix only needs nonzero values, this is way faster
-        kk = kk[kk>0]
-    return kk
+
+# ------------------------------------ index handling ------------------------------------
+def powerset(iterable, ignore_empty=False):
+    """
+    return chain of subsets in powerset of an iterable 
+    (https://docs.python.org/3/library/itertools.html#itertools-recipes)
+    """
+    s = list(iterable)
+    return chain.from_iterable(combinations(s, r) for r in range(1 if ignore_empty else 0, len(s)+1))
+    
+def index_in_target(value, target):
+    """returns boolean array for whether each value is in target and location array such that target[loc_target] = value"""
+    target_to_index = {value: index for index, value in enumerate(target)}
+    in_target = np.array([val in target_to_index for val in value])
+    loc_target = np.array([target_to_index[val] if in_t else -1 for in_t, val in zip(in_target, value)])
+    return in_target, loc_target
+
+def cvFoldSplit(samples, numFold):
+    if type(samples)==int:
+        numSamples = copy(samples)
+        samples = np.arange(samples)
+    else:
+        numSamples = len(samples)
+    # generates list of indices of equally sized randomly selected samples to be used in numFold-crossvalidation for a given number of samples
+    minimumSamples = np.floor(numSamples / numFold) 
+    remainder = numSamples - numFold*minimumSamples 
+    samplesPerFold = [int(minimumSamples + 1*(f<remainder)) for f in range(numFold)] # each fold gets minimum number of samples, assign remainder evenly to as many as necessary
+    sampleIdxPerFold = [0, *np.cumsum(samplesPerFold)] # defines where to start and stop for each fold
+    randomOrder = samples[np.random.permutation(numSamples)] # random permutation of samples
+    foldIdx = [randomOrder[sampleIdxPerFold[i]:sampleIdxPerFold[i+1]] for i in range(numFold)] # assign samples to each cross-validation fold
+    return foldIdx
 
 def nearestpoint(x,y,mode='nearest'):
     # fast implementation of nearest neighbor index between two arrays
@@ -123,7 +146,49 @@ def nearestpoint(x,y,mode='nearest'):
     d = np.abs(x-ynearest)
     
     return ind, d
-
+    
+def digitizeEqual(data, mn, mx, nbins):
+    # digitizeEqual returns the bin of each element from data within each equally spaced bin between mn,mx
+    # (it's like np.digitize but faster and only works with equal bins)
+    binidx = (data-mn)/(mx-mn)*float(nbins)
+    binidx[binidx<0]=0
+    binidx[binidx>nbins-1]=nbins-1
+    return binidx.astype(int)
+    
+    
+# ---------------------------------- signal processing ----------------------------------    
+def vectorCorrelation(x,y):
+    # for each column in x, measure the correlation with each column in y
+    assert x.shape==y.shape, "x and y need to have the same shape!"
+    N = x.shape[0]
+    xDev = x - np.mean(x,axis=0)
+    yDev = y - np.mean(y,axis=0)
+    xSampleStd = np.sqrt(np.sum(xDev**2,axis=0)/(N-1))
+    ySampleStd = np.sqrt(np.sum(yDev**2,axis=0)/(N-1))
+    xIdxValid = xSampleStd > 0
+    yIdxValid = ySampleStd > 0
+    xDev[:,xIdxValid] /= xSampleStd[xIdxValid]
+    yDev[:,yIdxValid] /= ySampleStd[yIdxValid]
+    std = np.sum(xDev * yDev, axis=0) / (N-1)
+    std *= 1*(xIdxValid & yIdxValid)
+    return std
+    
+def diffsame(data, zero=0):
+    # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back. 
+    # zero=0 means front, zero=1 means back
+    assert isinstance(data, np.ndarray) and data.ndim==1, "data must be a 1-d numpy array"
+    if zero==0: return np.append(0, np.diff(data))
+    else: return np.append(np.diff(data),0)
+    
+def getGaussKernel(timestamps, width, nonzero=True):
+    kx = timestamps - np.mean(timestamps)
+    kk = np.exp(-kx**2/(2*width)**2)
+    kk = kk / np.sum(kk)
+    if nonzero:
+        # since sp.linalg.convolution_matrix only needs nonzero values, this is way faster
+        kk = kk[kk>0]
+    return kk
+    
 def fivePointDer(signal,h,axis=-1,returnIndex=False):
     # takes the five point stencil as an estimate of the derivative
     assert isinstance(signal,np.ndarray), "signal must be a numpy array"
@@ -193,7 +258,6 @@ def butterworthbpf(image, lowcut, highcut, order=1, fs=None, returnFull=False):
     # otherwise just return filtered image
     return filteredImage
 
-
 def phaseCorrelation(staticImage,shiftedImage,eps=0,window=None):
     # phaseCorrelation computes the phase correlation between the two inputs
     # the result is the fftshifted correlation map describing the phase-specific overlap after shifting "shiftedImage"
@@ -226,61 +290,8 @@ def convolveToeplitz(data, kk, axis=-1, mode='same'):
     output = np.reshape(output, newDataShape)
     return np.moveaxis(output, -1, axis)
 
-def edge2center(edges):
-    assert isinstance(edges, np.ndarray) and edges.ndim==1, "edges must be a 1-d numpy array"
-    return edges[:-1] + np.diff(edges)/2
 
-def digitizeEqual(data, mn, mx, nbins):
-    # digitizeEqual returns the bin of each element from data within each equally spaced bin between mn,mx
-    # (it's like np.digitize but faster and only works with equal bins)
-    binidx = (data-mn)/(mx-mn)*float(nbins)
-    binidx[binidx<0]=0
-    binidx[binidx>nbins-1]=nbins-1
-    return binidx.astype(int)
-
-def vectorCorrelation(x,y):
-    # for each column in x, measure the correlation with each column in y
-    assert x.shape==y.shape, "x and y need to have the same shape!"
-    N = x.shape[0]
-    xDev = x - np.mean(x,axis=0)
-    yDev = y - np.mean(y,axis=0)
-    xSampleStd = np.sqrt(np.sum(xDev**2,axis=0)/(N-1))
-    ySampleStd = np.sqrt(np.sum(yDev**2,axis=0)/(N-1))
-    xIdxValid = xSampleStd > 0
-    yIdxValid = ySampleStd > 0
-    xDev[:,xIdxValid] /= xSampleStd[xIdxValid]
-    yDev[:,yIdxValid] /= ySampleStd[yIdxValid]
-    std = np.sum(xDev * yDev, axis=0) / (N-1)
-    std *= 1*(xIdxValid & yIdxValid)
-    return std
-    
-def cvFoldSplit(samples, numFold):
-    if type(samples)==int:
-        numSamples = copy(samples)
-        samples = np.arange(samples)
-    else:
-        numSamples = len(samples)
-    # generates list of indices of equally sized randomly selected samples to be used in numFold-crossvalidation for a given number of samples
-    minimumSamples = np.floor(numSamples / numFold) 
-    remainder = numSamples - numFold*minimumSamples 
-    samplesPerFold = [int(minimumSamples + 1*(f<remainder)) for f in range(numFold)] # each fold gets minimum number of samples, assign remainder evenly to as many as necessary
-    sampleIdxPerFold = [0, *np.cumsum(samplesPerFold)] # defines where to start and stop for each fold
-    randomOrder = samples[np.random.permutation(numSamples)] # random permutation of samples
-    foldIdx = [randomOrder[sampleIdxPerFold[i]:sampleIdxPerFold[i+1]] for i in range(numFold)] # assign samples to each cross-validation fold
-    return foldIdx
-
-def check_iterable(val):
-    """duck-type check if val is iterable, if so return, if not, make it a list"""
-    try:
-        # I am a duck and ducks go quack
-        _ = iter(val)
-    except:
-        # not an iterable, woohoo! 
-        return [val] # now it is ha ha ha ha!
-    else:
-        # it's 5pm somewhere
-        return val
-        
+# ---------------------------------- workspace management ----------------------------------
 def readableBytes(numBytes):
     if numBytes==0: return "0B"
     sizeUnits = ("B", "KB", "MB", "GB", "TB")
@@ -303,4 +314,18 @@ def printWorkspace(maxToPrint=12):
     print("Note: this method is not equipped to handle complicated variables, it is possible underestimating the workspace size!\n") 
     for name, size in variables[:min(maxToPrint, len(variables))]:
         print(f"{name:>30}: {readableBytes(size):>8}")
+
+
+# ---------------------------------- type checks ----------------------------------
+def check_iterable(val):
+    """duck-type check if val is iterable, if so return, if not, make it a list"""
+    try:
+        # I am a duck and ducks go quack
+        _ = iter(val)
+    except:
+        # not an iterable, woohoo! 
+        return [val] # now it is ha ha ha ha!
+    else:
+        # it's 5pm somewhere
+        return val
         
