@@ -226,5 +226,23 @@ class tracker():
         # A straightforward numpy array of (numSessions, numROIs) containing the indices to retrieve tracked and sorted ROIs
         return np.concatenate([np.stack([offset+ucid for offset, ucid in zip(offsets, ucids)], axis=1) for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)], axis=0).T
 
-    
+    def check_red_cell_consistency(self, idx_ses=None, keepPlanes=None, use_s2p=False, s2p_cutoff=0.65):
+        # which planes to keep
+        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
+
+        # get session idx
+        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
+
+        # get idx of tracked ROIs
+        idx_tracked = self.get_tracked_idx(idx_ses=idx_ses, keepPlanes=keepPlanes)
+
+        # get red cell assignments
+        if not(use_s2p):
+            idx_red = np.stack([self.sessions[ii].getRedIdx(keepPlanes=keepPlanes)[it] for ii,it in zip(idx_ses, idx_tracked)])
+        else:
+            c_in_plane = [self.sessions[ii].idxToPlanes(keepPlanes=keepPlanes) for ii in idx_ses]
+            idx_red = np.stack([self.sessions[ii].loadone('mpciROIs.redS2P')[cip][it] > s2p_cutoff for ii, cip, it in zip(idx_ses, c_in_plane, idx_tracked)])
+        
+        return idx_red
+        
 
