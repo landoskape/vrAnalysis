@@ -641,11 +641,6 @@ class redSelectionGUI:
         else:
             print(f"Failed to update the redCellQC field of the database for session {self.redCell.sessionPrint()}")
             
-    # def oneNameFeatureCutoffs(self, name):
-    #     return 'parameters'+'Red'+name[0].upper()+name[1:]+'.minMaxCutoff'
-    
-    
-        
         
         
         
