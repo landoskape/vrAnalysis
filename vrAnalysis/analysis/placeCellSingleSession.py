@@ -20,7 +20,7 @@ def save_directory(name=''):
     dirName = fm.analysisPath() / 'placeCellAnalysis' / name
     if not(dirName.is_dir()): dirName.mkdir(parents=True)
     return dirName
-    
+
 def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     """
     Method for returning a list of reliability indices and red cell assignments
@@ -39,12 +39,10 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
     # generate session and analysis iterables if not provided
     remake_ipcss = ipcss is None # if it is None, we have to remake it
     if ises is None:
-        print('hi')
         ises = vrdb.iterSessions(imaging=True, vrRegistration=True, **kwConditions)
         remake_ipcss = True # if we remade the session iterable, remake pcss iterable even if provided
 
     if remake_ipcss:
-        print('whoops')
         ipcss = []
         for ses in tqdm(ises):
             ipcss.append(placeCellSingleSession(ses))
@@ -145,8 +143,8 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
         red_reliable[ii] = c_red_reliable
         
     # return data
-    return miceInSession, env_sort, ctl_reliable, red_reliable #ses_name, ses_per_mouse, inenv_per_mouse, red_idx, env_nums, relmse, relcor
-
+    return miceInSession, env_sort, ctl_reliable, red_reliable 
+    
 
 def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, ises=None, ipcss=None, include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     """plot difference in reliability for red and control cells across environments for all mice"""
@@ -488,14 +486,17 @@ class placeCellSingleSession(standardAnalysis):
         # make snakes and prepare plotting data
         train_snake, test_snake = self.make_snake(envnum=envnum, with_reliable=with_reliable, cutoffs=cutoffs, method=method)
         extent = [[self.distedges[0], self.distedges[-1], 0, ts.shape[0]] for ts in train_snake]
-        if normalize:
+        if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
+        elif normalize < 0:
+            maxrois = np.concatenate([np.max(np.abs(ts), axis=1) for ts in train_snake]+[np.max(np.abs(ts), axis=1) for ts in test_snake])
+            vmin, vmax = -np.percentile(maxrois, -normalize), np.percentile(maxrois, -normalize)
         else:
             magnitude = np.max(np.abs(np.concatenate((np.concatenate(train_snake),np.concatenate(test_snake)))))
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax)-np.fix(vmin)+1)))
-        labelSize = 12
+        labelSize = 20
         cb_unit = r'$\sigma$' if self.standardizeSpks else 'au'
         cb_label = f"Activity ({cb_unit})"
         
@@ -518,14 +519,14 @@ class placeCellSingleSession(standardAnalysis):
         for idx, env in enumerate(envnum):
             cim = ax[idx, 0].imshow(train_snake[idx], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent[idx], aspect='auto', interpolation=interpolation)
             if idx==numEnv-1:
-                ax[idx,0].set_xlabel('Virtual Position (cm)', fontsize=labelSize)
+                ax[idx,0].set_xlabel('Position (cm)', fontsize=labelSize)
             ax[idx,0].set_ylabel(f'Env:{env}, ROIs', fontsize=labelSize)
             if idx==0:
                 ax[idx,0].set_title('Train Trials', fontsize=labelSize)
 
             ax[idx,1].imshow(test_snake[idx], cmap=cmap, vmin=vmin, vmax=vmax, extent=extent[idx], aspect='auto', interpolation=interpolation)
             if idx==numEnv-1:
-                ax[idx,1].set_xlabel('Virtual Position (cm)', fontsize=labelSize)
+                ax[idx,1].set_xlabel('Position (cm)', fontsize=labelSize)
             ax[idx,1].set_ylabel('ROIs', fontsize=labelSize)
             if idx==0:
                 ax[idx,1].set_title('Test Trials', fontsize=labelSize)
@@ -547,7 +548,7 @@ class placeCellSingleSession(standardAnalysis):
         plt.show() if withShow else plt.close()
 
     
-    def plot_remap_snakes(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', force_single_env=False, withShow=True, withSave=False):
+    def plot_remap_snakes(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', force_single_env=False, withLabels=True, withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
         # plotting remap snakes always uses all environments
         envnum = helpers.check_iterable(copy(self.environments)) # always use all environments (as an iterable)
@@ -563,14 +564,17 @@ class placeCellSingleSession(standardAnalysis):
 
         # prepare plotting data
         extent = lambda ii, jj : [self.distedges[0], self.distedges[-1], 0, snake_remap[ii][jj].shape[0]]
-        if normalize:
+        if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
+        elif normalize < 0:
+            maxrois = np.concatenate([np.concatenate([np.max(np.abs(srp), axis=1) for srp in s_remap]) for s_remap in snake_remap])
+            vmin, vmax = -np.percentile(maxrois, -normalize), np.percentile(maxrois, -normalize)
         else:
-            magnitude = np.max(np.abs(np.vstack([np.concatenate(srp) for srp in snake_remap_plots])))
+            magnitude = np.max(np.abs(np.vstack([np.concatenate(srp) for srp in snake_remap])))
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax)-np.fix(vmin)+1)))
-        labelSize = 12
+        labelSize = 20
         cb_unit = r'$\sigma$' if self.standardizeSpks else 'au'
         cb_label = f"Activity ({cb_unit})"
         
@@ -587,9 +591,12 @@ class placeCellSingleSession(standardAnalysis):
 
         fig_dim = 3
         width_ratios = [*[fig_dim for _ in range(numEnv)], fig_dim/10]
-        fig, ax = plt.subplots(numEnv, numEnv+1, width_ratios=width_ratios, figsize=(sum(width_ratios), fig_dim*numEnv), layout='constrained')
 
-        if numEnv==1: ax = np.reshape(ax, (1,2))
+        if not(withLabels):
+            width_ratios = width_ratios[:-1]
+        fig, ax = plt.subplots(numEnv, numEnv+1*withLabels, width_ratios=width_ratios, figsize=(sum(width_ratios), fig_dim*numEnv), layout='constrained')
+
+        if numEnv==1: ax = np.reshape(ax, (1,-1))
             
         for ii in range(numEnv):
             for jj in range(numEnv):
@@ -598,20 +605,37 @@ class placeCellSingleSession(standardAnalysis):
 
                 # label images
                 if ii==numEnv-1:
-                    ax[ii, jj].set_xlabel('Virtual Position (cm)', fontsize=labelSize)
+                    ax[ii, jj].set_xlabel('Position (cm)', fontsize=labelSize)
 
-                ax[ii, jj].set_ylabel(f"ROIs (Train/Sort) by Env:{envnum[ii]}", fontsize=labelSize)
+                ax[ii, jj].set_ylabel(f"ROIs @Env:{envnum[ii]}", fontsize=labelSize)
                 if ii==0:
-                    ax[ii, jj].set_title(f"Test on Env:{envnum[jj]}", fontsize=labelSize)
+                    ax[ii, jj].set_title(f"Test @Env:{envnum[jj]}", fontsize=labelSize)
 
                 if rewzone:
                     ax[ii, jj].add_patch(rect(ii, jj))
 
-            fig.colorbar(aim, ticks=cb_ticks, orientation='vertical', cax=ax[ii, numEnv])
-            ax[ii, numEnv].set_ylabel(cb_label, fontsize=labelSize)
+            if withLabels:
+                fig.colorbar(aim, ticks=cb_ticks, orientation='vertical', cax=ax[ii, numEnv])
+                ax[ii, numEnv].set_ylabel(cb_label, fontsize=labelSize)
+
+        if not(withLabels):
+            for ii in range(numEnv):
+                for jj in range(numEnv):
+                    ax[ii, jj].set_xticks([])
+                    ax[ii, jj].set_yticks([])
+                    ax[ii, jj].xaxis.set_tick_params(labelbottom=False)
+                    ax[ii, jj].yaxis.set_tick_params(labelleft=False)
+                    ax[ii, jj].set_xlabel(None)
+                    ax[ii, jj].set_ylabel(None)
+                    ax[ii, jj].set_title(None)
+                    
+                    
+                    
 
         if withSave: 
-            self.saveFigure(fig.number, f'remap_snake_plot')
+            name = f'remap_snake_plot'
+            if not(withLabels): name = name + '_nolabel'
+            self.saveFigure(fig.number, name)
             
         # Show figure if requested
         plt.show() if withShow else plt.close()
