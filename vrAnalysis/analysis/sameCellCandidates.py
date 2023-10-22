@@ -674,9 +674,9 @@ class clusterExplorer(sameCellCandidates):
         cb.ax.set_yticks(range(numPlanes))
         cb.ax.set_yticklabels(roiPlanes)
 
-        self.title1 = self.ax[0].set_title('deconvolved')
+        self.title1 = self.ax[0].set_title('activity')
         self.title2 = self.ax[1].set_title('neuropil')
-        self.title3 = self.ax[2].set_title('full cluster (deconv)')
+        self.title3 = self.ax[2].set_title('full cluster activity')
         self.title4 = self.ax[3].set_title('roi outlines')
 
         # then add real data to them
@@ -790,7 +790,7 @@ class clusterExplorer(sameCellCandidates):
             
         self.ax[3].invert_yaxis()
         newImshow = sp.signal.savgol_filter(dTraces/np.max(dTraces,axis=1,keepdims=True),15,1,axis=1)
-        newImshow = newImshow - np.mean(newImshow, axis=1, keepdims=True)
+        #newImshow = newImshow - np.mean(newImshow, axis=1, keepdims=True)
         self.im.set(data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot))
         self.title1.set_text(f"Activity - idx:{newIdx}")
         self.title2.set_text(f"Neuropil - numInCluster:{self.numInCluster}")
