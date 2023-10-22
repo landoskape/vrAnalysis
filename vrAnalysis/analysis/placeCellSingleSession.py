@@ -161,7 +161,8 @@ def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, 
     else:
         cmap = mpl.colormaps['brg'].resampled(numEnvs)
     
-    labelSize = 16
+    labelSize = 18
+    slabelSize = 12
     
     plt.close('all')
     fig, ax = plt.subplots(1,numMice,figsize=(4*numMice, 4), layout='constrained')
@@ -173,11 +174,13 @@ def plot_reliable_difference(cutoffs=(0.5, 0.8), withSave=False, withShow=True, 
         maxAbsDiff = np.nanmax(np.abs(rrel-crel))*1.1
         ax[ii].axhline(color='k', linestyle='--', lw=0.5)
         ax[ii].set_ylim(-maxAbsDiff, maxAbsDiff)
-        
-        ax[ii].legend(loc='lower left')
+
+        ax[ii].tick_params(axis='x', labelsize=slabelSize)
+        ax[ii].tick_params(axis='y', labelsize=slabelSize)
         ax[ii].set_xlabel('Session #', fontsize=labelSize)
         if ii==0:
             ax[ii].set_ylabel('Red - Control Reliability (%)', fontsize=labelSize)
+            ax[ii].legend(loc='lower left', fontsize=slabelSize)
         ax[ii].set_title(mouse, fontsize=labelSize)
 
     # Save figure if requested
@@ -270,7 +273,7 @@ class placeCellSingleSession(standardAnalysis):
         e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
         """
         envnum = helpers.check_iterable(envnum)
-        return [np.where(self.environments==ev)[0][0] if ev in self.environments else -1 for ev in envnum]
+        return [np.where(self.environments==ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
         
     def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None):
         """load standard data for basic place cell analysis"""
