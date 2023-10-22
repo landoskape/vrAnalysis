@@ -52,8 +52,8 @@ that I've only tested this in Jupyter lab. The following code block will open
 up a GUI based on PyQt5 and Napari. 
 ```python
 mouseName = 'ATL027'
-dateString = '2023-08-04'
-sessionid = '702'
+dateString = '2023-08-01'
+sessionid = '701'
 
 # Load registered vrExperiment
 vrexp = session.vrExperiment(mouseName, dateString, sessionid)
