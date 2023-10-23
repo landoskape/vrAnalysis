@@ -20,6 +20,38 @@ you'll only need to change a few things.
 Finally, the package assumes [Alyx](https://github.com/cortex-lab/alyx) 
 database structure. 
 
+## Installation
+There are two ways to install the vrAnalysis package. The first is by working
+directly from the code after cloning the repository from GitHub. First, 
+navigate to whatever folder you want to store the cloned repository in. Then, 
+clone the repository, make a new conda (or mamba!) environment, and install 
+the requirements via the `environment.yml` file.
+```
+git clone https://github.com/landoskape/vrAnalysis
+cd vrAnalysis
+conda env create -f environment.yml # try mamba instead of conda if you haven't yet
+```
+
+Alternatively, you can do a pip install from GitHub if you don't want to edit 
+the code at all. For this method, note that you have to choose which features
+you want to include. The core requirements exclude some packages required for 
+reprocessing deconvolved calcium traces and exclude the red cell GUI. 
+
+In an existing conda environment, type:
+```
+pip install git+https://github.com/landoskape/vrAnalysis # core requirements
+```
+
+Or, for the extra installs, use one of the following. The registration 
+component includes some packages that require special compilers. The gui
+component includes some plotting and interactivity related packages that I've
+found can conflict with other packages if you're using jupyter. 
+```
+# pip install git+https://github.com/landoskape/vrAnalysis[registration] # include the registration packages
+# pip install git+https://github.com/landoskape/vrAnalysis[gui] # include the red cell GUI
+# pip install git+https://github.com/landoskape/vrAnalysis[all] # include everything
+```
+
 ## Capabilities
 vrAnalysis can do the following things: 
 - Manage a database (can work with any SQL database with a few adjustments). 
