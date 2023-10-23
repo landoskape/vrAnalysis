@@ -559,7 +559,7 @@ class redSelectionGUI:
     def maskLabels(self):
         # note that labelData handles indices in a complicated way so that it's easy to interface with Napari. Key points:
         # 1. ROIs are assigned an index that is unique across all ROIs independent of plane (the first ROI in plane 1 isn't ROI 0, it's 1 + the number of ROIs in plane 0)
-        # 2. ROI indices are incremented by 1 when they are added to the "label" layer of the napari viewer. This is because the label layer uses "0" to indicate "no label"
+        # 2. All ROI indices are incremented by 1 when they are added to the "label" layer of the napari viewer. This is because the label layer uses "0" to indicate "no label"
         # 3. ROIs are only presented if they are True in "self.idxMasksToPlot", which is a boolean array of size (numROIsPerPlane,). (Hence the enumerated for loop...)
         labelData = np.zeros((self.numPlanes,self.redCell.ly,self.redCell.lx), dtype=int)
         for planeIdx in range(self.numPlanes):

@@ -35,7 +35,7 @@ conda env create -f environment.yml # try mamba instead of conda if you haven't 
 Alternatively, you can do a pip install from GitHub if you don't want to edit 
 the code at all. For this method, note that you have to choose which features
 you want to include. The core requirements exclude some packages required for 
-reprocessing deconvolved calcium traces and exclude the red cell GUI. 
+reprocessing deconvolved calcium traces and exclude the red cell GUI.
 
 In an existing conda environment, type:
 ```
