@@ -40,12 +40,28 @@ vrdb = database.vrDatabase() # open a database manager
 ```
 
 ## Place Cell Multi Session -- [link to module](../vrAnalysis/analysis/placeCellMultiSession.py)
-Just some quick key workflows:
+Analyzing place cells across sessions requires a "tracker" object which 
+processes ROI tracking data from the ROICaT package. The tracker module is 
+[here](../vrAnalysis/tracking.py). Tracker objects operate for an entire mouse
+so open one up for whatever mouse you want to analyze, then use that as input
+to the `placeCellMultiSession` analysis object (`pcm`). Here, I'm using 
+``autoload=False`` because otherwise it'll analyze all the place cell data 
+from all the tracked sessions, which takes a while. 
 ```python
 track = tracking.tracker('ATL022') # get tracker object for mouse
 pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
 pcm.track.session_table() # this prints a dataframe of the sessions in the tracker!
+```
 
+The simplest analysis to do with the `pcm` object is to plot snakes across 
+sessions using tracked cells that are reliable on a particular session (in a
+particular environment). Here, I plot snakes from environment 4 in sessions 12
+to 16, sorting and choosing ROIs by their activity on session 16. The other 
+inputs are similar to those in place cell single session, which is described
+below. Note that this will load whatever sessions you request, which can take
+a bit of time, as I mentioned. This method calls another method named 
+`make_snake_data` which retrieves the data used by `plot_snake`. 
+```python
 # choose range of sessions based on dataframe, pick environment, and plot snake
 envnum = 4
 idx_ses = range(12,17)
@@ -53,6 +69,16 @@ sortby = 16 # which session to sort by
 pcm.plot_snake(envnum, idx_ses=idx_ses, sortby=sortby, cutoffs=(0.5, 0.8), method='max', normalize=10, rewzone=True, interpolation='none', withShow=True, withSave=False)
 ```
 
+This module can also analyze how place fields change across sessions. The
+`plot_pfplasticity` method does so by making a histogram of the changes in 
+place field position (with `'max'` or `'com'`, see method for details) across
+sessions. You can do it for all cells or split by control or red cells with
+`split_red`. You can plot absolute difference or plot actual difference 
+(including negative changes) with `abs_val`. This calls `measure_pfplasticity`
+to make the data.
+```python
+pcm.plot_pfplasticity(self, envnum, idx_ses=idx_ses, cutoffs=(0.5, 0.8), method='max', absval=True, split_red=False, withShow=True, withSave=False):
+```
 
 ## Place Cell Single Session -- [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
 This analysis module is used for analyzing place fields in single sessions
@@ -208,6 +234,37 @@ analysis.plot_reliable_fraction(ises=ises, ipcss=ipcss, cutoffs=(0.5, 0.8), incl
 ```
 
 
+## Session Stats -- [link to module](../vrAnalysis/analysis/sessionStats.py)
+
+This analysis module is used for analyzing basic session data using a session 
+iterable. As of now, this entire module is based on non-class methods, which I
+hope to change in the near future but I needed them quickly and this was 
+easiest. 
+
+The data are generally produced by the `sessionStats` method as follows. It 
+measures various things including which environments were used in each 
+session, how many trials per environment, how many ROIs per session, and how 
+many of those ROIs are considered red, according to the standard red detection
+method or by suite2p alone. It organizes the outputs by mouse and envrionment.
+```python
+ises = vrdb.iterSessions(imaging=True, vrRegistration=True) # get iterable of all registered imaging sessions
+stats = analysis.sessionStats(ises=ises, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65) # measure session stats
+miceInSession, env_counter, trial_counter, total_cell_count, red_cell_count = stats # unpack tuple
+```
+
+To plot the stats about which environments were visited and in how many trials
+by each mouse, use this. Additional input arguments are the same as 
+`sessionStats`.
+```python
+analysis.plot_environmentStats(ises=ises, keepPlanes=[1,2,3,4])
+```
+
+To plot the stats about how many ROIs were imaged and how many of those are 
+red in each session, use this. Additional input arguments are the same as 
+`sessionStats`.
+```python
+analysis.plot_roiCountStats(ises=ises, keepPlanes=[1,2,3,4])
+```
 
 ## Same Cell Candidates -- [link to module](../vrAnalysis/analysis/sameCellCandidates.py)
 
