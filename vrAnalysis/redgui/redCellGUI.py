@@ -159,15 +159,21 @@ class redSelectionGUI:
         def preserveYRange1(): preserveYRange(1)
         def preserveYRange2(): preserveYRange(2)
         def preserveYRange3(): preserveYRange(3)
+        # make independent callbacks for each so it's possible to disconnect and reconnnect them
+        # (this doesn't work with functools.partial, although that would be more elegant)
         preserveMethods = [preserveYRange0, preserveYRange1, preserveYRange2, preserveYRange3]
         
         def preserveYRange(idx):
-            #for idx in range(self.numFeatures):
+            # remove callback so we can update the yrange without a recursive call
             self.histPlots[idx].getViewBox().sigYRangeChanged.disconnect(preserveMethods[idx])
+            # then figure out the current y range (this is after a user update)
             current_min, current_max = self.histPlots[idx].viewRange()[1]
+            # set the new max to not exceed the current maximum 
             current_range = current_max - current_min
             current_max = min(current_range, self.hvaluesMaximum[idx])
+            # range is from 0 to the max, therefore the y=0 line always stays in the same place
             self.histPlots[idx].setYRange(0, current_max)
+            # reconnect callback for next update
             self.histPlots[idx].getViewBox().sigYRangeChanged.connect(preserveMethods[idx])
         
         # add bargraphs to plotArea
