@@ -535,11 +535,10 @@ class vrDatabase:
             return False
     
     # == well, this isn't coded yet :) ==
-    def addRecord(self):
-        raise ValueError("Not coded yet!")
-        #updateStatement = f"insert into T 
-        #INSERT INTO Customers (CustomerName, ContactName, Address, City, PostalCode, Country)
-        #VALUES ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway');
+    def addRecord(self, insert_statement, values):
+        with self.openCursor(commitChanges=True) as cursor:
+            cursor.execute(insert_statement, values)
+            print('Successfully added new record')
         
     # == operating vrExperiment pipeline ==
     def defaultRegistrationOpts(self, **userOpts):
