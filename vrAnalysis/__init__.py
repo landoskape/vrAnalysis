@@ -4,6 +4,7 @@ modules = [
     'functions',
     'session',
     'registration',
+    'uiDatabase',
     'database',
     'tracking',
     'analysis',

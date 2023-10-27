@@ -36,6 +36,7 @@ deps_gui = [
     "pyqtgraph",
     "napari[all]",
     "vrAnalysis.redgui",
+    "vrAnalysis.uiDatabase",
 ]
 
 setup(
