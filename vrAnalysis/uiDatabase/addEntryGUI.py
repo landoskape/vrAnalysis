@@ -81,10 +81,10 @@ recognized_types = [int, str, datetime, float, bool]
 
 # default parameters
 params = {
-    'max_rows' : 12,
+    'max_rows' : 10,
     'min_width' : 240,
+    'label_width' : 190,
 }
-
 
 def get_column_descriptions(vrdb):
     with vrdb.openCursor(commitChanges=False) as cursor:
@@ -137,6 +137,10 @@ class newEntryGUI(QWidget):
             self.entryFields.append(QLineEdit(placeholderText=self.constructPlaceholder(idx))) # create the edit field
             self.entryIndex.append(idx) # keep track of which ones were not ignored
 
+        for label in self.entryLabels:
+            label.setFixedWidth(self.params['label_width'])
+            label.setAlignment(Qt.AlignRight)
+            
         # Set validation functions for each field and control their appearance
         for idx, (field, entry) in enumerate(zip(self.entryFields, self.entryIndex)):
             field.editingFinished.connect(partial(self.validate_input, idx=idx, entry=entry))
