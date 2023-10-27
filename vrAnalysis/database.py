@@ -3,7 +3,9 @@ import pyodbc
 from IPython.display import Markdown, display
 from datetime import datetime
 from contextlib import contextmanager
+from pathlib import Path
 import pandas as pd
+from subprocess import call, run
 
 from . import session
 from . import registration
@@ -53,9 +55,11 @@ def vrDatabaseMetadata(dbName):
     
     dbdict = {
         'vrDatabase': {
-            'dbPath': r'C:\Users\andrew\Documents\localData\vrDatabaseManagement\vrDatabase.accdb',
+            'dbPath': r'C:\Users\andrew\Documents\localData\vrDatabaseManagement',
             'dbName': 'vrDatabase',
-            'tableName': 'sessiondb'
+            'dbExt': '.accdb',
+            'tableName': 'sessiondb',
+            'backupPath': r'D:\localData\vrDatabaseManagement',
         }
     }
     if dbName not in dbdict.keys():
@@ -95,14 +99,28 @@ class vrDatabase:
         metadata = vrDatabaseMetadata(dbName)
         self.dbPath = metadata['dbPath']
         self.dbName = metadata['dbName']
+        self.dbExt = metadata['dbExt']
         self.tableName = metadata['tableName']
-        
+        self.backupPath = metadata['backupPath']
+
+    def get_dbfile(self):
+        return Path(self.dbPath) / (self.dbName + self.dbExt)
+
+    def save_backup(self, return_out=False):
+        source_path = self.dbPath
+        target_path = self.backupPath
+        source_file = self.dbName + self.dbExt
+        robocopy_arguments = f"robocopy {source_path} {target_path} {source_file}"
+        outs = run(robocopy_arguments, capture_output=True, text=True)
+        if return_out:
+            return outs
+
     def connect(self, hostType='access'):
         """
         Connect to the database defined from the vrDatabaseMetadata function.
         """
         driverString = {
-            'access' : r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + fr"DBQ={self.dbPath};"
+            'access' : r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + fr"DBQ={self.get_dbfile()};"
         }
         
         # Make sure connections are possible for this hosttype
