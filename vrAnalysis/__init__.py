@@ -3,6 +3,7 @@ modules = [
     'helpers',
     'functions',
     'session',
+    'registration',
     'database',
     'tracking',
     'analysis',
