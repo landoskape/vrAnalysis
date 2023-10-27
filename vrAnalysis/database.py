@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import pandas as pd
 
 from . import session
+from . import registration
 from . import helpers
 from . import fileManagement as fm
 
@@ -180,7 +181,23 @@ class vrDatabase:
         >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
         """
         return f"UPDATE {self.tableName} set {field} = ? where uSessionID = ?"
-    
+
+    def updateDatabaseField(self, field, val, ignoreScratched=True, **kwConditions):
+        """
+        Method for updating a database field in every record where conditions are true
+
+        The ignoreScratched and kwConditions arguments are fed into the self.getTable() method
+        Then, every record that is returned gets <field> updated to <val>
+        """
+        assert field in self.tableData()[0], f"Requested field ({field}) is not in table. Use 'self.tableData()[0]' to see available fields."
+        df = self.getTable(ignoreScratched=ignoreScratched, **kwConditions)
+        updateStatement = self.createUpdateManyStatement(field)
+        uids = df['uSessionID'].tolist() # uids of all sessions requested
+        val_as_list = [val]*len(uids) # 
+        print(f"Setting {field}={val} for all requested records...")
+        with self.openCursor(commitChanges=True) as cursor:
+            cursor.executemany(updateStatement,zip(val_as_list, uids))
+        
     # == vrExperiment related methods ==
     def sessionName(self, row):
         """get session identifiers from record of database"""
@@ -202,7 +219,7 @@ class vrDatabase:
     def vrRegistration(self, row, **opts):
         """create vrRegistration object from record in database"""
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return session.vrRegistration(mouseName, sessionDate, sessionID, **opts)
+        return registration.vrRegistration(mouseName, sessionDate, sessionID, **opts)
     
     def miceInSessions(self, iterSession):
         """get list of unique mice names in session iterable"""
@@ -506,6 +523,7 @@ class vrDatabase:
     def registerRecord(self, record, **opts):
         opts['imaging'] = bool(record['imaging'])
         opts['facecam'] = bool(record['faceCamera'])
+        opts['vrBehaviorVersion'] = record['vrBehaviorVersion'] 
         vrExpReg = self.vrRegistration(record, **opts)
         try: 
             print(f"Performing vrExperiment preprocessing for session: {vrExpReg.sessionPrint()}")
