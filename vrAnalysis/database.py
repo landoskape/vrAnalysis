@@ -32,7 +32,7 @@ def vrDatabaseMetadata(dbName):
     -------
     dict
         A dictionary containing metadata for the specified database.
-        It has three keys: 'dbPath', 'dbName', and 'tableName'.
+        It has these keys: 'dbPath', 'dbName', 'dbExt', 'tableName', and 'backupPath'.
 
     Raises
     ------
@@ -43,7 +43,7 @@ def vrDatabaseMetadata(dbName):
     -------
     >>> metadata = vrDatabaseMetadata('vrDatabase')
     >>> print(metadata['dbPath'])
-    'C:\\Users\\andrew\\Documents\\localData\\vrDatabaseManagement\\vrDatabase.accdb'
+    'C:\\Users\\andrew\\Documents\\localData\\vrDatabaseManagement'
     >>> print(metadata['dbName'])
     'vrDatabase'
 
@@ -66,6 +66,11 @@ def vrDatabaseMetadata(dbName):
         raise ValueError(f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}")
     return dbdict[dbName]
 
+# a dictionary of host types determining what driver string to use for database connections
+host_types = {
+    '.accdb': 'access',
+    '.mdb': 'access',
+}
 
 class vrDatabase:
     def __init__(self, dbName='vrDatabase'):
@@ -102,6 +107,7 @@ class vrDatabase:
         self.dbExt = metadata['dbExt']
         self.tableName = metadata['tableName']
         self.backupPath = metadata['backupPath']
+        self.host_type = host_types[self.dbExt]
 
     def get_dbfile(self):
         return Path(self.dbPath) / (self.dbName + self.dbExt)
@@ -115,21 +121,36 @@ class vrDatabase:
         if return_out:
             return outs
 
-    def connect(self, hostType='access'):
+    def connect(self):
         """
         Connect to the database defined from the vrDatabaseMetadata function.
+
+        This is built to work with different database managers, but unless you are using 
+        Microsoft Access, you'll need to do a little work. First, figure out how to write
+        a driverString for the pyodbc connection. You can use this website for help:
+        
+        https://www.connectionstrings.com/
+
+        After making a new driver string, add it to the driver string dictionary and choose
+        a unique key. Once you've chosen your key, add the key to the dictionary called 
+        "host_types" at the top of this file as the value associated with the file extension 
+        for your database. 
+
+        Note: I am assuming that the file extension will fully specify the host type and driver
+        string. If this isn't the case and you're not sure what to do, contact me so we can make
+        a better system.
         """
         driverString = {
             'access' : r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + fr"DBQ={self.get_dbfile()};"
         }
         
         # Make sure connections are possible for this hosttype
-        failureMessage = (f"Requested hostType ({hostType}) is not available. The only ones that are coded are: {[k for k in driverString.keys()]}"
-                          "For support with writing a driver string for a different host, use the fantastic website: https://www.connectionstrings.com/")
-        assert hostType in driverString, failureMessage
+        failureMessage = (f"Requested hostType ({self.host_type}) is not available. The only ones that are coded are: {[k for k in driverString.keys()]}"
+                          f"For support with writing a driver string for a different host, use the fantastic website: https://www.connectionstrings.com/")
+        assert self.host_type in driverString, failureMessage
         
         # Return a connection to the database
-        return pyodbc.connect(driverString[hostType])
+        return pyodbc.connect(driverString[self.host_type])
     
     @contextmanager
     def openCursor(self, commitChanges=False):
