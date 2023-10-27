@@ -76,6 +76,9 @@ default_vals = {
     'vrRegistrationError': False,
 }
 
+# recognized datatypes
+recognized_types = [int, str, datetime, float, bool] 
+
 # default parameters
 params = {
     'max_rows' : 12,
@@ -185,7 +188,9 @@ class newEntryGUI(QWidget):
         value = None
         has_default = (self.defaults[entry] is not None)
         null = (ctext == '')
-        
+
+        assert self.data_type[entry] in recognized_types, f"Datatype {self.data_type} is not registered, add it to the list of recognized types and update validate_input!"
+            
         # if not nullable and doesn't have default and data is null, not valid
         if not(self.nullable[entry]) and not(has_default) and null:
             valid = False
