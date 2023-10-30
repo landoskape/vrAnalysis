@@ -71,6 +71,10 @@ structure, this GUI will reflect it. For more info, go
 [here](docs/database.md).
 ![addEntryGUI](docs/media/addEntryGUI.png)
 
+#### 2. Show what sessions require registration
+To figure out what sessions you have in your database that haven't been 
+registered (e.g. preprocessed), you can do this:
+![needRegistrationDisplay](docs/media/needsRegistrationDisplay.png)
 
 ## Documentation
 This isn't even close to a professional package so the documentation is 

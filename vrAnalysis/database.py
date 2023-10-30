@@ -613,8 +613,6 @@ class vrDatabase:
         # get opts for registering session
         opts = self.defaultRegistrationOpts(**userOpts)
         
-        print("In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!") 
-        
         countSessions = 0
         totalOneData = 0.0
         dfToRegister = self.needsRegistration(skipErrors=skipErrors)
