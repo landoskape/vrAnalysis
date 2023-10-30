@@ -18,7 +18,11 @@ suite2p, so if you are looking for a system to help analyze 2P data then
 you'll only need to change a few things. 
 
 Finally, the package assumes [Alyx](https://github.com/cortex-lab/alyx) 
-database structure. 
+database structure. This means that the data should be organized in a 
+directory first by mouse, then by date, then by session ID. These files should
+be contained in a directory, which you can set in the
+[fileManagement](https://github.com/landoskape/vrAnalysis/blob/main/vrAnalysis/fileManagement.py#L7)
+module with the `localDataPath` method.
 
 ## Installation
 There are two ways to install the vrAnalysis package. The first is by working
