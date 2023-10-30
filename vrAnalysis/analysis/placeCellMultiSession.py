@@ -160,42 +160,130 @@ class placeCellMultiSession(multipleAnalysis):
                 
         return snake_data, sortby, idx_red_data
 
+    def make_paired_snake(self, envnum, target, sortby, cutoffs=(0.5, 0.8), method='max', include_red=True):
+        """similar to above "make_snake_data" but only contains the data from two sessions, a sortby session and a target session"""
+        idx_ses, num_ses = self.track.get_idx_session(idx_ses=[target, sortby])
+        
+        # idx of session to sort by
+        idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[sortby]
+        
+        self.load_pcss_data(idx_ses=idx_ses)
+        self.idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keepPlanes=self.keepPlanes)
+        
+        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
+        assert all([~np.isnan(ei) for ei in envidx]), "requested environment not in all sessions"
+        
+        spkmaps = self.get_from_pcss('spkmap', idx_ses)
+        idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs)[ei] for i, ei in zip(idx_ses, envidx)]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in idx_ses]
+        idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(idx_ses, envidx)]
+        idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
+        idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
+        
+        track_spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, self.idx_tracked)]
+        track_idx_reliable = [idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)]
+        track_idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, self.idx_tracked)]
+        
+        track_pfidx = self.pcss[sortby].get_place_field(roi_idx=self.idx_tracked[idx_sortby][track_idx_reliable[idx_sortby]], trial_idx=idx_train[idx_sortby], method=method)[1]
+        
+        snake_data = []
+        idx_red_data = [ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red]
+        for ii, ises in enumerate(idx_ses):
+            if ises == sortby:
+                # use test trials
+                c_data = np.mean(track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_test[ii]], axis=1)
+                snake_data.append(c_data)
+            else:
+                c_data = np.mean(track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_full[ii]], axis=1)
+                snake_data.append(c_data)
+                
+        return snake_data, idx_red_data
+        
 
-    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', absval=True, split_red=False):
+    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', compare='r2', absval=True, split_red=False):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
         self.idx_ses, self.num_ses = self.track.get_idx_session(idx_ses=idx_ses)
-        snake_data = [self.make_snake_data(envnum, idx_ses=idx_ses, sortby=sortby, cutoffs=cutoffs, method=method)
-                      for sortby in idx_ses]
-        snake_data, _, idx_red = map(list, zip(*snake_data))
+        target_snake = []
+        sortby_snake = []
+        target_red = []
+        sortby_red = []
+        for sortby in self.idx_ses:
+            c_target_snake = []
+            c_sortby_snake = []
+            c_target_ired = []
+            c_sortby_ired = []
+            for target in self.idx_ses:
+                cdata, cired = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, method=method)
+                c_target_snake.append(cdata[0])
+                c_sortby_snake.append(cdata[1])
+                c_target_ired.append(cired[0])
+                c_sortby_ired.append(cired[1])
+            target_snake.append(c_target_snake)
+            sortby_snake.append(c_sortby_snake)
+            target_red.append(c_target_ired)
+            sortby_red.append(c_sortby_ired)
 
-        numROIs = [snake_data[ii][0].shape[0] for ii in range(self.num_ses)] # different # of ROIs for each sortby list
-        pfloc = [np.zeros((self.num_ses, nr)) for nr in numROIs]
-        for isort in range(self.num_ses):
-            for iplot in range(self.num_ses):
-                pfloc[isort][iplot] = self.get_place_field(snake_data[isort][iplot], method=method)[0]
+        # I need a grid of histograms comparing the snakes across sessions
+        r2 = []
+        pc = []
+        for isort, (snakes_target, snakes_sortby) in enumerate(zip(target_snake, sortby_snake)):
+            c_r2 = []
+            c_pc = []
+            for itarget, (snake_target, snake_sortby) in enumerate(zip(snakes_target, snakes_sortby)):
+                assert snake_target.shape[0] == snake_sortby.shape[0], "oops"
+                # get R-squared
+                dv_target = np.max(snake_target, axis=1, keepdims=True)
+                dv_sortby = np.max(snake_sortby, axis=1, keepdims=True)
+                st = snake_target / (dv_target + 1*(dv_target==0))
+                ss = snake_sortby / (dv_sortby + 1*(dv_sortby==0))
+                cc_r2 = helpers.vectorRSquared(ss, st, axis=1)
+                cc_r2[cc_r2==-np.inf] = np.nan
+                # also get correlation
+                cc_pc = helpers.vectorCorrelation(ss, st, axis=1)
+                # then add results
+                c_r2.append(cc_r2)
+                c_pc.append(cc_pc)
+            # keep all results
+            r2.append(c_r2)
+            pc.append(c_pc)
 
-        session_offsets = np.arange(1,self.num_ses)
-        pf_differences = [[] for _ in session_offsets]
-        if split_red: 
-            pf_diff_red = [[] for _ in session_offsets]
-        else:
-            pf_diff_red = None
+        return target_snake, sortby_snake, r2, pc
+                
+                
 
-        transform = lambda x: np.abs(x) if absval else x
+        """
+        The code commented below is how I used to do it, but I'm updating to make a grid
+        so need to rewrite everything anyway. Also, I'm switching to the R2 method...
         
-        for pf, ired in zip(pfloc, idx_red):
-            for iso, offset in enumerate(session_offsets):
-                for idx in range(0, self.num_ses - offset):
-                    if split_red:
-                        c_pf_diff = transform(pf[idx+1][~ired[0]] - pf[idx][~ired[0]])
-                        c_pf_diff_red = transform(pf[idx+1][ired[0]] - pf[idx][ired[0]])
-                        pf_differences[iso] = pf_differences[iso] + list(c_pf_diff[~np.isnan(c_pf_diff)])
-                        pf_diff_red[iso] = pf_diff_red[iso] + list(c_pf_diff_red[~np.isnan(c_pf_diff_red)])
-                    else:
-                        c_pf_diff = transform(pf[idx+1] - pf[idx])
-                        pf_differences[iso] = pf_differences[iso] + list(c_pf_diff[~np.isnan(c_pf_diff)])
+        # numROIs = [snake_data[ii][0].shape[0] for ii in range(self.num_ses)] # different # of ROIs for each sortby list
+        # pfloc = [np.zeros((self.num_ses, nr)) for nr in numROIs]
+        # for isort in range(self.num_ses):
+        #     for iplot in range(self.num_ses):
+        #         pfloc[isort][iplot] = self.get_place_field(snake_data[isort][iplot], method=method)[0]
+
+        # session_offsets = np.arange(1,self.num_ses)
+        # pf_differences = [[] for _ in session_offsets]
+        # if split_red: 
+        #     pf_diff_red = [[] for _ in session_offsets]
+        # else:
+        #     pf_diff_red = None
+
+        # transform = lambda x: np.abs(x) if absval else x
         
-        return snake_data, pf_differences, pf_diff_red
+        # for pf, ired in zip(pfloc, idx_red):
+        #     for iso, offset in enumerate(session_offsets):
+        #         for idx in range(0, self.num_ses - offset):
+        #             if split_red:
+        #                 c_pf_diff = transform(pf[idx+1][~ired[0]] - pf[idx][~ired[0]])
+        #                 c_pf_diff_red = transform(pf[idx+1][ired[0]] - pf[idx][ired[0]])
+        #                 pf_differences[iso] = pf_differences[iso] + list(c_pf_diff[~np.isnan(c_pf_diff)])
+        #                 pf_diff_red[iso] = pf_diff_red[iso] + list(c_pf_diff_red[~np.isnan(c_pf_diff_red)])
+        #             else:
+        #                 c_pf_diff = transform(pf[idx+1] - pf[idx])
+        #                 pf_differences[iso] = pf_differences[iso] + list(c_pf_diff[~np.isnan(c_pf_diff)])
+        """
+        
+        # return snake_data, pf_differences, pf_diff_red
         
         
     def plot_snake(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):

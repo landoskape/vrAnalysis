@@ -320,7 +320,6 @@ def behaveToFrame(behavePosition,behaveTrialIdx,idxBehaveToFrame,distBehaveToFra
             framePosition[sample] /= count[sample]
             frameTrialIdx[sample] /= count[sample]
 
-
 @nb.njit(parallel=True)
 def timelineToFrame(timelineIndex, timelineVariable, output, count):
     for idx in nb.prange(len(timelineIndex)):

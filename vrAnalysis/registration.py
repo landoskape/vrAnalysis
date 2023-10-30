@@ -476,7 +476,7 @@ class vrRegistration(session.vrExperiment):
             print(f"In session {self.sessionPrint()}, imaging setting set to False in opts['imaging']. Skipping behavior2imaging processing.")
             return None
         # compute translation mapping from behave frames to imaging frames
-        idxBehaveToFrame,distBehaveToFrame = helpers.nearestpoint(self.loadone('positionTracking.times'), self.loadone('mpci.times'))
+        idxBehaveToFrame, distBehaveToFrame = helpers.nearestpoint(self.loadone('positionTracking.times'), self.loadone('mpci.times'))
         self.saveone(idxBehaveToFrame.astype(int), 'positionTracking.mpci')
         
     def processRedCells(self):
