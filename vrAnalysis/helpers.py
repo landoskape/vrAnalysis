@@ -157,22 +157,36 @@ def digitizeEqual(data, mn, mx, nbins):
     
     
 # ---------------------------------- signal processing ----------------------------------    
-def vectorCorrelation(x,y):
+def vectorCorrelation(x,y,axis=-1):
     # for each column in x, measure the correlation with each column in y
     assert x.shape==y.shape, "x and y need to have the same shape!"
-    N = x.shape[0]
-    xDev = x - np.mean(x,axis=0)
-    yDev = y - np.mean(y,axis=0)
-    xSampleStd = np.sqrt(np.sum(xDev**2,axis=0)/(N-1))
-    ySampleStd = np.sqrt(np.sum(yDev**2,axis=0)/(N-1))
+    N = x.shape[axis]
+    xDev = x - np.mean(x, axis=axis, keepdims=True)
+    yDev = y - np.mean(y, axis=axis, keepdims=True)
+    xSampleStd = np.sqrt(np.sum(xDev**2, axis=axis, keepdims=True) / (N-1))
+    ySampleStd = np.sqrt(np.sum(yDev**2, axis=axis, keepdims=True) / (N-1))
     xIdxValid = xSampleStd > 0
     yIdxValid = ySampleStd > 0
-    xDev[:,xIdxValid] /= xSampleStd[xIdxValid]
-    yDev[:,yIdxValid] /= ySampleStd[yIdxValid]
-    std = np.sum(xDev * yDev, axis=0) / (N-1)
-    std *= 1*(xIdxValid & yIdxValid)
+    xSampleStdCorrected = xSampleStd + 1*(~xIdxValid)
+    ySampleStdCorrected = ySampleStd + 1*(~yIdxValid)
+    xDev /= xSampleStdCorrected
+    yDev /= ySampleStdCorrected
+    std = np.sum(xDev * yDev, axis=axis) / (N-1)
+    std *= 1*np.squeeze(xIdxValid & yIdxValid)
     return std
-    
+
+def vectorRSquared(x,y,axis=-1):
+    """
+    get r squared between x and y across a particular axis
+    treats x as the predictor and y as the data (e.g. SS_total comes from y)
+    broadcasting rules apply
+    """
+    ss_residual = np.sum((y-x)**2, axis=axis)
+    ss_total = np.sum((y - np.mean(y, axis=axis, keepdims=True))**2, axis=axis)
+    ss_total[ss_total==0] = np.nan
+    r_squared = 1 - ss_residual / ss_total
+    return r_squared
+
 def diffsame(data, zero=0):
     # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back. 
     # zero=0 means front, zero=1 means back
