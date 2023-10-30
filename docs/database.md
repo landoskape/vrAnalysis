@@ -78,6 +78,66 @@ and want to quickly and simply which mice need work.
 vrdb.printMiceInSessions(vrdb.iterSessions(imaging=True, vrRegistration=True, redCellQC=False))
 ```
 
+### Adding a new session to the database
+There is a nice GUI for adding a new session to the database. The GUI loads 
+the database fields and data properties then checks your entries to make sure
+they are valid. Of course, the database itself will throw an error if the 
+entries are invalid when you try to submit the new record. The GUI is nice 
+because you can preload data for faster submission and contains a few 
+defaults. The code for the GUI can be found 
+[here](../vrAnalysis/uiDatabase/addEntryGUI.py).
+
+Below is some code showing how to open the GUI with preloaded data.
+```python
+# session identifiers
+mouseName = 'CR_Hippocannula7'
+sessionDate = '2022-09-07'
+sessionID = '701'
+
+# create session object 
+# (at the moment, this only provides mouseName, sessionDate, and sessionID to the GUI, but will increase later)
+ses = registration.vrRegistration(mouseName, sessionDate, sessionID)
+
+# preloaded data
+preloaded_data = {
+    'experimentType': 'Blender VR',
+    'experimentID': 12,
+    'variableGain': False,
+    'behavior': True,
+    'imaging': True, 
+    'faceCamera': False, 
+    'vrEnvironments': 89,
+    'numPlanes': 5,
+    'planeSeparation': 25,
+    'suite2p': True,
+    'vrBehaviorVersion': 2,
+}
+
+# load the database connection
+vrdb = database.vrDatabase()
+
+# then open the GUI
+gui = addEntryGUI.newEntryGUI(vrdb, ses=ses, **preloaded_data)
+```
+
+It looks like this:
+![addEntryGUI](media/addEntryGUI.png)
+
+If you press the button on the right (`Submit New Row`), then it will attempt
+to submit the data to the database as a new row. The database object checks if
+any other record contains the same session identifiers (the mouseName, 
+sessionDate, and sessionID). If it does, then it prevents addition of the new 
+entry.
+
+Extra notes: 
+- When a field is empty, the placeholder text indicates the required datatype
+  and the default value, if it exists. All inputs are strings (e.g. "text"),
+  but the GUI checks whether the string can be converted to the required type
+  with the `validate_input` method. 
+- If you press the button on the left (`Check Values`), then it will validate
+  if the data in each field is valid. Entries turn to red if they are not.
+
+
 ### Registering Sessions
 You can register sessions from the `database` object, which is good practice
 because it automatically updates the SQL database appropriately. To update a
