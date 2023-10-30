@@ -62,7 +62,15 @@ vrAnalysis can do the following things:
   yet). 
 - Analyzing data using organized analysis objects that make it easy to do an
   analysis across groups of sessions from the database.
-  
+
+### Highlights
+#### GUI for adding data to a database
+To add a new record to a database, check out this GUI! Note that the labels 
+and datatypes aren't hardcoded, so if your SQL database has a different 
+structure, this GUI will reflect it. 
+![addEntryGUI](docs/media/addEntryGUI.png)
+
+
 ## Documentation
 This isn't even close to a professional package so the documentation is 
 primarily oriented towards helping future me remember what I've written. To
