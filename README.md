@@ -67,7 +67,7 @@ vrAnalysis can do the following things:
 #### 1. GUI for adding data to a database
 To add a new record to a database, check out this GUI! Note that the labels 
 and datatypes aren't hardcoded, so if your SQL database has a different 
-structure, this GUI will reflect it. 
+structure, this GUI will reflect it. For more, go [here](docs/database.md).
 ![addEntryGUI](docs/media/addEntryGUI.png)
 
 
