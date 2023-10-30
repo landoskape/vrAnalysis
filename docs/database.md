@@ -136,9 +136,9 @@ It looks like this:
 
 If you press the button on the right (`Submit New Row`), then it will attempt
 to submit the data to the database as a new row. The database object checks if
-any other record contains the same session identifiers (the mouseName, 
-sessionDate, and sessionID). If it does, then it prevents addition of the new 
-entry.
+any other record contains the same session identifiers (the `mouseName`, 
+`sessionDate`, and `sessionID`). If it does, then it prevents addition of the 
+new entry.
 
 Extra notes: 
 - When a field is empty, the placeholder text indicates the required datatype
