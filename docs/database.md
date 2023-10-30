@@ -41,7 +41,7 @@ vrdb = database.vrDatabase()
 ```
 
 ### Storing a backup of the database
-The database is an import object, it contains the data used to manage a
+The database is an important object, it contains the data used to manage a
 scientific project. Therefore, updating it programmatically can be a little
 dangerous since it can overwrite information without you "seeing" what 
 happened. To help deal with potential mistakes, the database object has a 
