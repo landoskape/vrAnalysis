@@ -1,5 +1,6 @@
 # inclusions
 import time
+from datetime import datetime
 from tqdm import tqdm
 import numpy as np
 import scipy as sp
@@ -284,10 +285,13 @@ class vrRegistration(session.vrExperiment):
         
         # get time stamps, photodiode, trial start and end times, room position, lick times, trial idx, visual data visible
         mpepStartTimes = []
-        for (mt,me) in zip(self.tlFile['mpepUDPTimes'],self.tlFile['mpepUDPEvents']):
+        for mt, me in zip(self.tlFile['mpepUDPTimes'],self.tlFile['mpepUDPEvents']):
             if isinstance(me,str):
-                if 'TrialStart' in me: mpepStartTimes.append(mt)
-        
+                if 'TrialStart' in me: 
+                    mpepStartTimes.append(mt)
+                elif 'StimStart' in me:
+                    mpepStartTimes.append(mt)
+                    
         mpepStartTimes = np.array(mpepStartTimes)
         timestamps = self.getTimelineVar('timestamps') # load timestamps
         
@@ -328,14 +332,16 @@ class vrRegistration(session.vrExperiment):
         flipSortIdx = np.argsort(flipTimes)
         flipTimes = flipTimes[flipSortIdx]
         flipValue = flipValue[flipSortIdx]
-        
+
         # Naive Method (just look for flips before and after trialstart/trialend mpep message:
         # A sophisticated message uses the time of the photodiode ramps, but those are really just for safety and rare manual curation...
         firstFlipIndex = np.array([np.where(flipTimes >= mpepStart)[0][0] for mpepStart in mpepStartTimes])
         startTrialIndex = helpers.nearestpoint(flipTimes[firstFlipIndex], timestamps)[0] # returns frame index of first photodiode flip in each trial
         
         # Check that first flip is always down -- all of the vrControl code prepares trials in this way
-        assert np.all(flipValue[firstFlipIndex]==0), f"In session {self.sessionPrint()}, first flips in trial are not all down!!"
+        if datetime.strptime(self.dateString, '%Y-%m-%d') >= datetime.strptime('2022-08-30', '%Y-%m-%d'):
+            # But it didn't prepare it this way before august 30th :(
+            assert np.all(flipValue[firstFlipIndex]==0), f"In session {self.sessionPrint()}, first flips in trial are not all down!!"
         
         # Check shapes of timeline arrays
         assert timestamps.ndim==1, "timelineTimestamps is not a 1-d array!"
