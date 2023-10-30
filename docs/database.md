@@ -40,6 +40,17 @@ from vrAnalysis import database
 vrdb = database.vrDatabase()
 ```
 
+### Storing a backup of the database
+The database is an import object, it contains the data used to manage a
+scientific project. Therefore, updating it programmatically can be a little
+dangerous since it can overwrite information without you "seeing" what 
+happened. To help deal with potential mistakes, the database object has a 
+method for saving a backup. Make sure you have a "backupPath" included in the
+metadata, then run this method:
+```python
+vrdb.save_backup()
+```
+
 ### Retrieving data from the database
 The `getTable` method retrieves data from the database and returns it as a 
 pandas dataframe. By default, it ignores "scratched" sessions (those that did 
