@@ -336,7 +336,7 @@ class vrDatabase:
             df = df.query(query)
         return df
     
-    def getRecord(self, mouseName, sessionDate, sessionID):
+    def getRecord(self, mouseName, sessionDate, sessionID, verbose=True):
         """
         Retrieve single record from table in database and return as dataframe. 
         
@@ -365,7 +365,8 @@ class vrDatabase:
                     & (df['sessionDate'].apply(lambda sd : sd.strftime('%Y-%m-%d'))==sessionDate)
                     & (df['sessionID']==int(sessionID))]
         if len(record)==0: 
-            print(f"No session found under: {mouseName}/{sessionDate}/{sessionID}")
+            if verbose:
+                print(f"No session found under: {mouseName}/{sessionDate}/{sessionID}")
             return None
         if len(record)>1:
             raise ValueError(f"Multiple sessions found under: {mouseName}/{sessionDate}/{sessionID}")
@@ -535,7 +536,12 @@ class vrDatabase:
             return False
     
     # == well, this isn't coded yet :) ==
-    def addRecord(self, insert_statement, values):
+    def addRecord(self, insert_statement, columns, values):
+        d = dict(zip(columns, values))
+        mouseName, sessionDate, sessionID = d['mouseName'], d['sessionDate'], d['sessionID']
+        if self.getRecord(mouseName, sessionDate, sessionID, verbose=False) is not None:
+            print(f"Record already exists for {mouseName}/{sessionDate}/{sessionID}")
+            return None
         with self.openCursor(commitChanges=True) as cursor:
             cursor.execute(insert_statement, values)
             print('Successfully added new record')

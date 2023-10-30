@@ -26,6 +26,7 @@ darkModeStylesheet = """
     QLineEdit, QTextEdit, QDateEdit {
         background-color: #333333;
         color: #F0F0F0;
+        font-size: 13px;
         border: 1px solid #555555;
         border-radius: 5px;
         padding: 5px;
@@ -79,6 +80,16 @@ default_vals = {
 # recognized datatypes
 recognized_types = [int, str, datetime, float, bool] 
 
+# import from session attributes
+attribute_lookup = {
+    'mouseName': 'mouseName',
+    'sessionDate': 'dateString',
+    'sessionID': 'session',
+    # 'imaging': ('opts', 'imaging'),
+    # 'faceCamera': ('opts', 'facecam'),
+    # 'vrBehaviorVersion': ('opts', 'vrBehaviorVersion'),
+}
+
 # default parameters
 params = {
     'max_rows' : 10,
@@ -99,6 +110,7 @@ class newEntryGUI(QWidget):
         column_descriptions = get_column_descriptions(vrdb)
         column_name, data_type, size, _, _, _, nullable = map(list, zip(*column_descriptions))
         self.vrdb = vrdb
+        self.ses = ses
         self.column_name = column_name
         self.data_type = data_type
         self.size = size
@@ -115,9 +127,47 @@ class newEntryGUI(QWidget):
         # Create GUI
         self.init_ui()
 
+        # If session object is provided, fill in details
+        self.populate_from_session()
+
+        # If kwargs provided, add them to GUI
+        self.populate_from_kwargs(**kwargs)
+        
         # And open it
         self.show()
+
+    def populate_from_kwargs(self, **kwargs):
+        for idx, entry in enumerate(self.entryIndex):
+            if self.column_name[entry] in kwargs:
+                self.entryFields[idx].setText(str(kwargs[self.column_name[entry]]))
         
+    def populate_from_session(self):
+        if self.ses is None: return # nothing to do if not provided
+        for idx, entry in enumerate(self.entryIndex):
+            # check if column name matches attribute look up table
+            if self.column_name[entry] in attribute_lookup:
+                attribute = attribute_lookup[self.column_name[entry]]
+                """
+                # use this for smarter attribute lookup eventually
+                # if attribute is a tuple (should be a tuple of strings), then recursive check until last string
+                if not(type(attribute)==tuple): 
+                    attribute = (attribute)
+                c_has_att = True
+                c_next_att = self.ses
+                for ii, att_name in enumerate(attribute):
+                    if hasattr(c_next_att, att_name):
+                        c_next_att = getattr(c_next_att, att_name)
+                    else:
+                        c_has_att = False
+                        continue
+                if c_has_att:
+                    self.entryFields[idx].setText(c_next_att)  
+                """
+                # if session object has the requested attribute, then... 
+                if hasattr(self.ses, attribute):
+                    # set the value in the LineEdit
+                    self.entryFields[idx].setText(getattr(self.ses, attribute))
+            
     def init_ui(self):
         # First, check and select which columns require the user to provide information
         ignore_column = [cname in list_ignore for cname in self.column_name]
@@ -139,7 +189,7 @@ class newEntryGUI(QWidget):
 
         for label in self.entryLabels:
             label.setFixedWidth(self.params['label_width'])
-            label.setAlignment(Qt.AlignRight)
+            label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             
         # Set validation functions for each field and control their appearance
         for idx, (field, entry) in enumerate(zip(self.entryFields, self.entryIndex)):
@@ -301,7 +351,7 @@ class newEntryGUI(QWidget):
         insert_statement = self.get_insert_statement(columns, values)
         
         if validData:
-            self.vrdb.addRecord(insert_statement, values)
+            self.vrdb.addRecord(insert_statement, columns, values)
             print("Submission successful")
         else:
             print("Some fields do not have valid input data, submission failed!")
