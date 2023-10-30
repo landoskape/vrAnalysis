@@ -146,7 +146,9 @@ Extra notes:
   but the GUI checks whether the string can be converted to the required type
   with the `validate_input` method. 
 - If you press the button on the left (`Check Values`), then it will validate
-  if the data in each field is valid. Entries turn to red if they are not.
+  if the data in each field is valid. Entries turn to red if they are not. As
+  an example, I filled the `redCellQC` field with the text `Not a bool!`,
+  which cannot be converted to a boolean, so the edit field turned red. 
 
 
 ### Registering Sessions
