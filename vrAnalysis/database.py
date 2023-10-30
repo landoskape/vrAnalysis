@@ -377,10 +377,11 @@ class vrDatabase:
         df = self.getTable(ignoreScratched=ignoreScratched, **kwConditions)
         return self.createSessionIterable(df)
 
-    def createSessionIterable(self, df):
+    def createSessionIterable(self, df, session_constructor=None):
+        if session_constructor is None: session_constructor = self.vrExperiment
         ises = []
         for idx, row in df.iterrows():
-            ises.append(self.vrExperiment(row))
+            ises.append(session_constructor(row))
         return ises
     
     # == visualization ==
@@ -395,13 +396,13 @@ class vrDatabase:
             print(self.vrSession(row).sessionPrint())
     
     # == helper functions for figuring out what needs work ==
-    def needsRegistration(self, skipErrors=True, as_iterable=True, **kwargs): 
+    def needsRegistration(self, skipErrors=True, as_iterable=False, **kwargs): 
         df = self.getTable(**kwargs)
         if skipErrors: 
             df = df[df['vrRegistrationError']==False]
         df = df[df['vrRegistration']==False]
         if as_iterable: 
-            return self.createSessionIterable(df)
+            return self.createSessionIterable(df, session_constructor=self.vrRegistration)
         else:
             return df
     

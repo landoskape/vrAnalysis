@@ -180,7 +180,7 @@ which can be a lot of memory). Additionally, you can specify `userOpts` which
 are passed to the `vrRegistration` object that determine how to register each 
 session.
 ```python
-def registerSessions(self, maxData=30e9, skipErrors=True, **userOpts):
+vrdb.registerSessions(maxData=30e9, skipErrors=True, **userOpts)
 ```
 
 If an error was encountered during registration, it is saved in the SQL 
