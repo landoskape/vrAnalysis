@@ -5,9 +5,11 @@ from copy import copy
 from itertools import chain, combinations
 import numpy as np
 import scipy as sp
+import torch
 import matplotlib
 import matplotlib.pyplot as plt
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # ---------------------------------- plotting helpers ----------------------------------
 def scale(data, vmin=0, vmax=1, prctile=(0,100)):
@@ -69,8 +71,8 @@ def powerset(iterable, ignore_empty=False):
 def index_in_target(value, target):
     """returns boolean array for whether each value is in target and location array such that target[loc_target] = value"""
     target_to_index = {value: index for index, value in enumerate(target)}
-    in_target = np.array([val in target_to_index for val in value])
-    loc_target = np.array([target_to_index[val] if in_t else -1 for in_t, val in zip(in_target, value)])
+    in_target = np.array([val in target_to_index for val in value], dtype=bool)
+    loc_target = np.array([target_to_index[val] if in_t else -1 for in_t, val in zip(in_target, value)], dtype=int)
     return in_target, loc_target
 
 def cvFoldSplit(samples, numFold):
@@ -291,15 +293,29 @@ def phaseCorrelation(staticImage,shiftedImage,eps=0,window=None):
     R /= (eps+np.absolute(R))
     return np.fft.fftshift(np.fft.ifft2(R).real, axes=(-2,-1))
 
-def convolveToeplitz(data, kk, axis=-1, mode='same'):
+def convWithTorch(data, convMat, device='cpu'):
+    data = torch.tensor(data).to(device)
+    convMat = torch.tensor(convMat).to(device)
+    dataShape = data.shape
+    convMatShape = convMat.shape
+    assert dataShape[-1] == convMatShape[0] == convMatShape[1], "oops!"
+    assert convMat.ndim==2, "welp crap"
+    output = torch.matmul(data, convMat)
+    return output
+    
+def convolveToeplitz(data, kk, axis=-1, mode='same', device=device):
     # convolve data on requested axis (default:-1) using a toeplitz matrix of kk
     # equivalent to np.convolve(data,kk,mode=mode) for each array on requested axis in data
+    # uses torch for possible GPU speed up, default device set after imports
     assert -1 <= axis <= data.ndim, "requested axis does not exist"
     data = np.moveaxis(data, axis, -1) # move target axis
     dataShape = data.shape
-    convMat = sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T
-    dataReshape = np.reshape(data, (-1, dataShape[-1]))
-    output = dataReshape @ convMat
+    with torch.no_grad():
+        # if there are not many signals to convolve, this is a tiny slower
+        # if there are many signals to convolve (order of ROIs in a recording), this is waaaaayyyy faster
+        convMat = torch.tensor(sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T).to(device)
+        dataReshape = torch.tensor(np.reshape(data, (-1, dataShape[-1]))).to(device)    
+        output = torch.matmul(dataReshape, convMat).cpu().numpy()
     newDataShape = (*dataShape[:-1],convMat.shape[1])
     output = np.reshape(output, newDataShape)
     return np.moveaxis(output, -1, axis)
