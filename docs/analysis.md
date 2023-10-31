@@ -69,6 +69,7 @@ sortby = 16 # which session to sort by
 pcm.plot_snake(envnum, idx_ses=idx_ses, sortby=sortby, cutoffs=(0.5, 0.8), method='max', normalize=10, rewzone=True, interpolation='none', withShow=True, withSave=False)
 ```
 
+*NOTE THAT THIS SECTION IS NOW OBSOLETE, BUT WILL BE REPLACED!!!*
 This module can also analyze how place fields change across sessions. The
 `plot_pfplasticity` method does so by making a histogram of the changes in 
 place field position (with `'max'` or `'com'`, see method for details) across
@@ -78,6 +79,17 @@ sessions. You can do it for all cells or split by control or red cells with
 to make the data.
 ```python
 pcm.plot_pfplasticity(self, envnum, idx_ses=idx_ses, cutoffs=(0.5, 0.8), method='max', absval=True, split_red=False, withShow=True, withSave=False):
+```
+
+This contains a program for measuring place field plasticity across sessions 
+as well. *This needs more explanation!!!!* but for now I'll just show the main
+workflow:
+```python
+track = tracking.tracker('CR_Hippocannula7') # get tracker object for mouse
+pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
+for envnum in [1, 2]:
+    for present in ['r2', 'pc']:
+        pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=(0.3, 0.6), present=present, split_red=True, withShow=False, withSave=True)
 ```
 
 ## Place Cell Single Session -- [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
@@ -168,17 +180,6 @@ or show the figure (or both).
 # force_single_env: whether or not to make a remap_snake_figure even if there is only a single environment in the session 
 plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False)
 plot_remap_snakes(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', force_single_env=False, withShow=True, withSave=False)
-```
-
-This contains a program for measuring place field plasticity across sessions 
-as well. *This needs more explanation!!!!* but for now I'll just show the main
-workflow:
-```python
-track = tracking.tracker('CR_Hippocannula7') # get tracker object for mouse
-pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
-for envnum in [1, 2]:
-    for present in ['r2', 'pc']:
-        pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=(0.3, 0.6), present=present, split_red=True, withShow=False, withSave=True)
 ```
 
 To get a list of which ROIs are reliable for each environment, `pcss` uses two
