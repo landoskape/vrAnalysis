@@ -41,14 +41,9 @@ class placeCellMultiSession(multipleAnalysis):
         
         self.create_pcss()
 
-    def envnum_to_idx(self, envnum):
-        """
-        convert list of environment numbers to indices of environment within this session
-        e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
-        """
-        envnum = helpers.check_iterable(envnum)
-        return [np.where(self.environments==ev)[0][0] for ev in envnum]
-
+    def idx_ses_with_env(self, envnum):
+        return [ii for ii, pcss in enumerate(self.pcss) if envnum in pcss.environments]
+        
     def make_pcss_arguments(self):
         pcss_arguments = {
             'onefile':self.onefile, 
@@ -130,7 +125,8 @@ class placeCellMultiSession(multipleAnalysis):
         self.idx_tracked = self.track.get_tracked_idx(idx_ses=self.idx_ses, keepPlanes=self.keepPlanes)
         
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in self.idx_ses]
-        assert all([~np.isnan(ei) for ei in envidx]), "requested environment not in all sessions"
+        in_session = [~np.isnan(ei) for ei in envidx]
+        assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(self.idx_ses, in_session) if inses]}"
         
         spkmaps = self.get_from_pcss('spkmap', self.idx_ses)
         idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs)[ei] for i, ei in zip(self.idx_ses, envidx)]
@@ -162,10 +158,10 @@ class placeCellMultiSession(multipleAnalysis):
 
     def make_paired_snake(self, envnum, target, sortby, cutoffs=(0.5, 0.8), method='max', include_red=True):
         """similar to above "make_snake_data" but only contains the data from two sessions, a sortby session and a target session"""
-        idx_ses, num_ses = self.track.get_idx_session(idx_ses=[target, sortby])
-        
         # idx of session to sort by
-        idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[sortby]
+        idx_target = 0
+        idx_sortby = 1
+        idx_ses = [target, sortby]
         
         self.load_pcss_data(idx_ses=idx_ses)
         self.idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keepPlanes=self.keepPlanes)
@@ -185,34 +181,26 @@ class placeCellMultiSession(multipleAnalysis):
         track_idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, self.idx_tracked)]
         
         track_pfidx = self.pcss[sortby].get_place_field(roi_idx=self.idx_tracked[idx_sortby][track_idx_reliable[idx_sortby]], trial_idx=idx_train[idx_sortby], method=method)[1]
-        
-        snake_data = []
+
         idx_red_data = [ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red]
-        for ii, ises in enumerate(idx_ses):
-            if ises == sortby:
-                # use test trials
-                c_data = np.mean(track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_test[ii]], axis=1)
-                snake_data.append(c_data)
-            else:
-                c_data = np.mean(track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_full[ii]], axis=1)
-                snake_data.append(c_data)
-                
-        return snake_data, idx_red_data
+        target_snake = np.mean(track_spkmaps[idx_target][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_test[idx_target]], axis=1)
+        sortby_snake = np.mean(track_spkmaps[idx_sortby][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_full[idx_sortby]], axis=1)
+        return [target_snake, sortby_snake], idx_red_data
         
 
-    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', compare='r2', absval=True, split_red=False):
+    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max'):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
-        self.idx_ses, self.num_ses = self.track.get_idx_session(idx_ses=idx_ses)
+        store_idx_ses, store_num_ses = self.track.get_idx_session(idx_ses=idx_ses)
         target_snake = []
         sortby_snake = []
         target_red = []
         sortby_red = []
-        for sortby in self.idx_ses:
+        for sortby in store_idx_ses:
             c_target_snake = []
             c_sortby_snake = []
             c_target_ired = []
             c_sortby_ired = []
-            for target in self.idx_ses:
+            for target in store_idx_ses:
                 cdata, cired = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, method=method)
                 c_target_snake.append(cdata[0])
                 c_sortby_snake.append(cdata[1])
@@ -247,9 +235,8 @@ class placeCellMultiSession(multipleAnalysis):
             r2.append(c_r2)
             pc.append(c_pc)
 
-        return target_snake, sortby_snake, r2, pc
-                
-                
+        self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
+        return r2, pc, target_red, sortby_red
 
         """
         The code commented below is how I used to do it, but I'm updating to make a grid
@@ -281,9 +268,8 @@ class placeCellMultiSession(multipleAnalysis):
         #             else:
         #                 c_pf_diff = transform(pf[idx+1] - pf[idx])
         #                 pf_differences[iso] = pf_differences[iso] + list(c_pf_diff[~np.isnan(c_pf_diff)])
-        """
-        
         # return snake_data, pf_differences, pf_diff_red
+        """
         
         
     def plot_snake(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
@@ -295,12 +281,16 @@ class placeCellMultiSession(multipleAnalysis):
         assert all([ei>=0 for ei in envidx]), "you requested some sessions that don't have the requested environment!"
         
         extent = [distedges[0], distedges[-1], 0, snake_data[0].shape[0]]
-        if normalize:
+        
+        if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
+        elif normalize < 0:
+            maxrois = np.concatenate([np.max(np.abs(sd), axis=1) for sd in snake_data])
+            vmin, vmax = -np.percentile(maxrois, -normalize), np.percentile(maxrois, -normalize)
         else:
             magnitude = np.max(np.abs(np.concatenate(snake_data, axis=1)))
             vmin, vmax = -magnitude, magnitude
-
+            
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax)-np.fix(vmin)+1)))
         labelSize = 12
         cb_unit = r'$\sigma$' if self.standardizeSpks else 'au'
@@ -350,6 +340,94 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
 
 
+    def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), present='r2', method='max', split_red=False, withShow=True, withSave=False):
+        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        r2, pc, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method=method)
+        num_ses = len(idx_ses)
+        
+        labelSize = 18
+        lw = 1.5
+        numBins = 20
+        figdim = 1.5
+
+        if present=='r2':
+            data = r2
+        elif present=='pc':
+            data = pc
+        else:
+            raise ValueError("Only 'r2' or 'pc' allowed as 'present' argument!")
+
+        minval, maxval = np.nanmin([np.nanmin(np.concatenate(d)) for d in data]), np.nanmax([np.nanmax(np.concatenate(d)) for d in data])
+        minval = np.max([minval, -5])
+        numBins = 11
+
+        bins = np.linspace(minval, maxval, numBins)
+        centers = helpers.edge2center(bins)
+        barwidth = bins[1] - bins[0]
+
+        fig, ax = plt.subplots(num_ses, num_ses, figsize=(figdim*num_ses, figdim*num_ses), layout='constrained', sharex=True)
+        for ii, (ises, itred, isred) in enumerate(zip(idx_ses, target_red, sortby_red)):
+            for jj, (jses, jtred, jsred) in enumerate(zip(idx_ses, itred, isred)):
+                if split_red:
+                    idx_keep_red = jtred & jsred
+                else:
+                    idx_keep_red = np.full(jtred.shape, False) # none are red if not separating red cells
+                
+                ctl_counts = np.histogram(data[ii][jj][~idx_keep_red], bins=bins, density=False)[0]
+                ctl_counts = 100*ctl_counts/np.sum(ctl_counts)
+                if split_red:
+                    # print(ii, jj, "red stats:", f"Sortby red: {np.sum(jsred)}", f"Target red: {np.sum(jtred)}")
+                    red_counts = np.histogram(data[ii][jj][idx_keep_red], bins=bins, density=False)[0]
+                    red_counts = 100*red_counts/np.sum(red_counts)
+                    # get stats on difference between control and red
+                    rs_stat, rs_pval = sp.stats.ranksums(data[ii][jj][~idx_keep_red], data[ii][jj][idx_keep_red])
+                
+                ax[ii,jj].bar(centers, ctl_counts, color='k', alpha=0.5, width=barwidth)
+                if split_red:
+                    ax[ii,jj].bar(centers, red_counts, color='r', alpha=0.5, width=barwidth)
+                
+                if split_red:
+                    ax[ii,jj].axvline(np.mean(data[ii][jj][~idx_keep_red]), color='k')
+                    ax[ii,jj].axvline(np.mean(data[ii][jj][idx_keep_red]), color='r')
+        
+                    ytextpos = max([max(ctl_counts), max(red_counts)])*0.95
+                    ptext = f"p={rs_pval:0.4f}"
+                    ax[ii,jj].text(centers[0], ytextpos, ptext, horizontalalignment='left', verticalalignment='center', fontsize=8)
+                    
+                    nctl_textpos = ytextpos/9*8
+                    nred_textpos = ytextpos/9*7
+                    nctltext = f"N(ctl)={np.sum(~idx_keep_red)}"
+                    nredtext = f"N(red)={np.sum(idx_keep_red)}"
+                    ax[ii,jj].text(centers[0], nctl_textpos, nctltext, horizontalalignment='left', verticalalignment='center', fontsize=8)
+                    ax[ii,jj].text(centers[0], nred_textpos, nredtext, horizontalalignment='left', verticalalignment='center', fontsize=8)
+
+                if ii==0:
+                    ax[ii,jj].set_title(f"target {idx_ses[jj]}")
+                if jj==0:
+                    ax[ii,jj].set_ylabel(f"source {idx_ses[ii]}")
+                if ii==(num_ses-1):
+                    ax[ii,jj].set_xlabel(f"metric: {present}")
+                    
+            
+        
+                # for iredpc in pc[ii][jj][idx_keep_red]:
+                #     ax[ii,jj].axvline(iredpc, color='r')
+
+        if withSave: 
+            sesidx = '_'.join([str(i) for i in idx_ses])
+            redname = 'wred_' if split_red else ''
+            save_name = f"pfplasticity_env{envnum}_metric{present}_{redname}ses_{sesidx}"
+            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+
+
+
+    
+    """
+    This code was how I used to plot pf_plasticity when comparing changes in centroid...
+    
     def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', absval=True, split_red=False, withShow=True, withSave=False):
         snake_data, pf_differences, pf_diff_red = self.measure_pfplasticity(envnum, 
                                                                             idx_ses=idx_ses, 
@@ -416,6 +494,8 @@ class placeCellMultiSession(multipleAnalysis):
             
         # Show figure if requested
         plt.show() if withShow else plt.close()
+        
+    """
 
         
         
