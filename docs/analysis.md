@@ -170,6 +170,17 @@ plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='ma
 plot_remap_snakes(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', force_single_env=False, withShow=True, withSave=False)
 ```
 
+This contains a program for measuring place field plasticity across sessions 
+as well. *This needs more explanation!!!!* but for now I'll just show the main
+workflow:
+```python
+track = tracking.tracker('CR_Hippocannula7') # get tracker object for mouse
+pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
+for envnum in [1, 2]:
+    for present in ['r2', 'pc']:
+        pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=(0.3, 0.6), present=present, split_red=True, withShow=False, withSave=True)
+```
+
 To get a list of which ROIs are reliable for each environment, `pcss` uses two
 measures of reliability, one based on mean-square error and one based on 
 correlation. For both methods, the trials are divided into training and 
