@@ -141,8 +141,10 @@ class tracker():
             ops_paths = [Path(sp) for sp in results['input_data']['paths_ops']]
             for sessionidx, (stat_path, ops_path) in enumerate(zip(stat_paths, ops_paths)):
                 # then for each file path, make sure it comes from the same storage location
-                assert all([sp == dp for (sp,dp) in zip(stat_path.parts[:self.num_parts_data_path], self.data_path().parts)]), f"stat_path ({stat_path}) does not match data_path!"
-                assert all([op == dp for (op,dp) in zip(ops_path.parts[:self.num_parts_data_path], self.data_path().parts)]), f"ops_path ({ops_path}) does not match data_path!"
+                assert all([sp.lower() == dp.lower() for (sp,dp) in zip(stat_path.parts[:self.num_parts_data_path], self.data_path().parts)]), \
+                f"stat_path ({stat_path}) does not match data_path ({self.data_path()})!"
+                assert all([op.lower() == dp.lower() for (op,dp) in zip(ops_path.parts[:self.num_parts_data_path], self.data_path().parts)]), \
+                f"ops_path ({ops_path}) does not match data_path ({self.data_path()})!"
 
                 # the mouse name, date string, and session id are the next "groups" in the path according to Alyx database convention
                 tracked_mouse_name[planeidx].append(stat_path.parts[self.num_parts_data_path])
@@ -218,7 +220,7 @@ class tracker():
         
         # For each plane & session, a sorted index to the suite2p ROI to recreate the list of UCIDs
         idx_to_ucid = [[helpers.index_in_target(iis, uc)[1] for uc in ucid] for (iis, ucid) in zip(idx_in_ses, ucids)]
-
+        
         # cumulative number of ROIs before eacg plane (in numeric order of planes using sorted(self.plane_names))
         roi_per_plane = self.roi_per_plane[keepPlanes][:, idx_ses]
         roi_plane_offset = np.cumsum(np.vstack((np.zeros((1,num_ses),dtype=int), roi_per_plane[:-1])), axis=0)
