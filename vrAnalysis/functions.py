@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import scipy as sp
 import numba as nb
@@ -20,7 +21,8 @@ def environmentRewardZone(vrexp):
 def checkDistStep(distStep):
     """distStep has particular requirements for the functions that use it!"""
     if len(distStep)>1:
-        message = "distStep should be a two(or 3) element tuple of ints increasing in size, with an optional third argument describing the standard deviation of the smoothing kernel"
+        message = ("distStep should be a two(or 3) element tuple of ints increasing in size"
+                   "with an optional third argument describing the standard deviation of the smoothing kernel (or False for no smoothing)")
         assert len(distStep)<=3 and distStep[1]>distStep[0] and isinstance(distStep[0],int) and isinstance(distStep[1],int), message
     else:
         if not isinstance(distStep, tuple): 
@@ -139,12 +141,12 @@ def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeco
     else:
         # Create spatial smoothing kernel 
         kk = helpers.getGaussKernel(distcenter, distStep[-1]) # standard deviation = dsFactor if len(distStep)==2, and specified kernel width if len(distStep)==3
-
+        
         # Smooth maps with convolution (gauss kernel has unit norm so no correction needed)
         occmap = helpers.convolveToeplitz(occmap, kk, axis=1)
         speedmap = helpers.convolveToeplitz(speedmap, kk, axis=1)
         spkmap = helpers.convolveToeplitz(spkmap, kk, axis=1)
-
+        
         # now correct spkmap by occupancy map after smoothing
         correctMap(occmap, spkmap)
         spkmap = np.transpose(spkmap, (2, 0, 1)) # convert to smart indexing (which is necessary for reshaping)
@@ -169,7 +171,7 @@ def getBehaviorAndSpikeMaps(vrexp, distStep=(1,5), onefile='mpci.roiActivityDeco
         speedmap[all_didnt_visit] = np.nan
         lickmap[all_didnt_visit] = np.nan
         spkmap[:, all_didnt_visit] = np.nan
-
+    
     return occmap, speedmap, lickmap, spkmap, distedges
     
 def getBehaviorMaps(vrexp, distStep=(1,5), speedThreshold=0):
@@ -245,7 +247,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1):
             idxHasActivity = np.any(spkmap!=0, axis=(0,1)) & (denominator!=0)
             relmse[idxHasActivity] += (1 - numerator[idxHasActivity]/denominator[idxHasActivity])
             relmse[~idxHasActivity] = np.nan # otherwise set to nan
-            relcor += helpers.vectorCorrelation(trainProfile, testProfile) # vectorCorrelation returns 0 if data has 0 standard deviation
+            relcor += helpers.vectorCorrelation(trainProfile, testProfile, axis=0) # vectorCorrelation returns 0 if data has 0 standard deviation
     relmse /= (numcv*numRepeats)
     relcor /= (numcv*numRepeats)
     return relmse,relcor
