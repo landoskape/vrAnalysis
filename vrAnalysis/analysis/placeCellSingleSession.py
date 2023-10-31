@@ -265,6 +265,7 @@ class placeCellSingleSession(standardAnalysis):
         
         # automatically load data
         self.dataloaded = False
+        self.load_fast_data()
         if autoload: self.load_data()
 
     def envnum_to_idx(self, envnum):
@@ -274,6 +275,12 @@ class placeCellSingleSession(standardAnalysis):
         """
         envnum = helpers.check_iterable(envnum)
         return [np.where(self.environments==ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
+
+    def load_fast_data(self):
+        # get environment data
+        self.trial_envnum = self.vrexp.loadone('trials.environmentIndex')
+        self.environments = np.unique(self.trial_envnum)
+        self.numEnvironments = len(self.environments)
         
     def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None):
         """load standard data for basic place cell analysis"""
@@ -285,11 +292,6 @@ class placeCellSingleSession(standardAnalysis):
         if speedThreshold is not None: self.speedThreshold = speedThreshold
         if numcv is not None: self.numcv = numcv
         if keepPlanes is not None: self.keepPlanes = keepPlanes
-
-        # get environment data
-        self.trial_envnum = self.vrexp.loadone('trials.environmentIndex')
-        self.environments = np.unique(self.trial_envnum)
-        self.numEnvironments = len(self.environments)
         
         # get idx of rois within keep planes
         stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
@@ -321,9 +323,6 @@ class placeCellSingleSession(standardAnalysis):
         
     def clear_data(self):
         """method for clearing data to free up memory"""
-        del self.trial_envnum
-        del self.environments
-        del self.numEnvironments
         del self.idxUseROI
         del self.numROIs
         del self.omap
