@@ -362,14 +362,19 @@ class placeCellSingleSession(standardAnalysis):
             # Alert the user that the training data was recalculated without testing
             self.test_relmse = None
 
-    def get_reliable(self, envnum=None, cutoffs=None):
+    def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None):
         """central method for getting reliable cells from list of environments (by environment index)"""
         if not(self.dataloaded): self.load_data()
         if envnum is None: envnum = copy(self.environments) # default environment is all of them
         envnum = helpers.check_iterable(envnum) # make sure it's an iterable
         envidx = self.envnum_to_idx(envnum) # convert environment numbers to indices
         cutoffs = (-np.inf, -np.inf) if cutoffs is None else cutoffs
-        idx_reliable = [(self.relmse[ii] >= cutoffs[0]) & (self.relcor[ii] >= cutoffs[1]) for ii in envidx]
+        maxcutoffs = (np.inf, np.inf) if maxcutoffs is None else maxcutoffs
+        idx_reliable = [(self.relmse[ii] >= cutoffs[0]) 
+                        & (self.relcor[ii] >= cutoffs[1]) 
+                        & (self.relmse[ii] <= maxcutoffs[0])
+                        & (self.relcor[ii] <= maxcutoffs[1])
+                        for ii in envidx]
         return idx_reliable
         
     def get_place_field(self, roi_idx=None, trial_idx=None, method='max'):
@@ -399,7 +404,7 @@ class placeCellSingleSession(standardAnalysis):
 
         return pfloc, pfidx
     
-    def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max'):
+    def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max'):
         """make snake data from train and test sessions, for particular environment if requested"""
         if not(self.dataloaded): self.load_data()
         
@@ -417,7 +422,7 @@ class placeCellSingleSession(standardAnalysis):
         ctest_idx = [self.test_idx[ii] for ii in envidx]
         
         # get roi indices to use
-        self.idx_in_snake = self.get_reliable(envnum, cutoffs=cutoffs if with_reliable else None)
+        self.idx_in_snake = self.get_reliable(envnum, cutoffs=cutoffs if with_reliable else None, maxcutoffs=maxcutoffs if with_reliable else None)
         
         # get pf sort indices
         train_pfidx = [self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtrain, method=method)[1] for idxroi, idxenvtrain in zip(self.idx_in_snake, ctrain_idx)]
@@ -436,7 +441,7 @@ class placeCellSingleSession(standardAnalysis):
         # :)
         return train_snake, test_snake
 
-    def make_remap_data(self, with_reliable=True, cutoffs=(0.5, 0.8), method='max'):
+    def make_remap_data(self, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max'):
         """make snake data across environments with remapping indices (for N environments, an NxN grid of snakes and indices)"""
         if not(self.dataloaded): self.load_data()
         
@@ -444,7 +449,7 @@ class placeCellSingleSession(standardAnalysis):
         envidx = self.envnum_to_idx(envnum)
         
         # get roi indices to use
-        self.idx_in_snake = self.get_reliable(envnum, cutoffs=cutoffs if with_reliable else None)
+        self.idx_in_snake = self.get_reliable(envnum, cutoffs=cutoffs if with_reliable else None, maxcutoffs=maxcutoffs if with_reliable else None)
 
         # get pf sort indices
         train_pfidx = [self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtrain, method=method)[1] for idxroi, idxenvtrain in zip(self.idx_in_snake, self.train_idx)]
@@ -471,7 +476,7 @@ class placeCellSingleSession(standardAnalysis):
         # :)
         return snake_plots
     
-    def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
+    def plot_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
         if not(self.dataloaded): self.load_data()
         
@@ -486,7 +491,7 @@ class placeCellSingleSession(standardAnalysis):
         numEnv = len(envnum)
 
         # make snakes and prepare plotting data
-        train_snake, test_snake = self.make_snake(envnum=envnum, with_reliable=with_reliable, cutoffs=cutoffs, method=method)
+        train_snake, test_snake = self.make_snake(envnum=envnum, with_reliable=with_reliable, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
         extent = [[self.distedges[0], self.distedges[-1], 0, ts.shape[0]] for ts in train_snake]
         if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
