@@ -89,7 +89,7 @@ track = tracking.tracker('CR_Hippocannula7') # get tracker object for mouse
 pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
 for envnum in [1, 2]:
     for present in ['r2', 'pc']:
-        pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=(0.3, 0.6), present=present, split_red=True, withShow=False, withSave=True)
+        pcm.hist_pfplasticity(envnum, idx_ses=None, cutoffs=(0.3, 0.6), present=present, split_red=True, withShow=False, withSave=True)
 ```
 
 ## Place Cell Single Session -- [link to module](../vrAnalysis/analysis/placeCellSingleSession.py)
