@@ -362,6 +362,15 @@ class placeCellSingleSession(standardAnalysis):
             # Alert the user that the training data was recalculated without testing
             self.test_relmse = None
 
+    def get_reliability_values(self, envnum=None):
+        if not(self.dataloaded): self.load_data()
+        if envnum is None: envnum = copy(self.environments) # default environment is all of them
+        envnum = helpers.check_iterable(envnum) # make sure it's an iterable
+        envidx = self.envnum_to_idx(envnum) # convert environment numbers to indices
+        mse = [self.relmse[ii] for ii in envidx]
+        cor = [self.relcor[ii] for ii in envidx]
+        return mse, cor
+        
     def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None):
         """central method for getting reliable cells from list of environments (by environment index)"""
         if not(self.dataloaded): self.load_data()
