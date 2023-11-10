@@ -142,14 +142,14 @@ class vrExperiment(vrSession):
         self.value[name]=value
     
     # ----------------------------------------------------------------- one data handling --------------------------------------------------------------------
-    def saveone(self,var,*names):
+    def saveone(self, var, *names):
         # save variable as oneData (names can be an arbitrarily long list of strings, they'll be joined with '.' to make the filename
         # automatically adds variable to the loadBuffer for efficient data handling
         fileName = self.oneFilename(*names)
         self.loadBuffer[fileName] = var
         np.save(self.onePath() / fileName, var)
 
-    def loadone(self,*names,force=False, allow_pickle=True):
+    def loadone(self, *names, force=False, allow_pickle=True):
         # load one data from vrexp object. if available in loadBuffer, will grab it from there. force=True performs automatic reload, even if already in buffer
         fileName = self.oneFilename(*names)
         if not force and fileName in self.loadBuffer.keys():
@@ -163,11 +163,11 @@ class vrExperiment(vrSession):
             self.loadBuffer[fileName] = oneVar
             return oneVar
 
-    def oneFilename(self,*names):
+    def oneFilename(self, *names):
         # create one filename given an arbitrary length list of names
         return '.'.join(names)+'.npy'
     
-    def clearBuffer(self,*names):
+    def clearBuffer(self, *names):
         # clear loadBuffer for data management
         if len(names)==0:
             self.loadBuffer = {}
