@@ -292,16 +292,6 @@ def phaseCorrelation(staticImage,shiftedImage,eps=0,window=None):
     R = fftStatic * fftShiftedConjugate
     R /= (eps+np.absolute(R))
     return np.fft.fftshift(np.fft.ifft2(R).real, axes=(-2,-1))
-
-def convWithTorch(data, convMat, device='cpu'):
-    data = torch.tensor(data).to(device)
-    convMat = torch.tensor(convMat).to(device)
-    dataShape = data.shape
-    convMatShape = convMat.shape
-    assert dataShape[-1] == convMatShape[0] == convMatShape[1], "oops!"
-    assert convMat.ndim==2, "welp crap"
-    output = torch.matmul(data, convMat)
-    return output
     
 def convolveToeplitz(data, kk, axis=-1, mode='same', device=device):
     # convolve data on requested axis (default:-1) using a toeplitz matrix of kk
@@ -318,6 +308,9 @@ def convolveToeplitz(data, kk, axis=-1, mode='same', device=device):
         output = torch.matmul(dataReshape, convMat).cpu().numpy()
     newDataShape = (*dataShape[:-1],convMat.shape[1])
     output = np.reshape(output, newDataShape)
+    # don't keep data on GPU
+    del convMat, dataReshape # delete variables
+    torch.cuda.empty_cache() # clear memory 
     return np.moveaxis(output, -1, axis)
 
 
