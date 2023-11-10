@@ -112,8 +112,65 @@ class placeCellMultiSession(multipleAnalysis):
 
         return pfloc, pfidx
         
+    def make_skew_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.2, 0.5), maxcutoffs=None):
+        if idx_ses is None:
+            if envnum is None:
+                # use all sessions if not requesting ROIs based on reliability in certain environment
+                self.idx_ses = [ii for ii in range(len(self.pcss))]
+            else:
+                # otherwise use all sessions with environment
+                self.idx_ses = self.idx_ses_with_env(envnum)
+
+        # check sortby and get idx to sortby session
+        if sortby is None:
+            sortby = self.idx_ses[-1]
+        else:
+            assert sortby in self.idx_ses, f"sortby session ({sortby}) is not in requested sessions ({self.idx_ses})"
+
+        idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
+
+        # handle tracking
+        self.idx_tracked = [self.track.get_tracked_idx(idx_ses=[i, sortby], keepPlanes=self.keepPlanes)[0] for i in self.idx_ses]
+
+        # handle environment request
+        if envnum is not None:
+            envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in self.idx_ses]
+            in_session = [~np.isnan(ei) for ei in envidx]
+            assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(self.idx_ses, in_session) if inses]}"
+            self.load_pcss_data(idx_ses=self.idx_ses)
+
+        # get spiking data (in time!)
+        idx_to_planes = [self.pcss[i].vrexp.idxToPlanes(keepPlanes=self.keepPlanes) for i in self.idx_ses]    
+        spkdata = [self.pcss[i].vrexp.loadone(self.onefile).T[pi,:] for i, pi in zip(self.idx_ses, idx_to_planes)]
+
+        # handle reliability (if environment requested)
+        if envnum is not None:
+            idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(self.idx_ses, envidx)]
+        else:
+            idx_reliable = [np.full(sd.shape[0], True) for sd in spkdata] # if no environment requested, use all ROIs
+
+        # get red idx
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in self.idx_ses]
+
+        # filter by tracked
+        spkdata = [sd[idx_tracked] for sd, idx_tracked in zip(spkdata, self.idx_tracked)]
+        idx_reliable = [ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, self.idx_tracked)]
+        idx_red = [ir[idx_tracked] for ir, idx_tracked in zip(idx_red, self.idx_tracked)]
+        
+        # filter by reliability
+        spkdata = [sd[idx_reliable[idx_sortby]] for sd in spkdata]
+        idx_red = [ir[idx_reliable[idx_sortby]] for ir in idx_red]
+
+        # get skew for each ROI
+        skew = [sp.stats.skew(sd, axis=1) for sd in spkdata]
+
+        return skew, idx_red
+
+
+
     def make_snake_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', include_red=True):
         self.idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+
         if sortby is None:
             sortby = self.idx_ses[-1]
         else:
@@ -176,7 +233,14 @@ class placeCellMultiSession(multipleAnalysis):
         idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(idx_ses, envidx)]
         idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
         idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
-        relmse, relcor = map(list, zip(*[self.pcss[i].get_reliability_value()[ei] for i, ei in zip(idx_ses, envidx)]))
+
+        relmse, relcor = map(list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses]))
+        relmse = list(map(lambda x: x[0], relmse))
+        relcor = list(map(lambda x: x[0], relcor))
+        
+        #print(f"{target}/{sortby} -- {type(relmse)}, {len(relmse)}, -- {type(relcor)}, {len(relcor)}")
+        #for mse in relmse:
+        #    print(type(mse), len(mse), mse.shape)
         
         track_spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, self.idx_tracked)]
         track_idx_reliable = [idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)]
@@ -196,7 +260,7 @@ class placeCellMultiSession(multipleAnalysis):
         return [target_snake, sortby_snake], idx_red_data, [target_mse, sortby_mse], [target_cor, sortby_cor]
         
 
-    def measure_pfreliability(self, envnum, idx_ses=None, method='max'):
+    def measure_pfreliability(self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method='max'):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
         store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         store_num_ses = len(store_idx_ses)
@@ -219,7 +283,7 @@ class placeCellMultiSession(multipleAnalysis):
             c_target_relcor = []
             c_sortby_relcor = []
             for target in store_idx_ses:
-                cdata, cired, crelmse, crelcor = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, method=method)
+                cdata, cired, crelmse, crelcor = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
                 c_target_snake.append(cdata[0])
                 c_sortby_snake.append(cdata[1])
                 c_target_ired.append(cired[0])
@@ -239,6 +303,34 @@ class placeCellMultiSession(multipleAnalysis):
 
         self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
         return target_relmse, target_relcor, target_snake, target_red, sortby_red
+    
+    def measure_rel_plasticity(self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method='max'):
+        """method for getting change in reliability as a function of sessions apart for tracked cells"""
+        if cutoffs is None: cutoffs = [-np.inf, -np.inf]
+        if maxcutoffs is None: maxcutoffs = [np.inf, np.inf]
+        store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        store_num_ses = len(store_idx_ses)
+        self.load_pcss_data(idx_ses=store_idx_ses)
+        target_red = []
+        sortby_red = []
+        target_rel = []
+        for sortby in store_idx_ses:
+            c_target_ired = []
+            c_sortby_ired = []
+            c_target_rel = []
+            for target in store_idx_ses:
+                _, cired, crelmse, crelcor = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
+                crel = ((crelmse[0] > cutoffs[0]) & (crelcor[0] > cutoffs[1])
+                        & (crelmse[0] < maxcutoffs[0]) & (crelcor[0] < maxcutoffs[0])) # 1 if target reliability is above both cutoffs
+                c_target_ired.append(cired[0])
+                c_sortby_ired.append(cired[1])
+                c_target_rel.append(crel)
+            target_red.append(c_target_ired)
+            sortby_red.append(c_sortby_ired)
+            target_rel.append(c_target_rel)
+            
+        self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
+        return target_rel, target_red, sortby_red
         
     
     def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max'):
@@ -336,8 +428,8 @@ class placeCellMultiSession(multipleAnalysis):
         #                 pf_differences[iso] = pf_differences[iso] + list(c_pf_diff[~np.isnan(c_pf_diff)])
         # return snake_data, pf_differences, pf_diff_red
         """
-        
-        
+
+
     def plot_snake(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), maxcutoffs=None, sort_by_red=False, method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
         self.idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
@@ -687,56 +779,48 @@ class placeCellMultiSession(multipleAnalysis):
         
         if withSave: 
             sesidx = '_'.join([str(i) for i in idx_ses])
-            save_name = f"summary_pfplasticity_{reduction}_env{envnum}_ses_{sesidx}"
+            save_name = f"summary_pfplasticity_{reduction}_env{envnum}_{reduction}_ses_{sesidx}"
             self.saveFigure(fig.number, self.track.mouse_name, save_name)
             
         # Show figure if requested
         plt.show() if withShow else plt.close()
 
 
-    def plot_pfreliability(self, envnum, idx_ses=None, cutoffs=None, method='max', min_mse=-8, withShow=True, withSave=False):
+    def plot_pfreliability(self, envnum, idx_ses=None, cutoffs=None, method='max', reduction='mean', min_mse=-8, withShow=True, withSave=False):
         idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         num_ses = len(idx_ses)
-        target_relmse, target_relcor, target_snake, target_red, sortby_red = measure_pfreliability(envnum, idx_ses=idx_ses, method='max')
-        
-
-
-        print('hiiiii')
-        raise ValueError('oops')
-
-
-
+        target_relmse, target_relcor, target_snake, target_red, sortby_red = self.measure_pfreliability(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method='max')
         
         # put the average reliability in a numpy array
-        r2_avg_ctl = np.full((num_ses, num_ses), np.nan)
-        pc_avg_ctl = np.full((num_ses, num_ses), np.nan)
-        r2_avg_red = np.full((num_ses, num_ses), np.nan)
-        pc_avg_red = np.full((num_ses, num_ses), np.nan)
+        mse_ctl = np.full((num_ses, num_ses), np.nan)
+        mse_red = np.full((num_ses, num_ses), np.nan)
+        cor_ctl = np.full((num_ses, num_ses), np.nan)
+        cor_red = np.full((num_ses, num_ses), np.nan)
         for ii, (itred, isred) in enumerate(zip(target_red, sortby_red)):
             for jj, (jtred, jsred) in enumerate(zip(itred, isred)):
                 idx_red = jtred & jsred # only red if red in target and sortby sessions
 
                 # copy r2 and pc (especially r2 since we're updating values)
-                c_r2 = copy(r2[ii][jj])
-                c_r2[c_r2 < min_mse] = min_mse
-                c_r2[np.isnan(c_r2)] = min_mse
-                c_pc = copy(pc[ii][jj])
+                c_mse = copy(target_relmse[ii][jj])
+                c_mse[c_mse < min_mse] = min_mse # prevent mse from being too low (it goes from 1 to -inf)
+                c_mse[np.isnan(c_mse)] = min_mse # prevent mse from being nan -- this happens if the "denominator" is 0
+                c_cor = copy(target_relcor[ii][jj])
                 if np.any(idx_red):
                     if reduction=='mean':
-                        r2_avg_ctl[ii, jj] = np.mean(c_r2[~idx_red])
-                        pc_avg_ctl[ii, jj] = np.mean(c_pc[~idx_red])
-                        r2_avg_red[ii, jj] = np.mean(c_r2[idx_red])
-                        pc_avg_red[ii, jj] = np.mean(c_pc[idx_red])
+                        mse_ctl[ii, jj] = np.mean(c_mse[~idx_red])
+                        mse_red[ii, jj] = np.mean(c_mse[idx_red])
+                        cor_ctl[ii, jj] = np.mean(c_cor[~idx_red])
+                        cor_red[ii, jj] = np.mean(c_cor[idx_red])
                     elif reduction=='median':
-                        r2_avg_ctl[ii, jj] = np.median(c_r2[~idx_red])
-                        pc_avg_ctl[ii, jj] = np.median(c_pc[~idx_red])
-                        r2_avg_red[ii, jj] = np.median(c_r2[idx_red])
-                        pc_avg_red[ii, jj] = np.median(c_pc[idx_red])
+                        mse_ctl[ii, jj] = np.median(c_mse[~idx_red])
+                        mse_red[ii, jj] = np.median(c_mse[idx_red])
+                        cor_ctl[ii, jj] = np.median(c_cor[~idx_red])
+                        cor_red[ii, jj] = np.median(c_cor[idx_red])
                     else:
                         raise ValueError(f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!")
                    
         # 1 if nan -- this means there was no data (usually)
-        zz = np.isnan(r2_avg_ctl)*1.0
+        zz = np.isnan(mse_ctl)*1.0
         
         # plot parameters
         labelSize = 18
@@ -744,18 +828,18 @@ class placeCellMultiSession(multipleAnalysis):
         fig_dim = 4
         width_ratios = [fig_dim, fig_dim, fig_dim/10]
 
-        r2_min = np.nanmin(np.concatenate((r2_avg_ctl, r2_avg_red)))
-        pc_min = np.nanmin(np.concatenate((pc_avg_ctl, pc_avg_red)))
-        r2_norm = mpl.colors.Normalize(vmin=r2_min, vmax=1)
-        pc_norm = mpl.colors.Normalize(vmin=pc_min, vmax=1)
+        mse_min = np.nanmin(np.concatenate((mse_ctl, mse_red)))
+        cor_min = np.nanmin(np.concatenate((cor_ctl, cor_red)))
+        mse_norm = mpl.colors.Normalize(vmin=mse_min, vmax=1)
+        cor_norm = mpl.colors.Normalize(vmin=cor_min, vmax=1)
         cmap = 'coolwarm' #'magma_r' #'bone_r'
         
         plt.close('all')
         fig, ax = plt.subplots(2, 3, width_ratios=width_ratios, figsize=(sum(width_ratios),2*fig_dim), layout='constrained', num=1)
-        im_r2 = ax[0,0].imshow(r2_avg_ctl, origin='upper', cmap=cmap, norm=r2_norm)
-        ax[0,1].imshow(r2_avg_red, origin='upper', cmap=cmap, norm=r2_norm)
-        im_pc = ax[1,0].imshow(pc_avg_ctl, origin='upper', cmap=cmap, norm=pc_norm)
-        ax[1,1].imshow(pc_avg_red, origin='upper', cmap=cmap, norm=pc_norm)
+        im_r2 = ax[0,0].imshow(mse_ctl, origin='upper', cmap=cmap, norm=mse_norm)
+        ax[0,1].imshow(mse_red, origin='upper', cmap=cmap, norm=mse_norm)
+        im_pc = ax[1,0].imshow(cor_ctl, origin='upper', cmap=cmap, norm=cor_norm)
+        ax[1,1].imshow(cor_red, origin='upper', cmap=cmap, norm=cor_norm)
 
         # label no data with x's
         y,x = np.mgrid[range(num_ses), range(num_ses)] 
@@ -776,7 +860,7 @@ class placeCellMultiSession(multipleAnalysis):
         
         if withSave: 
             sesidx = '_'.join([str(i) for i in idx_ses])
-            save_name = f"summary_pfreliability_env{envnum}_ses_{sesidx}"
+            save_name = f"summary_pfreliability_env{envnum}_{reduction}_ses_{sesidx}"
             self.saveFigure(fig.number, self.track.mouse_name, save_name)
             
         # Show figure if requested
