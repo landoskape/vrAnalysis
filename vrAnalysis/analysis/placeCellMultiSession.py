@@ -214,7 +214,7 @@ class placeCellMultiSession(multipleAnalysis):
                 
         return snake_data, sortby, idx_red_data
 
-    def make_paired_snake(self, envnum, target, sortby, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', include_red=True):
+    def make_paired_snake(self, envnum, target, sortby, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', both_reliable=False):
         """similar to above "make_snake_data" but only contains the data from two sessions, a sortby session and a target session"""
         # idx of session to sort by
         idx_target = 0
@@ -248,15 +248,21 @@ class placeCellMultiSession(multipleAnalysis):
         track_relmse = [mse[idx_track] for mse, idx_track in zip(relmse, self.idx_tracked)]
         track_relcor = [cor[idx_track] for cor, idx_track in zip(relcor, self.idx_tracked)]
         
+        # use reliable on "sortby" sessions
+        keep_idx_reliable = track_idx_reliable[idx_sortby]
+        if both_reliable: 
+            # if requesting reliable on both sessions, then add reliability on target session
+            keep_idx_reliable &= track_idx_reliable[idx_target]
+            
         track_pfidx = self.pcss[sortby].get_place_field(roi_idx=self.idx_tracked[idx_sortby][track_idx_reliable[idx_sortby]], trial_idx=idx_train[idx_sortby], method=method)[1]
 
         idx_red_data = [ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red]
         target_snake = np.mean(track_spkmaps[idx_target][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_test[idx_target]], axis=1)
         sortby_snake = np.mean(track_spkmaps[idx_sortby][track_idx_reliable[idx_sortby]][track_pfidx][:,idx_full[idx_sortby]], axis=1)
-        target_mse = track_relmse[idx_target][track_idx_reliable[idx_sortby]][track_pfidx] # rel-mse in target, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
-        target_cor = track_relcor[idx_target][track_idx_reliable[idx_sortby]][track_pfidx] # rel-cor in target, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
-        sortby_mse = track_relmse[idx_sortby][track_idx_reliable[idx_sortby]][track_pfidx] # rel-mse in sortby, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
-        sortby_cor = track_relcor[idx_sortby][track_idx_reliable[idx_sortby]][track_pfidx] # rel-cor in sortby, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
+        target_mse = track_relmse[idx_target][keep_idx_reliable][track_pfidx] # rel-mse in target, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
+        target_cor = track_relcor[idx_target][keep_idx_reliable][track_pfidx] # rel-cor in target, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
+        sortby_mse = track_relmse[idx_sortby][keep_idx_reliable][track_pfidx] # rel-mse in sortby, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
+        sortby_cor = track_relcor[idx_sortby][keep_idx_reliable][track_pfidx] # rel-cor in sortby, filtered by whether reliable on sortby sessions, sorted by place field (just like snakes)
         return [target_snake, sortby_snake], idx_red_data, [target_mse, sortby_mse], [target_cor, sortby_cor]
         
 
@@ -313,27 +319,30 @@ class placeCellMultiSession(multipleAnalysis):
         self.load_pcss_data(idx_ses=store_idx_ses)
         target_red = []
         sortby_red = []
-        target_rel = []
+        target_relmse = []
+        target_relcor = []
         for sortby in store_idx_ses:
             c_target_ired = []
             c_sortby_ired = []
-            c_target_rel = []
+            c_target_relmse = []
+            c_target_relcor = []
             for target in store_idx_ses:
                 _, cired, crelmse, crelcor = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
-                crel = ((crelmse[0] > cutoffs[0]) & (crelcor[0] > cutoffs[1])
-                        & (crelmse[0] < maxcutoffs[0]) & (crelcor[0] < maxcutoffs[0])) # 1 if target reliability is above both cutoffs
+                crelmse = ((crelmse[0] > cutoffs[0]) & (crelmse[0] < maxcutoffs[0]))
+                crelcor = ((crelcor[0] > cutoffs[1]) & (crelcor[0] < maxcutoffs[1]))
                 c_target_ired.append(cired[0])
                 c_sortby_ired.append(cired[1])
-                c_target_rel.append(crel)
+                c_target_relmse.append(crelmse)
+                c_target_relcor.append(crelcor)
             target_red.append(c_target_ired)
             sortby_red.append(c_sortby_ired)
-            target_rel.append(c_target_rel)
+            target_relmse.append(c_target_relmse)
+            target_relcor.append(c_target_relcor)
             
         self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
-        return target_rel, target_red, sortby_red
-        
+        return target_relmse, target_relcor, target_red, sortby_red
     
-    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max'):
+    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
         store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         store_num_ses = len(store_idx_ses)
@@ -348,7 +357,7 @@ class placeCellMultiSession(multipleAnalysis):
             c_target_ired = []
             c_sortby_ired = []
             for target in store_idx_ses:
-                cdata, cired, _, _ = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, method=method)
+                cdata, cired, _, _ = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, both_reliable=both_reliable)
                 c_target_snake.append(cdata[0])
                 c_sortby_snake.append(cdata[1])
                 c_target_ired.append(cired[0])
@@ -592,9 +601,9 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
 
     
-    def compare_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', reduction='mean', min_mse=-8, withShow=True, withSave=False):
+    def compare_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False, reduction='mean', min_mse=-8, withShow=True, withSave=False):
         idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
-        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method=method)
+        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, both_reliable=False)
         num_ses = len(idx_ses)
 
         # put the difference and pval in a numpy array
@@ -639,7 +648,7 @@ class placeCellMultiSession(multipleAnalysis):
         width_ratios = [*[fig_dim for _ in range(2)], fig_dim/10, fig_dim/10, fig_dim/10]
         min_pval = np.min([r2_pval.min(), pc_pval.min(), 1e-3])
         pval_norm = mpl.colors.LogNorm(vmin=min_pval, vmax=1)
-        pval_cmap = 'viridis_r' #'magma_r' #'bone_r'
+        pval_cmap = 'viridis' #'magma_r' #'bone_r'
         r2_max_diff = np.nanmax(np.abs(r2_diff))
         r2_diff_norm = mpl.colors.Normalize(vmin=0, vmax=r2_max_diff)
         pc_max_diff = np.nanmax(np.abs(pc_diff))
@@ -699,11 +708,114 @@ class placeCellMultiSession(multipleAnalysis):
         
         if withSave: 
             sesidx = '_'.join([str(i) for i in idx_ses])
-            save_name = f"summary_compare_pfplasticity_{reduction}_env{envnum}_ses_{sesidx}"
+            both_rel_string = 'bothrel' if both_reliable else 'sourcerel'
+            save_name = f"summary_compare_pfplasticity_{reduction}_{both_rel_string}_env{envnum}_ses_{sesidx}"
             self.saveFigure(fig.number, self.track.mouse_name, save_name)
             
         # Show figure if requested
         plt.show() if withShow else plt.close()
+
+    
+    def plot_rel_plasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), maxcutoffs=None, withShow=True, withSave=False):
+        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        target_relmse, target_relcor, target_red, sortby_red = self.measure_rel_plasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, maxcutoffs=maxcutoffs)
+
+        # Put fraction reliable in array
+        num_ses = len(idx_ses)
+        frac_relmse_ctl = np.full((num_ses, num_ses), np.nan)
+        frac_relmse_red = np.full((num_ses, num_ses), np.nan)
+        frac_relcor_ctl = np.full((num_ses, num_ses), np.nan)
+        frac_relcor_red = np.full((num_ses, num_ses), np.nan)
+        num_ctl = np.zeros((num_ses, num_ses))
+        num_red = np.zeros((num_ses, num_ses))
+        
+        for ii, (itred, isred) in enumerate(zip(target_red, sortby_red)):
+            for jj, (jtred, jsred) in enumerate(zip(itred, isred)):
+                idx_red = jtred | jsred # only red if red in target and sortby sessions
+                num_ctl[ii,jj] = np.sum(~idx_red)
+                num_red[ii,jj] = np.sum(idx_red)
+
+                c_relmse = target_relmse[ii][jj]
+                c_relcor = target_relcor[ii][jj]
+                frac_relmse_ctl[ii,jj] = np.sum(c_relmse[~idx_red]) / len(c_relmse[~idx_red])
+                frac_relcor_ctl[ii,jj] = np.sum(c_relcor[~idx_red]) / len(c_relcor[~idx_red])
+                if np.any(idx_red):
+                    frac_relmse_red[ii,jj] = np.sum(c_relmse[idx_red]) / len(c_relmse[idx_red])
+                    frac_relcor_red[ii,jj] = np.sum(c_relcor[idx_red]) / len(c_relcor[idx_red])
+                   
+        # 1 if nan -- this means there was no data (usually)
+        zz = np.isnan(frac_relmse_red)*1.0
+        
+        # plot parameters
+        labelSize = 18
+        nsize = 7
+        fig_dim = 4
+        width_ratios = [fig_dim, fig_dim, fig_dim/10, fig_dim, fig_dim/10]
+
+        norm = mpl.colors.Normalize(vmin=0, vmax=1)
+        cmap = 'viridis'
+
+        cmp_bound_rel = np.max(np.abs(frac_relmse_red - frac_relmse_ctl))
+        cmp_bound_cor = np.max(np.abs(frac_relcor_red - frac_relcor_ctl))
+        norm_cmp_rel = mpl.colors.Normalize(vmin=-cmp_bound_rel, vmax=cmp_bound_rel)
+        norm_cmp_cor = mpl.colors.Normalize(vmin=-cmp_bound_cor, vmax=cmp_bound_cor)
+        cmap_cmp = 'bwr'
+
+        plt.close('all')
+        fig, ax = plt.subplots(2, 5, width_ratios=width_ratios, figsize=(sum(width_ratios),2*fig_dim), layout='constrained', num=1)
+        im_r2 = ax[0,0].imshow(frac_relmse_ctl, origin='upper', cmap=cmap, norm=norm)
+        ax[0,1].imshow(frac_relmse_red, origin='upper', cmap=cmap, norm=norm)
+        im_r2_cmp = ax[0,3].imshow(frac_relmse_red - frac_relmse_ctl, origin='upper', cmap=cmap_cmp, norm=norm_cmp_rel)
+
+        im_pc = ax[1,0].imshow(frac_relcor_ctl, origin='upper', cmap=cmap, norm=norm)
+        ax[1,1].imshow(frac_relcor_red, origin='upper', cmap=cmap, norm=norm)
+        im_pc_cmp = ax[1,3].imshow(frac_relcor_red - frac_relcor_ctl, origin='upper', cmap=cmap_cmp, norm=norm_cmp_cor)
+        
+        # label no data with x's
+        y,x = np.mgrid[range(num_ses), range(num_ses)] 
+        xs_for_zeros = False
+        if xs_for_zeros:
+            ax[0,0].scatter(x[zz==1], y[zz==1], s=10, c='k', marker='x')
+            ax[0,1].scatter(x[zz==1], y[zz==1], s=10, c='k', marker='x')
+            ax[1,0].scatter(x[zz==1], y[zz==1], s=10, c='k', marker='x')
+            ax[1,1].scatter(x[zz==1], y[zz==1], s=10, c='k', marker='x')
+        else:
+            for ii in range(num_ses):
+                for jj in range(num_ses):
+                    for cax in (ax[0,0], ax[1,0]):
+                        cax.text(ii, jj, f"{int(num_ctl[ii,jj])}", horizontalalignment='center', verticalalignment='center', fontsize=nsize)
+                    for cax in (ax[0,1], ax[1,1]):
+                        cax.text(ii, jj, f"{int(num_red[ii,jj])}", horizontalalignment='center', verticalalignment='center', fontsize=nsize)
+        ax[0,0].set_title('frac(R^2) - CTL')
+        ax[0,1].set_title('frac(R^2) - RED')
+        ax[0,3].set_title('diff(R^2) - (r-c)')
+        ax[0,0].set_ylabel('Source Session')
+        ax[1,0].set_ylabel('Source Session')
+        ax[1,0].set_xlabel('Target Session')
+        ax[1,1].set_xlabel('Target Session')
+        ax[1,3].set_xlabel('Target Session')
+        ax[1,0].set_title('frac(PC) - CTL')
+        ax[1,1].set_title('frac(PC) - RED')
+        ax[1,3].set_title('diff(PC) - (r-c)')
+        
+        fig.colorbar(im_r2, orientation='vertical', cax=ax[0,2], ticklocation='right', drawedges=False)
+        ax[0,2].set_ylabel('R^2')
+        fig.colorbar(im_pc, orientation='vertical', cax=ax[1,2], ticklocation='right', drawedges=False)
+        ax[1,2].set_ylabel('PC')
+
+        fig.colorbar(im_r2_cmp, orientation='vertical', cax=ax[0,4], ticklocation='right', drawedges=False)
+        ax[0,4].set_ylabel('$\Delta$ R^2')
+        fig.colorbar(im_pc_cmp, orientation='vertical', cax=ax[1,4], ticklocation='right', drawedges=False)
+        ax[1,4].set_ylabel('$\Delta$ PC')
+        
+        if withSave: 
+            sesidx = '_'.join([str(i) for i in idx_ses])
+            save_name = f"summary_rel_plasticity_env{envnum}_ses_{sesidx}"
+            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+
 
     def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', reduction='mean', min_mse=-8, withShow=True, withSave=False):
         idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
@@ -751,7 +863,7 @@ class placeCellMultiSession(multipleAnalysis):
         pc_min = np.nanmin(np.concatenate((pc_avg_ctl, pc_avg_red)))
         r2_norm = mpl.colors.Normalize(vmin=r2_min, vmax=1)
         pc_norm = mpl.colors.Normalize(vmin=pc_min, vmax=1)
-        cmap = 'coolwarm' #'magma_r' #'bone_r'
+        cmap = 'viridis' #'magma_r' #'bone_r'
         
         plt.close('all')
         fig, ax = plt.subplots(2, 3, width_ratios=width_ratios, figsize=(sum(width_ratios),2*fig_dim), layout='constrained', num=1)
@@ -832,7 +944,7 @@ class placeCellMultiSession(multipleAnalysis):
         cor_min = np.nanmin(np.concatenate((cor_ctl, cor_red)))
         mse_norm = mpl.colors.Normalize(vmin=mse_min, vmax=1)
         cor_norm = mpl.colors.Normalize(vmin=cor_min, vmax=1)
-        cmap = 'coolwarm' #'magma_r' #'bone_r'
+        cmap = 'viridis' #'magma_r' #'bone_r'
         
         plt.close('all')
         fig, ax = plt.subplots(2, 3, width_ratios=width_ratios, figsize=(sum(width_ratios),2*fig_dim), layout='constrained', num=1)
@@ -865,89 +977,6 @@ class placeCellMultiSession(multipleAnalysis):
             
         # Show figure if requested
         plt.show() if withShow else plt.close()
-
-
-
-    
-    """
-    This code was how I used to plot pf_plasticity when comparing changes in centroid...
-    
-    def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', absval=True, split_red=False, withShow=True, withSave=False):
-        snake_data, pf_differences, pf_diff_red = self.measure_pfplasticity(envnum, 
-                                                                            idx_ses=idx_ses, 
-                                                                            cutoffs=cutoffs,
-                                                                            method=method, 
-                                                                            absval=absval,
-                                                                            split_red=split_red)
-
-        ses_offsets = range(1, len(pf_differences)+1)
-        num_offsets = len(ses_offsets)
-        
-        labelSize = 18
-        lw = 1.5
-        numBins = 20
-        figdim = 3
-
-        max_diff = max([np.max(np.abs(pfd)) for pfd in pf_differences])
-        if split_red:
-            max_diff_red = max([np.max(np.abs(pfd)) for pfd in pf_diff_red])
-            max_diff = max([max_diff, max_diff_red])
-
-        numBins = 11 if method=='max' else 21
-        if absval:
-            bins = np.linspace(0, max_diff, numBins)
-        else:
-            bins = np.linspace(-max_diff, max_diff, numBins)
-        centers = helpers.edge2center(bins)
-        barwidth = bins[1] - bins[0]
-
-        fig, ax = plt.subplots(1, num_offsets, figsize=(figdim*num_offsets, figdim), layout='constrained')
-        for ioff, offset in enumerate(ses_offsets):
-            cdata = np.histogram(pf_differences[ioff], bins=bins)[0]
-            cdata = 100 * cdata / np.sum(cdata)
-            ax[ioff].bar(centers, cdata, color='k', width=barwidth) 
-            if split_red:
-                rdata = np.histogram(pf_diff_red[ioff], bins=bins)[0]
-                rdata = 100 * rdata / np.sum(rdata)
-                ax[ioff].bar(centers, rdata, color='r', width=barwidth, alpha=0.5) 
-
-                # plot p-value
-                rs = sp.stats.ranksums(pf_differences[ioff], pf_diff_red[ioff])
-                ytextpos = max([max(rdata), max(cdata)])*0.95
-                ptext = f"p={rs.pvalue:0.4f}"
-                ax[ioff].text(centers[-1], ytextpos, ptext, horizontalalignment='right', verticalalignment='center')
-                
-                # plot N's
-                nctl_textpos = ytextpos/9*8
-                nred_textpos = ytextpos/9*7
-                nctltext = f"N(ctl)={len(pf_differences[ioff])}"
-                nredtext = f"N(red)={len(pf_diff_red[ioff])}"
-                ax[ioff].text(centers[-1], nctl_textpos, nctltext, horizontalalignment='right', verticalalignment='center')
-                ax[ioff].text(centers[-1], nred_textpos, nredtext, horizontalalignment='right', verticalalignment='center')
-                
-            ax[ioff].set_xlabel(fr"$\Delta$PF {method}", fontsize=labelSize)
-            if ioff==0:
-                ax[ioff].set_ylabel("% Counts", fontsize=labelSize)
-            ax[ioff].set_title(fr"$\Delta$Ses={offset}", fontsize=labelSize)
-
-        if withSave: 
-            sesidx = '_'.join([str(i) for i in idx_ses])
-            redname = 'wred_' if split_red else ''
-            save_name = f"pfplasticity_env{envnum}_{redname}ses_{sesidx}"
-            self.saveFigure(fig.number, self.track.mouse_name, save_name)
-            
-        # Show figure if requested
-        plt.show() if withShow else plt.close()
-        
-    """
-
-        
-        
-        
-        
-        
-        
-            
     
 
 
