@@ -130,7 +130,7 @@ class placeCellMultiSession(multipleAnalysis):
         idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
 
         # handle tracking
-        self.idx_tracked = [self.track.get_tracked_idx(idx_ses=[i, sortby], keepPlanes=self.keepPlanes)[0] for i in self.idx_ses]
+        idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keepPlanes=self.keepPlanes) for i in self.idx_ses]))
 
         # handle environment request
         if envnum is not None:
@@ -153,13 +153,14 @@ class placeCellMultiSession(multipleAnalysis):
         idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in self.idx_ses]
 
         # filter by tracked
-        spkdata = [sd[idx_tracked] for sd, idx_tracked in zip(spkdata, self.idx_tracked)]
-        idx_reliable = [ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, self.idx_tracked)]
-        idx_red = [ir[idx_tracked] for ir, idx_tracked in zip(idx_red, self.idx_tracked)]
+        spkdata = [sd[idx_tracked] for sd, idx_tracked in zip(spkdata, idx_tracked_target)]
+        idx_reliable = [ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, idx_tracked_target)]
+        idx_reliable_sortby = [ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, idx_tracked_sortby)]
+        idx_red = [ir[idx_tracked] for ir, idx_tracked in zip(idx_red, idx_tracked_target)]
         
         # filter by reliability
-        spkdata = [sd[idx_reliable[idx_sortby]] for sd in spkdata]
-        idx_red = [ir[idx_reliable[idx_sortby]] for ir in idx_red]
+        spkdata = [sd[irel] for sd, irel in zip(spkdata, idx_reliable_sortby)]
+        idx_red = [ir[irel] for ir, irel in zip(idx_red, idx_reliable_sortby)]
 
         # get skew for each ROI
         skew = [sp.stats.skew(sd, axis=1) for sd in spkdata]
@@ -603,7 +604,7 @@ class placeCellMultiSession(multipleAnalysis):
     
     def compare_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False, reduction='mean', min_mse=-8, withShow=True, withSave=False):
         idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
-        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, both_reliable=False)
+        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, both_reliable=both_reliable)
         num_ses = len(idx_ses)
 
         # put the difference and pval in a numpy array
@@ -648,7 +649,7 @@ class placeCellMultiSession(multipleAnalysis):
         width_ratios = [*[fig_dim for _ in range(2)], fig_dim/10, fig_dim/10, fig_dim/10]
         min_pval = np.min([r2_pval.min(), pc_pval.min(), 1e-3])
         pval_norm = mpl.colors.LogNorm(vmin=min_pval, vmax=1)
-        pval_cmap = 'viridis' #'magma_r' #'bone_r'
+        pval_cmap = 'viridis_r' #'magma_r' #'bone_r'
         r2_max_diff = np.nanmax(np.abs(r2_diff))
         r2_diff_norm = mpl.colors.Normalize(vmin=0, vmax=r2_max_diff)
         pc_max_diff = np.nanmax(np.abs(pc_diff))
@@ -753,7 +754,7 @@ class placeCellMultiSession(multipleAnalysis):
         width_ratios = [fig_dim, fig_dim, fig_dim/10, fig_dim, fig_dim/10]
 
         norm = mpl.colors.Normalize(vmin=0, vmax=1)
-        cmap = 'viridis'
+        cmap = 'viridis_r'
 
         cmp_bound_rel = np.max(np.abs(frac_relmse_red - frac_relmse_ctl))
         cmp_bound_cor = np.max(np.abs(frac_relcor_red - frac_relcor_ctl))
@@ -817,9 +818,9 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
 
 
-    def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), method='max', reduction='mean', min_mse=-8, withShow=True, withSave=False):
+    def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False, reduction='mean', min_mse=-8, withShow=True, withSave=False):
         idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
-        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method=method)
+        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, both_reliable=both_reliable)
         num_ses = len(idx_ses)
 
         # put the difference and pval in a numpy array
@@ -863,7 +864,7 @@ class placeCellMultiSession(multipleAnalysis):
         pc_min = np.nanmin(np.concatenate((pc_avg_ctl, pc_avg_red)))
         r2_norm = mpl.colors.Normalize(vmin=r2_min, vmax=1)
         pc_norm = mpl.colors.Normalize(vmin=pc_min, vmax=1)
-        cmap = 'viridis' #'magma_r' #'bone_r'
+        cmap = 'viridis_r' #'magma_r' #'bone_r'
         
         plt.close('all')
         fig, ax = plt.subplots(2, 3, width_ratios=width_ratios, figsize=(sum(width_ratios),2*fig_dim), layout='constrained', num=1)
@@ -891,7 +892,8 @@ class placeCellMultiSession(multipleAnalysis):
         
         if withSave: 
             sesidx = '_'.join([str(i) for i in idx_ses])
-            save_name = f"summary_pfplasticity_{reduction}_env{envnum}_{reduction}_ses_{sesidx}"
+            both_rel_string = 'bothrel' if both_reliable else 'sourcerel'
+            save_name = f"summary_pfplasticity_{reduction}_{both_rel_string}_env{envnum}_{reduction}_ses_{sesidx}"
             self.saveFigure(fig.number, self.track.mouse_name, save_name)
             
         # Show figure if requested
@@ -944,7 +946,7 @@ class placeCellMultiSession(multipleAnalysis):
         cor_min = np.nanmin(np.concatenate((cor_ctl, cor_red)))
         mse_norm = mpl.colors.Normalize(vmin=mse_min, vmax=1)
         cor_norm = mpl.colors.Normalize(vmin=cor_min, vmax=1)
-        cmap = 'viridis' #'magma_r' #'bone_r'
+        cmap = 'viridis_r' #'magma_r' #'bone_r'
         
         plt.close('all')
         fig, ax = plt.subplots(2, 3, width_ratios=width_ratios, figsize=(sum(width_ratios),2*fig_dim), layout='constrained', num=1)
