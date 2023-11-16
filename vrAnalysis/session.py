@@ -179,9 +179,9 @@ class vrExperiment(vrSession):
                     del self.loadBuffer[self.oneFilename(name)]
     
     # -------------------------------------------------------------- database communication --------------------------------------------------------------------
-    def printSessionNotes(self, vrdb):
-        """you must pass a vrdatabase object for this to work"""
-        record = vrdb.getRecord(self.mouseName, self.dateString, self.session)
+    def printSessionNotes(self, sessiondb):
+        """you must pass a valid vrdatabase object for this to work"""
+        record = sessiondb.getRecord(self.mouseName, self.dateString, self.session)
         print(record['sessionNotes'])
     
     # ------------------------------------------ special loading functions for data not stored directly in one format ------------------------------------------

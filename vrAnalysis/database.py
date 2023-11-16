@@ -105,7 +105,7 @@ host_types = {
     '.mdb': 'access',
 }
 
-def vrDatabase(dbName='vrSessions'):
+def vrDatabase(dbName):
     """
     Method for retrieving an appropriate database object.
     """

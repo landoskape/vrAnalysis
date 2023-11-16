@@ -14,7 +14,7 @@ from .. import database
 from .. import fileManagement as fm
 from .standardAnalysis import standardAnalysis
 
-vrdb = database.vrDatabase()
+sessiondb = database.vrDatabase('vrSessions')
 
 def save_directory(name=''):
     dirName = fm.analysisPath() / 'placeCellAnalysis' / name
@@ -32,14 +32,14 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
     red cell identity by whether the s2p red cell method exceeds s2p_cutoff!
     
     include_manual determines if red cell indices include manual annotations
-    kwConditions are passed to vrAnalysis/database/getTable via vrdb.iterSessions()
+    kwConditions are passed to vrAnalysis/database/getTable via sessiondb.iterSessions()
     It automatically assumes that imaging=True and vrRegistration=True
     """
 
     # generate session and analysis iterables if not provided
     remake_ipcss = ipcss is None # if it is None, we have to remake it
     if ises is None:
-        ises = vrdb.iterSessions(imaging=True, vrRegistration=True, **kwConditions)
+        ises = sessiondb.iterSessions(imaging=True, vrRegistration=True, **kwConditions)
         remake_ipcss = True # if we remade the session iterable, remake pcss iterable even if provided
 
     if remake_ipcss:
@@ -55,7 +55,7 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
     relmse = []
     relcor = []
 
-    miceInSessions = vrdb.miceInSessions(ises)
+    miceInSessions = sessiondb.miceInSessions(ises)
     mouseCounter = dict(zip(miceInSessions, [0]*len(miceInSessions))) 
     
     # iterate through requested sessions and store data
@@ -114,7 +114,7 @@ def red_reliability(cutoffs=(0.5, 0.8), ises=None, ipcss=None, include_manual=Tr
         return env_sorted
         
     # now organize by mouse
-    miceInSession = sorted(vrdb.miceInSessions(ises))
+    miceInSession = sorted(sessiondb.miceInSessions(ises))
     ctl_reliable = [[] for _ in range(len(miceInSession))]
     red_reliable = [[] for _ in range(len(miceInSession))]
     env_sort = [[] for _ in range(len(miceInSession))]

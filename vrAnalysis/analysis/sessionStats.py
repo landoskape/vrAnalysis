@@ -14,7 +14,7 @@ from .. import database
 from .. import fileManagement as fm
 from .standardAnalysis import standardAnalysis
 
-vrdb = database.vrDatabase()
+sessiondb = database.vrDatabase('vrSessions')
 
 def analysisDirectory():
     """
@@ -68,13 +68,13 @@ def sessionStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=F
     red cell identity by whether the s2p red cell method exceeds s2p_cutoff!
     
     include_manual determines if red cell indices include manual annotations
-    kwConditions are passed to vrAnalysis/database/getTable via vrdb.iterSessions()
+    kwConditions are passed to vrAnalysis/database/getTable via sessiondb.iterSessions()
     It automatically assumes that imaging=True and vrRegistration=True
     """
 
     # generate session and analysis iterables if not provided
     if ises is None:
-        ises = vrdb.iterSessions(imaging=True, vrRegistration=True, **kwConditions)
+        ises = sessiondb.iterSessions(imaging=True, vrRegistration=True, **kwConditions)
     
     # initialize lists for storing the data
     ses_name = []
@@ -82,7 +82,7 @@ def sessionStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=F
     red_idx = []
     env_nums = []
 
-    miceInSessions = vrdb.miceInSessions(ises)
+    miceInSessions = sessiondb.miceInSessions(ises)
     mouseCounter = dict(zip(miceInSessions, [0]*len(miceInSessions))) 
     
     # iterate through requested sessions and store data
@@ -129,7 +129,7 @@ def sessionStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=F
         return env_sorted
         
     # now organize by mouse
-    miceInSession = sorted(vrdb.miceInSessions(ises))
+    miceInSession = sorted(sessiondb.miceInSessions(ises))
     
     total_cell_count = [[] for _ in range(len(miceInSession))]
     red_cell_count = [[] for _ in range(len(miceInSessions))]

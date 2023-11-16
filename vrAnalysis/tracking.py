@@ -14,7 +14,7 @@ from . import helpers
 from . import database
 from . import fileManagement as fm
 
-vrdb = database.vrDatabase()
+sessiondb = database.vrDatabase('vrSessions')
 
 # Variables that might need to be changed for different users
 # if anyone other than me uses this, let me know and I can make it smarter by using a user dictionary or storing a file somewhere else...
@@ -71,7 +71,7 @@ class tracker():
     def session_table(self, idx_ses=None, reset_index=True):
         """return dataframe of requested sessions from database"""
         idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
-        records = [vrdb.getRecord(*self.sessions[ii].sessionName()) for ii in idx_ses]
+        records = [sessiondb.getRecord(*self.sessions[ii].sessionName()) for ii in idx_ses]
         df = pd.concat(records, axis=1).T
         if reset_index: 
             df = df.reset_index(drop=True)

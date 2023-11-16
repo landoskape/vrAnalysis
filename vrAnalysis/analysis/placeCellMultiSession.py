@@ -15,7 +15,7 @@ from .. import fileManagement as fm
 from .standardAnalysis import multipleAnalysis
 from . import placeCellSingleSession
 
-vrdb = database.vrDatabase()
+sessiondb = database.vrDatabase('vrSessions')
 
 class placeCellMultiSession(multipleAnalysis):
     """

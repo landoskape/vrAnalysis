@@ -10,5 +10,5 @@ modules = [
     'analysis',
 ]
 
-for pkg in modules:
-    exec('from . import ' + pkg)
+#for pkg in modules:
+#    exec('from . import ' + pkg)
