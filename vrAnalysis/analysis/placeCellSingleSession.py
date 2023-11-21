@@ -253,7 +253,7 @@ class placeCellSingleSession(standardAnalysis):
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
-    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5,2), speedThreshold=5, numcv=2, standardizeSpks=True):
+    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5,5), speedThreshold=5, numcv=2, standardizeSpks=True):
         self.name = 'placeCellSingleSession'
         self.onefile = onefile
         self.vrexp = vrexp
@@ -282,7 +282,7 @@ class placeCellSingleSession(standardAnalysis):
         self.environments = np.unique(self.trial_envnum)
         self.numEnvironments = len(self.environments)
         
-    def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None):
+    def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None, with_test=False):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
         if onefile is not None: self.onefile = onefile
@@ -319,7 +319,7 @@ class placeCellSingleSession(standardAnalysis):
         self.dataloaded = True
 
         # measure reliability 
-        self.measure_reliability()
+        self.measure_reliability(with_test=with_test)
         
     def clear_data(self):
         """method for clearing data to free up memory"""
@@ -360,16 +360,23 @@ class placeCellSingleSession(standardAnalysis):
             self.test_relmse, self.test_relcor = np.stack(relmse), np.stack(relcor)
         else:
             # Alert the user that the training data was recalculated without testing
-            self.test_relmse = None
+            self.test_relmse, self.test_relcor = None, None
 
-    def get_reliability_values(self, envnum=None):
+    def get_reliability_values(self, envnum=None, with_test=False):
         if not(self.dataloaded): self.load_data()
         if envnum is None: envnum = copy(self.environments) # default environment is all of them
         envnum = helpers.check_iterable(envnum) # make sure it's an iterable
         envidx = self.envnum_to_idx(envnum) # convert environment numbers to indices
         mse = [self.relmse[ii] for ii in envidx]
         cor = [self.relcor[ii] for ii in envidx]
-        return mse, cor
+        # if not with_test trials, just return mse/cor on train trials 
+        if not with_test:
+            return mse, cor
+        
+        # if with_test, get these too and return them all
+        msetest = [self.test_relmse[ii] for ii in envidx]
+        cortest = [self.test_relcor[ii] for ii in envidx]
+        return mse, cor, msetest, cortest
         
     def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None):
         """central method for getting reliable cells from list of environments (by environment index)"""
