@@ -6,6 +6,7 @@ import numba as nb
 import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import seaborn as sns
 
 from .. import session
 from .. import functions
@@ -74,12 +75,12 @@ class placeCellMultiSession(multipleAnalysis):
         self.pcss_loaded = [self.autoload for _ in range(len(self.pcss))]
         self.environments = np.unique(np.concatenate([pcss.environments for pcss in self.pcss]))
         
-    def load_pcss_data(self, idx_ses=None):
+    def load_pcss_data(self, idx_ses=None, **kwargs):
         self.idx_ses, self.num_ses = self.track.get_idx_session(idx_ses=idx_ses)
         idx_to_load = [idx for idx in self.idx_ses if not(self.pcss_loaded[idx])]
         if len(idx_to_load)>0:
             for sesidx in tqdm(idx_to_load):
-                self.pcss[sesidx].load_data()
+                self.pcss[sesidx].load_data(**kwargs)
                 self.pcss_loaded[sesidx] = True
         
     def clear_pcss_data(self):
@@ -112,6 +113,78 @@ class placeCellMultiSession(multipleAnalysis):
 
         return pfloc, pfidx
         
+    def make_rel_data(self, envnum, idx_ses=None, sortby=None):
+        """
+        This method returns a comparison of reliability on source and target sessions.
+
+        When source==target, compares reliability on train and test trials.
+
+        Returns
+        -------
+        mse & cor: 
+            both contain reliability values (for mse/cor metrics)
+            each is a tuple of reliability values on sortby session and target session, containing ROIs tracked across the pair of sessions
+        sortby:
+            index of source session (aka sortby), from which reliability values in the first element of each tuple come from
+        idx_ses:
+            index of target sessions, from which reliability values in second element of each tuple come from (includes sortby session)
+        """
+
+        if idx_ses is None:
+            idx_ses = self.idx_ses_with_env(envnum)
+        
+        if sortby is None: 
+            sortby = idx_ses[0]
+        else:
+            assert sortby in idx_ses, f"sortby session ({sortby}) is not in requested sessions ({idx_ses})"
+        
+        idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[sortby] # get idx of sortby session from idx_ses
+        
+        # get idx of requested environment for each session
+        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
+        in_session = [~np.isnan(ei) for ei in envidx]
+        assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(idx_ses, in_session) if inses]}"
+        self.load_pcss_data(idx_ses=idx_ses, with_test=True) # required for reliability values -- include test for comparison of reliability within sortby session
+        for i in idx_ses:
+            if not hasattr(self.pcss[i], 'test_relmse') or self.pcss[i].test_relmse is None:
+                self.pcss[i].measure_reliability(with_test=True)
+            
+        # handle tracking 
+        idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keepPlanes=self.keepPlanes) for i in idx_ses]))
+
+        # get reliability values for all the cells - it's a tuple of relmse / relcor for each pcss
+        relmse, relcor, relmse_test, relcor_test = map(list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum, with_test=True) for i in idx_ses]))
+
+        # for consistency, the relmse value is a list, no matter how many envnum's there are. Since we only requested
+        # one envnum, the first value of the list is the array of reliability values for each session
+        relmse, relcor = list(map(lambda x: x[0], relmse)), list(map(lambda x: x[0], relcor))      
+        relmse_test, relcor_test = list(map(lambda x: x[0], relmse_test)), list(map(lambda x: x[0], relcor_test))      
+        
+        # get index of red cells and filter by tracked
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in self.idx_ses]
+        
+        # get tracked reliability arrays (for each tracked (not sortby session), tuple of reliability on sortby / target for tracked across this pair of sessions)
+        mse = []
+        cor = []
+        red = []
+        for ii, ises in enumerate(idx_ses):
+            if ises!=sortby:
+                # compare source to target
+                cmse = (relmse[idx_sortby][idx_tracked_sortby[ii]], relmse[ii][idx_tracked_target[ii]])
+                ccor = (relcor[idx_sortby][idx_tracked_sortby[ii]], relcor[ii][idx_tracked_target[ii]])
+            else:
+                # compare source to test trials in source
+                cmse = (relmse[idx_sortby][idx_tracked_sortby[ii]], relmse_test[ii][idx_tracked_target[ii]])
+                ccor = (relcor[idx_sortby][idx_tracked_sortby[ii]], relcor_test[ii][idx_tracked_target[ii]])
+            cred = (idx_red[idx_sortby][idx_tracked_sortby[ii]], idx_red[ii][idx_tracked_target[ii]])
+            mse.append(cmse)
+            cor.append(ccor)
+            red.append(cred)
+
+        # return paired reliability arrays along with sortby session and all target session indices
+        return mse, cor, red, sortby, idx_ses
+
+
     def make_skew_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.2, 0.5), maxcutoffs=None):
         if idx_ses is None:
             if envnum is None:
@@ -166,8 +239,6 @@ class placeCellMultiSession(multipleAnalysis):
         skew = [sp.stats.skew(sd, axis=1) for sd in spkdata]
 
         return skew, idx_red
-
-
 
     def make_snake_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', include_red=True):
         self.idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
@@ -516,6 +587,116 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
 
         return snake_data, sortby, idx_red
+
+
+    def plot_rel_comparison(self, envnum, idx_ses=None, sortby=None, rel_method='pc', withShow=True, withSave=False):
+        assert isinstance(rel_method, str) and (rel_method.lower()=='pc' or rel_method.lower()=='r2'), "rel_method must be 'r2' or 'pc'"
+
+        if idx_ses is None:
+            idx_ses = self.idx_ses_with_env(envnum)
+        
+        if sortby is None:
+            sortby = idx_ses[0]
+        else:
+            assert isinstance(sortby, int) and sortby in idx_ses, "sortby must be in idx_ses"
+
+        # Collect data
+        mse, cor, red, source, target = self.make_rel_data(envnum, idx_ses=idx_ses, sortby=sortby)
+        rel = mse if rel_method=='r2' else cor
+        red_idx = [rd[0] | rd[1] for rd in red] # red if either red in source or target
+
+        idx_to_ses = {val:idx for idx, val in enumerate(idx_ses)}
+        num_rows = 4
+        num_cols = len(idx_ses)+1
+        
+        figdim = 2
+        labelSize = 12
+        rel_name = 'R^2' if rel_method=='r2' else 'PC'
+        num_bins = 8
+        cmap = sns.light_palette("k", as_cmap=True)
+        rcmap = sns.light_palette("r", as_cmap=True)
+        width_ratios = [*[figdim]*len(idx_ses), figdim/5]
+
+        fig, ax = plt.subplots(num_rows, num_cols, figsize=(figdim*num_cols, figdim*num_rows), width_ratios=width_ratios, layout='constrained')
+        # fig.subplots_adjust(wspace=0.02)
+        
+        ims = []
+        for crel, cred, it in zip(rel, red_idx, target):
+            cidx = idx_to_ses[it]
+            if source==it: 
+                for spine in ('left', 'right', 'bottom', 'top'):
+                    for row in range(num_rows):
+                        getattr(ax[row,cidx].spines, spine).set(color='b', linewidth=3)
+            
+            # first measure 2d histograms and get bin edges
+            H_ctl, xe, ye = np.histogram2d(crel[0][~cred], crel[1][~cred], bins=num_bins, density=False)
+            H_red, _, _ = np.histogram2d(crel[0][cred], crel[1][cred], bins=[xe, ye], density=False)
+            H_ctl = 100 * H_ctl / np.sum(H_ctl) # normalize to percentage in each bin (not density by area!!)
+            H_red = 100 * H_red / np.sum(H_red) 
+            H_diff = (H_red - H_ctl).T # transpose for visualization (down is x...)
+
+            sns.histplot(x=crel[0][~cred], y=crel[1][~cred], bins=[xe, ye], thresh=0, cmap=cmap,  ax=ax[0, cidx])
+            #sns.kdeplot(x=crel[0][~cred], y=crel[1][~cred], color=('k', 0.5), fill=False, levels=8, thresh=0.0, ax=ax[0, cidx], legend=False)
+            
+            sns.histplot(x=crel[0][cred], y=crel[1][cred], bins=[xe, ye], thresh=0, cmap=rcmap,  ax=ax[1, cidx])
+            #sns.kdeplot(x=crel[0][cred], y=crel[1][cred], color=('r', 0.5), fill=False, levels=8, thresh=0.0, ax=ax[1, cidx], legend=False)
+            #sns.scatterplot(x=crel[0][cred], y=crel[1][cred], color=('r', 0.8), s=8, ax=ax[1, cidx], legend=False, lw=0.5, edgecolors='k')
+            
+            sns.histplot(x=crel[0][~cred], y=crel[1][~cred], bins=[xe, ye], thresh=0, cmap=cmap,  ax=ax[2, cidx])
+            #sns.kdeplot(x=crel[0][~cred], y=crel[1][~cred], color=('k', 0.5), fill=False, levels=8, thresh=0.0, ax=ax[2, cidx], legend=False)
+            sns.scatterplot(x=crel[0][cred], y=crel[1][cred], color=('r', 0.8), s=8, ax=ax[2, cidx], legend=False, lw=0.5, edgecolors='k')
+            #sns.kdeplot(x=crel[0][cred], y=crel[1][cred], color=('r', 0.5), fill=False, levels=8, thresh=0.0, ax=ax[2, cidx], legend=False)
+                        
+            extent = [xe.min(), xe.max(), ye.min(), ye.max()]
+            cim = ax[3, cidx].imshow(H_diff, extent=extent, interpolation=None, aspect='auto', origin='lower', cmap=sns.color_palette("icefire", as_cmap=True))
+            ims.append(cim)
+
+            for row in range(num_rows):
+                ax[row,cidx].set_xlim(-0.5, 1)
+                ax[row,cidx].set_ylim(-0.5, 1)
+
+            ax[-1, cidx].set_xlabel("src", fontsize=labelSize)
+            if cidx==0:
+                ax[0, cidx].set_ylabel("tgt (ctl)", fontsize=labelSize)
+                ax[1, cidx].set_ylabel("tgt (red)", fontsize=labelSize)
+                ax[2, cidx].set_ylabel("tgt (both)", fontsize=labelSize)
+                ax[3, cidx].set_ylabel("$\Delta$ Red-Ctl", fontsize=labelSize)
+            ax[0, cidx].set_title(f"S{sortby}>T{it}", fontsize=labelSize)
+
+        # Control appearance
+        for row in range(0, num_rows):
+            for col in range(0, num_cols):
+                if col < num_cols-1:
+                    ax[row, col].set_box_aspect(1)
+                    # ax[row, col].set_xlim(-0.5, 1)
+                    # ax[row, col].set_ylim(-0.5, 1)
+                if row==num_rows-1:
+                    ax[row, col].set_xticks([0, 0.5, 1])
+                if col==0:
+                    ax[row, col].set_yticks([0, 0.5, 1])
+                if row<num_rows-1 and col<num_cols-1:
+                    ax[row, col].set_xticks([])
+                if col>0 and col<num_cols-1:
+                    ax[row, col].set_yticks([])
+                if col==num_cols-1 and row<num_rows-1:
+                    ax[row, col].set_axis_off()
+        
+        # align color axis of difference maps and create colorbar
+        vminmax = np.max(np.abs(np.concatenate([im.get_clim() for im in ims])))
+        for im in ims:
+            im.set(clim=(-vminmax,vminmax))
+
+        plt.colorbar(ims[0], cax=ax[3,-1], location='right')
+        ax[3,-1].set_ylabel(r'% difference')
+
+        if withSave: 
+            sesidx = '_'.join([str(i) for i in idx_ses])
+            save_name = f"rel_comparison_{envnum}_sortby{sortby}_{rel_method}_ses_{sesidx}"
+            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
+        # Show figure if requested
+        plt.show() if withShow else plt.close()
+
 
 
     def hist_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), present='r2', method='max', split_red=False, withShow=True, withSave=False):
