@@ -31,6 +31,10 @@ if __name__ == "__main__":
         track = tracking.tracker(mouseName) # get tracker object for mouse
         pcm = analysis.placeCellMultiSession(track, autoload=False) # open up place cell multi session analysis object (don't autoload!!!)
         for envnum in pcm.environments[pcm.environments > 0]:
+            idx_ses = pcm.idx_ses_with_env(envnum)
+            sortby = [idx_ses[i] for i in [0, int(len(idx_ses)*0.5), -1]]
+            for sb in sortby:
+                pcm.plot_rel_comparison(envnum, idx_ses=None, sortby=sb, rel_method='pc', withShow=False, withSave=True)
             # pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=False, withShow=False, withSave=True)
             # pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=True, withShow=False, withSave=True)
             # pcm.plot_pfreliability(envnum, idx_ses=None, cutoffs=None, reduction='median', withShow=False, withSave=True)
