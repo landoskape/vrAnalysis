@@ -264,7 +264,8 @@ class base_database:
     # == display meta data for database ==
     def showMetadata(self):
         """convience method for showing the metadata associated with the open database"""
-        print(f"{self.host_type} database located at {self.dbPath}/{self.dbName}{self.dbExt}:{self.tableName} with uid: {self.uid}")
+        print(f"{self.host_type} database located at {self.dbPath}")
+        print(f"Database name: {self.dbName}{self.dbExt}, table name: {self.tableName}, with uid: {self.uid}")
         if self.backupPath is not None: 
             print(f"Backup path located at: {self.backupPath}")
         else:
