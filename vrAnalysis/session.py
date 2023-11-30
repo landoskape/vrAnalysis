@@ -25,12 +25,12 @@ dataPath = fm.localDataPath()
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 class vrSession:
     name = 'vrSession'
-    def __init__(self,mouseName,dateString,session):
+    def __init__(self,mouseName,dateString,sessionid):
         # initialize vrSession object -- this is a top level object which can be used to point to folders and identify basic aspects about the session. 
         # it can't do any real data handling
         self.mouseName = mouseName
         self.dateString = dateString
-        self.session = session
+        self.sessionid = sessionid
         
     # path methods
     def dataPath(self):
@@ -38,7 +38,7 @@ class vrSession:
         # the actual dataPath string is defined in the top of this scripts - change this for your machine and keep data in the Alyx format :)
         return dataPath
     
-    def sessionPath(self): return self.dataPath()/self.mouseName/self.dateString/self.session
+    def sessionPath(self): return self.dataPath()/self.mouseName/self.dateString/self.sessionid
     def onePath(self): return self.sessionPath()/'oneData'
     def rawDataPath(self): return self.sessionPath()/'rawDataPath'
     def suite2pPath(self): return self.sessionPath()/'suite2p'
@@ -65,7 +65,7 @@ class vrSession:
         
     def sessionName(self):
         # function for returning mousename, datestring, and sessionid
-        return self.mouseName, self.dateString, self.session
+        return self.mouseName, self.dateString, self.sessionid
     
     def sessionPrint(self): 
         # useful function for generating string of session name for useful feedback to user 
@@ -101,7 +101,7 @@ class vrExperiment(vrSession):
             assert isinstance(inputs[0], vrExperiment), f"input is a {type(inputs[0])} but it should be a vrExperiment object (or a child thereof)"
             self.mouseName = inputs[0].mouseName
             self.dateString = inputs[0].dateString
-            self.session = inputs[0].session
+            self.sessionid = inputs[0].session
             self.opts = inputs[0].opts
             self.preprocessing = inputs[0].preprocessing
             self.value = inputs[0].value
@@ -111,7 +111,7 @@ class vrExperiment(vrSession):
             assert all([isinstance(ip,str) for ip in inputs]), "if three inputs are provided, they must be strings indicating the mouseName, date, and session"
             self.mouseName = inputs[0]
             self.dateString = inputs[1]
-            self.session = inputs[2]
+            self.sessionid = inputs[2]
             assert self.sessionPath().exists(), "session folder does not exist!"
             self.loadRegisteredExperiment()
             self.loadBuffer = {}
@@ -181,7 +181,7 @@ class vrExperiment(vrSession):
     # -------------------------------------------------------------- database communication --------------------------------------------------------------------
     def printSessionNotes(self, sessiondb):
         """you must pass a valid vrdatabase object for this to work"""
-        record = sessiondb.getRecord(self.mouseName, self.dateString, self.session)
+        record = sessiondb.getRecord(self.mouseName, self.dateString, self.sessionid)
         print(record['sessionNotes'])
     
     # ------------------------------------------ special loading functions for data not stored directly in one format ------------------------------------------
