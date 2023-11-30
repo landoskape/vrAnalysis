@@ -13,7 +13,7 @@ mousedb = database.vrDatabase('vrMice')
 
 TRACKED_MICE = mousedb.getTable(tracked=True)['mouseName'].tolist() # list of mice with tracked sessions
 CUTOFFS = (0.2, 0.5)
-MAXCUTOFFS = (None, None)
+MAXCUTOFFS = None
 
 def handle_inputs():
     parser = ArgumentParser(description='do pcm analyses')
@@ -35,12 +35,13 @@ if __name__ == "__main__":
             sortby = [idx_ses[i] for i in [0, int(len(idx_ses)*0.5), -1]]
             for sb in sortby:
                 pcm.plot_rel_comparison(envnum, idx_ses=None, sortby=sb, rel_method='pc', withShow=False, withSave=True)
-            # pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=False, withShow=False, withSave=True)
-            # pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=True, withShow=False, withSave=True)
-            # pcm.plot_pfreliability(envnum, idx_ses=None, cutoffs=None, reduction='median', withShow=False, withSave=True)
-            # pcm.compare_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=False, withShow=False, withSave=True) 
-            # pcm.compare_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=True, withShow=False, withSave=True) 
-            # pcm.plot_rel_plasticity(envnum, idx_ses=None, cutoffs=cutoffs, maxcutoffs=maxcutoffs, withShow=False, withSave=True)
-            # for present in ['r2', 'pc']:
-            #    pcm.hist_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, present=present, split_red=True, withShow=False, withSave=True)
+                pcm.plot_snake(envnum, idx_ses=None, sortby=sb, cutoffs=cutoffs, method='max', normalize=-80, rewzone=True, withShow=False, withSave=True)
+            pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=False, withShow=False, withSave=True)
+            pcm.plot_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=True, withShow=False, withSave=True)
+            pcm.plot_pfreliability(envnum, idx_ses=None, cutoffs=None, reduction='median', withShow=False, withSave=True)
+            pcm.compare_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=False, withShow=False, withSave=True) 
+            pcm.compare_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, both_reliable=True, withShow=False, withSave=True) 
+            pcm.plot_rel_plasticity(envnum, idx_ses=None, cutoffs=cutoffs, maxcutoffs=maxcutoffs, withShow=False, withSave=True)
+            for present in ['r2', 'pc']:
+               pcm.hist_pfplasticity(envnum, idx_ses=None, cutoffs=cutoffs, present=present, split_red=True, withShow=False, withSave=True)
             pass
