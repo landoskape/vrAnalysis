@@ -701,7 +701,7 @@ class placeCellMultiSession(multipleAnalysis):
 
     def hist_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), present='r2', method='max', split_red=False, withShow=True, withSave=False):
         idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
-        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method=method)
+        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs)
         num_ses = len(idx_ses)
         
         labelSize = 18
@@ -727,6 +727,7 @@ class placeCellMultiSession(multipleAnalysis):
         barwidth = bins[1] - bins[0]
 
         fig, ax = plt.subplots(num_ses, num_ses, figsize=(figdim*num_ses, figdim*num_ses), layout='constrained', sharex=True)
+        ax = np.reshape(ax, (num_ses, num_ses))
         for ii, (ises, itred, isred) in enumerate(zip(idx_ses, target_red, sortby_red)):
             for jj, (jses, jtred, jsred) in enumerate(zip(idx_ses, itred, isred)):
                 if split_red:
