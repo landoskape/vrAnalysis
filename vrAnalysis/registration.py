@@ -217,7 +217,7 @@ class vrRegistration(session.vrExperiment):
     """
     name = 'vrRegistration'
     def __init__(self,*inputs,**userOpts):
-        if len(inputs)==1 and isinstance(inputs[0], vrExperiment):
+        if len(inputs)==1 and isinstance(inputs[0], session.vrExperiment):
             # This means we are creating a vrRegistration object from an existing vrExperiment
             self.createObject(*inputs)
             assert userOpts.keys() <= self.opts.keys(), f"userOpts contains the following invalid keys:  {set(userOpts.keys()).difference(opts.keys())}"
@@ -247,10 +247,10 @@ class vrRegistration(session.vrExperiment):
             opts.update(userOpts) # Update default opts with user requests
         
             # -- initialize vrExperiment parameters --
-            mouseName, dateString, session = inputs
+            mouseName, dateString, sessionid = inputs
             self.mouseName = mouseName
             self.dateString = dateString
-            self.session = session
+            self.sessionid = sessionid
             self.opts = opts
             
             if not self.sessionPath().exists():
@@ -514,7 +514,7 @@ class vrRegistration(session.vrExperiment):
     
     # -------------------------------------- methods for handling timeline data produced by rigbox ------------------------------------------------------------
     def loadTimelineStructure(self): 
-        tlFileName = self.sessionPath() / f"{self.dateString}_{self.session}_{self.mouseName}_Timeline.mat" # timeline.mat file name
+        tlFileName = self.sessionPath() / f"{self.dateString}_{self.sessionid}_{self.mouseName}_Timeline.mat" # timeline.mat file name
         self.tlFile = scio.loadmat(tlFileName,simplify_cells=True)['Timeline'] # load matlab structure
     
     def timelineInputs(self, ignoreTimestamps=False):
@@ -547,7 +547,7 @@ class vrRegistration(session.vrExperiment):
    
     # -------------------------------------- methods for handling vrBehavior data produced by vrControl ------------------------------------------------------------
     def loadBehaviorStructure(self):
-        vrFileName = self.sessionPath() / f"{self.dateString}_{self.session}_{self.mouseName}_VRBehavior_trial.mat" # vrBehavior output file name
+        vrFileName = self.sessionPath() / f"{self.dateString}_{self.sessionid}_{self.mouseName}_VRBehavior_trial.mat" # vrBehavior output file name
         self.vrFile = scio.loadmat(vrFileName,struct_as_record=False,squeeze_me=True)
         if 'rigInfo' not in self.vrFile.keys():
             print(f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2! using `defaultRigInfo()`")
