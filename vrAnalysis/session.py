@@ -101,7 +101,7 @@ class vrExperiment(vrSession):
             assert isinstance(inputs[0], vrExperiment), f"input is a {type(inputs[0])} but it should be a vrExperiment object (or a child thereof)"
             self.mouseName = inputs[0].mouseName
             self.dateString = inputs[0].dateString
-            self.sessionid = inputs[0].session
+            self.sessionid = inputs[0].sessionid
             self.opts = inputs[0].opts
             self.preprocessing = inputs[0].preprocessing
             self.value = inputs[0].value
