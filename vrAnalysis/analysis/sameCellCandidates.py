@@ -799,6 +799,205 @@ class clusterExplorer(sameCellCandidates):
     def inPlaneIndex(self, roi):
         idxToRoiPlane = self.keepPlanes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])
+    
+
+
+
+class clusterExplorerROICaT(sameCellCandidates):
+    def __init__(self,  scc, roicat_labels, maxCluster=25, corrCutoff=0.4, maxCutoff=None, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityF'):
+        for att,val in vars(scc).items(): setattr(self, att, val)
+        self.maxCluster = maxCluster
+        self.default_alpha = 0.8
+        self.default_linewidth = 1
+        
+        # Load ROICaT labels
+        self.roicat_labels = roicat_labels[self.idxROI_inTargetPlane]
+        self.roicat_clusters = np.unique(self.roicat_labels[self.roicat_labels>=0])
+
+        # Load activity and suite2p data
+        self.timestamps = self.vrexp.loadone('mpci.times')
+        self.activity = self.vrexp.loadone(activity)[:,self.idxROI_inTargetPlane]
+        self.neuropil = self.vrexp.loadone('mpci.roiNeuropilActivityF')[:,self.idxROI_inTargetPlane]
+        self.stat = self.vrexp.loadS2P('stat')[self.idxROI_inTargetPlane]
+        self.roiCentroid = self.vrexp.loadone('mpciROIs.stackPosition')[self.idxROI_inTargetPlane,:2]
+        self.roiPlaneIdx = self.vrexp.loadone('mpciROIs.stackPosition')[self.idxROI_inTargetPlane,2].astype(np.int32)
+        
+        # Create look up table for plane colormap
+        if keepPlanes is not None: 
+            assert set(keepPlanes) <= set(self.keepPlanes), "requested planes include some not stored in sameCellCandidate object"
+        roiPlanes = np.unique(self.roiPlaneIdx) if keepPlanes is None else copy(keepPlanes)
+        numPlanes = len(roiPlanes)
+        self.planeColormap = mpl.colormaps.get_cmap('jet').resampled(numPlanes)
+        self.planeToCmap = lambda plane : plane if keepPlanes is None else keepPlanes.index(plane)
+        
+        # create figure
+        plt.close('all')
+        self.ax = []
+        self.fig = plt.figure(figsize=(14,4))#, layout='constrained')
+        self.ax.append(self.fig.add_subplot(1, 4, 1))
+        self.ax.append(self.fig.add_subplot(1, 4, 2, sharex=self.ax[0]))
+        self.ax.append(self.fig.add_subplot(1, 4, 3, sharex=self.ax[0]))
+        self.ax.append(self.fig.add_subplot(1, 4, 4))
+
+        self.fig.subplots_adjust(bottom=0.25)
+
+        self.axIdx = self.fig.add_axes([0.25, 0.1, 0.65, 0.05])
+        self.axText = self.fig.add_axes([0.05, 0.1, 0.1, 0.05])
+        
+        # define the values to use for snapping
+        allowedPairs = copy(self.roicat_clusters)
+
+        # create the sliders
+        initIdx = 0
+        self.sSeed = Slider(
+            self.axIdx, "ROI Seed", 0, len(allowedPairs)-1,
+            valinit=initIdx, valstep=allowedPairs,
+            color="black"
+        )
+        
+        self.text_box = TextBox(self.axText, "ROI", textalignment="center")
+        self.text_box.set_val("0")  # Trigger `submit` with the initial string.
+
+        # initialize plot objects
+        self.dLine = []
+        self.nLine = []
+        self.roiHull = []
+        for n in range(self.maxCluster):
+            self.dLine.append(self.ax[0].plot(self.timestamps, self.activity[:,0], lw=self.default_linewidth, c='k', alpha=self.default_alpha)[0])
+            self.nLine.append(self.ax[1].plot(self.timestamps, self.neuropil[:,0], lw=self.default_linewidth, c='k', alpha=self.default_alpha)[0])
+            hull = self.getMinMaxHull(n)
+            self.roiHull.append(self.ax[3].plot(hull[0], hull[1], c=self.planeColormap(hull[2]), lw=self.default_linewidth)[0])
+        self.im = self.ax[2].imshow(self.activity[:,:10].T, vmin=0, vmax=1, extent=(self.timestamps[0], self.timestamps[-1], 0, 1), aspect='auto', interpolation='nearest', cmap='hot', origin='lower')
+
+        cb = plt.colorbar(mpl.cm.ScalarMappable(cmap=self.planeColormap), ax=self.ax[3], label='Plane Idx', boundaries=np.arange(numPlanes+1)-0.5, values=range(numPlanes))
+        cb.ax.set_yticks(range(numPlanes))
+        cb.ax.set_yticklabels(roiPlanes)
+
+        self.title1 = self.ax[0].set_title('activity')
+        self.title2 = self.ax[1].set_title('neuropil')
+        self.title3 = self.ax[2].set_title('full cluster activity')
+        self.title4 = self.ax[3].set_title('roi outlines')
+
+        # then add real data to them
+        self.updatePlot(initIdx)
+
+        cid = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        kid = self.fig.canvas.mpl_connect('key_press_event', self.onkey)
+        
+        self.sSeed.on_changed(self.changeSlider)
+        self.text_box.on_submit(self.typeROI)
+
+        plt.show()   
+    
+    def changeSlider(self, event):
+        self.updatePlot(int(self.sSeed.val))
+        
+    def typeROI(self, event):
+        valid = self.text_box.text.isnumeric()
+        if valid:
+            self.sSeed.set_val(int(self.text_box.text))
+        else:
+            self.text_box.set_val('not an int')
+        
+    def onkey(self, event):
+        if event.key=='right':
+            self.sSeed.set_val(self.sSeed.val+1)
+        if event.key=='left':
+            self.sSeed.set_val(self.sSeed.val-1)
+        
+    def onclick(self, event):
+        selected = False
+        if event.inaxes==self.ax[2]:
+            plotIndex = int(np.floor(event.ydata))
+            roiSelection = self.idxToPlot[plotIndex]
+            selected = True
+            
+        elif event.inaxes==self.ax[3]:
+            # color based on click position
+            return None
+        
+        else:
+            self.title4.set_text("ROI Outlines")
+        
+        # first reset colors and alphas and zorder
+        for i in range(self.numToPlot):
+            self.dLine[i].set(color=self.plot_cmap(i), alpha=self.default_alpha, zorder=i)
+            self.nLine[i].set(color=self.plot_cmap(i), alpha=self.default_alpha, zorder=i)
+            self.roiHull[i].set(color=self.planeColormap(self.planeToCmap(self.hulls[i][2])), zorder=i, lw=self.default_linewidth)
+        
+        if not selected: return 
+        
+        # then make the new one black
+        self.dLine[plotIndex].set(color='k', alpha=1, zorder=self.maxCluster+10)
+        self.nLine[plotIndex].set(color='k', alpha=1, zorder=self.maxCluster+10)
+        self.roiHull[plotIndex].set(color='k', zorder=self.maxCluster+10, lw=self.default_linewidth*2)
+        roiIndex = self.idxToPlot[plotIndex]
+        roiPlane = int(self.roiPlaneIdx[roiIndex])
+        inPlaneIndex = self.inPlaneIndex(roiIndex)
+        self.title4.set_text(f"ROI Index: {inPlaneIndex} Plane: {roiPlane}")
+        
+    def getMinMaxHull(self, idxroi):
+        ypix = self.stat[idxroi]['ypix']
+        xpix = self.stat[idxroi]['xpix']
+        allx, invx = np.unique(xpix, return_inverse=True)
+        miny, maxy = list(map(list,zip(*[(min(ypix[xpix==u]), max(ypix[xpix==u])) for u in allx])))
+        xpoints = np.append(np.concatenate((allx, allx[::-1])), allx[0])
+        ypoints = np.append(np.concatenate((miny, maxy[::-1])), miny[0])
+        planeIdx = self.roiPlaneIdx[idxroi]
+        return xpoints, ypoints, planeIdx
+        
+    def getConvexHull(self, idxroi):
+        roipix = np.stack((self.stat[idxroi]['ypix'], self.stat[idxroi]['xpix'])).T
+        hull = sp.spatial.ConvexHull(roipix)
+        xpoints, ypoints = hull.points[[*hull.vertices, hull.vertices[0]],1], hull.points[[*hull.vertices, hull.vertices[0]],0]
+        planeIdx = self.roiPlaneIdx[idxroi]
+        return xpoints, ypoints, planeIdx
+    
+    def getCluster(self, iSeed):
+        iCluster = self.roicat_labels==iSeed
+        self.idxROIs = np.where(iCluster)[0]
+        self.numInCluster = np.sum(iCluster)
+        assert self.numInCluster > 1, "found cluster with 1 ROI, this shouldn't happen"
+        self.numToPlot = min(self.numInCluster, self.maxCluster)
+        self.idxToPlot = copy(self.idxROIs)
+        self.hulls = [self.getMinMaxHull(i) for i in self.idxToPlot]
+        return self.activity[:,self.idxToPlot].T, self.neuropil[:, self.idxToPlot].T
+        
+    def updatePlot(self, newIdx):
+        dTraces, nTraces = self.getCluster(newIdx)
+        ydlim = np.min(dTraces), np.max(dTraces)
+        ynlim = np.min(nTraces), np.max(nTraces)
+        rhxlim = min([np.min(h[0]) for h in self.hulls]), max([np.max(h[0]) for h in self.hulls])
+        rhylim = min([np.min(h[1]) for h in self.hulls]), max([np.max(h[1]) for h in self.hulls])
+        rhxcenter = np.mean(rhxlim)
+        rhycenter = np.mean(rhylim)
+        rhrange = max([np.diff(rhxlim), np.diff(rhylim)])
+
+        self.ax[0].set_ylim(ydlim[0], ydlim[1])
+        self.ax[1].set_ylim(ynlim[0], ynlim[1])
+        self.ax[3].set_xlim(rhxcenter-rhrange/2, rhxcenter+rhrange/2) # rhxlim[0], rhxlim[1])
+        self.ax[3].set_ylim(rhycenter-rhrange/2, rhycenter+rhrange/2) # ylim[0], rhylim[1])
+        self.plot_cmap = helpers.ncmap('plasma', self.numToPlot)
+        for i, (dl,nl,rh,d,n,hull) in enumerate(zip(self.dLine, self.nLine, self.roiHull, dTraces, nTraces, self.hulls)):
+            dl.set(ydata=d, color=self.plot_cmap(i), visible=True)
+            nl.set(ydata=n, color=self.plot_cmap(i), visible=True)
+            rh.set(xdata=hull[0], ydata=hull[1], color=self.planeColormap(self.planeToCmap(hull[2])), visible=True)
+        for i in range(len(dTraces),self.maxCluster):
+            self.dLine[i].set(visible=False)
+            self.nLine[i].set(visible=False)
+            self.roiHull[i].set(visible=False)
+            
+        self.ax[3].invert_yaxis()
+        newImshow = sp.signal.savgol_filter(dTraces/np.max(dTraces,axis=1,keepdims=True),15,1,axis=1)
+        #newImshow = newImshow - np.mean(newImshow, axis=1, keepdims=True)
+        self.im.set(data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot))
+        self.title1.set_text(f"Activity - idx:{newIdx}")
+        self.title2.set_text(f"Neuropil - numInCluster:{self.numInCluster}")
+        self.fig.canvas.draw_idle()
+    
+    def inPlaneIndex(self, roi):
+        idxToRoiPlane = self.keepPlanes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
+        return roi - sum(self.roiPerPlane[:idxToRoiPlane])
         
         
         
