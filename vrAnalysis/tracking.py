@@ -27,14 +27,13 @@ class tracker():
         self.tracking_string = tracking_string
         self.results_string = '.results'
         self.rundata_string = '.rundata'
-        self.num_parts_data_path = len(self.data_path().parts) 
+        self.num_parts_data_path = len(self.data_path().parts)
 
         # identify tracking files
         self.identify_tracking_files()
         self.num_planes = len(self.results_files)
         assert len(self.results_files)>0, "no tracking files found"
         assert len(self.results_files)==len(self.rundata_files), "results and rundata have different numbers of files"
-        
         
         # load tracking data
         self.load_tracking_files()
