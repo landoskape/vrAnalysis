@@ -8,7 +8,6 @@ import seaborn as sns
 
 from .. import functions
 from .. import helpers
-from .. import database
 from .standardAnalysis import multipleAnalysis
 from . import placeCellSingleSession
 
