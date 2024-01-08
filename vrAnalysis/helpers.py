@@ -60,6 +60,21 @@ def edge2center(edges):
 
 
 # ------------------------------------ index handling ------------------------------------
+def sparse_filter_by_idx(csr, idx):
+    """
+    helper method for symmetric filtering of a sparse array in csr format
+
+    will perform the equivalent of csr.toarray()[idx][:, idx] using efficient
+    sparse indexing (the second slice done after converting to csc)
+    
+    ::note, tocsc() and tocsr() actually take longer than just doing it directly
+    (even though the row indexing is faster than column indexing for a csr and 
+    vice-versa...)
+
+    returns a sliced csr array
+    """
+    return csr[idx][:, idx]
+
 def powerset(iterable, ignore_empty=False):
     """
     return chain of subsets in powerset of an iterable 
