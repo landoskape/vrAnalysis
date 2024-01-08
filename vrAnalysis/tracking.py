@@ -5,6 +5,7 @@ from tqdm import tqdm
 import pickle
 from pathlib import Path 
 import numpy as np
+import scipy as sp
 import pandas as pd
 
 # import package
@@ -227,6 +228,52 @@ class tracker():
         # A straightforward numpy array of (numSessions, numROIs) containing the indices to retrieve tracked and sorted ROIs
         return np.concatenate([np.stack([offset+ucid for offset, ucid in zip(offsets, ucids)], axis=1) for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)], axis=0).T
 
+    def get_tracked_similarity(self, idx_ses=None, keepPlanes=None):
+        """retrieve sConj and format correctly"""
+        # which planes to keep
+        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
+
+        # get session idx
+        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
+
+        # get sConj data from requested planes
+        sConjData = [self.rundata[i]['clusterer']['sConj'] for i in keepPlanes]
+        sConj = [sp.sparse.csr_array((scd['data'], scd['indices'], scd['indptr'])) for scd in sConjData]
+        
+        # get number of ROIs per plane from each session (for requested planes)
+        num_per_plane = np.stack([ses.value['roiPerPlane'] for ses in self.sessions], axis=1)[keepPlanes]
+        first_last_roi = np.hstack((np.zeros((len(keepPlanes),1)), np.cumsum(num_per_plane, axis=1))).astype(int)
+
+        # concatenate slices of ROI from plane indices
+        idx_roi_to_session = []
+        for flr in first_last_roi:
+            cidx = []
+            for ises in idx_ses:
+                cidx += list(range(flr[ises], flr[ises+1]))
+            idx_roi_to_session.append(cidx)
+
+        # filter sConj to only include relevant sessions
+        sConj = [sc[irts][:, irts] for sc, irts in zip(sConj, idx_roi_to_session)]
+        
+        # concatenate sConj (all off diagonals will be 0!)
+        sconj_full_rows = []
+        for ii in range(len(sConj)):
+            row = []
+            for jj in range(len(sConj)):
+                if ii==jj:
+                    row.append(sConj[ii])
+                else:
+                    row.append(sp.sparse.csr_array((sConj[ii].shape[0], sConj[jj].shape[1])))
+
+            sconj_full_rows.append(sp.sparse.hstack(row, format='csr'))
+            
+        # create full sConj (across planes) for compatibility with standard vrAnalysis organization
+        sConj_full = sp.sparse.vstack(sconj_full_rows, format='csr')
+
+        # raise ValueError("this is all ROIs -- not just tracked ones!!!")
+    
+        return sConj_full
+    
     def check_red_cell_consistency(self, idx_ses=None, keepPlanes=None, use_s2p=False, s2p_cutoff=0.65):
         # which planes to keep
         keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
