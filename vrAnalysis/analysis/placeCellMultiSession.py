@@ -279,6 +279,7 @@ class placeCellMultiSession(multipleAnalysis):
                 
         return snake_data, sortby, idx_red_data
 
+
     def make_paired_snake(self, envnum, target, sortby, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', both_reliable=False):
         """similar to above "make_snake_data" but only contains the data from two sessions, a sortby session and a target session"""
         # idx of session to sort by
@@ -1156,5 +1157,71 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
     
 
+    def perform_roicat_comparisons(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False):
+        """method for determining how well ROICaT tracking similarity works for pairs of cells compared to their place field"""
+        # start by prepping the meta data (e.g. which sessions to use)
+        store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        store_num_ses = len(store_idx_ses)
 
+        # load all relevant data now for better user reporting
+        self.load_pcss_data(idx_ses=store_idx_ses)
+
+        # load paired snakes from matched ROIs
+        target_snake = []
+        sortby_snake = []
+        target_red = []
+        sortby_red = []
+        for sortby in store_idx_ses:
+            c_target_snake = []
+            c_sortby_snake = []
+            c_target_ired = []
+            c_sortby_ired = []
+            for target in store_idx_ses:
+                cdata, cired, _, _ = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, both_reliable=both_reliable)
+                c_target_snake.append(cdata[0])
+                c_sortby_snake.append(cdata[1])
+                c_target_ired.append(cired[0])
+                c_sortby_ired.append(cired[1])
+            target_snake.append(c_target_snake)
+            sortby_snake.append(c_sortby_snake)
+            target_red.append(c_target_ired)
+            sortby_red.append(c_sortby_ired)
+
+        # I need a grid of histograms comparing the snakes across sessions
+        r2 = []
+        pc = []
+        r2_stat = []
+        pc_stat = []
+        for isort, (snakes_target, snakes_sortby, red_target, red_sortby) in enumerate(zip(target_snake, sortby_snake, target_red, sortby_red)):
+            c_r2 = []
+            c_pc = []
+            c_r2_stat = []
+            c_pc_stat = []
+            for itarget, (snake_target, snake_sortby, r_target, r_sortby) in enumerate(zip(snakes_target, snakes_sortby, red_target, red_sortby)):
+                assert snake_target.shape[0] == snake_sortby.shape[0], "oops"
+                # red is only if red in both target and snake session
+                c_idx_red = r_target & r_sortby
+                # get R-squared
+                dv_target = np.max(snake_target, axis=1, keepdims=True)
+                dv_sortby = np.max(snake_sortby, axis=1, keepdims=True)
+                st = snake_target / (dv_target + 1*(dv_target==0))
+                ss = snake_sortby / (dv_sortby + 1*(dv_sortby==0))
+                cc_r2 = helpers.vectorRSquared(ss, st, axis=1)
+                cc_r2[cc_r2==-np.inf] = np.nan
+                # also get correlation
+                cc_pc = helpers.vectorCorrelation(ss, st, axis=1)
+                # then add results
+                c_r2.append(cc_r2)
+                c_pc.append(cc_pc)
+                # now do stats (just ranksum) 
+                c_r2_stat.append(sp.stats.ranksums(cc_r2[~c_idx_red], cc_r2[c_idx_red]))
+                c_pc_stat.append(sp.stats.ranksums(cc_pc[~c_idx_red], cc_pc[c_idx_red]))
+            # keep all results
+            r2.append(c_r2)
+            pc.append(c_pc)
+            r2_stat.append(c_r2_stat)
+            pc_stat.append(c_pc_stat)
+
+        self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
+        return r2, pc, r2_stat, pc_stat, target_red, sortby_red
 
