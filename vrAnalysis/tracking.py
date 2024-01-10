@@ -276,6 +276,8 @@ class tracker():
             's_sf': lambda rundata: rundata['sim']['s_sf'],
             's_SWT': lambda rundata: rundata['sim']['s_SWT'],
             's_sesh': lambda rundata: rundata['sim']['s_sesh'],
+            's_NN_z': lambda rundata: rundata['sim']['s_NN_z'],
+            's_SWT_z': lambda rundata: rundata['sim']['s_SWT_z'],
         }
 
         similarity_data = [lookup[name](self.rundata[i]) for i in keep_planes]
@@ -286,7 +288,7 @@ class tracker():
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_idx_roi_to_session_by_plane(self, idx_ses=None, keep_planes=None):
+    def get_idx_roi_to_session_by_plane(self, tracked=False, idx_ses=None, keep_planes=None):
         """
         returns a list of indices containing the ROIs in idx_ses from keep_planes
         
@@ -297,17 +299,35 @@ class tracker():
 
         to pull out target sessions from each plane, we need an index that pulls out
         the relevant rows and columns (or whatever else structure, but this was 
-        designed to be used with sparse matrices which require integer indexing).        
+        designed to be used with sparse matrices which require integer indexing).    
+
+        if tracked=True, will filter and sort by tracked ROIs such that if there are 
+        10 tracked ROIs in plane 0 and 7 sessions, the similarity matrix after indexing
+        using idx_roi_to_session will be (10*7, 10*7).    
         """
+        # if using tracked ROIs only, get lookup of ROIs for each session
+        if tracked:
+            # this is a nested list with outer length = len(keep_planes) and inner length = len(idx_ses)
+            # where the indices contain the indices to tracked ROIs (in order) for each plane/session combination
+            # without the plane offset required for indexing into stacked data
+            idx_to_ucid = self.get_idx_to_tracked(with_offset=False, idx_ses=idx_ses, keep_planes=keep_planes)
+
         # get number of ROIs per plane from each session (for requested planes)
         first_last_roi = np.hstack((np.zeros((len(keep_planes),1)), np.cumsum(self.roi_per_plane[keep_planes], axis=1))).astype(int)
 
         # concatenate slices of ROI from plane indices
         idx_roi_to_session = []
-        for flr in first_last_roi:
+        for ii, flr in enumerate(first_last_roi):
             cidx = []
-            for ises in idx_ses:
-                cidx += list(range(flr[ises], flr[ises+1]))
+            for jj, ises in enumerate(idx_ses):
+                # this is the set of indices for this particular plane and session corresponding to the rows / columns
+                # in the similarity matrix that correspond to those ROIs similarity comparisons
+                cindices = list(range(flr[ises], flr[ises+1]))
+                if tracked:
+                    # filter by tracked index if requested
+                    cindices = [cindices[i] for i in idx_to_ucid[ii][jj]]
+                # add list to current index
+                cidx += cindices
             idx_roi_to_session.append(cidx)
 
         return idx_roi_to_session
@@ -347,7 +367,7 @@ class tracker():
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_similarity(self, name, tracked=True, idx_ses=None, keep_planes=None):
+    def get_similarity(self, name, tracked=False, idx_ses=None, keep_planes=None):
         """
         retrieve sparse similarity data and consolidate across planes
         
@@ -360,10 +380,10 @@ class tracker():
         sparse = self.similarity_lookup(name, keep_planes=keep_planes, make_csr=True)
 
         # get idx to ROIs in each plane
-        idx_roi_to_sesion = self.get_idx_roi_to_session_by_plane(idx_ses=idx_ses, keep_planes=keep_planes)
+        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # filter sparse matrices
-        sparse_filtered = self._filter_sparse_by_index(sparse, idx_roi_to_sesion)
+        sparse_filtered = self._filter_sparse_by_index(sparse, idx_roi_to_session)
 
         # concatenate 
         sparse_full = self._concatenate_sparse_across_planes(sparse_filtered)
