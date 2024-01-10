@@ -4,6 +4,7 @@ import time
 from tqdm import tqdm
 import pickle
 from pathlib import Path 
+from functools import wraps
 import numpy as np
 import scipy as sp
 import pandas as pd
@@ -20,6 +21,24 @@ sessiondb = database.vrDatabase('vrSessions')
 # Variables that might need to be changed for different users
 # if anyone other than me uses this, let me know and I can make it smarter by using a user dictionary or storing a file somewhere else...
 data_path = fm.localDataPath()
+
+# ---- decorators for tracker class methods ----
+def handle_keep_planes(func):
+    """decorator to handle the keep_planes argument in a standard way for the tracker class"""
+    @wraps(func)
+    def wrapper(tracker_instance, *args, keep_planes=None, **kwargs):
+        keep_planes = tracker_instance.get_keep_planes(keep_planes=keep_planes)
+        return func(tracker_instance, *args, keep_planes=keep_planes, **kwargs)
+    return wrapper
+
+def handle_idx_ses(func):
+    """decorator to handle the idx_ses argument in a standard way for the tracker class"""
+    @wraps(func)
+    def wrapper(tracker_instance, *args, idx_ses=None, **kwargs):
+        idx_ses = tracker_instance.get_idx_session(idx_ses=idx_ses)
+        return func(tracker_instance, *args, idx_ses=idx_ses, **kwargs)
+    return wrapper
+
 
 class tracker():
     def __init__(self, mouse_name, tracking_string='ROICaT.tracking'):
@@ -57,20 +76,16 @@ class tracker():
         return self.data_path() / self.mouse_name
 
     # basic utilities 
-    def get_keepPlanes(self, keepPlanes=None):
-        keepPlanes = keepPlanes if keepPlanes is not None else np.arange(self.num_planes)
-        num_planes = len(keepPlanes)
-        return keepPlanes, num_planes
+    def get_keep_planes(self, keep_planes=None):
+        return keep_planes if keep_planes is not None else np.arange(self.num_planes)
         
     def get_idx_session(self, idx_ses=None):
-        idx_ses = idx_ses if idx_ses is not None else np.arange(self.num_sessions)
-        num_ses = len(idx_ses)
-        return idx_ses, num_ses
+        return idx_ses if idx_ses is not None else np.arange(self.num_sessions)
         
     # database utilities
+    @handle_idx_ses
     def session_table(self, idx_ses=None, reset_index=True):
         """return dataframe of requested sessions from database"""
-        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
         records = [sessiondb.getRecord(*self.sessions[ii].sessionName()) for ii in idx_ses]
         df = pd.concat(records, axis=1).T
         if reset_index: 
@@ -178,17 +193,16 @@ class tracker():
                 assert len(labels)==session.value['roiPerPlane'][planeidx], assertion_message(planeidx, labels, session)
                 self.roi_per_plane[planeidx, sesidx] = session.value['roiPerPlane'][planeidx]
 
-    def prepare_tracking_idx(self, idx_ses=None, keepPlanes=None):
+    @handle_idx_ses
+    @handle_keep_planes
+    def prepare_tracking_idx(self, idx_ses=None, keep_planes=None):
         """get index to tracked ROIs for a list of sessions"""
-        # which planes to keep
-        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
-        
-        # get session index
-        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
-        
+        # get number of sessions used
+        num_ses = len(idx_ses)
+
         # ucids in list of lists for requested sessions
-        ucids = [[[] for _ in range(num_ses)] for _ in range(num_planes)]
-        for planeidx, results in enumerate([self.results[p] for p in keepPlanes]):
+        ucids = [[[] for _ in range(num_ses)] for _ in range(len(keep_planes))]
+        for planeidx, results in enumerate([self.results[p] for p in keep_planes]):
             for sesidx, idx in enumerate(idx_ses):
                 ucids[planeidx][sesidx] = results['clusters']['labels_bySession'][idx]
 
@@ -199,50 +213,94 @@ class tracker():
         roicat_index = [np.zeros((nucids, num_ses), dtype=bool) for nucids in num_ucids]
         for planeidx, ucid in enumerate(ucids):
             for sesidx, uc in enumerate(ucid):
-                cindex = uc[uc >= 0] # index of ROIs found in this session
+                cindex = uc[uc >= 0] # index of ROIs (UCIDs) found in this session in this plane (excluding -1s)
                 roicat_index[planeidx][cindex, sesidx] = True # label found ROI with True
 
         return ucids, roicat_index
     
-    def get_tracked_idx(self, idx_ses=None, keepPlanes=None):
-        """retrieve indices to tracked ROIs for list of sessions"""
-        # which planes to keep
-        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
 
-        # get session idx
-        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
-        
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_idx_to_tracked(self, with_offset=False, idx_ses=None, keep_planes=None):
+        """
+        retrieve indices to tracked ROIs for list of sessions
+        """
         # get ucids and 1s index for requested sessions
-        ucids, roicat_index = self.prepare_tracking_idx(idx_ses=idx_ses, keepPlanes=keepPlanes)
+        ucids, roicat_index = self.prepare_tracking_idx(idx_ses=idx_ses, keep_planes=keep_planes)
         
         # list of UCIDs in all requested sessions (a list of the UCIDs...)
         idx_in_ses = [np.where(np.all(rindex, axis=1))[0] for rindex in roicat_index]
         
         # For each plane & session, a sorted index to the suite2p ROI to recreate the list of UCIDs
         idx_to_ucid = [[helpers.index_in_target(iis, uc)[1] for uc in ucid] for (iis, ucid) in zip(idx_in_ses, ucids)]
-        
-        # cumulative number of ROIs before eacg plane (in numeric order of planes using sorted(self.plane_names))
-        roi_per_plane = self.roi_per_plane[keepPlanes][:, idx_ses]
-        roi_plane_offset = np.cumsum(np.vstack((np.zeros((1,num_ses),dtype=int), roi_per_plane[:-1])), axis=0)
+
+        # if with_offset, add offset for number of ROIs in each plane
+        if with_offset:
+            # cumulative number of ROIs before each plane (in numeric order of planes using sorted(self.plane_names))
+            roi_per_plane = self.roi_per_plane[keep_planes][:, idx_ses]
+            roi_plane_offset = np.cumsum(np.vstack((np.zeros((1, len(idx_ses)), dtype=int), roi_per_plane[:-1])), axis=0)
+            idx_to_ucid = [[offset+ucid for offset, ucid in zip(offsets, ucids)] for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)]
+
+        # return indices
+        return idx_to_ucid
+
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_tracked_idx(self, idx_ses=None, keep_planes=None):
+        """
+        retrieve indices to tracked ROIs for list of sessions
+
+        returns a (num_session, num_tracked) shape numpy array where each column contains
+        integer indices to the tracked ROIs from each session. The integer indices are stacked
+        indices to tracked ROIs in each plane after applying an offset for the number of ROIs 
+        in each plane.
+        """
+        # For each plane & session, a sorted index to the suite2p ROI to recreate the list of UCIDs
+        idx_to_ucid = self.get_idx_to_tracked(with_offset=True, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # A straightforward numpy array of (numSessions, numROIs) containing the indices to retrieve tracked and sorted ROIs
-        return np.concatenate([np.stack([offset+ucid for offset, ucid in zip(offsets, ucids)], axis=1) for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)], axis=0).T
+        return np.concatenate([np.stack([ucid for ucid in ucids], axis=1) for ucids in idx_to_ucid], axis=0).T
 
-    def get_tracked_similarity(self, idx_ses=None, keepPlanes=None):
-        """retrieve sConj and format correctly"""
-        # which planes to keep
-        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
 
-        # get session idx
-        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
-
-        # get sConj data from requested planes
-        sConjData = [self.rundata[i]['clusterer']['sConj'] for i in keepPlanes]
-        sConj = [sp.sparse.csr_array((scd['data'], scd['indices'], scd['indptr'])) for scd in sConjData]
+    # ----- what follows is a set of methods for retrieveing similarity scores from the ROICaT pipeline -----
+    @handle_keep_planes
+    def similarity_lookup(self, name, keep_planes=None, make_csr=True):
+        """
+        retrieve the requested similarity score from the ROICaT rundata
         
+        see dictionary of lookup method for explanation and possible names inside of function
+        """
+        lookup = {
+            'sConj': lambda rundata: rundata['clusterer']['sConj'], 
+            's_NN': lambda rundata: rundata['sim']['s_NN'],
+            's_sf': lambda rundata: rundata['sim']['s_sf'],
+            's_SWT': lambda rundata: rundata['sim']['s_SWT'],
+            's_sesh': lambda rundata: rundata['sim']['s_sesh'],
+        }
+
+        similarity_data = [lookup[name](self.rundata[i]) for i in keep_planes]
+        if make_csr: 
+            return [sp.sparse.csr_array((scd['data'], scd['indices'], scd['indptr'])) for scd in similarity_data]
+        
+        return similarity_data
+
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_idx_roi_to_session_by_plane(self, idx_ses=None, keep_planes=None):
+        """
+        returns a list of indices containing the ROIs in idx_ses from keep_planes
+        
+        helper method for retrieving the idx to all ROIs in requested sessions
+        from each plane. If there are N sessions tracked (from 0 to N-1), and x_n_p
+        ROIs in session n in plane p, then ROICaT will save data with SUM_n (x_n_p)
+        dimensions for each plane (containing all ROIs stacked in order of sessions).
+
+        to pull out target sessions from each plane, we need an index that pulls out
+        the relevant rows and columns (or whatever else structure, but this was 
+        designed to be used with sparse matrices which require integer indexing).        
+        """
         # get number of ROIs per plane from each session (for requested planes)
-        num_per_plane = np.stack([ses.value['roiPerPlane'] for ses in self.sessions], axis=1)[keepPlanes]
-        first_last_roi = np.hstack((np.zeros((len(keepPlanes),1)), np.cumsum(num_per_plane, axis=1))).astype(int)
+        first_last_roi = np.hstack((np.zeros((len(keep_planes),1)), np.cumsum(self.roi_per_plane[keep_planes], axis=1))).astype(int)
 
         # concatenate slices of ROI from plane indices
         idx_roi_to_session = []
@@ -252,43 +310,77 @@ class tracker():
                 cidx += list(range(flr[ises], flr[ises+1]))
             idx_roi_to_session.append(cidx)
 
-        # filter sConj to only include relevant sessions
-        sConj = [sc[irts][:, irts] for sc, irts in zip(sConj, idx_roi_to_session)]
+        return idx_roi_to_session
+
+    def _filter_sparse_by_index(self, list_sparse, list_idx):
+        """helper for retrieveing requested index in rows and columns from sparse matrices"""
+        return [sm[irts][:, irts] for sm, irts in zip(list_sparse, list_idx)]
+    
+    def _concatenate_sparse_across_planes(self, list_sparse):
+        """
+        helper for concatenating sparse matrices across planes
         
-        # concatenate sConj (all off diagonals will be 0!)
-        sconj_full_rows = []
-        for ii in range(len(sConj)):
+        **list_sparse** is a list of sparse csr matrices
+        
+        this method will concatenate them such that each matrix provided
+        in the **list_sparse** argument makes the main diagonal of a block
+        matrix (so all off-diagonal elements between matrices in list_sparse
+        are set to 0...).
+        """
+        
+        sparse_full_rows = []
+        for ii in range(len(list_sparse)):
             row = []
-            for jj in range(len(sConj)):
+            for jj in range(len(list_sparse)):
                 if ii==jj:
-                    row.append(sConj[ii])
+                    # if on main-diagonal of block, append the provided sparse matrix
+                    row.append(list_sparse[ii])
                 else:
-                    row.append(sp.sparse.csr_array((sConj[ii].shape[0], sConj[jj].shape[1])))
+                    # otherwise make an empty (all 0s) csr matrix with the right dimensions
+                    row.append(sp.sparse.csr_array((list_sparse[ii].shape[0], list_sparse[jj].shape[1])))
 
-            sconj_full_rows.append(sp.sparse.hstack(row, format='csr'))
+            # concatenate columns within this row 
+            sparse_full_rows.append(sp.sparse.hstack(row, format='csr'))
             
-        # create full sConj (across planes) for compatibility with standard vrAnalysis organization
-        sConj_full = sp.sparse.vstack(sconj_full_rows, format='csr')
+        # concatenate all rows to form the full square(usually) block matrix
+        return sp.sparse.vstack(sparse_full_rows, format='csr')
 
-        # raise ValueError("this is all ROIs -- not just tracked ones!!!")
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_similarity(self, name, tracked=True, idx_ses=None, keep_planes=None):
+        """
+        retrieve sparse similarity data and consolidate across planes
+        
+        only retrieves data from requested sessions and planes using **idx_ses** and **keep_planes**
+        
+        if tracked=True, will filter by whatever ROIs are officially "tracked" according to ROICaT
+        and whatever criterion are defined in this class instance. Otherwise returns data for all ROIs 
+        """
+        # get sparse similarity data from requested planes
+        sparse = self.similarity_lookup(name, keep_planes=keep_planes, make_csr=True)
+
+        # get idx to ROIs in each plane
+        idx_roi_to_sesion = self.get_idx_roi_to_session_by_plane(idx_ses=idx_ses, keep_planes=keep_planes)
+
+        # filter sparse matrices
+        sparse_filtered = self._filter_sparse_by_index(sparse, idx_roi_to_sesion)
+
+        # concatenate 
+        sparse_full = self._concatenate_sparse_across_planes(sparse_filtered)
+        
+        return sparse_full
     
-        return sConj_full
-    
-    def check_red_cell_consistency(self, idx_ses=None, keepPlanes=None, use_s2p=False, s2p_cutoff=0.65):
-        # which planes to keep
-        keepPlanes, num_planes = self.get_keepPlanes(keepPlanes=keepPlanes)
-
-        # get session idx
-        idx_ses, num_ses = self.get_idx_session(idx_ses=idx_ses)
-
+    @handle_idx_ses
+    @handle_keep_planes
+    def check_red_cell_consistency(self, idx_ses=None, keep_planes=None, use_s2p=False, s2p_cutoff=0.65):
         # get idx of tracked ROIs
-        idx_tracked = self.get_tracked_idx(idx_ses=idx_ses, keepPlanes=keepPlanes)
+        idx_tracked = self.get_tracked_idx(idx_ses=idx_ses, keep_planes=keep_planes)
 
         # get red cell assignments
         if not(use_s2p):
-            idx_red = np.stack([self.sessions[ii].getRedIdx(keepPlanes=keepPlanes)[it] for ii,it in zip(idx_ses, idx_tracked)])
+            idx_red = np.stack([self.sessions[ii].getRedIdx(keep_planes=keep_planes)[it] for ii,it in zip(idx_ses, idx_tracked)])
         else:
-            c_in_plane = [self.sessions[ii].idxToPlanes(keepPlanes=keepPlanes) for ii in idx_ses]
+            c_in_plane = [self.sessions[ii].idxToPlanes(keep_planes=keep_planes) for ii in idx_ses]
             idx_red = np.stack([self.sessions[ii].loadone('mpciROIs.redS2P')[cip][it] > s2p_cutoff for ii, cip, it in zip(idx_ses, c_in_plane, idx_tracked)])
         
         return idx_red
