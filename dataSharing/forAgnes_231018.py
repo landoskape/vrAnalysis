@@ -33,7 +33,7 @@ def generate_filepath(name):
     
 def generate_dictionary():
     """method for getting data as requested by Agnes"""
-    keepPlanes = [1,2,3,4]
+    keep_planes = [1,2,3,4]
     filename = []
     data = []
 
@@ -55,7 +55,7 @@ def generate_dictionary():
         roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
         
         # figure out which ROIs are in the target planes
-        idxUseROI = np.any(np.stack([roiPlaneIdx==pidx for pidx in keepPlanes]),axis=0)
+        idxUseROI = np.any(np.stack([roiPlaneIdx==pidx for pidx in keep_planes]),axis=0)
 
         # add data to dictionary
         cdata['timestamps'] = mpciTime

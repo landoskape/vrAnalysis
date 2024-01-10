@@ -256,17 +256,17 @@ class vrExperiment(vrSession):
         stackPosition = np.stack((xc,yc,planeIdx)).T
         return stackPosition
 
-    def getNumROIs(self, keepPlanes=None):
-        keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(self.value['roiPerPlane']))]
-        return sum([self.value['roiPerPlane'][p] for p in keepPlanes])
+    def getNumROIs(self, keep_planes=None):
+        keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(self.value['roiPerPlane']))]
+        return sum([self.value['roiPerPlane'][p] for p in keep_planes])
 
-    def idxToPlanes(self, keepPlanes=None):
-        keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(self.value['roiPerPlane']))]
+    def idxToPlanes(self, keep_planes=None):
+        keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(self.value['roiPerPlane']))]
         stackPosition = self.loadone('mpciROIs.stackPosition')
         roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
-        return np.any(np.stack([roiPlaneIdx==pidx for pidx in keepPlanes]),axis=0)
+        return np.any(np.stack([roiPlaneIdx==pidx for pidx in keep_planes]),axis=0)
         
-    def getRedIdx(self, include_manual=True, keepPlanes=None):
+    def getRedIdx(self, include_manual=True, keep_planes=None):
         """special loading method for getting red cell index (for handling manual assignment)"""
         assert 'mpciROIs.redCellIdx' in self.printSavedOne(), "mpciROIs.redCellIdx is not a saved one variable, this is required for loading the red index!"
         redidx = self.loadone('mpciROIs.redCellIdx')
@@ -276,7 +276,7 @@ class vrExperiment(vrSession):
             redmanual_assignment = redmanual[0]
             redmanual_active = redmanual[1]
             redidx[redmanual_active] = redmanual_assignment[redmanual_active]
-        in_plane_idx = self.idxToPlanes(keepPlanes=keepPlanes)
+        in_plane_idx = self.idxToPlanes(keep_planes=keep_planes)
         return redidx[in_plane_idx]
             
     

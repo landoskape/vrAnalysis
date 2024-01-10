@@ -83,15 +83,15 @@ class sameCellCandidates(standardAnalysis):
     
     There's also two related methods for looking at the relationship between distance and correlation. 
     One of them makes a scatter plot of all pairs passing the filtering requirements. This is: 
-    scc.scatterForThresholds(keepPlanes=[1,2,3,4], distanceCutoff=250);
+    scc.scatterForThresholds(keep_planes=[1,2,3,4], distanceCutoff=250);
     
     The other makes a cumulative distribution plot for ROIs of two different distance ranges...
     """
-    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4]):
+    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keep_planes=[1,2,3,4]):
         self.name = 'sameCellCandidates'
         self.onefile = onefile
         self.vrexp = vrexp
-        self.keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(vrexp.value['roiPerPlane']))]
+        self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value['roiPerPlane']))]
         
         # automatically do measurements
         self.dataloaded = False
@@ -102,14 +102,14 @@ class sameCellCandidates(standardAnalysis):
         # update onefile if using a different measure of activity
         self.onefile = self.onefile if onefile is None else onefile
         
-        self.roiPerPlane = [self.vrexp.value['roiPerPlane'][kp] for kp in sorted(self.keepPlanes)]
+        self.roiPerPlane = [self.vrexp.value['roiPerPlane'][kp] for kp in sorted(self.keep_planes)]
         self.numROIs = sum(self.roiPerPlane)
         
         # get relevant data
         stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
         roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
         # figure out which ROIs are in the target planes
-        self.idxROI_inTargetPlane = np.any(np.stack([roiPlaneIdx==pidx for pidx in self.keepPlanes]),axis=0)
+        self.idxROI_inTargetPlane = np.any(np.stack([roiPlaneIdx==pidx for pidx in self.keep_planes]),axis=0)
         
         npix = np.array([s['npix'] for s in self.vrexp.loadS2P('stat')[self.idxROI_inTargetPlane]]).astype(np.int32) # roi size (in pixels of mask)
         data = self.vrexp.loadone(self.onefile)[:,self.idxROI_inTargetPlane] # activity array
@@ -145,19 +145,19 @@ class sameCellCandidates(standardAnalysis):
             p2 = sp.spatial.distance.squareform(p2, checks=False)
         return p1, p2
     
-    def getPairFilter(self, npixCutoff=None, keepPlanes=None, corrCutoff=None, distanceCutoff=None, extraFilter=None):
+    def getPairFilter(self, npixCutoff=None, keep_planes=None, corrCutoff=None, distanceCutoff=None, extraFilter=None):
         assert self.dataloaded, "data is not loaded yet, use 'run()' to get key datapoints"
-        if keepPlanes is not None: 
-            assert set(keepPlanes)<=set(self.keepPlanes), f"requested planes are not stored in data, at initialization, you only loaded: {self.keepPlanes}"
+        if keep_planes is not None: 
+            assert set(keep_planes)<=set(self.keep_planes), f"requested planes are not stored in data, at initialization, you only loaded: {self.keep_planes}"
             
         pairIdx = np.full(self.numPairs, True)
         if npixCutoff is not None:
             # remove pairs from index if they don't pass the cutoff
             pairIdx &= self.npixPair1 > npixCutoff
             pairIdx &= self.npixPair2 > npixCutoff
-        if keepPlanes is not None:
-            pairIdx &= np.any(np.stack([self.planePair1==pidx for pidx in keepPlanes]),axis=0)
-            pairIdx &= np.any(np.stack([self.planePair2==pidx for pidx in keepPlanes]),axis=0)
+        if keep_planes is not None:
+            pairIdx &= np.any(np.stack([self.planePair1==pidx for pidx in keep_planes]),axis=0)
+            pairIdx &= np.any(np.stack([self.planePair2==pidx for pidx in keep_planes]),axis=0)
         if corrCutoff is not None:
             pairIdx &= self.xcROIs > corrCutoff
         if distanceCutoff is not None:
@@ -175,11 +175,11 @@ class sameCellCandidates(standardAnalysis):
         yposPair1, yposPair2 = self.yposPair1[pairIdx], self.yposPair2[pairIdx]
         return xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2
         
-    def scatterForThresholds(self, keepPlanes=None, distanceCutoff=None, outputFig=False):
+    def scatterForThresholds(self, keep_planes=None, distanceCutoff=None, outputFig=False):
         '''Make color-coded scatter plot to visualize potential thresholds for distance and planes'''
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
+        pairIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=distanceCutoff)
         
         randomFilter = pairIdx & (np.random.random(self.xcROIs.shape) < 0.05)
         xcROIs = self.xcROIs[randomFilter]
@@ -214,9 +214,9 @@ class sameCellCandidates(standardAnalysis):
         
         if outputFig: return fig
     
-    def cdfForThresholds(self, cdfVals=np.linspace(0,1,11), ylim=None, keepPlanes=None, distanceCutoff=50, corrCutoff=None, distanceDistant=(50, 250), withSave=False, withShow=True):
+    def cdfForThresholds(self, cdfVals=np.linspace(0,1,11), ylim=None, keep_planes=None, distanceCutoff=50, corrCutoff=None, distanceDistant=(50, 250), withSave=False, withShow=True):
         '''Make color-coded cumulative distribution plots to visualize potential thresholds for distance and planes
-        the cutoff inputs and keepPlanes input are all standard - they go into getPairFilter. 
+        the cutoff inputs and keep_planes input are all standard - they go into getPairFilter. 
         the distanceDistant input requires a tuple and determines the range of distances to use for the "distant" group
         the "close" group is based purely on 'distanceCutoff'
         This uses a fast approximation of the cdf with prespecified cdfVals, which should be an increasing linspace like array.
@@ -224,8 +224,8 @@ class sameCellCandidates(standardAnalysis):
         assert type(distanceDistant)==tuple and len(distanceDistant)==2, "distanceDistant should be a tuple specifying the range"
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        closeIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff, corrCutoff=corrCutoff)
-        farIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceDistant[1], corrCutoff=corrCutoff, extraFilter=(self.pwDist>distanceDistant[0])) 
+        closeIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=distanceCutoff, corrCutoff=corrCutoff)
+        farIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=distanceDistant[1], corrCutoff=corrCutoff, extraFilter=(self.pwDist>distanceDistant[0])) 
         
         def makeCDF(self, idx):            
             xcROIs = self.xcROIs[idx]
@@ -272,7 +272,7 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
         
     
-    def roiCountHandling(self, roiCountCutoffs=np.linspace(0, 1, 11), maxBinConnections=25, keepPlanes=None, distanceCutoff=40, withSave=False, withShow=True):
+    def roiCountHandling(self, roiCountCutoffs=np.linspace(0, 1, 11), maxBinConnections=25, keep_planes=None, distanceCutoff=40, withSave=False, withShow=True):
         '''measures statistics about how many ROIs are removed (and other things about the connection graph)'''
         
         if len(roiCountCutoffs)>11:
@@ -280,7 +280,7 @@ class sameCellCandidates(standardAnalysis):
                   "this could lead to an extremely long processing time due to the MIS algorithm!")
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=distanceCutoff)
+        pairIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=distanceCutoff)
         xcROIs = self.xcROIs[pairIdx]
         idxRoi1 = self.idxRoi1[pairIdx]
         idxRoi2 = self.idxRoi2[pairIdx]
@@ -365,12 +365,12 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
         
         
-    def clusterSize(self, corrCutoffs=[0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], distanceCutoff=30, minDistance=None, keepPlanes=[1,2,3,4], verbose=True, withSave=False, withShow=True):
+    def clusterSize(self, corrCutoffs=[0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], distanceCutoff=30, minDistance=None, keep_planes=[1,2,3,4], verbose=True, withSave=False, withShow=True):
         """clusterSize plots the histogram of cluster sizes as the correlation cutoff changes, given other parameters..."""
         numCutoffs = len(corrCutoffs)
         extraFilter = self.pwdist > minDistance if minDistance is not None else None
-        planeIdx = self.getPairFilter(keepPlanes=keepPlanes) # just plane filter for pulling out the relevant pairs
-        pairIdx = self.getPairFilter(distanceCutoff=distanceCutoff, keepPlanes=keepPlanes, extraFilter=extraFilter)
+        planeIdx = self.getPairFilter(keep_planes=keep_planes) # just plane filter for pulling out the relevant pairs
+        pairIdx = self.getPairFilter(distanceCutoff=distanceCutoff, keep_planes=keep_planes, extraFilter=extraFilter)
         connBins, connCounts = [], []
         corrBins, corrCounts = [], []
         for i, cc in enumerate(corrCutoffs):
@@ -481,8 +481,8 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
         
     
-    def distanceDistribution(self, corrCutoffs=np.linspace(0.2, 0.6, 5), maxDistance=200, normalize='counts', keepPlanes=[1,2,3,4], withSave=False, withShow=True):
-        planeIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=maxDistance) 
+    def distanceDistribution(self, corrCutoffs=np.linspace(0.2, 0.6, 5), maxDistance=200, normalize='counts', keep_planes=[1,2,3,4], withSave=False, withShow=True):
+        planeIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=maxDistance) 
         corrIdx = [planeIdx & (self.xcROIs>cc) for cc in corrCutoffs]
         corrDistanceDistribution = [self.pwDist[cidx] for cidx in corrIdx]
         maxDistance = max([np.max(cdd) for cdd in corrDistanceDistribution])
@@ -491,7 +491,7 @@ class sameCellCandidates(standardAnalysis):
         counts = [np.histogram(cdd, bins=bins)[0] for cdd in corrDistanceDistribution]
         
         samePlaneIdx = self.planePair1==self.planePair2
-        planeIdx = self.getPairFilter(keepPlanes=keepPlanes, distanceCutoff=maxDistance, extraFilter=samePlaneIdx) 
+        planeIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=maxDistance, extraFilter=samePlaneIdx) 
         corrIdx = [planeIdx & (self.xcROIs>cc) for cc in corrCutoffs]
         corrDistanceDistribution = [self.pwDist[cidx] for cidx in corrIdx]
         maxDistance = max([np.max(cdd) for cdd in corrDistanceDistribution])
@@ -533,14 +533,14 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
         
         
-    def makeHistograms(self, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, withSave=False, npixCutoff=None, keepPlanes=None):
+    def makeHistograms(self, thresholds=[40, 10, 5, 3, 1], ncorrbins=51, withSave=False, npixCutoff=None, keep_planes=None):
         '''Makes histograms of the correlation coefficients between ROIs within plane or across all planes, filtering for xy - distance'''
         binEdges = np.linspace(-1, 1, ncorrbins)
         binCenters = helpers.edge2center(binEdges)
         barWidth = np.diff(binEdges[:2])
         
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(npixCutoff=npixCutoff, keepPlanes=keepPlanes)
+        pairIdx = self.getPairFilter(npixCutoff=npixCutoff, keep_planes=keep_planes)
         xcROIs, pwDist, planePair1, planePair2, npixPair1, npixPair2, xposPair1, xposPair1, yposPair1, yposPair2 = self.filterPairs(pairIdx)
         
         # same plane information
@@ -594,7 +594,7 @@ class sameCellCandidates(standardAnalysis):
         
         
 class clusterExplorer(sameCellCandidates):
-    def __init__(self,  scc, maxCluster=25, corrCutoff=0.4, maxCutoff=None, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityF'):
+    def __init__(self,  scc, maxCluster=25, corrCutoff=0.4, maxCutoff=None, distanceCutoff=20, minDistance=None, keep_planes=[1,2,3,4], activity='mpci.roiActivityF'):
         for att,val in vars(scc).items(): setattr(self, att, val)
         self.maxCluster = maxCluster
         self.default_alpha = 0.8
@@ -609,12 +609,12 @@ class clusterExplorer(sameCellCandidates):
         self.roiPlaneIdx = self.vrexp.loadone('mpciROIs.stackPosition')[self.idxROI_inTargetPlane,2].astype(np.int32)
         
         # Create look up table for plane colormap
-        if keepPlanes is None: 
-            assert set(keepPlanes) <= set(self.keepPlanes), "requested planes include some not stored in sameCellCandidate object"
-        roiPlanes = np.unique(self.roiPlaneIdx) if keepPlanes is None else copy(keepPlanes)
+        if keep_planes is None: 
+            assert set(keep_planes) <= set(self.keep_planes), "requested planes include some not stored in sameCellCandidate object"
+        roiPlanes = np.unique(self.roiPlaneIdx) if keep_planes is None else copy(keep_planes)
         numPlanes = len(roiPlanes)
         self.planeColormap = mpl.colormaps.get_cmap('jet').resampled(numPlanes)
-        self.planeToCmap = lambda plane : plane if keepPlanes is None else keepPlanes.index(plane)
+        self.planeToCmap = lambda plane : plane if keep_planes is None else keep_planes.index(plane)
         
         # Create extrafilter if requested
         if maxCutoff is not None or minDistance is not None:
@@ -627,7 +627,7 @@ class clusterExplorer(sameCellCandidates):
             extraFilter = None
 
         # generate pair filter and return list of ROIs in clusters based on correlation, distance, and plane
-        self.boolIdx = self.getPairFilter(corrCutoff=corrCutoff, distanceCutoff=distanceCutoff, keepPlanes=keepPlanes, extraFilter=extraFilter)
+        self.boolIdx = self.getPairFilter(corrCutoff=corrCutoff, distanceCutoff=distanceCutoff, keep_planes=keep_planes, extraFilter=extraFilter)
         self.allROIs = list(set(self.idxRoi1[self.boolIdx]).union(set(self.idxRoi2[self.boolIdx])))
         numPairs = len(self.allROIs)
         
@@ -797,14 +797,14 @@ class clusterExplorer(sameCellCandidates):
         self.fig.canvas.draw_idle()
     
     def inPlaneIndex(self, roi):
-        idxToRoiPlane = self.keepPlanes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
+        idxToRoiPlane = self.keep_planes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])
     
 
 
 
 class clusterExplorerROICaT(sameCellCandidates):
-    def __init__(self,  scc, roicat_labels, maxCluster=25, corrCutoff=0.4, maxCutoff=None, distanceCutoff=20, minDistance=None, keepPlanes=[1,2,3,4], activity='mpci.roiActivityF'):
+    def __init__(self,  scc, roicat_labels, maxCluster=25, corrCutoff=0.4, maxCutoff=None, distanceCutoff=20, minDistance=None, keep_planes=[1,2,3,4], activity='mpci.roiActivityF'):
         for att,val in vars(scc).items(): setattr(self, att, val)
         self.maxCluster = maxCluster
         self.default_alpha = 0.8
@@ -823,12 +823,12 @@ class clusterExplorerROICaT(sameCellCandidates):
         self.roiPlaneIdx = self.vrexp.loadone('mpciROIs.stackPosition')[self.idxROI_inTargetPlane,2].astype(np.int32)
         
         # Create look up table for plane colormap
-        if keepPlanes is not None: 
-            assert set(keepPlanes) <= set(self.keepPlanes), "requested planes include some not stored in sameCellCandidate object"
-        roiPlanes = np.unique(self.roiPlaneIdx) if keepPlanes is None else copy(keepPlanes)
+        if keep_planes is not None: 
+            assert set(keep_planes) <= set(self.keep_planes), "requested planes include some not stored in sameCellCandidate object"
+        roiPlanes = np.unique(self.roiPlaneIdx) if keep_planes is None else copy(keep_planes)
         numPlanes = len(roiPlanes)
         self.planeColormap = mpl.colormaps.get_cmap('jet').resampled(numPlanes)
-        self.planeToCmap = lambda plane : plane if keepPlanes is None else keepPlanes.index(plane)
+        self.planeToCmap = lambda plane : plane if keep_planes is None else keep_planes.index(plane)
         
         # create figure
         plt.close('all')
@@ -996,7 +996,7 @@ class clusterExplorerROICaT(sameCellCandidates):
         self.fig.canvas.draw_idle()
     
     def inPlaneIndex(self, roi):
-        idxToRoiPlane = self.keepPlanes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
+        idxToRoiPlane = self.keep_planes.index(self.roiPlaneIdx[roi]) # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])
         
         

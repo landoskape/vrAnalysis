@@ -57,7 +57,7 @@ def getEnvironmentSorted(inenv, ge=0):
         env_sorted = sorted([i for i,u in enumerate(used) if u], key=lambda x: env_order[x])
         return env_sorted
     
-def sessionStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
+def sessionStats(ises=None, keep_planes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     """
     Method for returning a list of reliability indices and red cell assignments
 
@@ -87,7 +87,7 @@ def sessionStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=F
     
     # iterate through requested sessions and store data
     for ses in ises:
-        c_use_rois = ses.idxToPlanes(keepPlanes=keepPlanes) # boolean array of ROIs within target planes
+        c_use_rois = ses.idxToPlanes(keep_planes=keep_planes) # boolean array of ROIs within target planes
         ses_name.append(str(ses))
         ses_per_mouse.append(mouseCounter[ses.mouseName])
         if use_s2p:
@@ -156,9 +156,9 @@ def sessionStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=F
     return miceInSession, env_counter, trial_counter, total_cell_count, red_cell_count
 
 
-def plot_environmentStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
+def plot_environmentStats(ises=None, keep_planes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     miceInSession, env_counter, trial_counter, total_cell_count, red_cell_count = sessionStats(ises=ises,
-                                                                                               keepPlanes=keepPlanes,
+                                                                                               keep_planes=keep_planes,
                                                                                                include_manual=include_manual,
                                                                                                use_s2p=use_s2p,
                                                                                                s2p_cutoff=s2p_cutoff,
@@ -206,9 +206,9 @@ def plot_environmentStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, 
     plt.show()
     
 
-def plot_roiCountStats(ises=None, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
+def plot_roiCountStats(ises=None, keep_planes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65, **kwConditions):
     miceInSession, env_counter, trial_counter, total_cell_count, red_cell_count = sessionStats(ises=ises,
-                                                                                               keepPlanes=keepPlanes,
+                                                                                               keep_planes=keep_planes,
                                                                                                include_manual=include_manual,
                                                                                                use_s2p=use_s2p,
                                                                                                s2p_cutoff=s2p_cutoff,

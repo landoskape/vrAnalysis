@@ -22,7 +22,7 @@ class placeCellMultiSession(multipleAnalysis):
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
-    def __init__(self, track, onefile='mpci.roiActivityDeconvolvedOasis', autoload=False, keepPlanes=[1,2,3,4], distStep=(1,5,2), speedThreshold=5, numcv=2, standardizeSpks=True):
+    def __init__(self, track, onefile='mpci.roiActivityDeconvolvedOasis', autoload=False, keep_planes=[1,2,3,4], distStep=(1,5,2), speedThreshold=5, numcv=2, standardizeSpks=True):
         self.name = 'placeCellMultiSession'
         self.onefile = onefile
         self.track = track
@@ -31,7 +31,7 @@ class placeCellMultiSession(multipleAnalysis):
         self.speedThreshold = speedThreshold
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
-        self.keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(track.sessions[0].value['roiPerPlane']))]
+        self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(track.sessions[0].value['roiPerPlane']))]
         
         self.create_pcss()
 
@@ -42,7 +42,7 @@ class placeCellMultiSession(multipleAnalysis):
         pcss_arguments = {
             'onefile':self.onefile, 
             'autoload':self.autoload,
-            'keepPlanes':self.keepPlanes,
+            'keep_planes':self.keep_planes,
             'distStep':self.distStep,
             'speedThreshold':self.speedThreshold,
             'numcv':self.numcv,
@@ -50,7 +50,7 @@ class placeCellMultiSession(multipleAnalysis):
         }
         return pcss_arguments
             
-    def create_pcss(self, autoload=None, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None):
+    def create_pcss(self, autoload=None, onefile=None, distStep=None, speedThreshold=None, numcv=None, keep_planes=None):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
         if onefile is not None: self.onefile = onefile
@@ -60,7 +60,7 @@ class placeCellMultiSession(multipleAnalysis):
         if distStep is not None: self.distStep = distStep
         if speedThreshold is not None: self.speedThreshold = speedThreshold
         if numcv is not None: self.numcv = numcv
-        if keepPlanes is not None: self.keepPlanes = keepPlanes
+        if keep_planes is not None: self.keep_planes = keep_planes
 
         # create place cell single session objects for each session
         pcss_arguments = self.make_pcss_arguments()
@@ -69,7 +69,8 @@ class placeCellMultiSession(multipleAnalysis):
         self.environments = np.unique(np.concatenate([pcss.environments for pcss in self.pcss]))
         
     def load_pcss_data(self, idx_ses=None, **kwargs):
-        self.idx_ses, self.num_ses = self.track.get_idx_session(idx_ses=idx_ses)
+        self.idx_ses = self.track.get_idx_session(idx_ses=idx_ses)
+        self.num_ses = len(self.idx_ses)
         idx_to_load = [idx for idx in self.idx_ses if not(self.pcss_loaded[idx])]
         if len(idx_to_load)>0:
             for sesidx in tqdm(idx_to_load):
@@ -143,7 +144,7 @@ class placeCellMultiSession(multipleAnalysis):
                 self.pcss[i].measure_reliability(with_test=True)
             
         # handle tracking 
-        idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keepPlanes=self.keepPlanes) for i in idx_ses]))
+        idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes) for i in idx_ses]))
 
         # get reliability values for all the cells - it's a tuple of relmse / relcor for each pcss
         relmse, relcor, relmse_test, relcor_test = map(list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum, with_test=True) for i in idx_ses]))
@@ -154,7 +155,7 @@ class placeCellMultiSession(multipleAnalysis):
         relmse_test, relcor_test = list(map(lambda x: x[0], relmse_test)), list(map(lambda x: x[0], relcor_test))      
         
         # get index of red cells and filter by tracked
-        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in self.idx_ses]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
         
         # get tracked reliability arrays (for each tracked (not sortby session), tuple of reliability on sortby / target for tracked across this pair of sessions)
         mse = []
@@ -196,7 +197,7 @@ class placeCellMultiSession(multipleAnalysis):
         idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
 
         # handle tracking
-        idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keepPlanes=self.keepPlanes) for i in self.idx_ses]))
+        idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes) for i in self.idx_ses]))
 
         # handle environment request
         if envnum is not None:
@@ -206,7 +207,7 @@ class placeCellMultiSession(multipleAnalysis):
             self.load_pcss_data(idx_ses=self.idx_ses)
 
         # get spiking data (in time!)
-        idx_to_planes = [self.pcss[i].vrexp.idxToPlanes(keepPlanes=self.keepPlanes) for i in self.idx_ses]    
+        idx_to_planes = [self.pcss[i].vrexp.idxToPlanes(keep_planes=self.keep_planes) for i in self.idx_ses]    
         spkdata = [self.pcss[i].vrexp.loadone(self.onefile).T[pi,:] for i, pi in zip(self.idx_ses, idx_to_planes)]
 
         # handle reliability (if environment requested)
@@ -216,7 +217,7 @@ class placeCellMultiSession(multipleAnalysis):
             idx_reliable = [np.full(sd.shape[0], True) for sd in spkdata] # if no environment requested, use all ROIs
 
         # get red idx
-        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in self.idx_ses]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
 
         # filter by tracked
         spkdata = [sd[idx_tracked] for sd, idx_tracked in zip(spkdata, idx_tracked_target)]
@@ -245,7 +246,7 @@ class placeCellMultiSession(multipleAnalysis):
         idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
         
         self.load_pcss_data(idx_ses=self.idx_ses)
-        self.idx_tracked = self.track.get_tracked_idx(idx_ses=self.idx_ses, keepPlanes=self.keepPlanes)
+        self.idx_tracked = self.track.get_tracked_idx(idx_ses=self.idx_ses, keep_planes=self.keep_planes)
         
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in self.idx_ses]
         in_session = [~np.isnan(ei) for ei in envidx]
@@ -253,7 +254,7 @@ class placeCellMultiSession(multipleAnalysis):
         
         spkmaps = self.get_from_pcss('spkmap', self.idx_ses)
         idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(self.idx_ses, envidx)]
-        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in self.idx_ses]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
         idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(self.idx_ses, envidx)]
         idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(self.idx_ses, envidx)]
         idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(self.idx_ses, envidx)]
@@ -288,14 +289,14 @@ class placeCellMultiSession(multipleAnalysis):
         idx_ses = [target, sortby]
         
         self.load_pcss_data(idx_ses=idx_ses)
-        self.idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keepPlanes=self.keepPlanes)
+        self.idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
         
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
         assert all([~np.isnan(ei) for ei in envidx]), "requested environment not in all sessions"
         
         spkmaps = self.get_from_pcss('spkmap', idx_ses)
         idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(idx_ses, envidx)]
-        idx_red = [self.pcss[i].vrexp.getRedIdx(keepPlanes=self.keepPlanes) for i in idx_ses]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
         idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(idx_ses, envidx)]
         idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
         idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]

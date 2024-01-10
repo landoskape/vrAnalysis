@@ -253,7 +253,7 @@ class placeCellSingleSession(standardAnalysis):
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
-    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keepPlanes=[1,2,3,4], distStep=(1,5,5), speedThreshold=5, numcv=2, standardizeSpks=True):
+    def __init__(self, vrexp, onefile='mpci.roiActivityDeconvolvedOasis', autoload=True, keep_planes=[1,2,3,4], distStep=(1,5,5), speedThreshold=5, numcv=2, standardizeSpks=True):
         self.name = 'placeCellSingleSession'
         self.onefile = onefile
         self.vrexp = vrexp
@@ -261,7 +261,7 @@ class placeCellSingleSession(standardAnalysis):
         self.speedThreshold = speedThreshold
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
-        self.keepPlanes = keepPlanes if keepPlanes is not None else [i for i in range(len(vrexp.value['roiPerPlane']))]
+        self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value['roiPerPlane']))]
         
         # automatically load data
         self.dataloaded = False
@@ -282,7 +282,7 @@ class placeCellSingleSession(standardAnalysis):
         self.environments = np.unique(self.trial_envnum)
         self.numEnvironments = len(self.environments)
         
-    def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keepPlanes=None, with_test=False):
+    def load_data(self, onefile=None, distStep=None, speedThreshold=None, numcv=None, keep_planes=None, with_test=False):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
         if onefile is not None: self.onefile = onefile
@@ -291,15 +291,15 @@ class placeCellSingleSession(standardAnalysis):
         if distStep is not None: self.distStep = distStep
         if speedThreshold is not None: self.speedThreshold = speedThreshold
         if numcv is not None: self.numcv = numcv
-        if keepPlanes is not None: self.keepPlanes = keepPlanes
+        if keep_planes is not None: self.keep_planes = keep_planes
         
         # get idx of rois within keep planes
         stackPosition = self.vrexp.loadone('mpciROIs.stackPosition')
         roiPlaneIdx = stackPosition[:,2].astype(np.int32) # plane index
         
         # figure out which ROIs are in the target planes
-        self.idxUseROI = np.any(np.stack([roiPlaneIdx==pidx for pidx in self.keepPlanes]),axis=0)
-        self.numROIs = self.vrexp.getNumROIs(self.keepPlanes)
+        self.idxUseROI = np.any(np.stack([roiPlaneIdx==pidx for pidx in self.keep_planes]), axis=0)
+        self.numROIs = self.vrexp.getNumROIs(self.keep_planes)
         
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
         kwargs = {'distStep':self.distStep, 'onefile':self.onefile, 'speedThreshold':self.speedThreshold, 'standardizeSpks':self.standardizeSpks}

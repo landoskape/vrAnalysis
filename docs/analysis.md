@@ -125,7 +125,7 @@ pcss = analysis.placeCellSingleSession(vrexp)
 There are several options for creating a `pcss` object. Most of these options
 are utilized in the [`functions`](../vrAnalysis/functions.py) module, for more
 explanation look there. 
-- keepPlanes: a list of planes to keep, usually ignoring the flyback plane
+- keep_planes: a list of planes to keep, usually ignoring the flyback plane
 - distStep: a tuple describing how to manage spatial resolution. It's a little
   complicated so here's a full explanation. If only one value is provided, no
   downsampling or gaussian smoothing is used. If only two values are provided,
@@ -260,7 +260,7 @@ many of those ROIs are considered red, according to the standard red detection
 method or by suite2p alone. It organizes the outputs by mouse and envrionment.
 ```python
 ises = vrdb.iterSessions(imaging=True, vrRegistration=True) # get iterable of all registered imaging sessions
-stats = analysis.sessionStats(ises=ises, keepPlanes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65) # measure session stats
+stats = analysis.sessionStats(ises=ises, keep_planes=[1,2,3,4], include_manual=True, use_s2p=False, s2p_cutoff=0.65) # measure session stats
 miceInSession, env_counter, trial_counter, total_cell_count, red_cell_count = stats # unpack tuple
 ```
 
@@ -268,14 +268,14 @@ To plot the stats about which environments were visited and in how many trials
 by each mouse, use this. Additional input arguments are the same as 
 `sessionStats`.
 ```python
-analysis.plot_environmentStats(ises=ises, keepPlanes=[1,2,3,4])
+analysis.plot_environmentStats(ises=ises, keep_planes=[1,2,3,4])
 ```
 
 To plot the stats about how many ROIs were imaged and how many of those are 
 red in each session, use this. Additional input arguments are the same as 
 `sessionStats`.
 ```python
-analysis.plot_roiCountStats(ises=ises, keepPlanes=[1,2,3,4])
+analysis.plot_roiCountStats(ises=ises, keep_planes=[1,2,3,4])
 ```
 
 ## Same Cell Candidates -- [link to module](../vrAnalysis/analysis/sameCellCandidates.py)
@@ -297,14 +297,14 @@ vrexp = random.choice(vrdb.iterSessions(imaging=True, vrRegistration=True))
 print(vrexp.sessionPrint()) # show which session you chose
 
 # create sameCellCandidates object
-# keepPlanes determines which planes to use, others will be considered the flyback and ignored in all further analyses
-scc = analysis.sameCellCandidates(vrexp, keepPlanes=[1,2,3,4]) 
+# keep_planes determines which planes to use, others will be considered the flyback and ignored in all further analyses
+scc = analysis.sameCellCandidates(vrexp, keep_planes=[1,2,3,4]) 
 ```
 
 To observe clusters of cells based on a variety of criteria, use this block. 
 It opens up a mediocre matplotlib GUI to look through ROI clusters. 
 ```python
-clusterExplorer = analysis.clusterExplorer(scc, corrCutoff=0.5, maxCutoff=None, distanceCutoff=30, minDistance=None, keepPlanes=[1,2,3,4])
+clusterExplorer = analysis.clusterExplorer(scc, corrCutoff=0.5, maxCutoff=None, distanceCutoff=30, minDistance=None, keep_planes=[1,2,3,4])
 ```
 
 To look at how many pairs of ROIs are found across planes that are near each
@@ -317,7 +317,7 @@ scc.planePairHistograms(corrCutoff=[0.5, 0.6, 0.7, 0.8], distanceCutoff=50, with
 To look at a scatter plot of the distance between ROIs vs. their correlation 
 coefficient, use this. Beware of the alpha value.
 ```python
-scc.scatterForThresholds(keepPlanes=[1,2,3,4], distanceCutoff=250);
+scc.scatterForThresholds(keep_planes=[1,2,3,4], distanceCutoff=250);
 ``` 
 
 
