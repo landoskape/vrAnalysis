@@ -9,6 +9,8 @@ import numpy as np
 import scipy as sp
 import pandas as pd
 
+from typing import List
+
 # import package
 from . import session
 from . import functions
@@ -263,11 +265,20 @@ class tracker():
 
     @handle_idx_ses
     @handle_keep_planes
-    def split_by_plane(self, data: np.ndarray, dim=0, tracked=False, idx_ses=None, keep_planes=None):
+    def split_by_plane(self, data: List[np.ndarray], dim=0, tracked=False, idx_ses=None, keep_planes=None):
         """
         helper method for splitting data by planes along dimension **dim** 
         
-        to make a list of whatever was in the data separated by plane
+        data should be a list of numpy arrays containing some value associated with each ROI 
+        concatenated across planes. this method will split each data array into a list of data
+        arrays where each list corresponds to the part of the array associated with a particular
+        imaging plane
+
+        dim is used to set which dimension of the data array to index on (it's where the ROIs
+        are concatenate)
+
+        tracked=True assumes that data contains ROIs that were filtered by whether they had been
+        tracked across the set of sessions in idx_ses
         """
         assert len(data)==len(idx_ses), "length of data list and idx_ses is not equal"
 
@@ -288,7 +299,7 @@ class tracker():
 
         # create index list for each plane for each session
         idx_to_plane = []
-        for ises, flr in enumerate(first_last_roi):
+        for _, flr in enumerate(first_last_roi):
             cidx = []
             for iplane, _ in enumerate(keep_planes):
                 # add a list of indices for this plane in this session
@@ -339,7 +350,7 @@ class tracker():
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_idx_roi_to_session_by_plane(self, tracked=False, idx_ses=None, keep_planes=None):
+    def get_idx_roi_to_session_by_plane(self, tracked=False, split_sessions=False, idx_ses=None, keep_planes=None):
         """
         returns a list of indices containing the ROIs in idx_ses from keep_planes
         
@@ -381,8 +392,12 @@ class tracker():
                 elif tracked:
                     # filter for those that are tracked if requested
                     cindices = [cindices[i] for i in idx_to_ucid[ii][jj]]
-                # add list to current index
-                cidx += cindices
+                if split_sessions:
+                    # If splitting across sessions, make a list of lists of indices to each session
+                    cidx.append(cindices)
+                else:
+                    # If not splitting across sessions, make a single list for all sessions for each plane
+                    cidx += cindices
             idx_roi_to_session.append(cidx)
 
         return idx_roi_to_session
@@ -439,7 +454,7 @@ class tracker():
         sparse = self.similarity_lookup(name, keep_planes=keep_planes, make_csr=True)
 
         # get idx to ROIs in each plane
-        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, idx_ses=idx_ses, keep_planes=keep_planes)
+        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, split_sessions=False, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # filter sparse matrices
         sparse = self._filter_sparse_by_index(sparse, idx_roi_to_session)
@@ -450,6 +465,48 @@ class tracker():
         
         return sparse
     
+    @handle_keep_planes
+    def get_similarity_paired(self, name, source=None, target=None, symmetric=True, tracked=False, cat_planes=False, keep_planes=None):
+        """
+        retrieve sparse similarity data from a pair of sessions (source and target)
+
+        returns the requested similarity data (by **name**) in the format of a sparse matrix
+        with size (#ROIs_in_source, #ROIs_in_target). Since some similarity data is not symmetric, 
+        using the symmetric=True kwarg setting will take the average of the [row, col] & [col, row]
+        values. If symmetric=False, will just take [row, col] where row<source, and col<target.
+
+        if tracked=True, will filter by whatever ROIs are officially "tracked" according to ROICaT
+        and whatever criterion are defined in this class instance. Otherwise returns data for all ROIs 
+        can also use tracked='not' to only return those that aren't tracked
+
+        if cat_planes=True, will create a full similarity matrix stacked across planes (with all
+        off-diagonal entries zero because they aren't defined in ROICaT)
+        """
+        # get sparse similarity data from requested planes
+        sparse = self.similarity_lookup(name, keep_planes=keep_planes, make_csr=True)
+
+        # get idx to ROIs in each plane
+        idx_ses = [source, target]
+        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, split_sessions=True, idx_ses=idx_ses, keep_planes=keep_planes)
+
+        # filter sparse matrix
+        sparse_pair = [s[idx[0]][:, idx[1]] for s, idx in zip(sparse, idx_roi_to_session)]
+        
+        # if symmetric is requested, take the average of the data with it's transpose
+        if symmetric:
+            # this is the same ROI pairs but organized by (target, source) 
+            # which isn't always symmetric... 
+            sparse_reflection = [s[idx[1]][:, idx[0]].transpose().tocsr() for s, idx in zip(sparse, idx_roi_to_session)]
+            # average the data from the [source, target] and [target, source] looks
+            for idx, (sp, sr) in enumerate(zip(sparse_pair, sparse_reflection)):
+                sparse_pair[idx].data = np.mean(np.stack((sp.data, sr.data)), axis=0)
+
+        # concatenate across planes if requested
+        if cat_planes:
+            sparse_pair = self._concatenate_sparse_across_planes(sparse_pair)
+        
+        return sparse_pair
+
     @handle_idx_ses
     @handle_keep_planes
     def check_red_cell_consistency(self, idx_ses=None, keep_planes=None, use_s2p=False, s2p_cutoff=0.65):
