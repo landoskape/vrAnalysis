@@ -177,7 +177,15 @@ def digitizeEqual(data, mn, mx, nbins):
     binidx[binidx<0]=0
     binidx[binidx>nbins-1]=nbins-1
     return binidx.astype(int)
-    
+
+# ------------------------------------ sparse handling -----------------------------------    
+def sparse_equal(a, b):
+    """
+    helper method for checking if two sparse arrays a & b are equal
+    """
+    # if they are equal, the number of disagreeing values will be 0
+    return (a!=b).nnz==0
+
 def sparse_filter_by_idx(csr, idx):
     """
     helper method for symmetric filtering of a sparse array in csr format
