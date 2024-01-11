@@ -1,4 +1,5 @@
 import sys
+from warnings import warn
 import inspect
 import math
 from copy import copy
@@ -75,6 +76,10 @@ def named_transpose(list_of_lists):
     return map(list, zip(*list_of_lists))
 
 # ------------------------------------ index handling ------------------------------------
+def all_pairs(idx_ses):
+    """Return all pairs without replacement of elements in iterable idx_ses"""
+    return np.array([np.array(pair) for pair in combinations(idx_ses, 2)], dtype=int)
+
 def index_on_dim(numpy_array, index, dim):
     """Return data from **numpy_array** from indices **index** on dimension **dim**"""
     slices = [slice(None)] * numpy_array.ndim
@@ -91,6 +96,7 @@ def powerset(iterable, ignore_empty=False):
     
 def index_in_target(value, target):
     """returns boolean array for whether each value is in target and location array such that target[loc_target] = value"""
+    value = check_iterable(value)
     target_to_index = {value: index for index, value in enumerate(target)}
     in_target = np.array([val in target_to_index for val in value], dtype=bool)
     loc_target = np.array([target_to_index[val] if in_t else -1 for in_t, val in zip(in_target, value)], dtype=int)
@@ -202,8 +208,32 @@ def sparse_filter_by_idx(csr, idx):
     return csr[idx][:, idx]
     
 # ---------------------------------- signal processing ----------------------------------    
-def vectorCorrelation(x,y,axis=-1):
-    # for each column in x, measure the correlation with each column in y
+def crossCorrelation(x, y):
+    """
+    measure the cross correlation between each column in x with every column in y
+
+    sets the cross-correlation to NaN for any element if it has 0 variation
+    """
+    assert x.ndim==y.ndim==2, "x and y must be 2-d numpy arrays"
+    assert x.shape[0]==y.shape[0], "x and y need to have the same number of dimensions (=rows)!"
+    N = x.shape[0]
+    xDev = x - np.mean(x, axis=0, keepdims=True)
+    yDev = y - np.mean(y, axis=0, keepdims=True)
+    xSampleStd = np.sqrt(np.sum(xDev**2, axis=0, keepdims=True) / (N-1))
+    ySampleStd = np.sqrt(np.sum(yDev**2, axis=0, keepdims=True) / (N-1))
+    xIdxValid = xSampleStd > 0
+    yIdxValid = ySampleStd > 0
+    xSampleStdCorrected = xSampleStd + 1*(~xIdxValid)
+    ySampleStdCorrected = ySampleStd + 1*(~yIdxValid)
+    xDev /= xSampleStdCorrected
+    yDev /= ySampleStdCorrected
+    std = xDev.T @ yDev / (N - 1)
+    std[:, ~yIdxValid[0]] = np.nan
+    std[~xIdxValid[0]] = np.nan
+    return std
+
+def vectorCorrelation(x, y, axis=-1):
+    """measure the correlation of every element in x with every element in y on axis=axis"""
     assert x.shape==y.shape, "x and y need to have the same shape!"
     N = x.shape[axis]
     xDev = x - np.mean(x, axis=axis, keepdims=True)
