@@ -398,8 +398,8 @@ class placeCellSingleSession(standardAnalysis):
         if not(self.dataloaded): self.load_data()
         
         assert method=='com' or method=='max', f"invalid method ({method}), must be either 'com' or 'max'"
-        if roi_idx is None: roi_idx = np.ones(numROIs, dtype=bool)            
-        if trial_idx is None: trial_idx = np.ones(numTrials, dtype=bool)
+        if roi_idx is None: roi_idx = np.ones(self.numROIs, dtype=bool)            
+        if trial_idx is None: trial_idx = np.ones(self.numTrials, dtype=bool)
             
         # Get ROI x Position profile of activity for each ROI as a function of position
         meanProfile = np.mean(self.spkmap[roi_idx][:,trial_idx], axis=1) 
@@ -407,7 +407,8 @@ class placeCellSingleSession(standardAnalysis):
         # if method is 'com' (=center of mass), use weighted mean to get place field location
         if method=='com':
             # note that this can generate buggy behavior if spkmap isn't based on mostly positive signals!
-            
+            if np.any(meanProfile < 0):
+                print(f"Place field estimation with center-of-mass method is ignoring negative activity values found in session: {self.vrexp.sessionPrint()}")
             nonnegativeProfile = np.maximum(meanProfile, 0) 
             pfloc = np.sum(nonnegativeProfile * self.distcenters.reshape(1,-1), axis=1) / np.sum(nonnegativeProfile, axis=1)
 
