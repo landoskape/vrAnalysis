@@ -106,6 +106,94 @@ class placeCellMultiSession(multipleAnalysis):
         pfidx = np.argsort(pfloc)
 
         return pfloc, pfidx
+    
+    def get_spkmaps(self, envnum, trials=None, tracked=True, idx_ses=None, pf_method='max', by_plane=False):
+        """
+        method for retrieving spkmap from a particular environment across sessions
+
+        also will retrieve red index and reliability values
+
+        if tracked=True, will filter spkmaps by whether ROIs were tracked and sort
+        each sessions spkmap to be aligned by track index across sessions
+
+        if trials=None, will return the full spkmap (#ROIs, #Trials, #SpatialBins).
+        if trials='train', 'test', or 'full', then will return the average across
+        the requested trials.
+
+        pf_method determines how to measure the place field location-- can either be
+        'max' for the location at peak value or 'com' for a center of mass measurement
+        """
+        # define idx_ses if not provided (use all sessions for requested environment)
+        if idx_ses is None:
+            idx_ses = self.idx_ses_with_env(envnum)
+
+        # check that requested environment is in all requested sessions
+        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
+        assert all([~np.isnan(ei) for ei in envidx]), "requested environment not in all requested sessions"
+        
+        # load all data now
+        self.load_pcss_data(idx_ses=idx_ses)
+        
+        # get track index if requested
+        if tracked:
+            idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
+        
+        # get spkmaps (#ROI, #Trials, #SpatialBins)
+        spkmaps = self.get_from_pcss('spkmap', idx_ses)
+        
+        # retrieve red index for ROIs 
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
+        
+        # retrieve requested trial indices (or all trial indices for requested environment)
+        if trials=='train':
+            # get train trials
+            idx_trials = [self.pcss[i].train_idx[ei] for i, ei in zip(idx_ses, envidx)]
+        elif trials=='test':
+            # get test trials 
+            idx_trials = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
+        else:
+            # Otherwise use all trials in requested environment
+            idx_trials = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
+
+        # get reliability values for ROIs
+        relmse, relcor = map(list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses]))
+
+        # get_reliability_values returns a list of relmse/relcor values for each environment
+        # since only envnum (len(envnum)==1) was requested, get the 0th index for each relmse & relcor
+        relmse = list(map(lambda x: x[0], relmse)) 
+        relcor = list(map(lambda x: x[0], relcor))
+
+        # get place field for ROIs
+        pfloc, pfidx = map(list, zip(*[self.pcss[ises].get_place_field(trial_idx=idx_trials[ii], method=pf_method) for ii, ises in enumerate(idx_ses)]))
+        
+        # if using tracked only, then filter and sort by tracking index
+        if tracked:
+            spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, idx_tracked)]
+            idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, idx_tracked)]
+            relmse = [mse[idx_track] for mse, idx_track in zip(relmse, idx_tracked)]
+            relcor = [cor[idx_track] for cor, idx_track in zip(relcor, idx_tracked)]
+            pfloc = [pfl[idx_track] for pfl, idx_track in zip(pfloc, idx_tracked)]
+            pfidx = [pfi[idx_track] for pfi, idx_track in zip(pfidx, idx_tracked)]
+
+        # always filter spkmaps by trials for requested environment (either train/test/all)
+        spkmaps = [spkmap[:, trials] for spkmap, trials in zip(spkmaps, idx_trials)]
+        
+        # if trial average requested, average over trials
+        if trials:
+            spkmaps = list(map(lambda smap: np.mean(smap, axis=1), spkmaps))
+        
+        # if by_plane=True, then split each dataset up into lists of the data for each plane
+        if by_plane:
+            spkmaps = self.track.split_by_plane(spkmaps, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            idx_red = self.track.split_by_plane(idx_red, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            relmse = self.track.split_by_plane(relmse, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            relcor = self.track.split_by_plane(relcor, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            pfloc = self.track.split_by_plane(pfloc, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            pfidx = self.track.split_by_plane(pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+
+        # return data
+        return spkmaps, relmse, relcor, pfloc, pfidx, idx_red
+    
         
     def make_rel_data(self, envnum, idx_ses=None, sortby=None):
         """
