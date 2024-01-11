@@ -59,21 +59,27 @@ def edge2center(edges):
     return edges[:-1] + np.diff(edges)/2
 
 
+# ------------------------------------ data wrangling ------------------------------------
+def transpose_list(list_of_lists):
+    """helper function for transposing the order of a list of lists"""
+    return list(map(list, zip(*list_of_lists)))
+
+def named_transpose(list_of_lists):
+    """
+    helper function for transposing lists without forcing the output to be a list like transpose_list
+
+    for example, if list_of_lists contains 10 copies of lists that each have 3 iterable elements you
+    want to name "A", "B", and "C", then write:
+    A, B, C = named_transpose(list_of_lists)
+    """
+    return map(list, zip(*list_of_lists))
+
 # ------------------------------------ index handling ------------------------------------
-def sparse_filter_by_idx(csr, idx):
-    """
-    helper method for symmetric filtering of a sparse array in csr format
-
-    will perform the equivalent of csr.toarray()[idx][:, idx] using efficient
-    sparse indexing (the second slice done after converting to csc)
-    
-    ::note, tocsc() and tocsr() actually take longer than just doing it directly
-    (even though the row indexing is faster than column indexing for a csr and 
-    vice-versa...)
-
-    returns a sliced csr array
-    """
-    return csr[idx][:, idx]
+def index_on_dim(numpy_array, index, dim):
+    """Return data from **numpy_array** from indices **index** on dimension **dim**"""
+    slices = [slice(None)] * numpy_array.ndim
+    slices[dim] = index
+    return numpy_array[tuple(slices)]
 
 def powerset(iterable, ignore_empty=False):
     """
@@ -172,6 +178,20 @@ def digitizeEqual(data, mn, mx, nbins):
     binidx[binidx>nbins-1]=nbins-1
     return binidx.astype(int)
     
+def sparse_filter_by_idx(csr, idx):
+    """
+    helper method for symmetric filtering of a sparse array in csr format
+
+    will perform the equivalent of csr.toarray()[idx][:, idx] using efficient
+    sparse indexing (the second slice done after converting to csc)
+    
+    ::note, tocsc() and tocsr() actually take longer than just doing it directly
+    (even though the row indexing is faster than column indexing for a csr and 
+    vice-versa...)
+
+    returns a sliced csr array
+    """
+    return csr[idx][:, idx]
     
 # ---------------------------------- signal processing ----------------------------------    
 def vectorCorrelation(x,y,axis=-1):
