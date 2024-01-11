@@ -261,6 +261,57 @@ class tracker():
         # A straightforward numpy array of (numSessions, numROIs) containing the indices to retrieve tracked and sorted ROIs
         return np.concatenate([np.stack([ucid for ucid in ucids], axis=1) for ucids in idx_to_ucid], axis=0).T
 
+    @handle_idx_ses
+    @handle_keep_planes
+    def split_by_plane(self, data: np.ndarray, dim=0, tracked=False, idx_ses=None, keep_planes=None):
+        """
+        helper method for splitting data by planes along dimension **dim** 
+        
+        to make a list of whatever was in the data separated by plane
+        """
+        assert len(data)==len(idx_ses), "length of data list and idx_ses is not equal"
+
+        # if using tracked ROIs only, get lookup of ROIs for each session
+        if tracked:
+            # this is a nested list with outer length = len(keep_planes) and inner length = len(idx_ses)
+            # where the indices contain the indices to tracked ROIs (in order) for each plane/session combination
+            # without the plane offset required for indexing into stacked data
+            idx_to_ucid = self.get_idx_to_tracked(with_offset=False, idx_ses=idx_ses, keep_planes=keep_planes)
+            tracked_roi_per_plane = np.stack([np.stack([len(idx) for idx in idx_ucid]) for idx_ucid in idx_to_ucid])
+
+            # first and last roi per plane of tracked data
+            first_last_roi = np.vstack((np.zeros((1, len(idx_ses))), np.cumsum(tracked_roi_per_plane, axis=0))).astype(int).T
+        else:
+            # get first and last roi for each plane of data
+            # (num_session x num_plane) numpy array
+            first_last_roi = np.vstack((np.zeros((1, len(idx_ses))), np.cumsum(self.roi_per_plane[keep_planes][:, idx_ses], axis=0))).astype(int).T
+
+        # create index list for each plane for each session
+        idx_to_plane = []
+        for ises, flr in enumerate(first_last_roi):
+            cidx = []
+            for iplane, _ in enumerate(keep_planes):
+                # add a list of indices for this plane in this session
+                cidx.append(list(range(flr[iplane], flr[iplane+1])))
+            
+            # add to list of lists of index to each plane for each session
+            idx_to_plane.append(cidx)
+
+        # check if size is correct (sum of length of index list for each plane should be equal to total number of ROIs for that session)
+        expected_num_rois = [sum([len(idx) for idx in idx_plane]) for idx_plane in idx_to_plane]
+        assert all([d.shape[dim]==exp_num for d, exp_num in zip(data, expected_num_rois)]), f"mismatch between number of elements on dim {dim} of data and expected number of ROIs in each plane"
+
+        # break data down into list of arrays for each plane within each session
+        data_by_plane = []
+        for ses_data, idx_plane in zip(data, idx_to_plane):
+            cdata = []
+            for idx in idx_plane:
+                cdata.append(helpers.index_on_dim(ses_data, idx, dim))
+            data_by_plane.append(cdata)
+        
+        # return 
+        return data_by_plane
+
 
     # ----- what follows is a set of methods for retrieveing similarity scores from the ROICaT pipeline -----
     @handle_keep_planes
@@ -268,7 +319,7 @@ class tracker():
         """
         retrieve the requested similarity score from the ROICaT rundata
         
-        see dictionary of lookup method for explanation and possible names inside of function
+        see dictionary of lookup methods for explanation and possible names inside of function
         """
         lookup = {
             'sConj': lambda rundata: rundata['clusterer']['sConj'], 
@@ -303,7 +354,8 @@ class tracker():
 
         if tracked=True, will filter and sort by tracked ROIs such that if there are 
         10 tracked ROIs in plane 0 and 7 sessions, the similarity matrix after indexing
-        using idx_roi_to_session will be (10*7, 10*7).    
+        using idx_roi_to_session will be (10*7, 10*7). Can also use tracked='not' to 
+        specifically look at ROIs that ~aren't~ tracked.
         """
         # if using tracked ROIs only, get lookup of ROIs for each session
         if tracked:
@@ -323,8 +375,11 @@ class tracker():
                 # this is the set of indices for this particular plane and session corresponding to the rows / columns
                 # in the similarity matrix that correspond to those ROIs similarity comparisons
                 cindices = list(range(flr[ises], flr[ises+1]))
-                if tracked:
-                    # filter by tracked index if requested
+                if tracked and tracked=='not':
+                    # filter out any that are tracked if requested
+                    cindices = [cind for ii, cind in enumerate(cindices) if ii not in idx_to_ucid[ii][jj]]
+                elif tracked:
+                    # filter for those that are tracked if requested
                     cindices = [cindices[i] for i in idx_to_ucid[ii][jj]]
                 # add list to current index
                 cidx += cindices
@@ -367,7 +422,7 @@ class tracker():
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_similarity(self, name, tracked=False, idx_ses=None, keep_planes=None):
+    def get_similarity(self, name, tracked=False, cat_planes=False, idx_ses=None, keep_planes=None):
         """
         retrieve sparse similarity data and consolidate across planes
         
@@ -375,6 +430,10 @@ class tracker():
         
         if tracked=True, will filter by whatever ROIs are officially "tracked" according to ROICaT
         and whatever criterion are defined in this class instance. Otherwise returns data for all ROIs 
+        can also use tracked='not' to only return those that aren't tracked
+
+        if cat_planes=True, will create a full similarity matrix stacked across planes (with all
+        off-diagonal entries zero because they aren't defined in ROICaT)
         """
         # get sparse similarity data from requested planes
         sparse = self.similarity_lookup(name, keep_planes=keep_planes, make_csr=True)
@@ -383,12 +442,13 @@ class tracker():
         idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # filter sparse matrices
-        sparse_filtered = self._filter_sparse_by_index(sparse, idx_roi_to_session)
+        sparse = self._filter_sparse_by_index(sparse, idx_roi_to_session)
 
-        # concatenate 
-        sparse_full = self._concatenate_sparse_across_planes(sparse_filtered)
+        # concatenate across planes if requested
+        if cat_planes:
+            sparse = self._concatenate_sparse_across_planes(sparse)
         
-        return sparse_full
+        return sparse
     
     @handle_idx_ses
     @handle_keep_planes
