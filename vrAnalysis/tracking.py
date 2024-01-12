@@ -109,7 +109,7 @@ class tracker():
         return match.group(2) 
         
     def list_tracking_files(self, filetype):
-        return list(self.mouse_path().rglob(f"*{self.tracking_string+filetype}*"))
+        return list(self.mouse_path().glob(f"*{self.tracking_string+filetype}*"))
                     
     def identify_tracking_files(self):
         """identify files where tracking data is stored"""
