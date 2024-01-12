@@ -107,7 +107,7 @@ class placeCellMultiSession(multipleAnalysis):
 
         return pfloc, pfidx
     
-    def get_spkmaps(self, envnum, trials=None, tracked=True, idx_ses=None, pf_method='max', by_plane=False):
+    def get_spkmaps(self, envnum, trials='full', average=True, tracked=True, idx_ses=None, pf_method='max', by_plane=False):
         """
         method for retrieving spkmap from a particular environment across sessions
 
@@ -116,9 +116,9 @@ class placeCellMultiSession(multipleAnalysis):
         if tracked=True, will filter spkmaps by whether ROIs were tracked and sort
         each sessions spkmap to be aligned by track index across sessions
 
-        if trials=None, will return the full spkmap (#ROIs, #Trials, #SpatialBins).
-        if trials='train', 'test', or 'full', then will return the average across
-        the requested trials.
+        if trials='train', 'test', or 'full', then will use the requested trials
+        if average=True, will average across the requested trials, otherwise will
+        return the full spkmap (#ROIs, #Trials, #SpatialBins).
 
         pf_method determines how to measure the place field location-- can either be
         'max' for the location at peak value or 'com' for a center of mass measurement
@@ -151,10 +151,12 @@ class placeCellMultiSession(multipleAnalysis):
         elif trials=='test':
             # get test trials 
             idx_trials = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
-        else:
+        elif trials=='full':
             # Otherwise use all trials in requested environment
             idx_trials = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
-
+        else:
+            raise ValueError(f"Did not recognize 'trials' input, permitted is 'train', 'test', and 'full' but '{trials}' was provided.")
+        
         # get reliability values for ROIs
         relmse, relcor = map(list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses]))
 
@@ -179,7 +181,7 @@ class placeCellMultiSession(multipleAnalysis):
         spkmaps = [spkmap[:, trials] for spkmap, trials in zip(spkmaps, idx_trials)]
         
         # if trial average requested, average over trials
-        if trials:
+        if average:
             spkmaps = list(map(lambda smap: np.mean(smap, axis=1), spkmaps))
         
         # if by_plane=True, then split each dataset up into lists of the data for each plane
