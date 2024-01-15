@@ -1,5 +1,6 @@
 from copy import copy
 from tqdm import tqdm
+from functools import wraps
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
@@ -10,6 +11,38 @@ from .. import functions
 from .. import helpers
 from .standardAnalysis import multipleAnalysis
 from . import placeCellSingleSession
+
+# ---- decorators for pcm class methods ----
+def handle_idx_ses(func):
+    """
+    decorator to handle the idx_ses argument in a standardized way when envnum is provided
+    """
+    @wraps(func)
+    def wrapper(pcm_instance, envnum, *args, idx_ses=None, **kwargs):
+        # check this
+        provide_envidx = 'envidx' in kwargs # check if envidx is required by func
+        envidx = kwargs.pop('envidx', None) # get it (or use None if not present)
+        if envidx is not None:
+            raise ValueError("envidx is used as a placeholder and should never be set directly")
+        
+        # get all sessions with requested environment
+        if idx_ses is None:
+            idx_ses = pcm_instance.idx_ses_with_env(envnum)
+            
+        # check that requested environment is in all requested sessions
+        envidx = [pcm_instance.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
+        in_session = [~np.isnan(ei) for ei in envidx]
+        assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(idx_ses, in_session) if inses]}"
+
+        # add processed envidx if required
+        if provide_envidx:
+            kwargs['envidx'] = envidx
+
+        # return function with processed arguments
+        return func(pcm_instance, envnum, *args, envidx=envidx, idx_ses=idx_ses, **kwargs)
+    
+    # return decorated function
+    return wrapper
 
 class placeCellMultiSession(multipleAnalysis):
     """
@@ -50,7 +83,7 @@ class placeCellMultiSession(multipleAnalysis):
         }
         return pcss_arguments
             
-    def create_pcss(self, autoload=None, onefile=None, distStep=None, speedThreshold=None, numcv=None, keep_planes=None):
+    def create_pcss(self, *, autoload=None, onefile=None, distStep=None, speedThreshold=None, numcv=None, keep_planes=None):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
         if onefile is not None: self.onefile = onefile
@@ -68,7 +101,8 @@ class placeCellMultiSession(multipleAnalysis):
         self.pcss_loaded = [self.autoload for _ in range(len(self.pcss))]
         self.environments = np.unique(np.concatenate([pcss.environments for pcss in self.pcss]))
         
-    def load_pcss_data(self, idx_ses=None, **kwargs):
+    def load_pcss_data(self, *, idx_ses=None, **kwargs):
+        """load pcss data from requested sessions with kwargs"""
         self.idx_ses = self.track.get_idx_session(idx_ses=idx_ses)
         self.num_ses = len(self.idx_ses)
         idx_to_load = [idx for idx in self.idx_ses if not(self.pcss_loaded[idx])]
@@ -106,8 +140,9 @@ class placeCellMultiSession(multipleAnalysis):
         pfidx = np.argsort(pfloc)
 
         return pfloc, pfidx
-    
-    def get_spkmaps(self, envnum, trials='full', average=True, tracked=True, idx_ses=None, pf_method='max', by_plane=False):
+
+    @handle_idx_ses
+    def get_spkmaps(self, envnum, *, trials='full', average=True, tracked=True, pf_method='max', by_plane=False, envidx=None, idx_ses=None):
         """
         method for retrieving spkmap from a particular environment across sessions
 
@@ -123,14 +158,6 @@ class placeCellMultiSession(multipleAnalysis):
         pf_method determines how to measure the place field location-- can either be
         'max' for the location at peak value or 'com' for a center of mass measurement
         """
-        # define idx_ses if not provided (use all sessions for requested environment)
-        if idx_ses is None:
-            idx_ses = self.idx_ses_with_env(envnum)
-
-        # check that requested environment is in all requested sessions
-        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
-        assert all([~np.isnan(ei) for ei in envidx]), "requested environment not in all requested sessions"
-        
         # load all data now
         self.load_pcss_data(idx_ses=idx_ses)
         
@@ -196,8 +223,8 @@ class placeCellMultiSession(multipleAnalysis):
         # return data
         return spkmaps, relmse, relcor, pfloc, pfidx, idx_red
     
-        
-    def make_rel_data(self, envnum, idx_ses=None, sortby=None):
+    @handle_idx_ses
+    def make_rel_data(self, envnum, sortby=None, idx_ses=None):
         """
         This method returns a comparison of reliability on source and target sessions.
 
@@ -213,10 +240,6 @@ class placeCellMultiSession(multipleAnalysis):
         idx_ses:
             index of target sessions, from which reliability values in second element of each tuple come from (includes sortby session)
         """
-
-        if idx_ses is None:
-            idx_ses = self.idx_ses_with_env(envnum)
-        
         if sortby is None: 
             sortby = idx_ses[0]
         else:
@@ -224,10 +247,6 @@ class placeCellMultiSession(multipleAnalysis):
         
         idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[sortby] # get idx of sortby session from idx_ses
         
-        # get idx of requested environment for each session
-        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
-        in_session = [~np.isnan(ei) for ei in envidx]
-        assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(idx_ses, in_session) if inses]}"
         self.load_pcss_data(idx_ses=idx_ses, with_test=True) # required for reliability values -- include test for comparison of reliability within sortby session
         for i in idx_ses:
             if not hasattr(self.pcss[i], 'test_relmse') or self.pcss[i].test_relmse is None:
@@ -269,22 +288,15 @@ class placeCellMultiSession(multipleAnalysis):
         return mse, cor, red, sortby, idx_ses
 
 
+    @handle_idx_ses
     def make_skew_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.2, 0.5), maxcutoffs=None):
-        if idx_ses is None:
-            if envnum is None:
-                # use all sessions if not requesting ROIs based on reliability in certain environment
-                self.idx_ses = [ii for ii in range(len(self.pcss))]
-            else:
-                # otherwise use all sessions with environment
-                self.idx_ses = self.idx_ses_with_env(envnum)
-
         # check sortby and get idx to sortby session
         if sortby is None:
             sortby = self.idx_ses[-1]
         else:
             assert sortby in self.idx_ses, f"sortby session ({sortby}) is not in requested sessions ({self.idx_ses})"
 
-        idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
+        # idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
 
         # handle tracking
         idx_tracked_target, idx_tracked_sortby = map(list, zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes) for i in self.idx_ses]))
@@ -324,9 +336,8 @@ class placeCellMultiSession(multipleAnalysis):
 
         return skew, idx_red
 
+    @handle_idx_ses
     def make_snake_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), maxcutoffs=None, method='max', include_red=True):
-        self.idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
-
         if sortby is None:
             sortby = self.idx_ses[-1]
         else:
@@ -423,9 +434,10 @@ class placeCellMultiSession(multipleAnalysis):
         return [target_snake, sortby_snake], idx_red_data, [target_mse, sortby_mse], [target_cor, sortby_cor]
         
 
+    @handle_idx_ses
     def measure_pfreliability(self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method='max'):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
-        store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        store_idx_ses = copy(idx_ses)
         store_num_ses = len(store_idx_ses)
         self.load_pcss_data(idx_ses=store_idx_ses)
         target_snake = []
@@ -467,11 +479,12 @@ class placeCellMultiSession(multipleAnalysis):
         self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
         return target_relmse, target_relcor, target_snake, target_red, sortby_red
     
+    @handle_idx_ses
     def measure_rel_plasticity(self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method='max'):
         """method for getting change in reliability as a function of sessions apart for tracked cells"""
         if cutoffs is None: cutoffs = [-np.inf, -np.inf]
         if maxcutoffs is None: maxcutoffs = [np.inf, np.inf]
-        store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        store_idx_ses = copy(idx_ses)
         store_num_ses = len(store_idx_ses)
         self.load_pcss_data(idx_ses=store_idx_ses)
         target_red = []
@@ -499,9 +512,10 @@ class placeCellMultiSession(multipleAnalysis):
         self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
         return target_relmse, target_relcor, target_red, sortby_red
     
+    @handle_idx_ses
     def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
-        store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        store_idx_ses = copy(idx_ses)
         store_num_ses = len(store_idx_ses)
         self.load_pcss_data(idx_ses=store_idx_ses)
         target_snake = []
@@ -596,9 +610,10 @@ class placeCellMultiSession(multipleAnalysis):
         """
 
 
+    @handle_idx_ses
     def plot_snake(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.5, 0.8), maxcutoffs=None, sort_by_red=False, method='max', normalize=0, rewzone=True, interpolation='none', withShow=True, withSave=False):
         """method for plotting cross-validated snake plot"""
-        self.idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
+        self.idx_ses = idx_ses
         self.num_ses = len(self.idx_ses)
         snake_data, sortby, idx_red = self.make_snake_data(envnum, idx_ses=idx_ses, sortby=sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
         distedges = self.pcss[self.idx_ses[0]].distedges
@@ -673,12 +688,9 @@ class placeCellMultiSession(multipleAnalysis):
 
         return snake_data, sortby, idx_red
 
-
+    @handle_idx_ses
     def plot_rel_comparison(self, envnum, idx_ses=None, sortby=None, rel_method='pc', withShow=True, withSave=False):
         assert isinstance(rel_method, str) and (rel_method.lower()=='pc' or rel_method.lower()=='r2'), "rel_method must be 'r2' or 'pc'"
-
-        if idx_ses is None:
-            idx_ses = self.idx_ses_with_env(envnum)
         
         if sortby is None:
             sortby = idx_ses[0]
@@ -784,8 +796,8 @@ class placeCellMultiSession(multipleAnalysis):
 
 
 
+    @handle_idx_ses
     def hist_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), present='r2', method='max', split_red=False, withShow=True, withSave=False):
-        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs)
         num_ses = len(idx_ses)
         
@@ -868,9 +880,8 @@ class placeCellMultiSession(multipleAnalysis):
         # Show figure if requested
         plt.show() if withShow else plt.close()
 
-    
+    @handle_idx_ses
     def compare_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False, reduction='mean', min_mse=-8, withShow=True, withSave=False):
-        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, both_reliable=both_reliable)
         num_ses = len(idx_ses)
 
@@ -983,9 +994,8 @@ class placeCellMultiSession(multipleAnalysis):
         # Show figure if requested
         plt.show() if withShow else plt.close()
 
-    
+    @handle_idx_ses
     def plot_rel_plasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), maxcutoffs=None, withShow=True, withSave=False):
-        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         target_relmse, target_relcor, target_red, sortby_red = self.measure_rel_plasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, maxcutoffs=maxcutoffs)
 
         # Put fraction reliable in array
@@ -1085,8 +1095,8 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
 
 
+    @handle_idx_ses
     def plot_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False, reduction='mean', min_mse=-8, withShow=True, withSave=False):
-        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs, both_reliable=both_reliable)
         num_ses = len(idx_ses)
 
@@ -1167,8 +1177,8 @@ class placeCellMultiSession(multipleAnalysis):
         plt.show() if withShow else plt.close()
 
 
+    @handle_idx_ses
     def plot_pfreliability(self, envnum, idx_ses=None, cutoffs=None, method='max', reduction='mean', min_mse=-8, withShow=True, withSave=False):
-        idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
         num_ses = len(idx_ses)
         target_relmse, target_relcor, target_snake, target_red, sortby_red = self.measure_pfreliability(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method='max')
         
@@ -1247,7 +1257,43 @@ class placeCellMultiSession(multipleAnalysis):
         # Show figure if requested
         plt.show() if withShow else plt.close()
     
+    
+    @handle_idx_ses
+    def make_roicat_comparison(self, envnum, sim_name='sConj', tracked=False, idx_ses=None, cutoffs=(0.4, 0.7), both_reliable=False):        
+        
+        # get all pairs of sessions for idx_ses
+        idx_ses_pairs = helpers.all_pairs(idx_ses)
 
+        # get all spkmaps from requested sessions
+        spkmaps, relmse, relcor, pfloc, _, _ = self.get_spkmaps(envnum, trials='full', average=True, tracked=tracked, idx_ses=idx_ses, by_plane=True)
+
+        # define reliability metric
+        idx_reliable = [[(mse>cutoffs[0]) & (cor>cutoffs[1]) for mse, cor in zip(rmse, rcor)] for rmse, rcor in zip(relmse, relcor)]
+
+        # for each source/target pair in idx_ses, do: 
+        sim, corr = [], []       
+        for source, target in idx_ses_pairs:
+            isource, itarget = helpers.index_in_target(source, idx_ses)[1][0], helpers.index_in_target(target, idx_ses)[1][0]
+
+            # get similarity data from source/target
+            sim_paired = self.track.get_similarity_paired(sim_name, source=source, target=target, symmetric=True, tracked=tracked, cat_planes=False, keep_planes=self.keep_planes)
+            
+            # compute correlation between source and target
+            corrs = [helpers.crossCorrelation(spksource.T, spktarget.T) for spksource, spktarget in zip(spkmaps[isource], spkmaps[itarget])]
+            
+            # filter by reliability
+            sim_paired = [sim[idx_source] for sim, idx_source in zip(sim_paired, idx_reliable[isource])]
+            corrs = [cor[idx_source] for cor, idx_source in zip(corrs, idx_reliable[isource])]
+            if both_reliable:
+                sim_paired = [sim[:, idx_target] for sim, idx_target in zip(sim_paired, idx_reliable[itarget])]
+                corrs = [cor[:, idx_target] for cor, idx_target in zip(corrs, idx_reliable[itarget])]
+
+            # stack and flatten across planes
+            sim.append(np.concatenate([s.toarray().flatten() for s in sim_paired]))
+            corr.append(np.concatenate([c.flatten() for c in corrs]))
+
+        return sim, corr
+        
     def perform_roicat_comparisons(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False):
         """method for determining how well ROICaT tracking similarity works for pairs of cells compared to their place field"""
         # start by prepping the meta data (e.g. which sessions to use)
