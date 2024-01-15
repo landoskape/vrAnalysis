@@ -344,7 +344,7 @@ class tracker():
 
         similarity_data = [lookup[name](self.rundata[i]) for i in keep_planes]
         if make_csr: 
-            return [sp.sparse.csr_array((scd['data'], scd['indices'], scd['indptr'])) for scd in similarity_data]
+            return [sp.sparse.csr_array((scd['data'], scd['indices'], scd['indptr']), shape=scd['_shape']) for scd in similarity_data]
         
         return similarity_data
 
