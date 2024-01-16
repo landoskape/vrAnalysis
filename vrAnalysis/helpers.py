@@ -86,6 +86,18 @@ def index_on_dim(numpy_array, index, dim):
     slices[dim] = index
     return numpy_array[tuple(slices)]
 
+def argsort(seq):
+    """Native python for getting index of sort of a sequence"""
+    return sorted(range(len(seq)), key=seq.__getitem__)
+
+def index_in_order(seq):
+    """Native python for getting argsort index but in order"""
+    sorted_indices = argsort(seq)
+    order = [0] * len(sorted_indices)
+    for i, j in enumerate(sorted_indices):
+        order[j] = i
+    return order
+
 def powerset(iterable, ignore_empty=False):
     """
     return chain of subsets in powerset of an iterable 
