@@ -1,6 +1,7 @@
 from copy import copy
 from tqdm import tqdm
 from functools import wraps
+from math import floor, ceil
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
@@ -19,12 +20,6 @@ def handle_idx_ses(func):
     """
     @wraps(func)
     def wrapper(pcm_instance, envnum, *args, idx_ses=None, **kwargs):
-        # check this
-        provide_envidx = 'envidx' in kwargs # check if envidx is required by func
-        envidx = kwargs.pop('envidx', None) # get it (or use None if not present)
-        if envidx is not None:
-            raise ValueError("envidx is used as a placeholder and should never be set directly")
-        
         # get all sessions with requested environment
         if idx_ses is None:
             idx_ses = pcm_instance.idx_ses_with_env(envnum)
@@ -34,12 +29,8 @@ def handle_idx_ses(func):
         in_session = [~np.isnan(ei) for ei in envidx]
         assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(idx_ses, in_session) if inses]}"
 
-        # add processed envidx if required
-        if provide_envidx:
-            kwargs['envidx'] = envidx
-
         # return function with processed arguments
-        return func(pcm_instance, envnum, *args, envidx=envidx, idx_ses=idx_ses, **kwargs)
+        return func(pcm_instance, envnum, *args, idx_ses=idx_ses, **kwargs)
     
     # return decorated function
     return wrapper
@@ -68,6 +59,105 @@ class placeCellMultiSession(multipleAnalysis):
         
         self.create_pcss()
 
+    def env_stats(self):
+        """
+        helper for getting environment stats in sessions
+
+        returns a dictionary where the keys represent the environments (by index)
+        contained in at least one session from **self** (i.e. in self.pcss) and 
+        the keys represent the list of session indices in which the environment is
+        present (e.g. env_stats()[1] is a list of session indices pointing to the
+        self.pcss[i] such that environment 1 is in self.pcss[i].environments)
+        """
+        envs = sorted(list(set(self.pcss[0].environments).union(*[pcss.environments for pcss in self.pcss[1:]])))
+        return dict(zip(envs, [self.idx_ses_with_env(env) for env in envs]))
+
+    def env_ses_selector(self, env='most', ses='all'):
+        """
+        method for selecting environment and index of sessions based on some rules
+        
+        returns an environment index and a list of session indices
+
+        env is a string or int indicating which environment to use
+        env=='most':
+            return the environment with the most sessions
+        env=='least':
+            return the environment with the least sessions
+        env=='first':
+            return the environment the mouse experienced first
+        env=='second':
+            return the environment the mouse experienced second
+        env=='last': 
+            return the environment the mouse experienced last
+        env== int :
+            return the environment the mouse experienced Nth where N is the provided value of env (or last to first if negative)
+            uses standard python indexing (0 means first, -1 means last)
+        
+        ses is a string or int or float between -1 < 1, indicating which sessions to pick
+        ses=='all':
+            return all sessions in the environment
+        ses=='first':
+            return first session in environment
+        ses=='last':
+            return last session in environment
+        ses==float in between -1 and 1
+            return first or last fraction of sessions in environment (first if positive, last if negative)
+        ses==integer:
+            return first or last N sessons where N is the value of ses (first if positive, last if negative)
+        """
+        # get environment stats
+        stats = self.env_stats()
+
+        # pick environment
+        if env in ('most', 'least'):
+            # get number of sessions per environment
+            num_per_env = [len(idx_ses) for idx_ses in stats.values()]
+            # get index to environment with most or least sessions
+            if env=='most':
+                envidx = num_per_env.index(max(num_per_env))
+            else:
+                envidx = num_per_env.index(min(num_per_env))
+            envnum = list(stats.keys())[envidx]
+
+        elif env in ('first', 'second', 'last') or isinstance(env, int):
+            if env == 'last': 
+                env = -1 # convert to integer representation
+            elif isinstance(env, str):
+                # convert to integer representation
+                env = {val: idx for idx, val in enumerate(['first', 'second'])}[env]
+
+            # get first session in each environment
+            first_ses = [idx_ses[0] for idx_ses in stats.values()]
+            envnum = list(stats.keys())[helpers.argsort(first_ses)[env]]
+
+        else:
+            raise ValueError("did not recognize env method. see docstring")
+        
+        # pick sessions
+        if ses == 'all':
+            idx_ses = stats[envnum]
+
+        elif ses in ('first', 'last'):
+            sesnum = dict(zip(('first', 'last'), [0, -1]))[ses]
+            idx_ses = stats[envnum][sesnum]
+
+        elif (-1 < ses < 0) or (0 < ses < 1) or isinstance(ses, int):
+            if (-1 < ses < 0):
+                num_ses = len(stats[envnum])
+                ses = floor(ses * num_ses)
+            elif (0 < ses < 1):
+                num_ses = len(stats[envnum])
+                ses = ceil(ses * num_ses)
+            if ses < 0:
+                idx_ses = stats[envnum][-ses:]
+            else:
+                idx_ses = stats[envnum][:ses]
+        
+        else:
+            raise ValueError("did not recognize ses method. see docstring")
+        
+        return envnum, idx_ses
+        
     def idx_ses_with_env(self, envnum):
         return [ii for ii, pcss in enumerate(self.pcss) if envnum in pcss.environments]
         
@@ -142,7 +232,7 @@ class placeCellMultiSession(multipleAnalysis):
         return pfloc, pfidx
 
     @handle_idx_ses
-    def get_spkmaps(self, envnum, *, trials='full', average=True, tracked=True, pf_method='max', by_plane=False, envidx=None, idx_ses=None):
+    def get_spkmaps(self, envnum, *, trials='full', average=True, tracked=True, pf_method='max', by_plane=False, idx_ses=None):
         """
         method for retrieving spkmap from a particular environment across sessions
 
@@ -158,6 +248,8 @@ class placeCellMultiSession(multipleAnalysis):
         pf_method determines how to measure the place field location-- can either be
         'max' for the location at peak value or 'com' for a center of mass measurement
         """
+        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
+
         # load all data now
         self.load_pcss_data(idx_ses=idx_ses)
         
