@@ -61,6 +61,12 @@ def edge2center(edges):
 
 
 # ------------------------------------ data wrangling ------------------------------------
+def fractional_histogram(*args, **kwargs):
+    """wrapper of np.histogram() with relative counts instead of total or density"""
+    counts, bins = np.histogram(*args, **kwargs)
+    counts = counts / np.sum(counts)
+    return counts, bins
+
 def transpose_list(list_of_lists):
     """helper function for transposing the order of a list of lists"""
     return list(map(list, zip(*list_of_lists)))
