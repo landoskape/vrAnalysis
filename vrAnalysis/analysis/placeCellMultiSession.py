@@ -72,90 +72,108 @@ class placeCellMultiSession(multipleAnalysis):
         envs = sorted(list(set(self.pcss[0].environments).union(*[pcss.environments for pcss in self.pcss[1:]])))
         return dict(zip(envs, [self.idx_ses_with_env(env) for env in envs]))
 
-    def env_ses_selector(self, env='most', ses='all'):
+    def env_selector(self, envmethod='most'):
         """
-        method for selecting environment and index of sessions based on some rules
-        
-        returns an environment index and a list of session indices
+        method for selecting environment based on some rules
 
-        env is a string or int indicating which environment to use
-        env=='most':
+        envmethod is a string or int indicating which environment to use
+        envmethod=='most':
             return the environment with the most sessions
-        env=='least':
+        envmethod=='least':
             return the environment with the least sessions
-        env=='first':
+        envmethod=='first':
             return the environment the mouse experienced first
-        env=='second':
+        envmethod=='second':
             return the environment the mouse experienced second
-        env=='last': 
+        envmethod=='last': 
             return the environment the mouse experienced last
-        env== int :
-            return the environment the mouse experienced Nth where N is the provided value of env (or last to first if negative)
+        envmethod== int :
+            return the environment the mouse experienced Nth where N is the provided value of envmethod (or last to first if negative)
             uses standard python indexing (0 means first, -1 means last)
-        
-        ses is a string or int or float between -1 < 1, indicating which sessions to pick
-        ses=='all':
-            return all sessions in the environment
-        ses=='first':
-            return first session in environment
-        ses=='last':
-            return last session in environment
-        ses==float in between -1 and 1
-            return first or last fraction of sessions in environment (first if positive, last if negative)
-        ses==integer:
-            return first or last N sessons where N is the value of ses (first if positive, last if negative)
         """
         # get environment stats
         stats = self.env_stats()
-
+        
         # pick environment
-        if env in ('most', 'least'):
+        if envmethod in ('most', 'least'):
             # get number of sessions per environment
             num_per_env = [len(idx_ses) for idx_ses in stats.values()]
             # get index to environment with most or least sessions
-            if env=='most':
+            if envmethod=='most':
                 envidx = num_per_env.index(max(num_per_env))
             else:
                 envidx = num_per_env.index(min(num_per_env))
             envnum = list(stats.keys())[envidx]
 
-        elif env in ('first', 'second', 'last') or isinstance(env, int):
-            if env == 'last': 
-                env = -1 # convert to integer representation
-            elif isinstance(env, str):
+        elif envmethod in ('first', 'second', 'last') or isinstance(envmethod, int):
+            if envmethod == 'last': 
+                envmethod = -1 # convert to integer representation
+            elif isinstance(envmethod, str):
                 # convert to integer representation
-                env = {val: idx for idx, val in enumerate(['first', 'second'])}[env]
+                envmethod = {val: idx for idx, val in enumerate(['first', 'second'])}[envmethod]
 
             # get first session in each environment
             first_ses = [idx_ses[0] for idx_ses in stats.values()]
-            envnum = list(stats.keys())[helpers.argsort(first_ses)[env]]
+            envnum = list(stats.keys())[helpers.argsort(first_ses)[envmethod]]
 
         else:
             raise ValueError("did not recognize env method. see docstring")
         
+        return envnum
+    
+    def idx_ses_selector(self, envnum, sesmethod='all'):
+        """
+        method for selecting index of sessions with envnum based on some rules
+        
+        sesmethod is a string or int or float between -1 < 1, indicating which sessions to pick
+        sesmethod=='all':
+            return all sessions in the environment
+        sesmethod=='first':
+            return first session in environment
+        sesmethod=='last':
+            return last session in environment
+        sesmethod==float in between -1 and 1
+            return first or last fraction of sessions in environment (first if positive, last if negative)
+        sesmethod==integer:
+            return first or last N sessons where N is the value of sesmethod (first if positive, last if negative)
+        """
+        # get environment stats
+        stats = self.env_stats()
+            
         # pick sessions
-        if ses == 'all':
+        if sesmethod == 'all':
             idx_ses = stats[envnum]
 
-        elif ses in ('first', 'last'):
-            sesnum = dict(zip(('first', 'last'), [0, -1]))[ses]
+        elif sesmethod in ('first', 'last'):
+            sesnum = dict(zip(('first', 'last'), [0, -1]))[sesmethod]
             idx_ses = stats[envnum][sesnum]
 
-        elif (-1 < ses < 0) or (0 < ses < 1) or isinstance(ses, int):
-            if (-1 < ses < 0):
+        elif (-1 < sesmethod < 0) or (0 < sesmethod < 1) or isinstance(sesmethod, int):
+            if (-1 < sesmethod < 0):
                 num_ses = len(stats[envnum])
-                ses = floor(ses * num_ses)
-            elif (0 < ses < 1):
+                sesmethod = floor(sesmethod * num_ses)
+            elif (0 < sesmethod < 1):
                 num_ses = len(stats[envnum])
-                ses = ceil(ses * num_ses)
-            if ses < 0:
-                idx_ses = stats[envnum][-ses:]
+                sesmethod = ceil(sesmethod * num_ses)
+            if sesmethod < 0:
+                idx_ses = stats[envnum][sesmethod:]
             else:
-                idx_ses = stats[envnum][:ses]
+                idx_ses = stats[envnum][:sesmethod]
         
         else:
-            raise ValueError("did not recognize ses method. see docstring")
+            raise ValueError("did not recognize sesmethod. see docstring")
         
+        return idx_ses
+    
+
+    def env_idx_ses_selector(self, envmethod='most', sesmethod='all'):
+        """
+        method for selecting environment and index of sessions based on some rules
+
+        see env_selector and idx_ses_selector for explanations
+        """
+        envnum = self.env_selector(envmethod=envmethod)
+        idx_ses = self.idx_ses_selector(envnum, sesmethod=sesmethod)
         return envnum, idx_ses
         
     def idx_ses_with_env(self, envnum):
@@ -1349,108 +1367,6 @@ class placeCellMultiSession(multipleAnalysis):
         # Show figure if requested
         plt.show() if withShow else plt.close()
     
+        
     
-    @handle_idx_ses
-    def make_roicat_comparison(self, envnum, sim_name='sConj', tracked=False, idx_ses=None, cutoffs=(0.4, 0.7), both_reliable=False):        
-        
-        # get all pairs of sessions for idx_ses
-        idx_ses_pairs = helpers.all_pairs(idx_ses)
-
-        # get all spkmaps from requested sessions
-        spkmaps, relmse, relcor, pfloc, _, _ = self.get_spkmaps(envnum, trials='full', average=True, tracked=tracked, idx_ses=idx_ses, by_plane=True)
-
-        # define reliability metric
-        idx_reliable = [[(mse>cutoffs[0]) & (cor>cutoffs[1]) for mse, cor in zip(rmse, rcor)] for rmse, rcor in zip(relmse, relcor)]
-
-        # for each source/target pair in idx_ses, do: 
-        sim, corr = [], []       
-        for source, target in idx_ses_pairs:
-            isource, itarget = helpers.index_in_target(source, idx_ses)[1][0], helpers.index_in_target(target, idx_ses)[1][0]
-
-            # get similarity data from source/target
-            sim_paired = self.track.get_similarity_paired(sim_name, source=source, target=target, symmetric=True, tracked=tracked, cat_planes=False, keep_planes=self.keep_planes)
-            
-            # compute correlation between source and target
-            corrs = [helpers.crossCorrelation(spksource.T, spktarget.T) for spksource, spktarget in zip(spkmaps[isource], spkmaps[itarget])]
-            
-            # filter by reliability
-            sim_paired = [sim[idx_source] for sim, idx_source in zip(sim_paired, idx_reliable[isource])]
-            corrs = [cor[idx_source] for cor, idx_source in zip(corrs, idx_reliable[isource])]
-            if both_reliable:
-                sim_paired = [sim[:, idx_target] for sim, idx_target in zip(sim_paired, idx_reliable[itarget])]
-                corrs = [cor[:, idx_target] for cor, idx_target in zip(corrs, idx_reliable[itarget])]
-
-            # stack and flatten across planes
-            sim.append(np.concatenate([s.toarray().flatten() for s in sim_paired]))
-            corr.append(np.concatenate([c.flatten() for c in corrs]))
-
-        return sim, corr
-        
-    def perform_roicat_comparisons(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False):
-        """method for determining how well ROICaT tracking similarity works for pairs of cells compared to their place field"""
-        # start by prepping the meta data (e.g. which sessions to use)
-        store_idx_ses = self.idx_ses_with_env(envnum) if idx_ses is None else idx_ses
-        store_num_ses = len(store_idx_ses)
-
-        # load all relevant data now for better user reporting
-        self.load_pcss_data(idx_ses=store_idx_ses)
-
-        # load paired snakes from matched ROIs
-        target_snake = []
-        sortby_snake = []
-        target_red = []
-        sortby_red = []
-        for sortby in store_idx_ses:
-            c_target_snake = []
-            c_sortby_snake = []
-            c_target_ired = []
-            c_sortby_ired = []
-            for target in store_idx_ses:
-                cdata, cired, _, _ = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, both_reliable=both_reliable)
-                c_target_snake.append(cdata[0])
-                c_sortby_snake.append(cdata[1])
-                c_target_ired.append(cired[0])
-                c_sortby_ired.append(cired[1])
-            target_snake.append(c_target_snake)
-            sortby_snake.append(c_sortby_snake)
-            target_red.append(c_target_ired)
-            sortby_red.append(c_sortby_ired)
-
-        # I need a grid of histograms comparing the snakes across sessions
-        r2 = []
-        pc = []
-        r2_stat = []
-        pc_stat = []
-        for isort, (snakes_target, snakes_sortby, red_target, red_sortby) in enumerate(zip(target_snake, sortby_snake, target_red, sortby_red)):
-            c_r2 = []
-            c_pc = []
-            c_r2_stat = []
-            c_pc_stat = []
-            for itarget, (snake_target, snake_sortby, r_target, r_sortby) in enumerate(zip(snakes_target, snakes_sortby, red_target, red_sortby)):
-                assert snake_target.shape[0] == snake_sortby.shape[0], "oops"
-                # red is only if red in both target and snake session
-                c_idx_red = r_target & r_sortby
-                # get R-squared
-                dv_target = np.max(snake_target, axis=1, keepdims=True)
-                dv_sortby = np.max(snake_sortby, axis=1, keepdims=True)
-                st = snake_target / (dv_target + 1*(dv_target==0))
-                ss = snake_sortby / (dv_sortby + 1*(dv_sortby==0))
-                cc_r2 = helpers.vectorRSquared(ss, st, axis=1)
-                cc_r2[cc_r2==-np.inf] = np.nan
-                # also get correlation
-                cc_pc = helpers.vectorCorrelation(ss, st, axis=1)
-                # then add results
-                c_r2.append(cc_r2)
-                c_pc.append(cc_pc)
-                # now do stats (just ranksum) 
-                c_r2_stat.append(sp.stats.ranksums(cc_r2[~c_idx_red], cc_r2[c_idx_red]))
-                c_pc_stat.append(sp.stats.ranksums(cc_pc[~c_idx_red], cc_pc[c_idx_red]))
-            # keep all results
-            r2.append(c_r2)
-            pc.append(c_pc)
-            r2_stat.append(c_r2_stat)
-            pc_stat.append(c_pc_stat)
-
-        self.idx_ses, self.num_ses = store_idx_ses, store_num_ses
-        return r2, pc, r2_stat, pc_stat, target_red, sortby_red
 
