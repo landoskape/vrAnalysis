@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.stats import gaussian_kde
 import pandas as pd
 
 from matplotlib import pyplot as plt
@@ -91,6 +92,7 @@ class RoicatStats(placeCellMultiSession):
             envnum=envnum,
             idx_ses=idx_ses,
             idx_ses_pairs=idx_ses_pairs,
+            sim_name=sim_name,
         )
 
         return sim, corr, prms
@@ -103,6 +105,47 @@ class RoicatStats(placeCellMultiSession):
         corr_same = [c[idx] for c, idx in zip(corr, idx_roicat_same)]
         return corr_same, corr_diff
 
+    def plot_sim_vs_pfcorr(self, sim, corr, prms, color_by_density=False, with_show=True, with_save=False):
+        """
+        helper for making scatter plots between sim and corr
+
+        inputs are sim, corr, and prms which come from make_roicat_comparison()
+
+        if color_by_density=True, will color plots by their local density with gaussian_kde
+        (keep in mind that this is slow)
+        """
+        marginal_corr_edges = np.linspace(-1, 1, 51)
+        marginal_corr_centers = helpers.edge2center(marginal_corr_edges)
+        for s, c, name in zip(sim, corr, self.session_pair_names(prms)):
+            idx_zero = s==0
+            s_nozero = s[~idx_zero]
+            c_nozero = c[~idx_zero]
+
+            c_zero = c[idx_zero]
+            c_zero_counts = helpers.fractional_histogram(c_zero, bins=marginal_corr_edges)[0]
+
+            if color_by_density:
+                xy = np.stack((s_nozero, c_nozero))
+                color = gaussian_kde(xy)(xy) # color by local density
+            else:
+                color = ('k', 0.1) # use black and alpha to see the density a bit
+
+            fig, ax = plt.subplots()
+            ax.scatter(s_nozero, c_nozero, c=color, s=5)
+            ax.plot(c_zero_counts, marginal_corr_centers, c='r', linewidth=1.5, label=f"{prms['sim_name']}=0")
+            
+            ax.set_xlabel(f"ROICaT Similarity {prms['sim_name']}")
+            ax.set_ylabel("Place Field Correlation")
+            ax.set_title(f"Session Pair: {name}")
+            ax.legend(loc='lower right')
+            
+            if with_save: 
+                save_name = f"simcorr_comparison_envnum{prms['envnum']}_idxses{name}"
+                self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
+        # Show figure if requested
+        plt.show() if with_show else plt.close()
+
     def plot_pfcorr_by_samediff(self, sim, corr, prms, with_show=True, with_save=False):
         """
         helper for plotting pfcorr values for same and different populations
@@ -111,8 +154,7 @@ class RoicatStats(placeCellMultiSession):
         for pairs of ROIs based on whether their roicat similarity value is in the "same" group or
         the "diff" group. 
 
-        corr_same & corr_diff should be lists of np arrays of pf corr values for each session for each distribution
-        prms should be a dictionary describing the data in sim and corrs
+        inputs are sim, corr, and prms which come from make_roicat_comparison()
         """
         corr_same, corr_diff = self.split_by_roicat_assignment(sim, corr)
         
@@ -157,7 +199,7 @@ class RoicatStats(placeCellMultiSession):
             ax.plot(centers, count, c=cmap(idx), label=name)
             inset.plot([-0.2, 0.2], [zeros, zeros], c=cmap(idx), linewidth=2)
 
-        ax.set_yscale('log')
+        # ax.set_yscale('log')
         ax.legend(loc='upper right', title='Session Pair')
         ax.set_xlabel('ROICaT Similarity Value')
         ax.set_ylabel('Counts')
