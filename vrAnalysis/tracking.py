@@ -509,6 +509,31 @@ class tracker():
 
     @handle_idx_ses
     @handle_keep_planes
+    def get_tracked_labels(self, cat_planes=False, nan_untracked=True, idx_ses=None, keep_planes=None):
+        """
+        get tracking labels across sessions
+        convert untracked to nans if requested (untracked are = -1), replace with np.nan if nan_untracked=True
+        """
+        # helper function 
+        def retrieve_labels(results_for_plane, ses, nan_untracked):
+            out = results_for_plane['clusters']['labels_bySession'][ses]
+            if nan_untracked:
+                out = out.astype(np.float32)
+                np.put(out, np.where(out==-1)[0], np.nan)
+            return out
+        
+        # list of lists of labels per plane for each session in idx_ses
+        labels = [[retrieve_labels(self.results[plane], ses, nan_untracked) for plane in keep_planes] for ses in idx_ses]
+
+        # concatenate across planes if requested
+        if cat_planes:
+            labels = [np.concatenate(label_by_plane) for label_by_plane in labels]
+        
+        # return labels
+        return labels
+    
+    @handle_idx_ses
+    @handle_keep_planes
     def check_red_cell_consistency(self, idx_ses=None, keep_planes=None, use_s2p=False, s2p_cutoff=0.65):
         # get idx of tracked ROIs
         idx_tracked = self.get_tracked_idx(idx_ses=idx_ses, keep_planes=keep_planes)
