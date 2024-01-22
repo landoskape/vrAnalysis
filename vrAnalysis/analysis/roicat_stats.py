@@ -108,7 +108,7 @@ class RoicatStats(placeCellMultiSession):
             cutoffs=cutoffs, 
             both_reliable=both_reliable,
         )
-
+        
         return sim, corr, tracked, prms
 
     def split_by_roicat_assignment(self, sim, corr, tracked=None):
