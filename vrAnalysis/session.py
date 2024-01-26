@@ -255,6 +255,45 @@ class vrExperiment(vrSession):
             xc = np.array([np.median(x) for x in xpix])
         stackPosition = np.stack((xc,yc,planeIdx)).T
         return stackPosition
+    
+    def getMaskVolume(self, cat_planes=False, keep_planes=None):
+        """
+        create volume of masks for each plane in keep_planes (all by default)
+
+        will concatenate across planes if requested or keep each planes volume in a list
+        """
+        # set keep_planes if not provided
+        keep_planes = helpers.check_iterable(keep_planes) if keep_planes is not None else [i for i in range(len(self.value['roiPerPlane']))]
+        
+        # get plane index of each ROI
+        roi_plane_idx = self.getPlaneIdx()
+
+        # get size of reference
+        ly, lx = self.loadS2P('ops')[0]['meanImg'].shape
+        
+        # get roi data
+        stat = self.loadS2P('stat')
+        lam = [s['lam'] for s in stat]
+        ypix = [s['ypix'] for s in stat]
+        xpix = [s['xpix'] for s in stat]
+
+        # make volume for each plane
+        mask_volume = []
+        for plane in keep_planes:
+            c_volume = np.zeros((self.value['roiPerPlane'][plane], ly, lx))
+            idx_roi_in_plane = np.where(roi_plane_idx == plane)[0]
+            for roi in range(self.value['roiPerPlane'][plane]):
+                # get index to this ROI
+                c_roi_idx = idx_roi_in_plane[roi]
+                # set pixel values for this ROI
+                c_volume[roi, ypix[c_roi_idx], xpix[c_roi_idx]] = lam[c_roi_idx]
+            mask_volume.append(c_volume)
+        
+        # concatenate across planes if requested
+        if cat_planes:
+            mask_volume = np.concatenate(mask_volume, axis=0)
+
+        return mask_volume 
 
     def getNumROIs(self, keep_planes=None):
         keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(self.value['roiPerPlane']))]
@@ -380,7 +419,7 @@ class redCellProcessing(vrExperiment):
         # load reference images
         ops = self.loadS2P('ops')
         self.reference = [op['meanImg_chan2'] for op in ops]
-        self.lx,self.ly = self.reference[0].shape
+        self.lx, self.ly = self.reference[0].shape
         for ref in self.reference: assert (self.lx,self.ly)==ref.shape, "reference images do not all have the same shape"
 
         # load masks (lam=weight of each pixel, xpix & ypix=index of each pixel in ROI mask)
@@ -564,7 +603,7 @@ class redCellProcessing(vrExperiment):
     
     def getyref(self, yCenter):
         if not(self.data_loaded): self.loadReferenceAndMasks()
-        return self.umPerPixel * (self.yBaseRef - xCenter)
+        return self.umPerPixel * (self.yBaseRef - yCenter)
     
     def getxref(self, xCenter):
         if not(self.data_loaded): self.loadReferenceAndMasks()
@@ -579,6 +618,7 @@ class redCellProcessing(vrExperiment):
         elif mode=='median':
             yc = int(np.median(self.ypix[idx]))
             xc = int(np.median(self.xpix[idx]))
+
         return yc,xc
     
     def getRoiRange(self,idx):

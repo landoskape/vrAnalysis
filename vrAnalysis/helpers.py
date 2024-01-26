@@ -59,7 +59,6 @@ def edge2center(edges):
     assert isinstance(edges, np.ndarray) and edges.ndim==1, "edges must be a 1-d numpy array"
     return edges[:-1] + np.diff(edges)/2
 
-
 # ------------------------------------ data wrangling ------------------------------------
 def fractional_histogram(*args, **kwargs):
     """wrapper of np.histogram() with relative counts instead of total or density"""
