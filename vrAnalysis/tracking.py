@@ -395,8 +395,60 @@ class tracker():
         
         # otherwise return centroids in separate variables
         return ycentroids, xcentroids
-        
+    
 
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_roi_range(self, combine=False, cat_planes=False, idx_ses=None, keep_planes=None):
+        """
+        retrieve the yx range of ROIs from requested sessions and planes
+
+        returns a list of ROI yx range (in pixels) from the requested sessions and planes
+        where len(out)=len(idx_ses) and len(out[0])=len(keep_planes)
+        unless cat_planes=True, in which case each sublist is concatenated across planes
+
+        if combine=True, will combine y/x range into a 2d array for each ROI
+        if combine=False, will keep y/x range separated in two variables
+        """
+        # get list of lists of ROI mask data for each session / plane combination
+        _, ypix, xpix = self.get_roi_data(idx_ses=idx_ses, keep_planes=keep_planes)
+
+        # convert each to range
+        yranges, xranges = [], []
+        for s_ypix, s_xpix in zip(ypix, xpix):
+
+            # session ranges
+            s_yranges, s_xranges = [], []
+            for ps_ypix, ps_xpix in zip(s_ypix, s_xpix):
+                
+                # get roi range
+                ps_yrange = [np.ptp(rypix) for rypix in ps_ypix]
+                ps_xrange = [np.ptp(rxpix) for rxpix in ps_xpix]
+                
+                # add this planes ranges to the session
+                s_yranges.append(np.stack(ps_yrange))
+                s_xranges.append(np.stack(ps_xrange))
+            
+            if cat_planes:
+                # concatenate across planes if requested
+                s_yranges = np.concatenate(s_yranges)
+                s_xranges = np.concatenate(s_xranges)
+
+            # add this sessions centroids to the full list
+            yranges.append(s_yranges)
+            xranges.append(s_xranges)
+
+        if combine:
+            # combine into a 2d coordinate if requested
+            if cat_planes:
+                return [np.stack((yr, xr)).T for yr, xr in zip(yranges, xranges)]
+            else:
+                return [[np.stack((yr, xr)).T for yr, xr in zip(yrng, xrng)] for yrng, xrng in zip(yranges, xranges)]
+        
+        # otherwise return ranges in separate variables
+        return yranges, xranges
+
+    
     @handle_idx_ses
     @handle_keep_planes
     def get_roi_data(self, idx_ses=None, keep_planes=None):
