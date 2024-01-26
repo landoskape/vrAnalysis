@@ -156,7 +156,7 @@ class tracker():
             # get paths to stat files and ops files
             stat_paths = [Path(sp) for sp in results['input_data']['paths_stat']]
             ops_paths = [Path(sp) for sp in results['input_data']['paths_ops']]
-            for sessionidx, (stat_path, ops_path) in enumerate(zip(stat_paths, ops_paths)):
+            for stat_path, ops_path in zip(stat_paths, ops_paths):
                 # then for each file path, make sure it comes from the same storage location
                 assert all([sp.lower() == dp.lower() for (sp,dp) in zip(stat_path.parts[:self.num_parts_data_path], self.data_path().parts)]), \
                 f"stat_path ({stat_path}) does not match data_path ({self.data_path()})!"
@@ -219,7 +219,6 @@ class tracker():
                 roicat_index[planeidx][cindex, sesidx] = True # label found ROI with True
 
         return ucids, roicat_index
-    
 
     @handle_idx_ses
     @handle_keep_planes
@@ -323,6 +322,137 @@ class tracker():
         # return 
         return data_by_plane
 
+    # ----- what follows this is a set of methods for retrieving aligned cell location and structure from the ROICaT pipeline -----
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_ROIs(self, idx_ses=None, keep_planes=None):
+        """
+        retrieve all ROIs from requested sessions and planes
+
+        returns a list of ROI mask data from the requested sessions and planes
+        where len(out)=len(idx_ses) and len(out[0])=len(keep_planes)
+        
+        each element is a coo_array with size (num_rois_per_plane(s), num_pixels)
+        """
+        return [[self._make_ROIs(plane, ses, as_coo=True) for plane in keep_planes] for ses in idx_ses]
+    
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_centroids(self, method='weightedmean', combine=False, cat_planes=False, idx_ses=None, keep_planes=None):
+        """
+        retrieve the centroids of ROIs from requested sessions and planes
+
+        returns a list of ROI centroids from the requested sessions and planes
+        where len(out)=len(idx_ses) and len(out[0])=len(keep_planes)
+        unless cat_planes=True, in which case each sublist is concatenated across planes
+
+        method determines how to estimate the centroid from lam, ypix, xpix
+        - 'weightedmean' will weigh the pixel coordinates by lam
+        - 'median' will just take median of each x/y pixels
+
+        if combine=True, will combine y/x coordinates into a 2d array for each ROI
+        if combine=False, will keep y/x coordinates separated in two variables
+        """
+        # get list of lists of ROI mask data for each session / plane combination
+        lam, ypix, xpix = self.get_roi_data(idx_ses=idx_ses, keep_planes=keep_planes)
+
+        # convert each to centroid
+        ycentroids, xcentroids = [], []
+        for s_lam, s_ypix, s_xpix in zip(lam, ypix, xpix):
+
+            # session centroids
+            s_ycentroids, s_xcentroids = [], []
+            for ps_lam, ps_ypix, ps_xpix in zip(s_lam, s_ypix, s_xpix):
+
+                # get plane/session centroids by requested method
+                if method == 'weightedmean':
+                    ps_ycentroids = [np.sum(rlam * rypix)/np.sum(rlam) for rlam, rypix in zip(ps_lam, ps_ypix)]
+                    ps_xcentroids = [np.sum(rlam * rxpix)/np.sum(rlam) for rlam, rxpix in zip(ps_lam, ps_xpix)]
+
+                elif method == 'median':
+                    ps_ycentroids = [np.median(rypix) for rypix in ps_ypix]
+                    ps_xcentroids = [np.median(rxpix) for rxpix in ps_xpix]
+
+                else:
+                    raise ValueError("did not recognize centroid method")
+                
+                # add this planes centroids to the session
+                s_ycentroids.append(np.stack(ps_ycentroids))
+                s_xcentroids.append(np.stack(ps_xcentroids))
+            
+            if cat_planes:
+                # concatenate across planes if requested
+                s_ycentroids = np.concatenate(s_ycentroids)
+                s_xcentroids = np.concatenate(s_xcentroids)
+
+            # add this sessions centroids to the full list
+            ycentroids.append(s_ycentroids)
+            xcentroids.append(s_xcentroids)
+
+        if combine:
+            # combine into a 2d coordinate if requested
+            return [[np.stack((yc, xc)).T for yc, xc in zip(ycent, xcent)] for ycent, xcent in zip(ycentroids, xcentroids)]
+        
+        # otherwise return centroids in separate variables
+        return ycentroids, xcentroids
+        
+
+    @handle_idx_ses
+    @handle_keep_planes
+    def get_roi_data(self, idx_ses=None, keep_planes=None):
+        """
+        retrieve roi data from requested sessions and planes
+
+        returns three lists of lists corresponding to the lam, ypix, and xpix of each ROI
+
+        each list has:
+        - len(lam)=len(idx_ses)
+        - len(lam[i])=len(keep_planes)
+        - len(lam[i][j])=num rois in plane j and session i
+        """
+        lam, ypix, xpix = [], [], []
+        for ses in tqdm(idx_ses, desc='getting roi data'):
+            clam, cxpix, cypix = helpers.named_transpose([self._make_lam_pix(plane, ses) for plane in keep_planes])
+            lam.append(clam)
+            ypix.append(cypix)
+            xpix.append(cxpix)
+        return lam, ypix, xpix
+    
+    def _make_lam_pix(self, plane, session):
+        """
+        makes lam, ypix, and xpix from ROIs in requested plane and session
+
+        returns three lists corresponding to the lam, ypix & xpix of each ROI
+        """
+        def _get_lam_pix(single_row_sparse, num_pixels):
+            # some ROIs are aligned out of frame so they have no data
+            if len(single_row_sparse.data)==0:
+                return np.nan, np.nan, np.nan
+            
+            # otherwise get their data
+            lam = single_row_sparse.data
+            ypix = np.fix(single_row_sparse.indices / num_pixels).astype(int)
+            xpix = np.remainder(single_row_sparse.indices, num_pixels)
+            return lam, ypix, xpix
+        
+        roi_sparse = self._make_ROIs(plane, session, as_coo=False)
+        num_rois = roi_sparse.shape[0]
+        num_pixels = int(np.sqrt(roi_sparse.shape[1]))
+        lam, ypix, xpix = helpers.named_transpose([_get_lam_pix(roi_sparse[[i]], num_pixels) for i in range(num_rois)])
+        return lam, ypix, xpix
+
+    def _make_ROIs(self, plane, session, as_coo=True):
+        """
+        returns a (numROIs, numPixels) shaped sparse array containing post-aligned ROI data for requested plane and session
+
+        defaults to coo array, but if as_coo=False then will return a csr_array
+        """
+        csr_data = self.rundata[plane]['aligner']['ROIs_aligned'][session]
+        csr_array = sp.sparse.csr_array((csr_data['data'], csr_data['indices'], csr_data['indptr']), shape=csr_data['_shape'])
+        if as_coo:
+            return csr_array.tocoo()
+        return csr_array
+    
 
     # ----- what follows is a set of methods for retrieveing similarity scores from the ROICaT pipeline -----
     @handle_keep_planes
