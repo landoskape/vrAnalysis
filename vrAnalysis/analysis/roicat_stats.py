@@ -362,6 +362,155 @@ class RoicatStats(placeCellMultiSession):
         # return data if requested
         if return_data:
             return means, serrors
+        
+    def plot_pfcorr_vs_pwdist_by_group(self, corr, tracked, pwdist, nnpair, prms, with_show=True, with_save=False):
+        """
+        hi
+        """
+        # split pairwise distances by roicat assignment
+        pwsame, pwdiff = self.split_by_roicat_assignment(pwdist, tracked)
+        corrsame, corrdiff = self.split_by_roicat_assignment(corr, tracked)
+
+        pwsamenn, pwdiffnn = self.split_by_roicat_assignment(pwdist, nnpair)
+        corr_nnsame, corr_nndiff = self.split_by_roicat_assignment(corr, nnpair)
+
+        # figure out maximum pair-wise distance in dataset
+        max_pwd = np.max([np.maximum(np.nanmax(pws), np.nanmax(pwd)) for pws, pwd in zip(pwsame, pwdiff)])
+
+        # measure distribution of pair-wise distances
+        max_pwdist = 10
+        bins = np.linspace(0, max_pwdist, 61)
+        centers = helpers.edge2center(bins)
+
+        fractional = False
+        hist_method = helpers.fractional_histogram if fractional else np.histogram
+        same_counts = [hist_method(pws[~np.isnan(pws)], bins=bins)[0] for pws in pwsame]
+        diff_counts = [hist_method(pwd[~np.isnan(pwd)], bins=bins)[0] for pwd in pwdiff]
+
+        # nn
+        samenn_counts = [hist_method(pws[~np.isnan(pws)], bins=bins)[0] for pws in pwsamenn]
+        diffnn_counts = [hist_method(pwd[~np.isnan(pwd)], bins=bins)[0] for pwd in pwdiffnn]
+
+        # corresponds to "centers" now (and can include -1 or len(centers), but we'll ignore those)
+        same_bin_idx = [np.searchsorted(bins, pws, side='left')-1 for pws in pwsame]
+        diff_bin_idx = [np.searchsorted(bins, pwd, side='left')-1 for pwd in pwdiff]
+
+        # corresponds to "centers" now (and can include -1 or len(centers), but we'll ignore those)
+        samenn_bin_idx = [np.searchsorted(bins, pws, side='left')-1 for pws in pwsamenn]
+        diffnn_bin_idx = [np.searchsorted(bins, pwd, side='left')-1 for pwd in pwdiffnn]
+
+        # get corrs for each bin and measure mean, std
+        def corr_stats(corr, binidx, max_bin):
+            mean = np.full(max_bin, np.nan)
+            for ic in range(max_bin):
+                c_data = corr[binidx==ic]
+                if len(c_data)!=0:
+                    mean[ic] = np.mean(c_data)
+            return mean
+
+        # get mean/std pfcorr given pw distance
+        same_corr_by_dist_mean = [corr_stats(csame, sbi, len(centers)) for csame, sbi in zip(corrsame, same_bin_idx)]
+        diff_corr_by_dist_mean = [corr_stats(cdiff, dbi, len(centers)) for cdiff, dbi in zip(corrdiff, diff_bin_idx)]
+        samenn_corr_by_dist_mean = [corr_stats(csame, sbi, len(centers)) for csame, sbi in zip(corr_nnsame, samenn_bin_idx)]
+        diffnn_corr_by_dist_mean = [corr_stats(cdiff, dbi, len(centers)) for cdiff, dbi in zip(corr_nndiff, diffnn_bin_idx)]
+
+        # stack these
+        same_corr_by_dist_mean = np.stack(same_corr_by_dist_mean)
+        diff_corr_by_dist_mean = np.stack(diff_corr_by_dist_mean)
+        samenn_corr_by_dist_mean = np.stack(samenn_corr_by_dist_mean)
+        diffnn_corr_by_dist_mean = np.stack(diffnn_corr_by_dist_mean)
+
+        # also stack these
+        same_counts = np.stack(same_counts)
+        diff_counts = np.stack(diff_counts)
+        samenn_counts = np.stack(samenn_counts)
+        diffnn_counts = np.stack(diffnn_counts)
+
+        plt.close('all')
+        fig, ax = plt.subplots(1, 2, figsize=(8, 4), layout='constrained')
+
+
+        mn_count_diff = np.nanmean(diff_counts, axis=0)
+        se_count_diff = np.nanstd(diff_counts, axis=0)
+        mn_count_same = np.nanmean(same_counts, axis=0)
+        se_count_same = np.nanstd(same_counts, axis=0)
+
+        mn_count_diffnn = np.nanmean(diffnn_counts, axis=0)
+        se_count_diffnn = np.nanstd(diffnn_counts, axis=0)
+        mn_count_samenn = np.nanmean(samenn_counts, axis=0)
+        se_count_samenn = np.nanstd(samenn_counts, axis=0)
+
+        ax[0].plot(centers, mn_count_diff, color='k', linewidth=1.5, label='different')
+        ax[0].fill_between(centers, mn_count_diff+se_count_diff, mn_count_diff-se_count_diff, color=('k', 0.3))
+        ax[0].plot(centers, mn_count_same, color='b', linewidth=1.5, label='same')
+        ax[0].fill_between(centers, mn_count_same+se_count_same, mn_count_same-se_count_same, color=('b', 0.3))
+        ax[0].plot(centers, mn_count_samenn, color='r', linewidth=1.5, label='nearest neighbor')
+        ax[0].fill_between(centers, mn_count_samenn+se_count_samenn, mn_count_samenn-se_count_samenn, color=('r', 0.3))
+
+        ax[0].set_xlim(0, max_pwdist)
+        ax[0].set_ylim(0, np.max(same_counts)*1.2)
+        ax[0].set_xlabel('pair-wise distance ROI centroids')
+        ax[0].set_ylabel('counts')
+        ax[0].legend(loc='best')
+
+        mn_cbd_diff = np.nanmean(diff_corr_by_dist_mean, axis=0)
+        se_cbd_diff = np.nanstd(diff_corr_by_dist_mean, axis=0)
+        mn_cbd_same = np.nanmean(same_corr_by_dist_mean, axis=0)
+        se_cbd_same = np.nanstd(same_corr_by_dist_mean, axis=0)
+
+        mn_cbd_diffnn = np.nanmean(diffnn_corr_by_dist_mean, axis=0)
+        se_cbd_diffnn = np.nanstd(diffnn_corr_by_dist_mean, axis=0)
+        mn_cbd_samenn = np.nanmean(samenn_corr_by_dist_mean, axis=0)
+        se_cbd_samenn = np.nanstd(samenn_corr_by_dist_mean, axis=0)
+
+        ax[1].plot(centers, mn_cbd_diff, color='k', linewidth=1.5, label='different')
+        ax[1].fill_between(centers, mn_cbd_diff+se_cbd_diff, mn_cbd_diff-se_cbd_diff, color=('k', 0.3))
+        ax[1].plot(centers, mn_cbd_same, color='b', linewidth=1.5, label='same')
+        ax[1].fill_between(centers, mn_cbd_same+se_cbd_same, mn_cbd_same-se_cbd_same, color=('b', 0.3))
+        ax[1].plot(centers, mn_cbd_samenn, color='r', linewidth=1.5, label='nearest neighbor')
+        ax[1].fill_between(centers, mn_cbd_samenn+se_cbd_samenn, mn_cbd_samenn-se_cbd_samenn, color=('r', 0.3))
+
+        ax[1].set_xlim(0, max_pwdist)
+        ax[1].set_xlabel('pair-wise distance ROI centroids')
+        ax[1].set_ylabel('average place field correlation')
+        ax[1].legend(loc='lower left')
+
+        if with_save: 
+            sesidx = '_'.join([str(i) for i in prms['idx_ses']])
+            save_name = f"pfcorr_asfof_pwdist_{prms['envnum']}_idxses{sesidx}"
+            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
+        # Show figure if requested
+        plt.show() if with_show else plt.close()
+
+
+    @handle_idx_ses
+    def plot_roi_diameter(self, idx_ses=None, keep_planes=None, with_show=True, with_save=False):
+        """
+        simple plot of roi diameters (average range of xpix to ypix in ROI)
+        """
+        yxrange = self.track.get_roi_range(combine=True, cat_planes=True, idx_ses=idx_ses, keep_planes=self.keep_planes)
+
+        bins = np.linspace(0, 50, 51)
+        centers = helpers.edge2center(bins)
+
+        data = np.mean(np.concatenate(yxrange, axis=0), axis=1)
+        counts = helpers.fractional_histogram(data, bins=bins)[0]
+
+        plt.close('all')
+        fig = plt.figure()
+        plt.plot(centers, counts, linewidth=1.5, label='footprint')
+        plt.xlabel('ROI Diameter (pixels)')
+        plt.ylabel('fraction of ROIs')
+
+        if with_save: 
+            sesidx = '_'.join([str(i) for i in idx_ses])
+            save_name = f"roi_diameter_idxses{sesidx}"
+            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            
+        # Show figure if requested
+        plt.show() if with_show else plt.close()
+
 
     def plot_similarity_histograms(self, sim, prms, with_show=True, with_save=False):
         """
