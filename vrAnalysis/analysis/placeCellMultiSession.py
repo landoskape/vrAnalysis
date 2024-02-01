@@ -225,7 +225,7 @@ class placeCellMultiSession(multipleAnalysis):
             ploaded = False
 
     def get_from_pcss(self, attribute, idx):
-        return [getattr(self.pcss[i], attribute) for i in idx]
+        return [getattr(self.pcss[i], attribute) for i in helpers.check_iterable(idx)]
 
     def get_place_field(self, snake, method='max'):
         """get sorting index based on spikemap, roi index, and trial index"""
