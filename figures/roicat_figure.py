@@ -47,7 +47,7 @@ def handle_inputs():
     parser.add_argument('--save-plots', default=False, action='store_true', help='save plots if used, will overwrite automatically!')
     parser.add_argument('--save-data', default=False, action='store_true', help='save data produced by script if used')
 
-    parser.add_argument('--use-saved-mouse-data', default=False, action='store_true', help='will use saved mouse data instead of remaking it if used')
+    parser.add_argument('--analyze-mouse-data', default=True, action='store_false', help='will process and analyze all mouse data instead of reusing saved data')
 
     return parser.parse_args()
 
@@ -182,12 +182,10 @@ def mouse_summary_plot(mouse_data):
     plt.show()
 
 
-
-
 if __name__ == "__main__":
     args = handle_inputs()
 
-    if not args.use_saved_mouse_data:
+    if args.analyze_mouse_data:
         # if collecting mouse data:
         mice, prms, means, errors = plot_loop_each_mouse(args)
         
