@@ -84,7 +84,7 @@ recognized_types = [int, str, datetime, float, bool]
 attribute_lookup = {
     'mouseName': 'mouseName',
     'sessionDate': 'dateString',
-    'sessionID': 'session',
+    'sessionID': 'sessionid',
     # 'imaging': ('opts', 'imaging'),
     # 'faceCamera': ('opts', 'facecam'),
     # 'vrBehaviorVersion': ('opts', 'vrBehaviorVersion'),
@@ -330,7 +330,7 @@ class newEntryGUI(QWidget):
             self.outputEntry.setPlainText("Some fields do not have valid input data!")
 
     def get_values(self):
-        print("Note this isn't smart with already calling checkValidity()")
+        print("This could be coded smarter with already calling checkValidity()")
         columns = []
         values = []
         for idx, entry in enumerate(self.entryIndex):
@@ -351,8 +351,7 @@ class newEntryGUI(QWidget):
         insert_statement = self.get_insert_statement(columns, values)
         
         if validData:
-            self.vrdb.addRecord(insert_statement, columns, values)
-            print("Submission successful")
+            output = self.vrdb.addRecord(insert_statement, columns, values)
         else:
             print("Some fields do not have valid input data, submission failed!")
 

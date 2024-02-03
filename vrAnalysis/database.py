@@ -1,7 +1,7 @@
 import traceback
 import pyodbc
 from IPython.display import Markdown, display
-from datetime import datetime
+from datetime import datetime, date
 from contextlib import contextmanager
 from pathlib import Path
 import pandas as pd
@@ -252,6 +252,7 @@ class base_database:
             yield cursor
         except Exception as ex:
             print(f"An exception occurred while trying to connect to {self.dbName}!")
+            print(ex)
             raise ex
         else:
             # if no exception was raised, commit changes
@@ -409,13 +410,18 @@ class base_database:
         """
         d = dict(zip(columns, values))
         unique_values = [d[uf[0]] for uf in self.uniqueFields] # get values associated with unique fields
+        for ii, uv in enumerate(unique_values):
+            if isinstance(uv, date) or isinstance(uv, datetime):
+                # this is required for communicating with Access
+                unique_values[ii] = uv.strftime('%Y-%m-%d')
         if self.getRecord(*unique_values, verbose=False) is not None:
             unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
             print(f"Record already exists for {unique_combo}")
-            return None
+            return f"Record already exists for {unique_combo}"
         with self.openCursor(commitChanges=True) as cursor:
             cursor.execute(insert_statement, values)
             print('Successfully added new record')
+        return 'Successfully added new record'
 
     def getRecord(self, *unique_values, verbose=True):
         """
