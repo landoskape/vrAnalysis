@@ -6,7 +6,8 @@ import numpy as np
 import scipy as sp
 import scipy.io as scio
 from . import helpers
-from . import session
+from .session import vrExperiment, redCellProcessing
+
 
 
 class defaultRigInfo:
@@ -204,7 +205,7 @@ behavior_processing = {
 }
 
 
-class vrRegistration(session.vrExperiment):
+class vrRegistration(vrExperiment):
     """
     The vrRegistration object is a preprocessing object used to preprocess the data, save oneformats, and save vrExperiment parameters.
     It accepts three required arguments as strings - the mouseName, dateString, and session, which it uses to identify the directory of the data (w/ Alyx conventions and a method specified local data path)
@@ -217,7 +218,7 @@ class vrRegistration(session.vrExperiment):
     """
     name = 'vrRegistration'
     def __init__(self,*inputs,**userOpts):
-        if len(inputs)==1 and isinstance(inputs[0], session.vrExperiment):
+        if len(inputs)==1 and isinstance(inputs[0], vrExperiment):
             # This means we are creating a vrRegistration object from an existing vrExperiment
             self.createObject(*inputs)
             assert userOpts.keys() <= self.opts.keys(), f"userOpts contains the following invalid keys:  {set(userOpts.keys()).difference(opts.keys())}"
@@ -487,7 +488,7 @@ class vrRegistration(session.vrExperiment):
             return 
         
         # create redCell object
-        redCell = session.redCellProcessing(self) 
+        redCell = redCellProcessing(self) 
         
         # compute red-features
         dotParameters={'lowcut':12, 'highcut':250, 'order':3, 'fs':512}
