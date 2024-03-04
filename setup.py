@@ -22,7 +22,7 @@ deps_core = [
     "pandas",
     "numpyencoder",
 ]
-    
+
 # Extra code for performing registration (these things are extras specifically for oasis)
 deps_registration = [
     "oasis-deconv",
@@ -47,16 +47,16 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/landoskape/vrAnalysis",
     author="Andrew T. Landau",
-    license='LICENSE',
+    license="LICENSE",
     packages=[
         "vrAnalysis",
         "vrAnalysis.analysis",
     ],
     python_requires=">=3.9, <=4",
-    install_requires=deps_core,  
+    install_requires=deps_core,
     extras_require={
-        "registration": deps_registration, 
-        "gui": deps_gui, 
-        "all": deps_registration+deps_gui,
-    }
+        "registration": deps_registration,
+        "gui": deps_gui,
+        "all": deps_registration + deps_gui,
+    },
 )

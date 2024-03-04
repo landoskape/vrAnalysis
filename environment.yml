@@ -27,3 +27,4 @@ dependencies:
     - pandas
     - h5py
     - napari[all]
+    - black

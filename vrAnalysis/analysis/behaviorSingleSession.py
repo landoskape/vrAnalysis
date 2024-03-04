@@ -10,26 +10,37 @@ import matplotlib as mpl
 from .. import helpers
 from .standardAnalysis import standardAnalysis
 
+
 class behaviorSingleSession(standardAnalysis):
     """
     Performs basic behavioral analysis on single sessions.
-    
+
     Takes as required input a vrexp object. Optional inputs define parameters of analysis.
     Standard usage:
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
-    def __init__(self, vrexp, autoload=True, distStep=(1,5,5), speedThreshold=5, numcv=2, standardizeSpks=True):
-        self.name = 'behaviorSingleSession'
+
+    def __init__(
+        self,
+        vrexp,
+        autoload=True,
+        distStep=(1, 5, 5),
+        speedThreshold=5,
+        numcv=2,
+        standardizeSpks=True,
+    ):
+        self.name = "behaviorSingleSession"
         self.vrexp = vrexp
         self.distStep = distStep
         self.speedThreshold = speedThreshold
         self.numcv = numcv
-        
+
         # automatically load data
         self.dataloaded = False
         self.load_fast_data()
-        if autoload: self.load_data()
+        if autoload:
+            self.load_data()
 
     def envnum_to_idx(self, envnum):
         """
@@ -37,18 +48,21 @@ class behaviorSingleSession(standardAnalysis):
         e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
         """
         envnum = helpers.check_iterable(envnum)
-        return [np.where(self.environments==ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
+        return [
+            np.where(self.environments == ev)[0][0] if ev in self.environments else np.nan
+            for ev in envnum
+        ]
 
     def load_fast_data(self):
         # get environment data
-        self.trial_envnum = self.vrexp.loadone('trials.environmentIndex')
+        self.trial_envnum = self.vrexp.loadone("trials.environmentIndex")
         self.environments = np.unique(self.trial_envnum)
         self.numEnvironments = len(self.environments)
-        
+
     def load_data(self, distStep=None, speedThreshold=None, numcv=None):
         """load standard data for basic behavioral analysis"""
         pass
-        
+
     def clear_data(self):
         """method for clearing data to free up memory"""
         del self.omap
