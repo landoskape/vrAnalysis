@@ -1,5 +1,5 @@
 # VSCODE
-.vscode/*
+.vscode/
 
 # Saved files
 *.pkl
