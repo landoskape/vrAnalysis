@@ -276,6 +276,17 @@ def sparse_filter_by_idx(csr, idx):
 
 
 # ---------------------------------- signal processing ----------------------------------
+def pairdist(XA, XB):
+    """
+    measure euclidean distance between set of points in XA and XB
+
+    XA and XB are (M x N) arrays of M observations in N dimensions
+    returns: (M, ) array of distance between each matched pair in XA, XB
+    """
+    difference = XA - XB
+    return np.sqrt(np.sum(difference**2, axis=1))
+
+
 def crossCorrelation(x, y):
     """
     measure the cross correlation between each column in x with every column in y
@@ -334,8 +345,10 @@ def vectorRSquared(x, y, axis=-1):
 
 
 def diffsame(data, zero=0):
-    # diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back.
-    # zero=0 means front, zero=1 means back
+    """
+    diffsame returns the diff of a 1-d np.ndarray "data" with the same size as data by appending a zero to the front or back.
+    zero=0 means front, zero=1 means back
+    """
     assert isinstance(data, np.ndarray) and data.ndim == 1, "data must be a 1-d numpy array"
     if zero == 0:
         return np.append(0, np.diff(data))
@@ -344,6 +357,10 @@ def diffsame(data, zero=0):
 
 
 def getGaussKernel(timestamps, width, nonzero=True):
+    """
+    create gaussian kernel (sum=1) around the "timestamps" array with width in units of timestamps
+    if nonzero=True, will remove zeros from the returned values (numerical zeros, obviously)
+    """
     kx = timestamps - np.mean(timestamps)
     kk = np.exp(-(kx**2) / (2 * width) ** 2)
     kk = kk / np.sum(kk)
