@@ -48,7 +48,13 @@ class RoicatStats(placeCellMultiSession):
 
     @handle_idx_ses
     def make_roicat_comparison(
-        self, envnum, sim_name="sConj", idx_ses=None, cutoffs=(0.4, 0.7), both_reliable=False
+        self,
+        envnum,
+        sim_name="sConj",
+        idx_ses=None,
+        cutoffs=(0.4, 0.7),
+        both_reliable=False,
+        **kwargs,
     ):
         """
         load ROICaT comparison data
@@ -60,17 +66,25 @@ class RoicatStats(placeCellMultiSession):
         tracked contains a 1 if the pair is tracked by ROICaT and a zero otherwise
         pwdist contains the pairwise distance of ROI centroid after alignment by ROICaT
         nnpair contains a 1 for whatever pair is closest by euclidean distance after alignment
+        pwind contains a (2 x numPairs) array of the index for np.stack((source roi index, target roi index))
 
         prms is a dictionary describing the data parameters (which sessions, which session pairs are used, which environment)
 
+        **kwargs are passed to get_spkmaps (and eventually to pcss.load_data())
         uses data from sessions with a specific environment and ROIs according to the criteria in the kwargs
         """
         # get all pairs of sessions for idx_ses
         idx_ses_pairs = helpers.all_pairs(idx_ses)
 
         # get all spkmaps from requested sessions
-        spkmaps, relmse, relcor, pfloc, _, _ = self.get_spkmaps(
-            envnum, trials="full", average=True, tracked=False, idx_ses=idx_ses, by_plane=True
+        spkmaps, relmse, relcor, pfloc, _, _, roi_idx = self.get_spkmaps(
+            envnum,
+            trials="full",
+            average=True,
+            tracked=False,
+            idx_ses=idx_ses,
+            by_plane=True,
+            **kwargs,
         )
 
         # define reliability metric
@@ -90,7 +104,7 @@ class RoicatStats(placeCellMultiSession):
         )
 
         # for each source/target pair in idx_ses, do:
-        sim, corr, tracked, pwdist, nnpair = [], [], [], [], []
+        sim, corr, tracked, pwdist, nnpair, pwind = [], [], [], [], [], []
 
         for source, target in idx_ses_pairs:
             isource, itarget = (
@@ -130,6 +144,17 @@ class RoicatStats(placeCellMultiSession):
                 for yx_source, yx_target in zip(yxcentroids[isource], yxcentroids[itarget])
             ]
 
+            # match indices
+            pwindices = [
+                np.stack(
+                    (
+                        np.tile(rs.reshape(-1, 1), (1, len(rt))),
+                        np.tile(rt.reshape(1, -1), (len(rs), 1)),
+                    )
+                )
+                for rs, rt in zip(roi_idx[isource], roi_idx[itarget])
+            ]
+
             # get index of nearest neighbor by pair-wise distance post alignment
             nn_dist = [np.nanmin(pwd, axis=1) for pwd in pwdists]
             nn_pairs = [pwd == nn.reshape(-1, 1) for pwd, nn in zip(pwdists, nn_dist)]
@@ -146,6 +171,9 @@ class RoicatStats(placeCellMultiSession):
             pwdists = [pwd[idx_source] for pwd, idx_source in zip(pwdists, idx_reliable[isource])]
             nn_pairs = [
                 nnp[idx_source] for nnp, idx_source in zip(nn_pairs, idx_reliable[isource])
+            ]
+            pwindices = [
+                pwidx[:, idx_source] for pwidx, idx_source in zip(pwindices, idx_reliable[isource])
             ]
             if both_reliable:
                 sim_paired = [
@@ -165,6 +193,10 @@ class RoicatStats(placeCellMultiSession):
                 nn_pairs = [
                     nnp[:, idx_target] for nnp, idx_target in zip(nn_pairs, idx_reliable[itarget])
                 ]
+                pwindices = [
+                    pwidx[:, :, idx_target]
+                    for pwidx, idx_target in zip(pwindices, idx_reliable[itarget])
+                ]
 
             # stack and flatten across planes
             sim.append(np.concatenate([s.toarray().flatten() for s in sim_paired]))
@@ -172,6 +204,7 @@ class RoicatStats(placeCellMultiSession):
             tracked.append(np.concatenate([p.flatten() for p in tracked_pair]))
             pwdist.append(np.concatenate([d.flatten() for d in pwdists]))
             nnpair.append(np.concatenate([n.flatten() for n in nn_pairs]))
+            pwind.append(np.concatenate([p.reshape(2, -1) for p in pwindices], axis=1))
 
         # result parameters
         prms = dict(
@@ -183,7 +216,7 @@ class RoicatStats(placeCellMultiSession):
             both_reliable=both_reliable,
         )
 
-        return sim, corr, tracked, pwdist, nnpair, prms
+        return sim, corr, tracked, pwdist, nnpair, pwind, prms
 
     def split_by_roicat_similarity(self, data, sim):
         """
