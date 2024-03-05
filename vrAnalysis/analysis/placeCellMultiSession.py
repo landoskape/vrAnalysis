@@ -340,6 +340,9 @@ class placeCellMultiSession(multipleAnalysis):
         # get spkmaps (#ROI, #Trials, #SpatialBins)
         spkmaps = self.get_from_pcss("spkmap", idx_ses)
 
+        # make ROI index
+        roi_idx = [np.arange(s.shape[0]) for s in spkmaps]
+
         # retrieve red index for ROIs
         idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
 
@@ -384,6 +387,7 @@ class placeCellMultiSession(multipleAnalysis):
             relcor = [cor[idx_track] for cor, idx_track in zip(relcor, idx_tracked)]
             pfloc = [pfl[idx_track] for pfl, idx_track in zip(pfloc, idx_tracked)]
             pfidx = [pfi[idx_track] for pfi, idx_track in zip(pfidx, idx_tracked)]
+            roi_idx = [ridx[idx_track] for ridx, idx_track in zip(roi_idx, idx_tracked)]
 
         # always filter spkmaps by trials for requested environment (either train/test/all)
         spkmaps = [spkmap[:, trials] for spkmap, trials in zip(spkmaps, idx_trials)]
@@ -412,9 +416,12 @@ class placeCellMultiSession(multipleAnalysis):
             pfidx = self.track.split_by_plane(
                 pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
             )
+            roi_idx = self.track.split_by_plane(
+                roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
+            )
 
         # return data
-        return spkmaps, relmse, relcor, pfloc, pfidx, idx_red
+        return spkmaps, relmse, relcor, pfloc, pfidx, idx_red, roi_idx
 
     @handle_idx_ses
     def make_rel_data(self, envnum, sortby=None, idx_ses=None):

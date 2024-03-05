@@ -54,7 +54,7 @@ def generate_dictionary(mouse_name, cutoffs):
 
     # Select best VR environment and sessions
     env, idx_ses = roistat.env_idx_ses_selector(envmethod="most", sesmethod=-1)
-    spkmaps, relmse, relcor, _, _, _ = roistat.get_spkmaps(
+    spkmaps, relmse, relcor, _, _, _, _ = roistat.get_spkmaps(
         env,
         trials="full",
         average=True,
