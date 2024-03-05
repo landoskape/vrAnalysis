@@ -433,6 +433,7 @@ class placeCellSingleSession(standardAnalysis):
         self.idxUseROI = np.any(
             np.stack([roiPlaneIdx == pidx for pidx in self.keep_planes]), axis=0
         )
+        self.roiPlaneIdx = roiPlaneIdx[self.idxUseROI]
         self.numROIs = self.vrexp.getNumROIs(self.keep_planes)
 
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
