@@ -349,7 +349,7 @@ class tracker:
         imaging plane
 
         dim is used to set which dimension of the data array to index on (it's where the ROIs
-        are concatenate)
+        are concatenated)
 
         tracked=True assumes that data contains ROIs that were filtered by whether they had been
         tracked across the set of sessions in idx_ses
@@ -419,7 +419,7 @@ class tracker:
     # ----- what follows this is a set of methods for retrieving aligned cell location and structure from the ROICaT pipeline -----
     @handle_idx_ses
     @handle_keep_planes
-    def get_ROIs(self, idx_ses=None, keep_planes=None):
+    def get_ROIs(self, as_coo=True, idx_ses=None, keep_planes=None):
         """
         retrieve all ROIs from requested sessions and planes
 
@@ -429,7 +429,8 @@ class tracker:
         each element is a coo_array with size (num_rois_per_plane(s), num_pixels)
         """
         return [
-            [self._make_ROIs(plane, ses, as_coo=True) for plane in keep_planes] for ses in idx_ses
+            [self._make_ROIs(plane, ses, as_coo=as_coo) for plane in keep_planes]
+            for ses in idx_ses
         ]
 
     @handle_idx_ses
@@ -498,10 +499,13 @@ class tracker:
 
         if combine:
             # combine into a 2d coordinate if requested
-            return [
-                [np.stack((yc, xc)).T for yc, xc in zip(ycent, xcent)]
-                for ycent, xcent in zip(ycentroids, xcentroids)
-            ]
+            if cat_planes:
+                return [np.stack((yc, xc)).T for yc, xc in zip(ycentroids, xcentroids)]
+            else:
+                return [
+                    [np.stack((yc, xc)).T for yc, xc in zip(ycent, xcent)]
+                    for ycent, xcent in zip(ycentroids, xcentroids)
+                ]
 
         # otherwise return centroids in separate variables
         return ycentroids, xcentroids
