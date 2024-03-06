@@ -29,6 +29,4 @@ if __name__ == "__main__":
     maxcutoffs = args.maxcutoffs
 
     track = tracking.tracker(mouse)  # get tracker object for mouse
-    pcm = analysis.placeCellMultiSession(
-        track, autoload=False
-    )  # open up place cell multi session analysis object (don't autoload!!!)
+    pcm = analysis.placeCellMultiSession(track, autoload=False)  # open up place cell multi session analysis object (don't autoload!!!)

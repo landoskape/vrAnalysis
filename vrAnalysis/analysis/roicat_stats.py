@@ -88,20 +88,13 @@ class RoicatStats(placeCellMultiSession):
         )
 
         # define reliability metric
-        idx_reliable = [
-            [(mse > cutoffs[0]) & (cor > cutoffs[1]) for mse, cor in zip(rmse, rcor)]
-            for rmse, rcor in zip(relmse, relcor)
-        ]
+        idx_reliable = [[(mse > cutoffs[0]) & (cor > cutoffs[1]) for mse, cor in zip(rmse, rcor)] for rmse, rcor in zip(relmse, relcor)]
 
         # get all labels from requested sessions
-        tracked_labels = self.track.get_tracked_labels(
-            cat_planes=False, nan_untracked=True, idx_ses=idx_ses, keep_planes=self.keep_planes
-        )
+        tracked_labels = self.track.get_tracked_labels(cat_planes=False, nan_untracked=True, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # get xy coordinates of aligned ROIs from requested sessions
-        yxcentroids = self.track.get_centroids(
-            combine=True, idx_ses=idx_ses, keep_planes=self.keep_planes
-        )
+        yxcentroids = self.track.get_centroids(combine=True, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # for each source/target pair in idx_ses, do:
         sim, corr, tracked, pwdist, nnpair, pwind = [], [], [], [], [], []
@@ -124,25 +117,17 @@ class RoicatStats(placeCellMultiSession):
             )
 
             # compute correlation between source and target
-            corrs = [
-                helpers.crossCorrelation(spksource.T, spktarget.T)
-                for spksource, spktarget in zip(spkmaps[isource], spkmaps[itarget])
-            ]
+            corrs = [helpers.crossCorrelation(spksource.T, spktarget.T) for spksource, spktarget in zip(spkmaps[isource], spkmaps[itarget])]
 
             # retrieve source/target labels for each ROI by plane
             # 1 if pair is tracked (by label) and 0 if pair isn't tracked
             tracked_pair = [
                 label_source.reshape(-1, 1) == label_target.reshape(1, -1)
-                for label_source, label_target in zip(
-                    tracked_labels[isource], tracked_labels[itarget]
-                )
+                for label_source, label_target in zip(tracked_labels[isource], tracked_labels[itarget])
             ]
 
             # get pairwise distance
-            pwdists = [
-                cdist(yx_source, yx_target)
-                for yx_source, yx_target in zip(yxcentroids[isource], yxcentroids[itarget])
-            ]
+            pwdists = [cdist(yx_source, yx_target) for yx_source, yx_target in zip(yxcentroids[isource], yxcentroids[itarget])]
 
             # match indices
             pwindices = [
@@ -161,42 +146,19 @@ class RoicatStats(placeCellMultiSession):
 
             # measure pairwise distance between pairs
             # filter by reliability
-            sim_paired = [
-                sim[idx_source] for sim, idx_source in zip(sim_paired, idx_reliable[isource])
-            ]
+            sim_paired = [sim[idx_source] for sim, idx_source in zip(sim_paired, idx_reliable[isource])]
             corrs = [cor[idx_source] for cor, idx_source in zip(corrs, idx_reliable[isource])]
-            tracked_pair = [
-                pair[idx_source] for pair, idx_source in zip(tracked_pair, idx_reliable[isource])
-            ]
+            tracked_pair = [pair[idx_source] for pair, idx_source in zip(tracked_pair, idx_reliable[isource])]
             pwdists = [pwd[idx_source] for pwd, idx_source in zip(pwdists, idx_reliable[isource])]
-            nn_pairs = [
-                nnp[idx_source] for nnp, idx_source in zip(nn_pairs, idx_reliable[isource])
-            ]
-            pwindices = [
-                pwidx[:, idx_source] for pwidx, idx_source in zip(pwindices, idx_reliable[isource])
-            ]
+            nn_pairs = [nnp[idx_source] for nnp, idx_source in zip(nn_pairs, idx_reliable[isource])]
+            pwindices = [pwidx[:, idx_source] for pwidx, idx_source in zip(pwindices, idx_reliable[isource])]
             if both_reliable:
-                sim_paired = [
-                    sim[:, idx_target]
-                    for sim, idx_target in zip(sim_paired, idx_reliable[itarget])
-                ]
-                corrs = [
-                    cor[:, idx_target] for cor, idx_target in zip(corrs, idx_reliable[itarget])
-                ]
-                tracked_pair = [
-                    pair[:, idx_target]
-                    for pair, idx_target in zip(tracked_pair, idx_reliable[itarget])
-                ]
-                pwdists = [
-                    pwd[:, idx_target] for pwd, idx_target in zip(pwdists, idx_reliable[itarget])
-                ]
-                nn_pairs = [
-                    nnp[:, idx_target] for nnp, idx_target in zip(nn_pairs, idx_reliable[itarget])
-                ]
-                pwindices = [
-                    pwidx[:, :, idx_target]
-                    for pwidx, idx_target in zip(pwindices, idx_reliable[itarget])
-                ]
+                sim_paired = [sim[:, idx_target] for sim, idx_target in zip(sim_paired, idx_reliable[itarget])]
+                corrs = [cor[:, idx_target] for cor, idx_target in zip(corrs, idx_reliable[itarget])]
+                tracked_pair = [pair[:, idx_target] for pair, idx_target in zip(tracked_pair, idx_reliable[itarget])]
+                pwdists = [pwd[:, idx_target] for pwd, idx_target in zip(pwdists, idx_reliable[itarget])]
+                nn_pairs = [nnp[:, idx_target] for nnp, idx_target in zip(nn_pairs, idx_reliable[itarget])]
+                pwindices = [pwidx[:, :, idx_target] for pwidx, idx_target in zip(pwindices, idx_reliable[itarget])]
 
             # stack and flatten across planes
             sim.append(np.concatenate([s.toarray().flatten() for s in sim_paired]))
@@ -225,9 +187,7 @@ class RoicatStats(placeCellMultiSession):
         compares sim to cutoffs set as default attribute of self
         and splits data based on these cutoffs
         """
-        assert all(
-            [d.shape == s.shape for d, s in zip(data, sim)]
-        ), "data and sim shapes must be equal"
+        assert all([d.shape == s.shape for d, s in zip(data, sim)]), "data and sim shapes must be equal"
 
         idx_roicat_same = [s > self.sim_cutoffs[1] for s in sim]
         idx_roicat_diff = [s < self.sim_cutoffs[0] for s in sim]
@@ -242,9 +202,7 @@ class RoicatStats(placeCellMultiSession):
 
         or use tracked pair identities in tracked
         """
-        assert all(
-            [d.shape == t.shape for d, t in zip(data, tracked)]
-        ), "data and tracked shapes must be equal"
+        assert all([d.shape == t.shape for d, t in zip(data, tracked)]), "data and tracked shapes must be equal"
 
         idx_roicat_same = [t == True for t in tracked]
         idx_roicat_diff = [t == False for t in tracked]
@@ -253,9 +211,7 @@ class RoicatStats(placeCellMultiSession):
         data_diff = [c[idx] for c, idx in zip(data, idx_roicat_diff)]
         return data_same, data_diff
 
-    def plot_sim_vs_pfcorr(
-        self, sim, corr, tracked, prms, color_mode=None, with_show=True, with_save=False
-    ):
+    def plot_sim_vs_pfcorr(self, sim, corr, tracked, prms, color_mode=None, with_show=True, with_save=False):
         """
         helper for making scatter plots between sim and corr
 
@@ -392,9 +348,7 @@ class RoicatStats(placeCellMultiSession):
         # Show figure if requested
         plt.show() if with_show else plt.close()
 
-    def plot_pfcorr_by_samediff(
-        self, corr, tracked, nnpair, prms, with_show=True, with_save=False
-    ):
+    def plot_pfcorr_by_samediff(self, corr, tracked, nnpair, prms, with_show=True, with_save=False):
         """
         helper for plotting pfcorr values for same and different populations
 
@@ -408,27 +362,17 @@ class RoicatStats(placeCellMultiSession):
         corr_same_nn, _ = self.split_by_roicat_assignment(corr, nnpair)
 
         dataframes = []
-        for name, csame, cdiff, csamenn in zip(
-            self.session_pair_names(prms), corr_same, corr_diff, corr_same_nn
-        ):
-            same_df = pd.DataFrame(
-                {"PF Correlation": csame, "Session Pair": name, "ROICaT Assignment": "Same"}
-            )
-            diff_df = pd.DataFrame(
-                {"PF Correlation": cdiff, "Session Pair": name, "ROICaT Assignment": "Diff"}
-            )
-            nn_df = pd.DataFrame(
-                {"PF Correlation": csamenn, "Session Pair": name, "ROICaT Assignment": "NN"}
-            )
+        for name, csame, cdiff, csamenn in zip(self.session_pair_names(prms), corr_same, corr_diff, corr_same_nn):
+            same_df = pd.DataFrame({"PF Correlation": csame, "Session Pair": name, "ROICaT Assignment": "Same"})
+            diff_df = pd.DataFrame({"PF Correlation": cdiff, "Session Pair": name, "ROICaT Assignment": "Diff"})
+            nn_df = pd.DataFrame({"PF Correlation": csamenn, "Session Pair": name, "ROICaT Assignment": "NN"})
             dataframes.extend([same_df, diff_df, nn_df])
 
         data = pd.concat(dataframes, ignore_index=True)
 
         plt.close("all")
         fig, ax = plt.subplots()
-        sns.boxenplot(
-            data=data, x="Session Pair", y="PF Correlation", hue="ROICaT Assignment", ax=ax
-        )
+        sns.boxenplot(data=data, x="Session Pair", y="PF Correlation", hue="ROICaT Assignment", ax=ax)
         plt.show()
         ax.legend(loc="lower right")
 
@@ -495,12 +439,8 @@ class RoicatStats(placeCellMultiSession):
         plt.close("all")
         fig, ax = plt.subplots()
         for tname, tcolor, tdata, sdata in zip(type_names, type_colors, means, serrors):
-            ax.plot(
-                range(num_session_pairs), tdata, color=tcolor, linewidth=1, marker="o", label=tname
-            )
-            ax.fill_between(
-                range(num_session_pairs), tdata + sdata, tdata - sdata, color=(tcolor, 0.3)
-            )
+            ax.plot(range(num_session_pairs), tdata, color=tcolor, linewidth=1, marker="o", label=tname)
+            ax.fill_between(range(num_session_pairs), tdata + sdata, tdata - sdata, color=(tcolor, 0.3))
 
         ax.set_xlabel("Session Pair")
         ax.set_xticks(range(num_session_pairs), labels=session_pair_names)
@@ -519,9 +459,7 @@ class RoicatStats(placeCellMultiSession):
         if return_data:
             return means, serrors
 
-    def plot_pfcorr_vs_pwdist_by_group(
-        self, corr, tracked, pwdist, nnpair, prms, with_show=True, with_save=False
-    ):
+    def plot_pfcorr_vs_pwdist_by_group(self, corr, tracked, pwdist, nnpair, prms, with_show=True, with_save=False):
         """
         hi
         """
@@ -533,9 +471,7 @@ class RoicatStats(placeCellMultiSession):
         corr_nnsame, corr_nndiff = self.split_by_roicat_assignment(corr, nnpair)
 
         # figure out maximum pair-wise distance in dataset
-        max_pwd = np.max(
-            [np.maximum(np.nanmax(pws), np.nanmax(pwd)) for pws, pwd in zip(pwsame, pwdiff)]
-        )
+        max_pwd = np.max([np.maximum(np.nanmax(pws), np.nanmax(pwd)) for pws, pwd in zip(pwsame, pwdiff)])
 
         # measure distribution of pair-wise distances
         max_pwdist = 10
@@ -569,18 +505,10 @@ class RoicatStats(placeCellMultiSession):
             return mean
 
         # get mean/std pfcorr given pw distance
-        same_corr_by_dist_mean = [
-            corr_stats(csame, sbi, len(centers)) for csame, sbi in zip(corrsame, same_bin_idx)
-        ]
-        diff_corr_by_dist_mean = [
-            corr_stats(cdiff, dbi, len(centers)) for cdiff, dbi in zip(corrdiff, diff_bin_idx)
-        ]
-        samenn_corr_by_dist_mean = [
-            corr_stats(csame, sbi, len(centers)) for csame, sbi in zip(corr_nnsame, samenn_bin_idx)
-        ]
-        diffnn_corr_by_dist_mean = [
-            corr_stats(cdiff, dbi, len(centers)) for cdiff, dbi in zip(corr_nndiff, diffnn_bin_idx)
-        ]
+        same_corr_by_dist_mean = [corr_stats(csame, sbi, len(centers)) for csame, sbi in zip(corrsame, same_bin_idx)]
+        diff_corr_by_dist_mean = [corr_stats(cdiff, dbi, len(centers)) for cdiff, dbi in zip(corrdiff, diff_bin_idx)]
+        samenn_corr_by_dist_mean = [corr_stats(csame, sbi, len(centers)) for csame, sbi in zip(corr_nnsame, samenn_bin_idx)]
+        diffnn_corr_by_dist_mean = [corr_stats(cdiff, dbi, len(centers)) for cdiff, dbi in zip(corr_nndiff, diffnn_bin_idx)]
 
         # stack these
         same_corr_by_dist_mean = np.stack(same_corr_by_dist_mean)
@@ -608,13 +536,9 @@ class RoicatStats(placeCellMultiSession):
         se_count_samenn = np.nanstd(samenn_counts, axis=0)
 
         ax[0].plot(centers, mn_count_diff, color="k", linewidth=1.5, label="different")
-        ax[0].fill_between(
-            centers, mn_count_diff + se_count_diff, mn_count_diff - se_count_diff, color=("k", 0.3)
-        )
+        ax[0].fill_between(centers, mn_count_diff + se_count_diff, mn_count_diff - se_count_diff, color=("k", 0.3))
         ax[0].plot(centers, mn_count_same, color="b", linewidth=1.5, label="same")
-        ax[0].fill_between(
-            centers, mn_count_same + se_count_same, mn_count_same - se_count_same, color=("b", 0.3)
-        )
+        ax[0].fill_between(centers, mn_count_same + se_count_same, mn_count_same - se_count_same, color=("b", 0.3))
         ax[0].plot(centers, mn_count_samenn, color="r", linewidth=1.5, label="nearest neighbor")
         ax[0].fill_between(
             centers,
@@ -640,17 +564,11 @@ class RoicatStats(placeCellMultiSession):
         se_cbd_samenn = np.nanstd(samenn_corr_by_dist_mean, axis=0)
 
         ax[1].plot(centers, mn_cbd_diff, color="k", linewidth=1.5, label="different")
-        ax[1].fill_between(
-            centers, mn_cbd_diff + se_cbd_diff, mn_cbd_diff - se_cbd_diff, color=("k", 0.3)
-        )
+        ax[1].fill_between(centers, mn_cbd_diff + se_cbd_diff, mn_cbd_diff - se_cbd_diff, color=("k", 0.3))
         ax[1].plot(centers, mn_cbd_same, color="b", linewidth=1.5, label="same")
-        ax[1].fill_between(
-            centers, mn_cbd_same + se_cbd_same, mn_cbd_same - se_cbd_same, color=("b", 0.3)
-        )
+        ax[1].fill_between(centers, mn_cbd_same + se_cbd_same, mn_cbd_same - se_cbd_same, color=("b", 0.3))
         ax[1].plot(centers, mn_cbd_samenn, color="r", linewidth=1.5, label="nearest neighbor")
-        ax[1].fill_between(
-            centers, mn_cbd_samenn + se_cbd_samenn, mn_cbd_samenn - se_cbd_samenn, color=("r", 0.3)
-        )
+        ax[1].fill_between(centers, mn_cbd_samenn + se_cbd_samenn, mn_cbd_samenn - se_cbd_samenn, color=("r", 0.3))
 
         ax[1].set_xlim(0, max_pwdist)
         ax[1].set_xlabel("pair-wise distance ROI centroids")
@@ -670,9 +588,7 @@ class RoicatStats(placeCellMultiSession):
         """
         simple plot of roi diameters (average range of xpix to ypix in ROI)
         """
-        yxrange = self.track.get_roi_range(
-            combine=True, cat_planes=True, idx_ses=idx_ses, keep_planes=self.keep_planes
-        )
+        yxrange = self.track.get_roi_range(combine=True, cat_planes=True, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         bins = np.linspace(0, 50, 51)
         centers = helpers.edge2center(bins)

@@ -94,9 +94,7 @@ def vrDatabaseMetadata(dbName):
         },
     }
     if dbName not in dbdict.keys():
-        raise ValueError(
-            f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}"
-        )
+        raise ValueError(f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}")
     return dbdict[dbName]
 
 
@@ -116,9 +114,7 @@ def vrDatabase(dbName):
         if issubclass(metadata["constructor"], base_database):
             constructor = metadata["constructor"]  # get class constructor method for this database
         else:
-            raise ValueError(
-                f"{metadata['constructor']} must be a subclass of the `base_database` class!"
-            )
+            raise ValueError(f"{metadata['constructor']} must be a subclass of the `base_database` class!")
     else:
         constructor = base_database
     return constructor(dbName)
@@ -167,12 +163,7 @@ class base_database:
     def process_unique_fields(self, fields):
         ufields = []
         for f in fields:
-            if (
-                isinstance(f, tuple)
-                and len(f) == 2
-                and type(f[1]) == type
-                and isinstance(f[0], str)
-            ):
+            if isinstance(f, tuple) and len(f) == 2 and type(f[1]) == type and isinstance(f[0], str):
                 ufields.append(f)
             elif isinstance(f, str):
                 ufields.append((f, str))
@@ -211,10 +202,7 @@ class base_database:
         string. If this isn't the case and you're not sure what to do, contact me so we can make
         a better system.
         """
-        driverString = {
-            "access": r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
-            + rf"DBQ={self.get_dbfile()};"
-        }
+        driverString = {"access": r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + rf"DBQ={self.get_dbfile()};"}
 
         # Make sure connections are possible for this hosttype
         failureMessage = (
@@ -280,9 +268,7 @@ class base_database:
     def showMetadata(self):
         """convience method for showing the metadata associated with the open database"""
         print(f"{self.host_type} database located at {self.dbPath}")
-        print(
-            f"Database name: {self.dbName}{self.dbExt}, table name: {self.tableName}, with uid: {self.uid}"
-        )
+        print(f"Database name: {self.dbName}{self.dbExt}, table name: {self.tableName}, with uid: {self.uid}")
         if self.backupPath is not None:
             print(f"Backup path located at: {self.backupPath}")
         else:
@@ -355,15 +341,8 @@ class base_database:
         if conditions:
             for key, val in conditions.items():
                 assert key in fieldNames, f"{key} is not a column name in {self.tableName}"
-                conditions[key] = self.process_filter_value(
-                    val
-                )  # make sure it's a value/operation pair
-            query = " & ".join(
-                [
-                    self.construct_filter_string(key, val_op_tuple)
-                    for key, val_op_tuple in conditions.items()
-                ]
-            )
+                conditions[key] = self.process_filter_value(val)  # make sure it's a value/operation pair
+            query = " & ".join([self.construct_filter_string(key, val_op_tuple) for key, val_op_tuple in conditions.items()])
             df = df.query(query)
         return df
 
@@ -412,9 +391,7 @@ class base_database:
         The ignoreScratched and kwConditions arguments are fed into the self.getTable() method
         Then, every record that is returned gets <field> updated to <val>
         """
-        assert (
-            field in self.tableData()[0]
-        ), f"Requested field ({field}) is not in table. Use 'self.tableData()[0]' to see available fields."
+        assert field in self.tableData()[0], f"Requested field ({field}) is not in table. Use 'self.tableData()[0]' to see available fields."
         df = self.getTable(**kwConditions)
         updateStatement = self.createUpdateManyStatement(field)
         uids = df[self.uid].tolist()  # uids of all sessions requested
@@ -434,17 +411,13 @@ class base_database:
         Otherwise, adds the record to the database.
         """
         d = dict(zip(columns, values))
-        unique_values = [
-            d[uf[0]] for uf in self.uniqueFields
-        ]  # get values associated with unique fields
+        unique_values = [d[uf[0]] for uf in self.uniqueFields]  # get values associated with unique fields
         for ii, uv in enumerate(unique_values):
             if isinstance(uv, date) or isinstance(uv, datetime):
                 # this is required for communicating with Access
                 unique_values[ii] = uv.strftime("%Y-%m-%d")
         if self.getRecord(*unique_values, verbose=False) is not None:
-            unique_combo = ", ".join(
-                [f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)]
-            )
+            unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
             print(f"Record already exists for {unique_combo}")
             return f"Record already exists for {unique_combo}"
         with self.openCursor(commitChanges=True) as cursor:
@@ -480,9 +453,7 @@ class base_database:
         # Check if correct values are provided
         if len(unique_values) != len(self.uniqueFields):
             expected_list = ", ".join([uf[0] for uf in self.uniqueFields])
-            raise ValueError(
-                f"{len(unique_values)} values provided but *getRecord* is expecting values for: {expected_list}"
-            )
+            raise ValueError(f"{len(unique_values)} values provided but *getRecord* is expecting values for: {expected_list}")
 
         # Get table and compare
         df = self.getTable()
@@ -494,21 +465,15 @@ class base_database:
             elif uf[1] == int:
                 df = df[df[uf[0]] == int(uv)]
             else:
-                raise ValueError(
-                    f"uniqueField type ({uf[1]}) not recognized, add the appropriate query to this method!"
-                )
+                raise ValueError(f"uniqueField type ({uf[1]}) not recognized, add the appropriate query to this method!")
 
         if len(df) == 0:
             if verbose:
-                unique_combo = ", ".join(
-                    [f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)]
-                )
+                unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
                 print(f"No session found under: {unique_combo}")
             return None
         if len(df) > 1:
-            unique_combo = ", ".join(
-                [f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)]
-            )
+            unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
             raise ValueError(f"Multiple sessions found under: {unique_combo}")
         return df.iloc[0]
 
@@ -636,16 +601,12 @@ class session_database(base_database):
 
         # return s2pCreationDate
         with self.openCursor(commitChanges=True) as cursor:
-            cursor.executemany(
-                self.createUpdateManyStatement("suite2pDate"), zip(s2pCreationDate, uids)
-            )
+            cursor.executemany(self.createUpdateManyStatement("suite2pDate"), zip(s2pCreationDate, uids))
 
     def needsS2P(self, needsQC=False):
         df = self.getTable()
         if needsQC:
-            return df[
-                (df["imaging"] == True) & (df["suite2p"] == True) & (df["suite2pQC"] == False)
-            ]
+            return df[(df["imaging"] == True) & (df["suite2p"] == True) & (df["suite2pQC"] == False)]
         else:
             return df[(df["imaging"] == True) & (df["suite2p"] == False)]
 
@@ -653,13 +614,9 @@ class session_database(base_database):
         need = self.needsS2P(needsQC=needsQC)
         for idx, row in need.iterrows():
             if needsQC:
-                print(
-                    f"Database indicates that suite2p has been run but not QC'd: {self.vrSession(row).sessionPrint()}"
-                )
+                print(f"Database indicates that suite2p has been run but not QC'd: {self.vrSession(row).sessionPrint()}")
             else:
-                print(
-                    f"Database indicates that suite2p has not been run: {self.vrSession(row).sessionPrint()}"
-                )
+                print(f"Database indicates that suite2p has not been run: {self.vrSession(row).sessionPrint()}")
                 if printTargets:
                     mouseName, sessionDate, sessionID = self.sessionName(row)
                     fm.s2pTargets(mouseName, sessionDate, sessionID)
@@ -670,27 +627,19 @@ class session_database(base_database):
 
         # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
         check_s2pDone = df[(df["imaging"] == True) & (df["suite2p"] == True)]
-        checked_notDone = check_s2pDone.apply(
-            lambda row: not (self.vrSession(row).suite2pPath().exists()), axis=1
-        )
+        checked_notDone = check_s2pDone.apply(lambda row: not (self.vrSession(row).suite2pPath().exists()), axis=1)
         notActuallyDone = check_s2pDone[checked_notDone]
 
         # return dataframe of sessions with imaging where suite2p was done, even though the database thinks it wasn't
         check_s2pNeed = df[(df["imaging"] == True) & (df["suite2p"] == False)]
-        checked_notNeed = check_s2pNeed.apply(
-            lambda row: self.vrSession(row).suite2pPath().exists(), axis=1
-        )
+        checked_notNeed = check_s2pNeed.apply(lambda row: self.vrSession(row).suite2pPath().exists(), axis=1)
         notActuallyNeed = check_s2pNeed[checked_notNeed]
 
         # Print database errors to workspace
         for idx, row in notActuallyDone.iterrows():
-            print(
-                f"Database said suite2p has been ran, but it actually hasn't: {self.vrSession(row).sessionPrint()}"
-            )
+            print(f"Database said suite2p has been ran, but it actually hasn't: {self.vrSession(row).sessionPrint()}")
         for idx, row in notActuallyNeed.iterrows():
-            print(
-                f"Database said suite2p didn't run, but it already did: {self.vrSession(row).sessionPrint()}"
-            )
+            print(f"Database said suite2p didn't run, but it already did: {self.vrSession(row).sessionPrint()}")
 
         # If withDatabaseUpdate==True, then correct the database
         if withDatabaseUpdate:
@@ -715,9 +664,7 @@ class session_database(base_database):
         ]
 
         df = self.getTable()
-        redCellQC_done = df[
-            (df["imaging"] == True) & (df["suite2p"] == True) & (df["redCellQC"] == True)
-        ]
+        redCellQC_done = df[(df["imaging"] == True) & (df["suite2p"] == True) & (df["redCellQC"] == True)]
         uids = redCellQC_done[self.uid].tolist()
         rcEditDate = []
         for idx, row in redCellQC_done.iterrows():
@@ -730,25 +677,16 @@ class session_database(base_database):
             rcEditDate.append(cDateTime)  # get suite2p path creation date
 
         with self.openCursor(commitChanges=True) as cursor:
-            cursor.executemany(
-                self.createUpdateManyStatement("redCellQCDate"), zip(rcEditDate, uids)
-            )
+            cursor.executemany(self.createUpdateManyStatement("redCellQCDate"), zip(rcEditDate, uids))
 
     def needsRedCellQC(self, **kwConditions):
         df = self.getTable(**kwConditions)
-        return df[
-            (df["imaging"] == True)
-            & (df["suite2p"] == True)
-            & (df["vrRegistration"] == True)
-            & (df["redCellQC"] == False)
-        ]
+        return df[(df["imaging"] == True) & (df["suite2p"] == True) & (df["vrRegistration"] == True) & (df["redCellQC"] == False)]
 
     def printRequiresRedCellQC(self, printTargets=True, needsQC=False, **kwConditions):
         need = self.needsRedCellQC(**kwConditions)
         for idx, row in need.iterrows():
-            print(
-                f"Database indicates that redCellQC has not been performed for session: {self.vrSession(row).sessionPrint()}"
-            )
+            print(f"Database indicates that redCellQC has not been performed for session: {self.vrSession(row).sessionPrint()}")
 
     def iterSessionNeedRedCellQC(self, **kwConditions):
         """Creates list of sessions that can be iterated through that require red cell quality control"""
@@ -776,15 +714,11 @@ class session_database(base_database):
                     )
                 else:
                     # Otherwise remove the date
-                    cursor.execute(
-                        self.createUpdateStatement("redCellQCDate", record[self.uid]), ""
-                    )
+                    cursor.execute(self.createUpdateStatement("redCellQCDate", record[self.uid]), "")
             return True
 
         except:
-            print(
-                f"Failed to update database for session: {self.vrSession(record).sessionPrint()}"
-            )
+            print(f"Failed to update database for session: {self.vrSession(record).sessionPrint()}")
             return False
 
     # == operating vrExperiment pipeline ==
@@ -793,27 +727,17 @@ class session_database(base_database):
         # These are a subset of what is available in session.vrRegistration
         # They indicate what preprocessing steps to take depending on what was performed in each experiment
         opts = {}
-        opts["vrBehaviorVersion"] = (
-            1  # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
-        )
-        opts["facecam"] = (
-            False  # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
-        )
-        opts["imaging"] = (
-            True  # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
-        )
-        opts["oasis"] = (
-            True  # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
-        )
+        opts["vrBehaviorVersion"] = 1  # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
+        opts["facecam"] = False  # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
+        opts["imaging"] = True  # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
+        opts["oasis"] = True  # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
         opts["moveRawData"] = False  # whether or not to move raw data files to 'rawData'
         opts["redCellProcessing"] = (
             True  # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
         )
         opts["clearOne"] = True  # clear previous oneData.... yikes, big move dude!
 
-        assert (
-            userOpts.keys() <= opts.keys()
-        ), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
+        assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
         opts.update(userOpts)  # Update default opts with user requests
         return opts
 
@@ -829,16 +753,12 @@ class session_database(base_database):
             vrExpReg.saveParams()
         except Exception as ex:
             with self.openCursor(commitChanges=True) as cursor:
-                cursor.execute(
-                    self.createUpdateStatement("vrRegistrationError", record[self.uid]), True
-                )
+                cursor.execute(self.createUpdateStatement("vrRegistrationError", record[self.uid]), True)
                 cursor.execute(
                     self.createUpdateStatement("vrRegistrationException", record[self.uid]),
                     str(ex),
                 )
-            print(
-                f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData."
-            )
+            print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
             vrExpReg.clearOneData(certainty=True)
             errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
             errorPrint(f"Exception: {ex}")
@@ -847,15 +767,9 @@ class session_database(base_database):
         else:
             with self.openCursor(commitChanges=True) as cursor:
                 # Tell the database that vrRegistration was performed and the time of processing
-                cursor.execute(
-                    self.createUpdateStatement("vrRegistration", record[self.uid]), True
-                )
-                cursor.execute(
-                    self.createUpdateStatement("vrRegistrationError", record[self.uid]), False
-                )
-                cursor.execute(
-                    self.createUpdateStatement("vrRegistrationException", record[self.uid]), ""
-                )
+                cursor.execute(self.createUpdateStatement("vrRegistration", record[self.uid]), True)
+                cursor.execute(self.createUpdateStatement("vrRegistrationError", record[self.uid]), False)
+                cursor.execute(self.createUpdateStatement("vrRegistrationException", record[self.uid]), "")
                 cursor.execute(
                     self.createUpdateStatement("vrRegistrationDate", record[self.uid]),
                     datetime.now(),
@@ -865,9 +779,7 @@ class session_database(base_database):
                 True,
                 sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()]),
             )  # accumulate oneData
-            print(
-                f"Session {vrExpReg.sessionPrint()} registered with {helpers.readableBytes(out[1])} oneData."
-            )
+            print(f"Session {vrExpReg.sessionPrint()} registered with {helpers.readableBytes(out[1])} oneData.")
         finally:
             del vrExpReg
         return out
@@ -877,9 +789,7 @@ class session_database(base_database):
         opts = self.defaultRegistrationOpts(**userOpts)
         record = self.getRecord(mouseName, sessionDate, sessionID)
         if record is None:
-            print(
-                f"Session {session.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database"
-            )
+            print(f"Session {session.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
             return
         out = self.registerRecord(record, **opts)
         return out[0]
@@ -894,9 +804,7 @@ class session_database(base_database):
 
         for idx, (_, row) in enumerate(dfToRegister.iterrows()):
             if totalOneData > maxData:
-                print(
-                    f"\nMax data limit reached. Total processed: {helpers.readableBytes(totalOneData)}. Limit: {helpers.readableBytes(maxData)}"
-                )
+                print(f"\nMax data limit reached. Total processed: {helpers.readableBytes(totalOneData)}. Limit: {helpers.readableBytes(maxData)}")
                 return
             print("")
             out = self.registerRecord(row, **opts)
@@ -913,27 +821,19 @@ class session_database(base_database):
     def printRegistrationErrors(self, **kwargs):
         df = self.getTable(**kwargs)
         for idx, row in df[df["vrRegistrationError"] == True].iterrows():
-            print(
-                f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}"
-            )
+            print(f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}")
 
     # == operating vrExperiment pipeline ==
     def clearOneData(self, **userOpts):
         opts = {}
         opts["clearOne"] = True  # clear previous oneData.... yikes, big move dude!
 
-        raise ValueError(
-            "write in a user prompt to make sure they want to go through with this..."
-        )
+        raise ValueError("write in a user prompt to make sure they want to go through with this...")
 
-        assert (
-            userOpts.keys() <= opts.keys()
-        ), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
+        assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
         opts.update(userOpts)  # Update default opts with user requests
 
-        print(
-            "In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!"
-        )
+        print("In registerSessions, 'vrBehaviorVersion' is an important input that hasn't been coded yet!")
 
         dfToRegister = self.needsRegistration()
         for idx, row in dfToRegister.iterrows():
@@ -945,19 +845,13 @@ class session_database(base_database):
                 vrExpReg.preprocessing = []
                 vrExpReg.saveParams()
             except Exception as ex:
-                print(
-                    f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}"
-                )
+                print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}")
                 print(f"Exception: {ex}")
             else:
                 with self.openCursor(commitChanges=True) as cursor:
                     # Tell the database that vrRegistration was performed and the time of processing
-                    cursor.execute(
-                        self.createUpdateStatement("vrRegistration", row[self.uid]), None
-                    )
-                    cursor.execute(
-                        self.createUpdateStatement("vrRegistrationDate", row[self.uid]), None
-                    )
+                    cursor.execute(self.createUpdateStatement("vrRegistration", row[self.uid]), None)
+                    cursor.execute(self.createUpdateStatement("vrRegistrationDate", row[self.uid]), None)
             finally:
                 del vrExpReg
 
@@ -968,23 +862,15 @@ class vrDatabaseGrossUpdate(session_database):
 
     def checkSessionScratch(self, withDatabaseUpdate=False):
         df = self.getTable(ignoreScratched=False)
-        good_withJustification = df[
-            (df["sessionQC"] == True) & (~pd.isnull(df["scratchJustification"]))
-        ]
-        bad_noJustification = df[
-            (df["sessionQC"] == False) & (pd.isnull(df["scratchJustification"]))
-        ]
+        good_withJustification = df[(df["sessionQC"] == True) & (~pd.isnull(df["scratchJustification"]))]
+        bad_noJustification = df[(df["sessionQC"] == False) & (pd.isnull(df["scratchJustification"]))]
 
         goodToBad_UID = good_withJustification[self.uid].tolist()
         badToGood_UID = bad_noJustification[self.uid].tolist()
         for idx, row in good_withJustification.iterrows():
-            print(
-                f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification."
-            )
+            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
         for idx, row in bad_noJustification.iterrows():
-            print(
-                f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification."
-            )
+            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
 
         if withDatabaseUpdate:
             with self.openCursor(commitChanges=True) as cursor:

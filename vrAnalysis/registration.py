@@ -37,22 +37,14 @@ def standard_behavior(self):
     roomPosition = self.getVRData(self.convertDense(trialInfo.roomPosition), nzindex)
 
     # oneData with behave prefix is a (numBehavioralSamples, ) shaped array conveying information about the state of VR
-    numTimeStamps = np.array(
-        [len(t) for t in timeStamps]
-    )  # list of number of behavioral timestamps in each trial
-    behaveTimeStamps = np.concatenate(
-        timeStamps
-    )  # time stamp associated with each behavioral sample
-    behavePosition = np.concatenate(
-        roomPosition
-    )  # virtual position associated with each behavioral sample
+    numTimeStamps = np.array([len(t) for t in timeStamps])  # list of number of behavioral timestamps in each trial
+    behaveTimeStamps = np.concatenate(timeStamps)  # time stamp associated with each behavioral sample
+    behavePosition = np.concatenate(roomPosition)  # virtual position associated with each behavioral sample
     self.registerValue("numBehaveTimestamps", len(behaveTimeStamps))
 
     # Check shapes and sizes
     assert behaveTimeStamps.ndim == 1, "behaveTimeStamps is not a 1-d array!"
-    assert (
-        behaveTimeStamps.shape == behavePosition.shape
-    ), "behave oneData arrays do not have the same shape!"
+    assert behaveTimeStamps.shape == behavePosition.shape, "behave oneData arrays do not have the same shape!"
 
     # oneData with trial prefix is a (numTrials,) shaped array conveying information about the state on each trial
     trialStartFrame = np.array([0, *np.cumsum(numTimeStamps)[:-1]]).astype(np.int64)
@@ -72,11 +64,7 @@ def standard_behavior(self):
     # adjust frame count to behave arrays
     trialRewardDelivery = np.array(
         [
-            (
-                rewardDelivery + np.sum(numTimeStamps[:trialIdx])
-                if rewardDelivery >= 0
-                else rewardDelivery
-            )
+            (rewardDelivery + np.sum(numTimeStamps[:trialIdx]) if rewardDelivery >= 0 else rewardDelivery)
             for (trialIdx, rewardDelivery) in enumerate(rewardDelivery)
         ]
     )
@@ -103,26 +91,14 @@ def standard_behavior(self):
     # oneData with lick prefix is a (numLicks,) shaped array containing information about each lick during VR behavior
     licks = self.getVRData(self.convertDense(trialInfo.lick), nzindex)
     lickFrames = [np.nonzero(licks)[0] for licks in licks]
-    lickCounts = np.concatenate(
-        [licks[lickFrames] for (licks, lickFrames) in zip(licks, lickFrames)]
-    )
-    lickTrials = np.concatenate(
-        [tidx * np.ones_like(lickFrames) for (tidx, lickFrames) in enumerate(lickFrames)]
-    )
+    lickCounts = np.concatenate([licks[lickFrames] for (licks, lickFrames) in zip(licks, lickFrames)])
+    lickTrials = np.concatenate([tidx * np.ones_like(lickFrames) for (tidx, lickFrames) in enumerate(lickFrames)])
     lickFrames = np.concatenate(lickFrames)
     if np.sum(lickCounts) > 0:
-        lickFramesRepeat = np.concatenate(
-            [lf * np.ones(lc, dtype=np.uint8) for (lf, lc) in zip(lickFrames, lickCounts)]
-        )
-        lickTrialsRepeat = np.concatenate(
-            [lt * np.ones(lc, dtype=np.uint8) for (lt, lc) in zip(lickTrials, lickCounts)]
-        )
-        lickCountsRepeat = np.concatenate(
-            [lc * np.ones(lc, dtype=np.uint8) for (lc, lc) in zip(lickCounts, lickCounts)]
-        )
-        lickBehaveSample = lickFramesRepeat + np.array(
-            [np.sum(numTimeStamps[:trialIdx]) for trialIdx in lickTrialsRepeat]
-        )
+        lickFramesRepeat = np.concatenate([lf * np.ones(lc, dtype=np.uint8) for (lf, lc) in zip(lickFrames, lickCounts)])
+        lickTrialsRepeat = np.concatenate([lt * np.ones(lc, dtype=np.uint8) for (lt, lc) in zip(lickTrials, lickCounts)])
+        lickCountsRepeat = np.concatenate([lc * np.ones(lc, dtype=np.uint8) for (lc, lc) in zip(lickCounts, lickCounts)])
+        lickBehaveSample = lickFramesRepeat + np.array([np.sum(numTimeStamps[:trialIdx]) for trialIdx in lickTrialsRepeat])
 
         assert len(lickBehaveSample) == np.sum(
             lickCounts
@@ -136,16 +112,9 @@ def standard_behavior(self):
         lickBehaveSample = np.array([], dtype=np.uint8)
 
     # Align behavioral timestamp data to timeline -- shift each trials timestamps so that they start at the time of the first photodiode flip (which is reliably detected)
-    trialStartOffsets = behaveTimeStamps[trialStartFrame] - self.loadone(
-        "trials.startTimes"
-    )  # get offset
+    trialStartOffsets = behaveTimeStamps[trialStartFrame] - self.loadone("trials.startTimes")  # get offset
     behaveTimeStamps = np.concatenate(
-        [
-            bts - trialStartOffsets[tidx]
-            for (tidx, bts) in enumerate(
-                self.groupBehaveByTrial(behaveTimeStamps, trialStartFrame)
-            )
-        ]
+        [bts - trialStartOffsets[tidx] for (tidx, bts) in enumerate(self.groupBehaveByTrial(behaveTimeStamps, trialStartFrame))]
     )
 
     # Save behave onedata
@@ -176,9 +145,7 @@ def cr_hippocannula_behavior(self):
 
     numTrials = trialInfo.info.no
     nonNanSamples = np.sum(~np.isnan(trialInfo.time[:, 0]))
-    assert (
-        numTrials == nonNanSamples
-    ), f"# trials {trialInfo.info.no} isn't equal to non-nan first time samples {nonNanSamples}"
+    assert numTrials == nonNanSamples, f"# trials {trialInfo.info.no} isn't equal to non-nan first time samples {nonNanSamples}"
     self.registerValue("numTrials", numTrials)
 
     # trialInfo contains sparse matrices of size (maxTrials, maxSamples), where numTrials<maxTrials and numSamples<maxSamples
@@ -187,22 +154,14 @@ def cr_hippocannula_behavior(self):
     roomPosition = self.getVRData(self.convertDense(trialInfo.roomPosition), nzindex)
 
     # oneData with behave prefix is a (numBehavioralSamples, ) shaped array conveying information about the state of VR
-    numTimeStamps = np.array(
-        [len(t) for t in timeStamps]
-    )  # list of number of behavioral timestamps in each trial
-    behaveTimeStamps = np.concatenate(
-        timeStamps
-    )  # time stamp associated with each behavioral sample
-    behavePosition = np.concatenate(
-        roomPosition
-    )  # virtual position associated with each behavioral sample
+    numTimeStamps = np.array([len(t) for t in timeStamps])  # list of number of behavioral timestamps in each trial
+    behaveTimeStamps = np.concatenate(timeStamps)  # time stamp associated with each behavioral sample
+    behavePosition = np.concatenate(roomPosition)  # virtual position associated with each behavioral sample
     self.registerValue("numBehaveTimestamps", len(behaveTimeStamps))
 
     # Check shapes and sizes
     assert behaveTimeStamps.ndim == 1, "behaveTimeStamps is not a 1-d array!"
-    assert (
-        behaveTimeStamps.shape == behavePosition.shape
-    ), "behave oneData arrays do not have the same shape!"
+    assert behaveTimeStamps.shape == behavePosition.shape, "behave oneData arrays do not have the same shape!"
 
     # oneData with trial prefix is a (numTrials,) shaped array conveying information about the state on each trial
     trialStartFrame = np.array([0, *np.cumsum(numTimeStamps)[:-1]]).astype(np.int64)
@@ -214,26 +173,16 @@ def cr_hippocannula_behavior(self):
     trialRoomLength = np.ones(self.value["numTrials"]) * expInfo.roomLength
     trialMovementGain = np.ones(self.value["numTrials"])  # mvmt gain always one
     trialRewardPosition = self.convertDense(trialInfo.trialRewPos)
-    trialRewardTolerance = self.convertDense(
-        expInfo.rewPosTolerance * np.ones(self.value["numTrials"])
-    )
+    trialRewardTolerance = self.convertDense(expInfo.rewPosTolerance * np.ones(self.value["numTrials"]))
     trialRewardAvailability = self.convertDense(trialInfo.trialRewAvailable).astype(np.bool_)
     rewardDelivery = self.convertDense(trialInfo.trialRewDelivery)
-    rewardDelivery[np.isnan(rewardDelivery)] = (
-        0  # about to be (-1), indicating no reward delivered
-    )
-    rewardDelivery = (
-        rewardDelivery.astype(np.int64) - 1
-    )  # get reward delivery frame (frame within trial) first (will be -1 if no reward delivered)
+    rewardDelivery[np.isnan(rewardDelivery)] = 0  # about to be (-1), indicating no reward delivered
+    rewardDelivery = rewardDelivery.astype(np.int64) - 1  # get reward delivery frame (frame within trial) first (will be -1 if no reward delivered)
 
     # adjust frame count to behave arrays
     trialRewardDelivery = np.array(
         [
-            (
-                rewardDelivery + np.sum(numTimeStamps[:trialIdx])
-                if rewardDelivery >= 0
-                else rewardDelivery
-            )
+            (rewardDelivery + np.sum(numTimeStamps[:trialIdx]) if rewardDelivery >= 0 else rewardDelivery)
             for (trialIdx, rewardDelivery) in enumerate(rewardDelivery)
         ]
     )
@@ -258,30 +207,16 @@ def cr_hippocannula_behavior(self):
     ), "trial oneData arrays do not have the same shape!"
 
     # oneData with lick prefix is a (numLicks,) shaped array containing information about each lick during VR behavior
-    licks = [
-        vrd.astype(np.int16) for vrd in self.getVRData(self.convertDense(trialInfo.lick), nzindex)
-    ]
+    licks = [vrd.astype(np.int16) for vrd in self.getVRData(self.convertDense(trialInfo.lick), nzindex)]
     lickFrames = [np.nonzero(licks)[0] for licks in licks]
-    lickCounts = np.concatenate(
-        [licks[lickFrames] for (licks, lickFrames) in zip(licks, lickFrames)]
-    )
-    lickTrials = np.concatenate(
-        [tidx * np.ones_like(lickFrames) for (tidx, lickFrames) in enumerate(lickFrames)]
-    )
+    lickCounts = np.concatenate([licks[lickFrames] for (licks, lickFrames) in zip(licks, lickFrames)])
+    lickTrials = np.concatenate([tidx * np.ones_like(lickFrames) for (tidx, lickFrames) in enumerate(lickFrames)])
     lickFrames = np.concatenate(lickFrames)
     if np.sum(lickCounts) > 0:
-        lickFramesRepeat = np.concatenate(
-            [lf * np.ones(lc, dtype=np.uint8) for (lf, lc) in zip(lickFrames, lickCounts)]
-        )
-        lickTrialsRepeat = np.concatenate(
-            [lt * np.ones(lc, dtype=np.uint8) for (lt, lc) in zip(lickTrials, lickCounts)]
-        )
-        lickCountsRepeat = np.concatenate(
-            [lc * np.ones(lc, dtype=np.uint8) for (lc, lc) in zip(lickCounts, lickCounts)]
-        )
-        lickBehaveSample = lickFramesRepeat + np.array(
-            [np.sum(numTimeStamps[:trialIdx]) for trialIdx in lickTrialsRepeat]
-        )
+        lickFramesRepeat = np.concatenate([lf * np.ones(lc, dtype=np.uint8) for (lf, lc) in zip(lickFrames, lickCounts)])
+        lickTrialsRepeat = np.concatenate([lt * np.ones(lc, dtype=np.uint8) for (lt, lc) in zip(lickTrials, lickCounts)])
+        lickCountsRepeat = np.concatenate([lc * np.ones(lc, dtype=np.uint8) for (lc, lc) in zip(lickCounts, lickCounts)])
+        lickBehaveSample = lickFramesRepeat + np.array([np.sum(numTimeStamps[:trialIdx]) for trialIdx in lickTrialsRepeat])
 
         assert len(lickBehaveSample) == np.sum(
             lickCounts
@@ -295,16 +230,9 @@ def cr_hippocannula_behavior(self):
         lickBehaveSample = np.array([], dtype=np.uint8)
 
     # Align behavioral timestamp data to timeline -- shift each trials timestamps so that they start at the time of the first photodiode flip (which is reliably detected)
-    trialStartOffsets = behaveTimeStamps[trialStartFrame] - self.loadone(
-        "trials.startTimes"
-    )  # get offset
+    trialStartOffsets = behaveTimeStamps[trialStartFrame] - self.loadone("trials.startTimes")  # get offset
     behaveTimeStamps = np.concatenate(
-        [
-            bts - trialStartOffsets[tidx]
-            for (tidx, bts) in enumerate(
-                self.groupBehaveByTrial(behaveTimeStamps, trialStartFrame)
-            )
-        ]
+        [bts - trialStartOffsets[tidx] for (tidx, bts) in enumerate(self.groupBehaveByTrial(behaveTimeStamps, trialStartFrame))]
     )
 
     # Save behave onedata
@@ -370,33 +298,21 @@ class vrRegistration(vrExperiment):
             ), "if three inputs are provided, they must be strings indicating the mouseName, date, and session"
             opts = {}  # Options for data management
             # Preprocessing options -- these define what was performed in each experiment and what to preprocess --
-            opts["vrBehaviorVersion"] = (
-                1  # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
-            )
-            opts["facecam"] = (
-                False  # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
-            )
-            opts["imaging"] = (
-                True  # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
-            )
-            opts["oasis"] = (
-                True  # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
-            )
+            opts["vrBehaviorVersion"] = 1  # 1==standard behavioral output (will make conditional loading systems for alternative versions...)
+            opts["facecam"] = False  # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
+            opts["imaging"] = True  # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
+            opts["oasis"] = True  # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
             opts["moveRawData"] = False  # whether or not to move raw data files to 'rawData'
             opts["redCellProcessing"] = (
                 True  # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
             )
-            opts["clearOne"] = (
-                False  # whether or not to clear previously stored oneData (even if it wouldn't be overwritten by this registration)
-            )
+            opts["clearOne"] = False  # whether or not to clear previously stored oneData (even if it wouldn't be overwritten by this registration)
             # Imaging options -- these options are standard values for imaging, tau & fs directly affect preprocessing when OASIS is turned on (and deconvolution is recomputed)
             opts["neuropilCoefficient"] = 0.7  # for manual neuropil estimation
             opts["tau"] = 1.5  # GCaMP time constant
             opts["fs"] = 6  # sampling rate (per volume if multiplane)
             # Other options--
-            assert (
-                userOpts.keys() <= opts.keys()
-            ), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
+            assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
             opts.update(userOpts)  # Update default opts with user requests
 
             # -- initialize vrExperiment parameters --
@@ -410,15 +326,9 @@ class vrRegistration(vrExperiment):
                 raise ValueError(f"Session directory does not exist for {self.sessionPrint()}")
 
             # initialize dictionaries to be stored as JSONs and loaded by vrExperiment
-            self.preprocessing = (
-                []
-            )  # initialize this for storing which preprocessing stages were performed
-            self.loadBuffer = (
-                {}
-            )  # initialize this upon creation for efficient loading throughout preprocessing
-            self.value = (
-                {}
-            )  # initialize this dictionary to save important values (e.g. number of trials)
+            self.preprocessing = []  # initialize this for storing which preprocessing stages were performed
+            self.loadBuffer = {}  # initialize this upon creation for efficient loading throughout preprocessing
+            self.value = {}  # initialize this dictionary to save important values (e.g. number of trials)
 
             if not self.onePath().exists():
                 self.onePath().mkdir(parents=True)
@@ -426,9 +336,7 @@ class vrRegistration(vrExperiment):
                 self.rawDataPath().mkdir(parents=True)
 
         else:
-            raise TypeError(
-                "input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session"
-            )
+            raise TypeError("input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session")
 
     def doPreprocessing(self):
         if self.opts["clearOne"]:
@@ -464,16 +372,12 @@ class vrRegistration(vrExperiment):
 
         # Get Licks (uses an edge counter)
         lickDetector = self.getTimelineVar("lickDetector")  # load lick detector copy
-        lickSamples = np.where(helpers.diffsame(lickDetector) == 1)[0].astype(
-            np.uint64
-        )  # timeline samples of lick times
+        lickSamples = np.where(helpers.diffsame(lickDetector) == 1)[0].astype(np.uint64)  # timeline samples of lick times
 
         # Get Reward Commands (measures voltage of output -- assume it's either low or high)
         rewardCommand = self.getTimelineVar("rewardCommand")  # load reward command signal
         rewardCommand = np.round(rewardCommand / np.max(rewardCommand))
-        rewardSamples = np.where(helpers.diffsame(rewardCommand) > 0.5)[0].astype(
-            np.uint64
-        )  # timeline samples when reward was delivered
+        rewardSamples = np.where(helpers.diffsame(rewardCommand) > 0.5)[0].astype(np.uint64)  # timeline samples when reward was delivered
 
         # Now process photodiode signal
         photodiode = self.getTimelineVar("photoDiode")  # load lick detector copy
@@ -502,27 +406,17 @@ class vrRegistration(vrExperiment):
 
         # Naive Method (just look for flips before and after trialstart/trialend mpep message:
         # A sophisticated message uses the time of the photodiode ramps, but those are really just for safety and rare manual curation...
-        firstFlipIndex = np.array(
-            [np.where(flipTimes >= mpepStart)[0][0] for mpepStart in mpepStartTimes]
-        )
-        startTrialIndex = helpers.nearestpoint(flipTimes[firstFlipIndex], timestamps)[
-            0
-        ]  # returns frame index of first photodiode flip in each trial
+        firstFlipIndex = np.array([np.where(flipTimes >= mpepStart)[0][0] for mpepStart in mpepStartTimes])
+        startTrialIndex = helpers.nearestpoint(flipTimes[firstFlipIndex], timestamps)[0]  # returns frame index of first photodiode flip in each trial
 
         # Check that first flip is always down -- all of the vrControl code prepares trials in this way
-        if datetime.strptime(self.dateString, "%Y-%m-%d") >= datetime.strptime(
-            "2022-08-30", "%Y-%m-%d"
-        ):
+        if datetime.strptime(self.dateString, "%Y-%m-%d") >= datetime.strptime("2022-08-30", "%Y-%m-%d"):
             # But it didn't prepare it this way before august 30th :(
-            assert np.all(
-                flipValue[firstFlipIndex] == 0
-            ), f"In session {self.sessionPrint()}, first flips in trial are not all down!!"
+            assert np.all(flipValue[firstFlipIndex] == 0), f"In session {self.sessionPrint()}, first flips in trial are not all down!!"
 
         # Check shapes of timeline arrays
         assert timestamps.ndim == 1, "timelineTimestamps is not a 1-d array!"
-        assert (
-            timestamps.shape == rotaryPosition.shape
-        ), "timeline timestamps and rotary position arrays do not have the same shape!"
+        assert timestamps.shape == rotaryPosition.shape, "timeline timestamps and rotary position arrays do not have the same shape!"
 
         # Save timeline oneData
         self.saveone(timestamps, "wheelPosition.times")
@@ -547,28 +441,17 @@ class vrRegistration(vrExperiment):
 
     def processImaging(self):
         if not self.opts["imaging"]:
-            print(
-                f"In session {self.sessionPrint()}, imaging setting set to False in opts['imaging']. Skipping image processing."
-            )
+            print(f"In session {self.sessionPrint()}, imaging setting set to False in opts['imaging']. Skipping image processing.")
             return None
 
         if not self.suite2pPath().exists():
-            raise ValueError(
-                f"In session {self.sessionPrint()}, suite2p processing was requested but suite2p directory does not exist."
-            )
+            raise ValueError(f"In session {self.sessionPrint()}, suite2p processing was requested but suite2p directory does not exist.")
 
         # identifies which planes were processed through suite2p (assume that those are all available planes)
         # identifies which s2p outputs are available from each plane
-        self.registerValue(
-            "planeNames", [plane.parts[-1] for plane in self.suite2pPath().glob("plane*/")]
-        )
-        self.registerValue(
-            "planeIDs", [int(planeName[5:]) for planeName in self.value["planeNames"]]
-        )
-        npysInPlanes = [
-            [npy.stem for npy in list((self.suite2pPath() / planeName).glob("*.npy"))]
-            for planeName in self.value["planeNames"]
-        ]
+        self.registerValue("planeNames", [plane.parts[-1] for plane in self.suite2pPath().glob("plane*/")])
+        self.registerValue("planeIDs", [int(planeName[5:]) for planeName in self.value["planeNames"]])
+        npysInPlanes = [[npy.stem for npy in list((self.suite2pPath() / planeName).glob("*.npy"))] for planeName in self.value["planeNames"]]
         commonNPYs = list(set.intersection(*[set(npy) for npy in npysInPlanes]))
         unionNPYs = list(set.union(*[set(npy) for npy in npysInPlanes]))
         if set(commonNPYs) < set(unionNPYs):
@@ -576,9 +459,7 @@ class vrRegistration(vrExperiment):
                 f"The following npy files are present in some but not all plane folders within session {self.sessionPrint()}: {list(set(unionNPYs) - set(commonNPYs))}"
             )
             print(f"Each plane folder contains the following npy files: {commonNPYs}")
-        self.registerValue(
-            "available", commonNPYs
-        )  # a list of npy files available in each plane folder
+        self.registerValue("available", commonNPYs)  # a list of npy files available in each plane folder
         required = [
             "stat",
             "ops",
@@ -587,19 +468,12 @@ class vrRegistration(vrExperiment):
             "iscell",
         ]  # required variables (anything else is either optional or can be computed independently)
         if not self.opts["oasis"]:
-            required.append(
-                "spks"
-            )  # add deconvolved spikes to required variable if we aren't recomputing it here
+            required.append("spks")  # add deconvolved spikes to required variable if we aren't recomputing it here
         for varName in required:
-            assert (
-                varName in self.value["available"]
-            ), f"{self.sessionPrint()} is missing {varName} in at least one suite2p folder!"
+            assert varName in self.value["available"], f"{self.sessionPrint()} is missing {varName} in at least one suite2p folder!"
         self.registerValue(
             "roiPerPlane",
-            [
-                iscell.shape[0]
-                for iscell in self.loadS2P("iscell", concatenate=False, checkVariables=False)
-            ],
+            [iscell.shape[0] for iscell in self.loadS2P("iscell", concatenate=False, checkVariables=False)],
         )  # get number of ROIs in each plane
         self.registerValue(
             "framePerPlane",
@@ -608,9 +482,7 @@ class vrRegistration(vrExperiment):
         assert (
             np.max(self.value["framePerPlane"]) - np.min(self.value["framePerPlane"]) <= 1
         ), f"The frame count in {self.sessionPrint()} varies by more than 1 frame! ({self.value['framePerPlane']})"
-        self.registerValue(
-            "numROIs", np.sum(self.value["roiPerPlane"])
-        )  # number of ROIs in session
+        self.registerValue("numROIs", np.sum(self.value["roiPerPlane"]))  # number of ROIs in session
         self.registerValue(
             "numFrames", np.min(self.value["framePerPlane"])
         )  # number of frames to use when retrieving imaging data (might be overwritten to something smaller if timeline handled improperly)
@@ -620,18 +492,12 @@ class vrRegistration(vrExperiment):
         changeFrames = (
             np.append(
                 0,
-                np.diff(
-                    np.ceil(self.getTimelineVar("neuralFrames") / len(self.value["planeIDs"]))
-                ),
+                np.diff(np.ceil(self.getTimelineVar("neuralFrames") / len(self.value["planeIDs"]))),
             )
             == 1
         )
-        frameSamples = np.where(changeFrames)[
-            0
-        ]  # TTLs for each volume (increments by 1 for each plane)
-        frame2time = timelineTimestamps[
-            frameSamples
-        ]  # get timelineTimestamps of each imaging volume
+        frameSamples = np.where(changeFrames)[0]  # TTLs for each volume (increments by 1 for each plane)
+        frame2time = timelineTimestamps[frameSamples]  # get timelineTimestamps of each imaging volume
 
         # Handle mismatch between number of imaging frames saved by scanImage (and propagated through suite2p), and between timeline's measurement of the scanImage frame counter
         if len(frame2time) != self.value["numFrames"]:
@@ -647,9 +513,7 @@ class vrRegistration(vrExperiment):
                 frame2time = frame2time[:-2]
             else:
                 # If frameSamples has too few frames, it's possible that the scanImage signal to timeline was broken but scanImage still continued normally.
-                numMissing = self.value["numFrames"] - len(
-                    frameSamples
-                )  # measure number of missing frames
+                numMissing = self.value["numFrames"] - len(frameSamples)  # measure number of missing frames
                 if numMissing < 0:
                     # If frameSamples had many more frames, generate an error -- something went wrong that needs manual inspection
                     print(
@@ -699,9 +563,7 @@ class vrRegistration(vrExperiment):
             try:
                 from oasis.functions import deconvolve
             except ImportError as error:
-                print(
-                    "Failed to import deconvolve from oasis -- this probably means you only installed the core requirements"
-                )
+                print("Failed to import deconvolve from oasis -- this probably means you only installed the core requirements")
                 raise error
             g = np.exp(-1 / self.opts["tau"] / self.opts["fs"])
             fcorr = self.loadfcorr(loadFromOne=False)
@@ -732,14 +594,10 @@ class vrRegistration(vrExperiment):
 
     def processBehavior2Imaging(self):
         if not self.opts["imaging"]:
-            print(
-                f"In session {self.sessionPrint()}, imaging setting set to False in opts['imaging']. Skipping behavior2imaging processing."
-            )
+            print(f"In session {self.sessionPrint()}, imaging setting set to False in opts['imaging']. Skipping behavior2imaging processing.")
             return None
         # compute translation mapping from behave frames to imaging frames
-        idxBehaveToFrame, distBehaveToFrame = helpers.nearestpoint(
-            self.loadone("positionTracking.times"), self.loadone("mpci.times")
-        )
+        idxBehaveToFrame, distBehaveToFrame = helpers.nearestpoint(self.loadone("positionTracking.times"), self.loadone("mpci.times"))
         self.saveone(idxBehaveToFrame.astype(int), "positionTracking.mpci")
 
     def processRedCells(self):
@@ -747,9 +605,7 @@ class vrRegistration(vrExperiment):
             return  # if not requested, skip function
         # if imaging was processed and redCellProcessing was requested, then try to preprocess red cell features
         if "redcell" not in self.value["available"]:
-            print(
-                f"In session {self.sessionPrint()}, 'redcell' is not an available suite2p output, although 'redCellProcessing' was requested."
-            )
+            print(f"In session {self.sessionPrint()}, 'redcell' is not an available suite2p output, although 'redCellProcessing' was requested.")
             return
 
         # create redCell object
@@ -760,24 +616,14 @@ class vrRegistration(vrExperiment):
         corrParameters = {"width": 20, "lowcut": 12, "highcut": 250, "order": 3, "fs": 512}
         phaseParameters = {"width": 40, "eps": 1e6, "winFunc": "hamming"}
 
-        print(
-            f"Computing red cell features for {self.sessionPrint()}... (usually takes 10-20 seconds)"
-        )
-        dotProduct = redCell.computeDot(
-            planeIdx=None, **dotParameters
-        )  # compute dot-product for all ROIs
-        corrCoeff = redCell.computeCorr(
-            planeIdx=None, **corrParameters
-        )  # compute cross-correlation for all ROIs
-        phaseCorr = redCell.croppedPhaseCorrelation(planeIdx=None, **phaseParameters)[
-            3
-        ]  # compute central value of phase-correlation for all ROIs
+        print(f"Computing red cell features for {self.sessionPrint()}... (usually takes 10-20 seconds)")
+        dotProduct = redCell.computeDot(planeIdx=None, **dotParameters)  # compute dot-product for all ROIs
+        corrCoeff = redCell.computeCorr(planeIdx=None, **corrParameters)  # compute cross-correlation for all ROIs
+        phaseCorr = redCell.croppedPhaseCorrelation(planeIdx=None, **phaseParameters)[3]  # compute central value of phase-correlation for all ROIs
 
         # initialize annotations
         self.saveone(np.full(self.value["numROIs"], False), "mpciROIs.redCellIdx")
-        self.saveone(
-            np.full((2, self.value["numROIs"]), False), "mpciROIs.redCellManualAssignments"
-        )
+        self.saveone(np.full((2, self.value["numROIs"]), False), "mpciROIs.redCellManualAssignments")
 
         # save oneData
         self.saveone(dotProduct, "mpciROIs.redDotProduct")
@@ -789,13 +635,8 @@ class vrRegistration(vrExperiment):
 
     # -------------------------------------- methods for handling timeline data produced by rigbox ------------------------------------------------------------
     def loadTimelineStructure(self):
-        tlFileName = (
-            self.sessionPath()
-            / f"{self.dateString}_{self.sessionid}_{self.mouseName}_Timeline.mat"
-        )  # timeline.mat file name
-        self.tlFile = scio.loadmat(tlFileName, simplify_cells=True)[
-            "Timeline"
-        ]  # load matlab structure
+        tlFileName = self.sessionPath() / f"{self.dateString}_{self.sessionid}_{self.mouseName}_Timeline.mat"  # timeline.mat file name
+        self.tlFile = scio.loadmat(tlFileName, simplify_cells=True)["Timeline"]  # load matlab structure
 
     def timelineInputs(self, ignoreTimestamps=False):
         if not hasattr(self, "tlFile"):
@@ -812,14 +653,8 @@ class vrRegistration(vrExperiment):
             return self.tlFile["rawDAQTimestamps"]
         else:
             inputNames = self.timelineInputs(ignoreTimestamps=True)
-            assert (
-                varName in inputNames
-            ), f"{varName} is not a tlFile in session {self.sessionPrint()}"
-            return np.squeeze(
-                self.tlFile["rawDAQData"][
-                    :, np.where([inputName == varName for inputName in inputNames])[0]
-                ]
-            )
+            assert varName in inputNames, f"{varName} is not a tlFile in session {self.sessionPrint()}"
+            return np.squeeze(self.tlFile["rawDAQData"][:, np.where([inputName == varName for inputName in inputNames])[0]])
 
     def convertRotaryEncoderToPosition(self, rotaryEncoder, rigInfo):
         # rotary encoder is a counter with a big range that sometimes flips around it's axis
@@ -829,24 +664,14 @@ class vrRegistration(vrExperiment):
         idxLowValues = rotaryMovement < -(2 ** (rigInfo.rotaryRange - 1))
         rotaryMovement[idxHighValues] -= 2**rigInfo.rotaryRange
         rotaryMovement[idxLowValues] += 2**rigInfo.rotaryRange
-        return (
-            rigInfo.rotEncSign
-            * np.cumsum(rotaryMovement)
-            * (2 * np.pi * rigInfo.wheelRadius)
-            / rigInfo.wheelToVR
-        )
+        return rigInfo.rotEncSign * np.cumsum(rotaryMovement) * (2 * np.pi * rigInfo.wheelRadius) / rigInfo.wheelToVR
 
     # -------------------------------------- methods for handling vrBehavior data produced by vrControl ------------------------------------------------------------
     def loadBehaviorStructure(self):
-        vrFileName = (
-            self.sessionPath()
-            / f"{self.dateString}_{self.sessionid}_{self.mouseName}_VRBehavior_trial.mat"
-        )  # vrBehavior output file name
+        vrFileName = self.sessionPath() / f"{self.dateString}_{self.sessionid}_{self.mouseName}_VRBehavior_trial.mat"  # vrBehavior output file name
         self.vrFile = scio.loadmat(vrFileName, struct_as_record=False, squeeze_me=True)
         if "rigInfo" not in self.vrFile.keys():
-            print(
-                f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2! using `defaultRigInfo()`"
-            )
+            print(f"In session: {self.sessionPrint()}, vrFile['rigInfo'] does not exist. Assuming default settings for B2! using `defaultRigInfo()`")
             self.vrFile["rigInfo"] = defaultRigInfo()
             # {'computerName':'ZINKO','rotEncPos':'left','rotEncSign':-1,'wheelToVR':4000,'wheelRadius':9.75,'rotaryRange':32} # save dictionary with default B2 settings
         if not (hasattr(self.vrFile["rigInfo"], "rotaryRange")):
@@ -861,13 +686,9 @@ class vrRegistration(vrExperiment):
     def createIndex(self, timeStamps):
         # requires timestamps as (numTrials x numSamples) dense numpy array
         if np.any(np.isnan(timeStamps)):
-            return [
-                np.where(~np.isnan(t))[0] for t in timeStamps
-            ]  # in case we have dense timestamps with nans where no data
+            return [np.where(~np.isnan(t))[0] for t in timeStamps]  # in case we have dense timestamps with nans where no data
         else:
-            return [
-                np.nonzero(t)[0] for t in timeStamps
-            ]  # in case we have sparse timestamps with 0s where no data
+            return [np.nonzero(t)[0] for t in timeStamps]  # in case we have sparse timestamps with 0s where no data
 
     def getVRData(self, data, nzindex):
         return [d[nz] for (d, nz) in zip(data, nzindex)]

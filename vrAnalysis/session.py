@@ -63,9 +63,7 @@ class vrSession:
         # clears any oneData in session folder
         # oneFileNames is an optional list of files to clear, otherwise it will clear all of them
         if not (certainty):
-            print(
-                f"You have to be certain to clear oneData! (This means set kwarg certainty=True)."
-            )
+            print(f"You have to be certain to clear oneData! (This means set kwarg certainty=True).")
             return None
         oneFiles = self.getSavedOne()
         if oneFileNames:
@@ -111,9 +109,7 @@ class vrExperiment(vrSession):
         - redCellProcessing: absolutely necessary because it is literally run during registration
         """
         if len(inputs) == 1:
-            assert isinstance(
-                inputs[0], vrExperiment
-            ), f"input is a {type(inputs[0])} but it should be a vrExperiment object (or a child thereof)"
+            assert isinstance(inputs[0], vrExperiment), f"input is a {type(inputs[0])} but it should be a vrExperiment object (or a child thereof)"
             self.mouseName = inputs[0].mouseName
             self.dateString = inputs[0].dateString
             self.sessionid = inputs[0].sessionid
@@ -134,9 +130,7 @@ class vrExperiment(vrSession):
             self.loadBuffer = {}
 
         else:
-            raise TypeError(
-                "input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session"
-            )
+            raise TypeError("input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session")
 
         # print(f"{self.name} object created for session {self.sessionPrint()} at path {self.sessionPath()}")
 
@@ -177,9 +171,7 @@ class vrExperiment(vrSession):
             return self.loadBuffer[fileName]
         else:
             if not (self.onePath() / fileName).exists():
-                print(
-                    f"In session {self.sessionPrint()}, the one file {fileName} doesn't exist. Here is a list of saved oneData files:"
-                )
+                print(f"In session {self.sessionPrint()}, the one file {fileName} doesn't exist. Here is a list of saved oneData files:")
                 for oneFile in self.printSavedOne():
                     print(oneFile)
                 raise ValueError("oneData requested is not available")
@@ -217,26 +209,17 @@ class vrExperiment(vrSession):
         else:
             F = self.loadS2P("F")
             Fneu = self.loadS2P("Fneu")
-        meanFneu = (
-            np.mean(Fneu, axis=1, keepdims=True)
-            if meanAdjusted
-            else np.zeros((np.sum(self.value["roiPerPlane"]), 1))
-        )
+        meanFneu = np.mean(Fneu, axis=1, keepdims=True) if meanAdjusted else np.zeros((np.sum(self.value["roiPerPlane"]), 1))
         return F - self.opts["neuropilCoefficient"] * (Fneu - meanFneu)
 
     def loadS2P(self, varName, concatenate=True, checkVariables=True):
         # load S2P variable from suite2p folders
-        assert (
-            varName in self.value["available"]
-        ), f"{varName} is not available in the suite2p folders for {self.sessionPrint()}"
+        assert varName in self.value["available"], f"{varName} is not available in the suite2p folders for {self.sessionPrint()}"
         if varName == "ops":
             concatenate = False
             checkVariables = False
 
-        var = [
-            np.load(self.suite2pPath() / planeName / f"{varName}.npy", allow_pickle=True)
-            for planeName in self.value["planeNames"]
-        ]
+        var = [np.load(self.suite2pPath() / planeName / f"{varName}.npy", allow_pickle=True) for planeName in self.value["planeNames"]]
         if varName == "ops":
             var = [cvar.item() for cvar in var]
             return var
@@ -257,18 +240,12 @@ class vrExperiment(vrSession):
 
             # Check valid shapes across all planes together, then provide complete error message
             if all(isRoiVars):
-                validShapes = [
-                    cvar.shape[0] == self.value["roiPerPlane"][planeIdx]
-                    for planeIdx, cvar in enumerate(var)
-                ]
+                validShapes = [cvar.shape[0] == self.value["roiPerPlane"][planeIdx] for planeIdx, cvar in enumerate(var)]
                 assert all(
                     validShapes
                 ), f"{self.sessionPrint()}:{varName} has a different number of ROIs than registered in planes: {[pidx for pidx,vs in enumerate(validShapes) if not(vs)]}."
             if all(isFrameVars):
-                validShapes = [
-                    cvar.shape[1] == self.value["framePerPlane"][planeIdx]
-                    for planeIdx, cvar in enumerate(var)
-                ]
+                validShapes = [cvar.shape[1] == self.value["framePerPlane"][planeIdx] for planeIdx, cvar in enumerate(var)]
                 assert all(
                     validShapes
                 ), f"{self.sessionPrint()}:{varName} has a different number of frames than registered in planes: {[pidx for pidx,vs in enumerate(validShapes) if not(vs)]}."
@@ -276,33 +253,22 @@ class vrExperiment(vrSession):
         if concatenate:
             # if concatenation is requested, then concatenate each plane across the ROIs axis so we have just one ndarray of shape: (allROIs, allFrames)
             if self.isFrameVar(var[0]):
-                var = [
-                    v[:, : self.value["numFrames"]] for v in var
-                ]  # trim if necesary so each plane has the same number of frames
+                var = [v[:, : self.value["numFrames"]] for v in var]  # trim if necesary so each plane has the same number of frames
             var = np.concatenate(var, axis=0)
 
         return var
 
     # shorthands -- note that these require some assumptions about suite2p variables to be met
     def isRoiVar(self, var):
-        return (
-            var.ndim > 0
-        )  # useful shorthand for determining if suite2p variable includes one element for each ROI
+        return var.ndim > 0  # useful shorthand for determining if suite2p variable includes one element for each ROI
 
     def isFrameVar(self, var):
-        return (
-            var.ndim > 1 and var.shape[1] > 2
-        )  # useful shorthand for determining if suite2p variable includes a column for each frame
+        return var.ndim > 1 and var.shape[1] > 2  # useful shorthand for determining if suite2p variable includes a column for each frame
 
     def getPlaneIdx(self):
         # produce np array of plane ID associated with each ROI (assuming that the data e.g. spks will be concatenated across planes)
         return np.concatenate(
-            [
-                np.repeat(planeIDs, roiPerPlane)
-                for (planeIDs, roiPerPlane) in zip(
-                    self.value["planeIDs"], self.value["roiPerPlane"]
-                )
-            ]
+            [np.repeat(planeIDs, roiPerPlane) for (planeIDs, roiPerPlane) in zip(self.value["planeIDs"], self.value["roiPerPlane"])]
         ).astype(np.uint8)
 
     def getRoiStackPosition(self, mode="weightedmean"):
@@ -327,11 +293,7 @@ class vrExperiment(vrSession):
         will concatenate across planes if requested or keep each planes volume in a list
         """
         # set keep_planes if not provided
-        keep_planes = (
-            helpers.check_iterable(keep_planes)
-            if keep_planes is not None
-            else [i for i in range(len(self.value["roiPerPlane"]))]
-        )
+        keep_planes = helpers.check_iterable(keep_planes) if keep_planes is not None else [i for i in range(len(self.value["roiPerPlane"]))]
 
         # get plane index of each ROI
         roi_plane_idx = self.getPlaneIdx()
@@ -364,19 +326,11 @@ class vrExperiment(vrSession):
         return mask_volume
 
     def getNumROIs(self, keep_planes=None):
-        keep_planes = (
-            keep_planes
-            if keep_planes is not None
-            else [i for i in range(len(self.value["roiPerPlane"]))]
-        )
+        keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(self.value["roiPerPlane"]))]
         return sum([self.value["roiPerPlane"][p] for p in keep_planes])
 
     def idxToPlanes(self, keep_planes=None):
-        keep_planes = (
-            keep_planes
-            if keep_planes is not None
-            else [i for i in range(len(self.value["roiPerPlane"]))]
-        )
+        keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(self.value["roiPerPlane"]))]
         stackPosition = self.loadone("mpciROIs.stackPosition")
         roiPlaneIdx = stackPosition[:, 2].astype(np.int32)  # plane index
         return np.any(np.stack([roiPlaneIdx == pidx for pidx in keep_planes]), axis=0)
@@ -401,18 +355,10 @@ class vrExperiment(vrSession):
     # ---------------------------------------- postprocessing functions for translating behavior to imaging time frame -----------------------------------------------------
     def getFrameBehavior(self):
         # convert behavioral data to a timescale that is aligned with imaging data
-        trialStartSample = self.loadone(
-            "trials.positionTracking"
-        )  # behavioral sample that each trial starts on
-        behaveTimes = self.loadone(
-            "positionTracking.times"
-        )  # time of each positionTracking sample
-        behavePosition = self.loadone(
-            "positionTracking.position"
-        )  # virtual position of each behavioral sample
-        behaveTrialIdx = self.getBehaveTrialIdx(
-            trialStartSample
-        )  # trial index of each behavioral sample
+        trialStartSample = self.loadone("trials.positionTracking")  # behavioral sample that each trial starts on
+        behaveTimes = self.loadone("positionTracking.times")  # time of each positionTracking sample
+        behavePosition = self.loadone("positionTracking.position")  # virtual position of each behavioral sample
+        behaveTrialIdx = self.getBehaveTrialIdx(trialStartSample)  # trial index of each behavioral sample
 
         frameTimeStamps = self.loadone("mpci.times")  # timestamps for each imaging frame
         samplingRate = 1 / np.median(
@@ -420,9 +366,7 @@ class vrExperiment(vrSession):
         )  # median sampling rate (can use self.value['samplingDeviationMedianPercentError'] to determine if this is smart)
 
         # behave timestamps has higher temporal resolution than frame timestamps, so we need to average over behavioral frames
-        idxBehaveToFrame = self.loadone(
-            "positionTracking.mpci"
-        )  # mpci frame index associated with each behavioral frame
+        idxBehaveToFrame = self.loadone("positionTracking.mpci")  # mpci frame index associated with each behavioral frame
         distBehaveToFrame = frameTimeStamps[idxBehaveToFrame] - behaveTimes
 
         # get behavioral variables associated with each imaging frame (preallocate, then use special behaveToFrame numba function)
@@ -444,8 +388,7 @@ class vrExperiment(vrSession):
         )  # behaveToFrame uses a single pass summation method, so count==0 indicates that no behavioral data was available for that frame
         frameTrialIdx[count == 0] = np.nan
         assert (
-            np.min(frameTrialIdx[count > 0]) == 0
-            and np.max(frameTrialIdx[count > 0]) == self.value["numTrials"] - 1
+            np.min(frameTrialIdx[count > 0]) == 0 and np.max(frameTrialIdx[count > 0]) == self.value["numTrials"] - 1
         ), "frameTrialIdx doesn't have correct number of trials"
 
         # Make sure trial indices are integers -- otherwise (in most cases this means multiple behavioral trials were matched with same neural frame)
@@ -455,12 +398,8 @@ class vrExperiment(vrSession):
 
         # Occasionally some neural frames do not map onto any best behavioral frame (usually for random slow behavioral sample) -- interpolate those samples
         for trial in range(self.value["numTrials"]):
-            cTrialIdx = np.where(frameTrialIdx == trial)[
-                0
-            ]  # find frames associated with particular trial
-            trialSlice = slice(
-                cTrialIdx[0], cTrialIdx[-1] + 1
-            )  # get slice from first to last frame within trial
+            cTrialIdx = np.where(frameTrialIdx == trial)[0]  # find frames associated with particular trial
+            trialSlice = slice(cTrialIdx[0], cTrialIdx[-1] + 1)  # get slice from first to last frame within trial
             withinTrialNan = np.isnan(
                 frameTrialIdx[trialSlice]
             )  # find nans -- this means the sampling was slow in behavioral computer and requires filling in
@@ -477,21 +416,15 @@ class vrExperiment(vrSession):
                 framePosition[trialSlice] = trialPosition
 
         # Once position is fully interpolated on each trial, compute speed (let last sample of each trial have undefined (nan) speed)
-        frameSpeed = np.append(
-            np.diff(framePosition) / np.diff(frameTimeStamps), np.nan
-        )  # never assume sampling rate is perfect...
+        frameSpeed = np.append(np.diff(framePosition) / np.diff(frameTimeStamps), np.nan)  # never assume sampling rate is perfect...
 
         return frameTrialIdx, framePosition, frameSpeed
 
     # -------------------- post-processing of behavioral data in one format -----------------
     def getBehaveTrialIdx(self, trialStartFrame):
         # produces a 1-d numpy array where each element indicates the trial index of the behavioral sample onedata arrays
-        nspt = np.array(
-            [*np.diff(trialStartFrame), self.value["numBehaveTimestamps"] - trialStartFrame[-1]]
-        )  # num samples per trial
-        return np.concatenate([tidx * np.ones(ns) for (tidx, ns) in enumerate(nspt)]).astype(
-            np.uint64
-        )
+        nspt = np.array([*np.diff(trialStartFrame), self.value["numBehaveTimestamps"] - trialStartFrame[-1]])  # num samples per trial
+        return np.concatenate([tidx * np.ones(ns) for (tidx, ns) in enumerate(nspt)]).astype(np.uint64)
 
     def groupBehaveByTrial(self, data, trialStartFrame):
         # returns a list containing trial-separated behavioral data
@@ -529,9 +462,7 @@ class redCellProcessing(vrExperiment):
 
         # load some critical values for easy readable access
         self.numPlanes = len(self.value["planeNames"])
-        self.umPerPixel = (
-            umPerPixel  # store this for generating correct axes and measuring distances
-        )
+        self.umPerPixel = umPerPixel  # store this for generating correct axes and measuring distances
 
         self.data_loaded = False  # initialize to false in case data isn't loaded
         if autoload:
@@ -559,9 +490,7 @@ class redCellProcessing(vrExperiment):
         self.roiPlaneIdx = self.loadone("mpciROIs.stackPosition")[:, 2]
 
         # load S2P red cell value
-        self.redS2P = self.loadone(
-            "mpciROIs.redS2P"
-        )  # (preloaded, will never change in this function)
+        self.redS2P = self.loadone("mpciROIs.redS2P")  # (preloaded, will never change in this function)
 
         # create supporting variables for mapping locations and axes
         self.yBaseRef = np.arange(self.ly)
@@ -579,9 +508,7 @@ class redCellProcessing(vrExperiment):
         """standard method for naming the features used to define redCellIdx cutoffs"""
         return "parameters" + "Red" + name[0].upper() + name[1:] + ".minMaxCutoff"
 
-    def updateRedIdx(
-        self, s2p_cutoff=None, dotProd_cutoff=None, corrCoef_cutoff=None, pxcValues_cutoff=None
-    ):
+    def updateRedIdx(self, s2p_cutoff=None, dotProd_cutoff=None, corrCoef_cutoff=None, pxcValues_cutoff=None):
         """method for updating the red index given new cutoff values"""
         # create initial all true red cell idx
         redCellIdx = np.full(self.loadone("mpciROIs.redCellIdx").shape, True)
@@ -628,9 +555,7 @@ class redCellProcessing(vrExperiment):
             assert (
                 redCell.mouseName == self.mouseName
             ), "session to copy from is from a different mouse, this isn't allowed without the force_update=True input"
-        cutoffs = [
-            redCell.loadone(redCell.oneNameFeatureCutoffs(name)) for name in self.featureNames
-        ]
+        cutoffs = [redCell.loadone(redCell.oneNameFeatureCutoffs(name)) for name in self.featureNames]
         self.updateRedIdx(
             s2p_cutoff=cutoffs[0],
             dotProd_cutoff=cutoffs[1],
@@ -671,51 +596,36 @@ class redCellProcessing(vrExperiment):
         )  # stack of ref images centered on each ROI
         refStack = np.copy(refStackNans)
         refStack[np.isnan(refStack)] = 0
-        maskStack = self.centeredMaskStack(
-            planeIdx=planeIdx, width=width
-        )  # stack of mask value centered on each ROI
+        maskStack = self.centeredMaskStack(planeIdx=planeIdx, width=width)  # stack of mask value centered on each ROI
 
         print("Computing phase correlation for each ROI...")
         window = winFunc(refStack)
         pxcStack = np.stack(
-            [
-                helpers.phaseCorrelation(ref, mask, eps=eps, window=window)
-                for (ref, mask) in zip(refStack, maskStack)
-            ]
+            [helpers.phaseCorrelation(ref, mask, eps=eps, window=window) for (ref, mask) in zip(refStack, maskStack)]
         )  # measure phase correlation
         pxcCenterPixel = int((pxcStack.shape[2] - 1) / 2)
         pxcValues = pxcStack[:, pxcCenterPixel, pxcCenterPixel]
 
         # next, compute the dot product between the filtered reference and masks
-        refNorm = np.linalg.norm(
-            refStack, axis=(1, 2)
-        )  # compute the norm of each centered reference image
+        refNorm = np.linalg.norm(refStack, axis=(1, 2))  # compute the norm of each centered reference image
         maskNorm = np.linalg.norm(maskStack, axis=(1, 2))
-        dotProd = (
-            np.sum(refStack * maskStack, axis=(1, 2)) / refNorm / maskNorm
-        )  # compute the dot product for each ROI
+        dotProd = np.sum(refStack * maskStack, axis=(1, 2)) / refNorm / maskNorm  # compute the dot product for each ROI
 
         # next, compute the correlation coefficients
         refStackNans = np.reshape(refStackNans, (refStackNans.shape[0], -1))
         maskStack = np.reshape(maskStack, (maskStack.shape[0], -1))
-        maskStack[np.isnan(refStackNans)] = (
-            np.nan
-        )  # remove the border areas from the masks stack (they are nan in the refStackNans array)
+        maskStack[np.isnan(refStackNans)] = np.nan  # remove the border areas from the masks stack (they are nan in the refStackNans array)
         uRef = np.nanmean(refStackNans, axis=1, keepdims=True)
         uMask = np.nanmean(maskStack, axis=1, keepdims=True)
         sRef = np.nanstd(refStackNans, axis=1)
         sMask = np.nanstd(maskStack, axis=1)
         N = np.sum(~np.isnan(refStackNans), axis=1)
-        corrCoef = (
-            np.nansum((refStackNans - uRef) * (maskStack - uMask), axis=1) / N / sRef / sMask
-        )
+        corrCoef = np.nansum((refStackNans - uRef) * (maskStack - uMask), axis=1) / N / sRef / sMask
 
         # And return
         return dotProd, corrCoef, pxcValues
 
-    def croppedPhaseCorrelation(
-        self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x: np.hamming(x.shape[-1])
-    ):
+    def croppedPhaseCorrelation(self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x: np.hamming(x.shape[-1])):
         """
         This returns the phase correlation of each (cropped) mask with the (cropped) reference image.
         The default parameters (width=40um, eps=1e6, and a hamming window function) were tested on a few sessions and is purely subjective.
@@ -725,18 +635,11 @@ class redCellProcessing(vrExperiment):
             self.loadReferenceAndMasks()
         if winFunc == "hamming":
             winFunc = lambda x: np.hamming(x.shape[-1])
-        refStack = self.centeredReferenceStack(
-            planeIdx=planeIdx, width=width
-        )  # get stack of reference image centered on each ROI
-        maskStack = self.centeredMaskStack(
-            planeIdx=planeIdx, width=width
-        )  # get stack of mask value centered on each ROI
+        refStack = self.centeredReferenceStack(planeIdx=planeIdx, width=width)  # get stack of reference image centered on each ROI
+        maskStack = self.centeredMaskStack(planeIdx=planeIdx, width=width)  # get stack of mask value centered on each ROI
         window = winFunc(refStack)  # create a window function
         pxcStack = np.stack(
-            [
-                helpers.phaseCorrelation(ref, mask, eps=eps, window=window)
-                for (ref, mask) in zip(refStack, maskStack)
-            ]
+            [helpers.phaseCorrelation(ref, mask, eps=eps, window=window) for (ref, mask) in zip(refStack, maskStack)]
         )  # measure phase correlation
         pxcCenterPixel = int((pxcStack.shape[2] - 1) / 2)
         return refStack, maskStack, pxcStack, pxcStack[:, pxcCenterPixel, pxcCenterPixel]
@@ -753,23 +656,10 @@ class redCellProcessing(vrExperiment):
         for plane in planeIdx:
             t = time.time()
             cRoiIdx = np.where(self.roiPlaneIdx == plane)[0]  # index of ROIs in this plane
-            bwReference = helpers.butterworthbpf(
-                self.reference[plane], lowcut, highcut, order=order, fs=fs
-            )  # filtered reference image
-            bwReference /= np.linalg.norm(
-                bwReference
-            )  # adjust to norm for straightforward cosine angle
+            bwReference = helpers.butterworthbpf(self.reference[plane], lowcut, highcut, order=order, fs=fs)  # filtered reference image
+            bwReference /= np.linalg.norm(bwReference)  # adjust to norm for straightforward cosine angle
             # compute normalized dot product for each ROI
-            dotProd.append(
-                np.array(
-                    [
-                        bwReference[self.ypix[roi], self.xpix[roi]]
-                        @ self.lam[roi]
-                        / np.linalg.norm(self.lam[roi])
-                        for roi in cRoiIdx
-                    ]
-                )
-            )
+            dotProd.append(np.array([bwReference[self.ypix[roi], self.xpix[roi]] @ self.lam[roi] / np.linalg.norm(self.lam[roi]) for roi in cRoiIdx]))
 
         return np.concatenate(dotProd)
 
@@ -786,14 +676,10 @@ class redCellProcessing(vrExperiment):
             numROIs = self.value["roiPerPlane"][plane]
             cRoiIdx = np.where(self.roiPlaneIdx == plane)[0]  # index of ROIs in this plane
             cRefStack = np.reshape(
-                self.centeredReferenceStack(
-                    planeIdx=plane, width=width, fill=np.nan, filtPrms=(lowcut, highcut, order, fs)
-                ),
+                self.centeredReferenceStack(planeIdx=plane, width=width, fill=np.nan, filtPrms=(lowcut, highcut, order, fs)),
                 (numROIs, -1),
             )
-            cMaskStack = np.reshape(
-                self.centeredMaskStack(planeIdx=plane, width=width, fill=0), (numROIs, -1)
-            )
+            cMaskStack = np.reshape(self.centeredMaskStack(planeIdx=plane, width=width, fill=0), (numROIs, -1))
             cMaskStack[np.isnan(cRefStack)] = np.nan
 
             # Measure mean and standard deviation (and number of non-nan datapoints)
@@ -803,9 +689,7 @@ class redCellProcessing(vrExperiment):
             sMask = np.nanstd(cMaskStack, axis=1)
             N = np.sum(~np.isnan(cRefStack), axis=1)
             # compute correlation coefficient and add to storage variable
-            corrCoef.append(
-                np.nansum((cRefStack - uRef) * (cMaskStack - uMask), axis=1) / N / sRef / sMask
-            )
+            corrCoef.append(np.nansum((cRefStack - uRef) * (cMaskStack - uMask), axis=1) / N / sRef / sMask)
 
         return np.concatenate(corrCoef)
 
@@ -864,9 +748,7 @@ class redCellProcessing(vrExperiment):
             planeIdx = (planeIdx,)  # make planeIdx iterable
         if not (self.data_loaded):
             self.loadReferenceAndMasks()
-        numPixels = int(
-            np.round(width / self.umPerPixel)
-        )  # numPixels to each side around the centroid
+        numPixels = int(np.round(width / self.umPerPixel))  # numPixels to each side around the centroid
         refStack = []
         for plane in planeIdx:
             cReference = self.reference[plane]
@@ -875,9 +757,7 @@ class redCellProcessing(vrExperiment):
                     cReference, filtPrms[0], filtPrms[1], order=filtPrms[2], fs=filtPrms[3]
                 )  # filtered reference image
             idxRoiInPlane = np.where(self.roiPlaneIdx == plane)[0]
-            refStack.append(
-                np.full((len(idxRoiInPlane), 2 * numPixels + 1, 2 * numPixels + 1), fill)
-            )
+            refStack.append(np.full((len(idxRoiInPlane), 2 * numPixels + 1, 2 * numPixels + 1), fill))
             for idx, idxRoi in enumerate(idxRoiInPlane):
                 yc, xc = self.getRoiCentroid(idxRoi, mode="median")
                 yUse = (np.maximum(yc - numPixels, 0), np.minimum(yc + numPixels + 1, self.ly))
@@ -907,30 +787,19 @@ class redCellProcessing(vrExperiment):
             planeIdx = (planeIdx,)  # make planeIdx iterable
         if not (self.data_loaded):
             self.loadReferenceAndMasks()
-        numPixels = int(
-            np.round(width / self.umPerPixel)
-        )  # numPixels to each side around the centroid
+        numPixels = int(np.round(width / self.umPerPixel))  # numPixels to each side around the centroid
         maskStack = []
         for plane in planeIdx:
             idxRoiInPlane = np.where(self.roiPlaneIdx == plane)[0]
-            maskStack.append(
-                np.full((len(idxRoiInPlane), 2 * numPixels + 1, 2 * numPixels + 1), fill)
-            )
+            maskStack.append(np.full((len(idxRoiInPlane), 2 * numPixels + 1, 2 * numPixels + 1), fill))
             for idx, idxRoi in enumerate(idxRoiInPlane):
                 yc, xc = self.getRoiCentroid(idxRoi, mode="median")
                 # centered y&x pixels of ROI
                 cyidx = self.ypix[idxRoi] - yc + numPixels
                 cxidx = self.xpix[idxRoi] - xc + numPixels
                 # index of pixels still within width of stack
-                idxUsePoints = (
-                    (cyidx >= 0)
-                    & (cyidx < 2 * numPixels + 1)
-                    & (cxidx >= 0)
-                    & (cxidx < 2 * numPixels + 1)
-                )
-                maskStack[-1][idx, cyidx[idxUsePoints], cxidx[idxUsePoints]] = self.lam[idxRoi][
-                    idxUsePoints
-                ]
+                idxUsePoints = (cyidx >= 0) & (cyidx < 2 * numPixels + 1) & (cxidx >= 0) & (cxidx < 2 * numPixels + 1)
+                maskStack[-1][idx, cyidx[idxUsePoints], cxidx[idxUsePoints]] = self.lam[idxRoi][idxUsePoints]
         return np.concatenate(maskStack, axis=0).astype(np.float32)
 
     def computeVolume(self, planeIdx=None):
@@ -938,9 +807,7 @@ class redCellProcessing(vrExperiment):
             planeIdx = np.arange(self.numPlanes)
         if isinstance(planeIdx, (int, np.integer)):
             planeIdx = (planeIdx,)  # make it iterable
-        assert all(
-            [0 <= plane < self.numPlanes for plane in planeIdx]
-        ), f"in session: {self.sessionPrint()}, there are only {self.numPlanes} planes!"
+        assert all([0 <= plane < self.numPlanes for plane in planeIdx]), f"in session: {self.sessionPrint()}, there are only {self.numPlanes} planes!"
         if not (self.data_loaded):
             self.loadReferenceAndMasks()
         roiMaskVolume = []

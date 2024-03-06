@@ -99,9 +99,7 @@ def sessionStats(
 
     # iterate through requested sessions and store data
     for ses in ises:
-        c_use_rois = ses.idxToPlanes(
-            keep_planes=keep_planes
-        )  # boolean array of ROIs within target planes
+        c_use_rois = ses.idxToPlanes(keep_planes=keep_planes)  # boolean array of ROIs within target planes
         ses_name.append(str(ses))
         ses_per_mouse.append(mouseCounter[ses.mouseName])
         if use_s2p:
@@ -207,23 +205,17 @@ def plot_environmentStats(
     figdim = 4
 
     plt.close("all")
-    fig, ax = plt.subplots(
-        1, numMice, figsize=((figdim * 1.4) * numMice, figdim), layout="constrained"
-    )
+    fig, ax = plt.subplots(1, numMice, figsize=((figdim * 1.4) * numMice, figdim), layout="constrained")
     for imouse, (mname, mses, tcount) in enumerate(zip(miceInSession, maxSessions, trial_counter)):
         c_esort = getEnvironmentSorted(tcount, ge=1)
-        cum_trials = np.cumsum(
-            np.concatenate((np.zeros((mses, 1)), tcount[:, c_esort]), axis=1), axis=1
-        )
+        cum_trials = np.cumsum(np.concatenate((np.zeros((mses, 1)), tcount[:, c_esort]), axis=1), axis=1)
 
         xdata = range(mses)
         for ii, ienv in reversed(list(enumerate(c_esort))):
             ybottom = cum_trials[:, ii]
             ytop = cum_trials[:, ii + 1]
             if imouse == 0:
-                ax[imouse].fill_between(
-                    xdata, ybottom, ytop, color=envcolor[ienv], label=f"Env {ienv+1}"
-                )
+                ax[imouse].fill_between(xdata, ybottom, ytop, color=envcolor[ienv], label=f"Env {ienv+1}")
             else:
                 ax[imouse].fill_between(xdata, ybottom, ytop, color=envcolor[ienv])
 
@@ -271,12 +263,8 @@ def plot_roiCountStats(
 
     plt.close("all")
     fig, ax = plt.subplots(1, 2, figsize=(3 * figdim, figdim), layout="constrained")
-    for imouse, (mname, mses, tcells, rcells) in enumerate(
-        zip(miceInSession, maxSessions, total_cell_count, red_cell_count)
-    ):
-        ax[0].plot(
-            range(mses), tcells, color=mousecolor[imouse], lw=lw, marker="o", markersize=mrk
-        )
+    for imouse, (mname, mses, tcells, rcells) in enumerate(zip(miceInSession, maxSessions, total_cell_count, red_cell_count)):
+        ax[0].plot(range(mses), tcells, color=mousecolor[imouse], lw=lw, marker="o", markersize=mrk)
         ax[0].tick_params(axis="x", labelsize=slabelSize)
         ax[0].tick_params(axis="y", labelsize=slabelSize)
         ax[0].set_xlabel("Session #", fontsize=labelSize)

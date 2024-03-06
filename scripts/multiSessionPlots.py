@@ -12,9 +12,7 @@ from vrAnalysis import analysis
 
 mousedb = database.vrDatabase("vrMice")
 
-TRACKED_MICE = mousedb.getTable(tracked=True)[
-    "mouseName"
-].tolist()  # list of mice with tracked sessions
+TRACKED_MICE = mousedb.getTable(tracked=True)["mouseName"].tolist()  # list of mice with tracked sessions
 CUTOFFS = (0.2, 0.5)
 MAXCUTOFFS = None
 
@@ -34,16 +32,12 @@ if __name__ == "__main__":
     maxcutoffs = args.maxcutoffs
     for mouseName in tracked_mice:
         track = tracking.tracker(mouseName)  # get tracker object for mouse
-        pcm = analysis.placeCellMultiSession(
-            track, autoload=False
-        )  # open up place cell multi session analysis object (don't autoload!!!)
+        pcm = analysis.placeCellMultiSession(track, autoload=False)  # open up place cell multi session analysis object (don't autoload!!!)
         for envnum in pcm.environments[pcm.environments > 0]:
             idx_ses = pcm.idx_ses_with_env(envnum)
             sortby = [idx_ses[i] for i in [0, int(len(idx_ses) * 0.5), -1]]
             for sb in sortby:
-                pcm.plot_rel_comparison(
-                    envnum, idx_ses=None, sortby=sb, rel_method="pc", withShow=False, withSave=True
-                )
+                pcm.plot_rel_comparison(envnum, idx_ses=None, sortby=sb, rel_method="pc", withShow=False, withSave=True)
                 pcm.plot_snake(
                     envnum,
                     idx_ses=None,

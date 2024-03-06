@@ -61,18 +61,14 @@ class tracker:
         self.identify_tracking_files()
         self.num_planes = len(self.results_files)
         assert len(self.results_files) > 0, "no tracking files found"
-        assert len(self.results_files) == len(
-            self.rundata_files
-        ), "results and rundata have different numbers of files"
+        assert len(self.results_files) == len(self.rundata_files), "results and rundata have different numbers of files"
 
         # load tracking data
         self.load_tracking_files()
 
         # identify sessions that were tracked and create session objects for them
         self.session_names = self.identify_tracked_sessions()
-        self.sessions = [
-            session.vrExperiment(*session_name) for session_name in self.session_names
-        ]
+        self.sessions = [session.vrExperiment(*session_name) for session_name in self.session_names]
         self.num_sessions = len(self.session_names)
 
         # check that number of ROIs is as expected
@@ -106,9 +102,7 @@ class tracker:
 
     # methods for loading tracking data
     def process_file_name(self, filename, filetype):
-        assert (filetype == "results") or (
-            filetype == "rundata"
-        ), f"did not recognize filetype ({filetype}), should be either 'results' or 'rundata'"
+        assert (filetype == "results") or (filetype == "rundata"), f"did not recognize filetype ({filetype}), should be either 'results' or 'rundata'"
         pattern = rf"(\w+)\.(plane\d+)\.{self.tracking_string}\.{filetype}"
         match = re.search(pattern, filename)
         assert match, f"{filename} is not a valid filename"
@@ -131,22 +125,14 @@ class tracker:
         self.rundata_files = [p.stem for p in self.list_tracking_files(self.rundata_string)]
         self.plane_names = [self.process_file_name(f, "results") for f in self.results_files]
         assert all(
-            [
-                pn == self.process_file_name(f, "rundata")
-                for pn, f in zip(self.plane_names, self.rundata_files)
-            ]
+            [pn == self.process_file_name(f, "rundata") for pn, f in zip(self.plane_names, self.rundata_files)]
         ), "plane names don't match in results and rundata"
-        assert self.plane_names == sorted(
-            self.plane_names
-        ), f"plane_names are not sorted properly.. ({self.plane_names})"
+        assert self.plane_names == sorted(self.plane_names), f"plane_names are not sorted properly.. ({self.plane_names})"
 
         suffices = np.unique(
-            [p.suffix for p in self.list_tracking_files(self.results_string)]
-            + [p.suffix for p in self.list_tracking_files(self.rundata_string)]
+            [p.suffix for p in self.list_tracking_files(self.results_string)] + [p.suffix for p in self.list_tracking_files(self.rundata_string)]
         )
-        assert (
-            len(suffices) == 1
-        ), f"suffices are multifarious... rename files so there's only 1! suffices found: {suffices}"
+        assert len(suffices) == 1, f"suffices are multifarious... rename files so there's only 1! suffices found: {suffices}"
         self.suffix = suffices[0]
 
     def load_tracking_files(self):
@@ -168,12 +154,8 @@ class tracker:
             """helper function for getting single unique value per session from a list across planes"""
             # get list of lists where each inner list contains all unique values for that element within the input
             value_each_session = list(map(list, map(set, zip(*values_each_plane))))
-            assert all(
-                [len(val) == 1 for val in value_each_session]
-            ), "some planes had different values!!! (inspect tracked session indicators)"
-            value = [
-                v[0] for v in value_each_session
-            ]  # convert to list of values now that we know each len(v)==1
+            assert all([len(val) == 1 for val in value_each_session]), "some planes had different values!!! (inspect tracked session indicators)"
+            value = [v[0] for v in value_each_session]  # convert to list of values now that we know each len(v)==1
             return value
 
         # store tracked session indicators here
@@ -189,20 +171,10 @@ class tracker:
             for stat_path, ops_path in zip(stat_paths, ops_paths):
                 # then for each file path, make sure it comes from the same storage location
                 assert all(
-                    [
-                        sp.lower() == dp.lower()
-                        for (sp, dp) in zip(
-                            stat_path.parts[: self.num_parts_data_path], self.data_path().parts
-                        )
-                    ]
+                    [sp.lower() == dp.lower() for (sp, dp) in zip(stat_path.parts[: self.num_parts_data_path], self.data_path().parts)]
                 ), f"stat_path ({stat_path}) does not match data_path ({self.data_path()})!"
                 assert all(
-                    [
-                        op.lower() == dp.lower()
-                        for (op, dp) in zip(
-                            ops_path.parts[: self.num_parts_data_path], self.data_path().parts
-                        )
-                    ]
+                    [op.lower() == dp.lower() for (op, dp) in zip(ops_path.parts[: self.num_parts_data_path], self.data_path().parts)]
                 ), f"ops_path ({ops_path}) does not match data_path ({self.data_path()})!"
 
                 # the mouse name, date string, and session id are the next "groups" in the path according to Alyx database convention
@@ -212,16 +184,13 @@ class tracker:
 
                 # check that session indicators are the same between the stat paths and ops paths
                 assert (
-                    stat_path.parts[self.num_parts_data_path]
-                    == ops_path.parts[self.num_parts_data_path]
+                    stat_path.parts[self.num_parts_data_path] == ops_path.parts[self.num_parts_data_path]
                 ), f"mouse name doesn't match for stat and ops: ({stat_path}), ({ops_path})"
                 assert (
-                    stat_path.parts[self.num_parts_data_path + 1]
-                    == ops_path.parts[self.num_parts_data_path + 1]
+                    stat_path.parts[self.num_parts_data_path + 1] == ops_path.parts[self.num_parts_data_path + 1]
                 ), f"date string doesn't match for stat and ops: ({stat_path}), ({ops_path})"
                 assert (
-                    stat_path.parts[self.num_parts_data_path + 2]
-                    == ops_path.parts[self.num_parts_data_path + 2]
+                    stat_path.parts[self.num_parts_data_path + 2] == ops_path.parts[self.num_parts_data_path + 2]
                 ), f"session id doesn't match for stat and ops: ({stat_path}), ({ops_path})"
 
         # make sure value is consistent across planes and return single value per session if it is
@@ -230,10 +199,7 @@ class tracker:
         tracked_session_id = check_across_planes(tracked_session_id)
 
         # return tuple of session name (mousename, datestring, sessionid)
-        return [
-            session_name
-            for session_name in zip(tracked_mouse_name, tracked_date_string, tracked_session_id)
-        ]
+        return [session_name for session_name in zip(tracked_mouse_name, tracked_date_string, tracked_session_id)]
 
     def check_num_rois_per_plane(self):
         """
@@ -246,12 +212,8 @@ class tracker:
 
         self.roi_per_plane = np.zeros((self.num_planes, self.num_sessions), dtype=int)
         for planeidx, results in enumerate(self.results):
-            for sesidx, (labels, session) in enumerate(
-                zip(results["clusters"]["labels_bySession"], self.sessions)
-            ):
-                assert len(labels) == session.value["roiPerPlane"][planeidx], assertion_message(
-                    planeidx, labels, session
-                )
+            for sesidx, (labels, session) in enumerate(zip(results["clusters"]["labels_bySession"], self.sessions)):
+                assert len(labels) == session.value["roiPerPlane"][planeidx], assertion_message(planeidx, labels, session)
                 self.roi_per_plane[planeidx, sesidx] = session.value["roiPerPlane"][planeidx]
 
     @handle_idx_ses
@@ -274,9 +236,7 @@ class tracker:
         roicat_index = [np.zeros((nucids, num_ses), dtype=bool) for nucids in num_ucids]
         for planeidx, ucid in enumerate(ucids):
             for sesidx, uc in enumerate(ucid):
-                cindex = uc[
-                    uc >= 0
-                ]  # index of ROIs (UCIDs) found in this session in this plane (excluding -1s)
+                cindex = uc[uc >= 0]  # index of ROIs (UCIDs) found in this session in this plane (excluding -1s)
                 roicat_index[planeidx][cindex, sesidx] = True  # label found ROI with True
 
         return ucids, roicat_index
@@ -294,22 +254,14 @@ class tracker:
         idx_in_ses = [np.where(np.all(rindex, axis=1))[0] for rindex in roicat_index]
 
         # For each plane & session, a sorted index to the suite2p ROI to recreate the list of UCIDs
-        idx_to_ucid = [
-            [helpers.index_in_target(iis, uc)[1] for uc in ucid]
-            for (iis, ucid) in zip(idx_in_ses, ucids)
-        ]
+        idx_to_ucid = [[helpers.index_in_target(iis, uc)[1] for uc in ucid] for (iis, ucid) in zip(idx_in_ses, ucids)]
 
         # if with_offset, add offset for number of ROIs in each plane
         if with_offset:
             # cumulative number of ROIs before each plane (in numeric order of planes using sorted(self.plane_names))
             roi_per_plane = self.roi_per_plane[keep_planes][:, idx_ses]
-            roi_plane_offset = np.cumsum(
-                np.vstack((np.zeros((1, len(idx_ses)), dtype=int), roi_per_plane[:-1])), axis=0
-            )
-            idx_to_ucid = [
-                [offset + ucid for offset, ucid in zip(offsets, ucids)]
-                for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)
-            ]
+            roi_plane_offset = np.cumsum(np.vstack((np.zeros((1, len(idx_ses)), dtype=int), roi_per_plane[:-1])), axis=0)
+            idx_to_ucid = [[offset + ucid for offset, ucid in zip(offsets, ucids)] for offsets, ucids in zip(roi_plane_offset, idx_to_ucid)]
 
         # return indices
         return idx_to_ucid
@@ -326,20 +278,14 @@ class tracker:
         in each plane.
         """
         # For each plane & session, a sorted index to the suite2p ROI to recreate the list of UCIDs
-        idx_to_ucid = self.get_idx_to_tracked(
-            with_offset=True, idx_ses=idx_ses, keep_planes=keep_planes
-        )
+        idx_to_ucid = self.get_idx_to_tracked(with_offset=True, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # A straightforward numpy array of (numSessions, numROIs) containing the indices to retrieve tracked and sorted ROIs
-        return np.concatenate(
-            [np.stack([ucid for ucid in ucids], axis=1) for ucids in idx_to_ucid], axis=0
-        ).T
+        return np.concatenate([np.stack([ucid for ucid in ucids], axis=1) for ucids in idx_to_ucid], axis=0).T
 
     @handle_idx_ses
     @handle_keep_planes
-    def split_by_plane(
-        self, data: List[np.ndarray], dim=0, tracked=False, idx_ses=None, keep_planes=None
-    ):
+    def split_by_plane(self, data: List[np.ndarray], dim=0, tracked=False, idx_ses=None, keep_planes=None):
         """
         helper method for splitting data by planes along dimension **dim**
 
@@ -361,19 +307,11 @@ class tracker:
             # this is a nested list with outer length = len(keep_planes) and inner length = len(idx_ses)
             # where the indices contain the indices to tracked ROIs (in order) for each plane/session combination
             # without the plane offset required for indexing into stacked data
-            idx_to_ucid = self.get_idx_to_tracked(
-                with_offset=False, idx_ses=idx_ses, keep_planes=keep_planes
-            )
-            tracked_roi_per_plane = np.stack(
-                [np.stack([len(idx) for idx in idx_ucid]) for idx_ucid in idx_to_ucid]
-            )
+            idx_to_ucid = self.get_idx_to_tracked(with_offset=False, idx_ses=idx_ses, keep_planes=keep_planes)
+            tracked_roi_per_plane = np.stack([np.stack([len(idx) for idx in idx_ucid]) for idx_ucid in idx_to_ucid])
 
             # first and last roi per plane of tracked data
-            first_last_roi = (
-                np.vstack((np.zeros((1, len(idx_ses))), np.cumsum(tracked_roi_per_plane, axis=0)))
-                .astype(int)
-                .T
-            )
+            first_last_roi = np.vstack((np.zeros((1, len(idx_ses))), np.cumsum(tracked_roi_per_plane, axis=0))).astype(int).T
         else:
             # get first and last roi for each plane of data
             # (num_session x num_plane) numpy array
@@ -428,10 +366,7 @@ class tracker:
 
         each element is a coo_array with size (num_rois_per_plane(s), num_pixels)
         """
-        return [
-            [self._make_ROIs(plane, ses, as_coo=as_coo) for plane in keep_planes]
-            for ses in idx_ses
-        ]
+        return [[self._make_ROIs(plane, ses, as_coo=as_coo) for plane in keep_planes] for ses in idx_ses]
 
     @handle_idx_ses
     @handle_keep_planes
@@ -470,12 +405,8 @@ class tracker:
 
                 # get plane/session centroids by requested method
                 if method == "weightedmean":
-                    ps_ycentroids = [
-                        np.sum(rlam * rypix) / np.sum(rlam) for rlam, rypix in zip(ps_lam, ps_ypix)
-                    ]
-                    ps_xcentroids = [
-                        np.sum(rlam * rxpix) / np.sum(rlam) for rlam, rxpix in zip(ps_lam, ps_xpix)
-                    ]
+                    ps_ycentroids = [np.sum(rlam * rypix) / np.sum(rlam) for rlam, rypix in zip(ps_lam, ps_ypix)]
+                    ps_xcentroids = [np.sum(rlam * rxpix) / np.sum(rlam) for rlam, rxpix in zip(ps_lam, ps_xpix)]
 
                 elif method == "median":
                     ps_ycentroids = [np.median(rypix) for rypix in ps_ypix]
@@ -502,10 +433,7 @@ class tracker:
             if cat_planes:
                 return [np.stack((yc, xc)).T for yc, xc in zip(ycentroids, xcentroids)]
             else:
-                return [
-                    [np.stack((yc, xc)).T for yc, xc in zip(ycent, xcent)]
-                    for ycent, xcent in zip(ycentroids, xcentroids)
-                ]
+                return [[np.stack((yc, xc)).T for yc, xc in zip(ycent, xcent)] for ycent, xcent in zip(ycentroids, xcentroids)]
 
         # otherwise return centroids in separate variables
         return ycentroids, xcentroids
@@ -556,10 +484,7 @@ class tracker:
             if cat_planes:
                 return [np.stack((yr, xr)).T for yr, xr in zip(yranges, xranges)]
             else:
-                return [
-                    [np.stack((yr, xr)).T for yr, xr in zip(yrng, xrng)]
-                    for yrng, xrng in zip(yranges, xranges)
-                ]
+                return [[np.stack((yr, xr)).T for yr, xr in zip(yrng, xrng)] for yrng, xrng in zip(yranges, xranges)]
 
         # otherwise return ranges in separate variables
         return yranges, xranges
@@ -579,9 +504,7 @@ class tracker:
         """
         lam, ypix, xpix = [], [], []
         for ses in tqdm(idx_ses, desc="getting roi data"):
-            clam, cxpix, cypix = helpers.named_transpose(
-                [self._make_lam_pix(plane, ses) for plane in keep_planes]
-            )
+            clam, cxpix, cypix = helpers.named_transpose([self._make_lam_pix(plane, ses) for plane in keep_planes])
             lam.append(clam)
             ypix.append(cypix)
             xpix.append(cxpix)
@@ -608,9 +531,7 @@ class tracker:
         roi_sparse = self._make_ROIs(plane, session, as_coo=False)
         num_rois = roi_sparse.shape[0]
         num_pixels = int(np.sqrt(roi_sparse.shape[1]))
-        lam, ypix, xpix = helpers.named_transpose(
-            [_get_lam_pix(roi_sparse[[i]], num_pixels) for i in range(num_rois)]
-        )
+        lam, ypix, xpix = helpers.named_transpose([_get_lam_pix(roi_sparse[[i]], num_pixels) for i in range(num_rois)])
         return lam, ypix, xpix
 
     def _make_ROIs(self, plane, session, as_coo=True):
@@ -620,9 +541,7 @@ class tracker:
         defaults to coo array, but if as_coo=False then will return a csr_array
         """
         csr_data = self.rundata[plane]["aligner"]["ROIs_aligned"][session]
-        csr_array = sp.sparse.csr_array(
-            (csr_data["data"], csr_data["indices"], csr_data["indptr"]), shape=csr_data["_shape"]
-        )
+        csr_array = sp.sparse.csr_array((csr_data["data"], csr_data["indices"], csr_data["indptr"]), shape=csr_data["_shape"])
         if as_coo:
             return csr_array.tocoo()
         return csr_array
@@ -647,20 +566,13 @@ class tracker:
 
         similarity_data = [lookup[name](self.rundata[i]) for i in keep_planes]
         if make_csr:
-            return [
-                sp.sparse.csr_array(
-                    (scd["data"], scd["indices"], scd["indptr"]), shape=scd["_shape"]
-                )
-                for scd in similarity_data
-            ]
+            return [sp.sparse.csr_array((scd["data"], scd["indices"], scd["indptr"]), shape=scd["_shape"]) for scd in similarity_data]
 
         return similarity_data
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_idx_roi_to_session_by_plane(
-        self, tracked=False, split_sessions=False, idx_ses=None, keep_planes=None
-    ):
+    def get_idx_roi_to_session_by_plane(self, tracked=False, split_sessions=False, idx_ses=None, keep_planes=None):
         """
         returns a list of indices containing the ROIs in idx_ses from keep_planes
 
@@ -683,14 +595,10 @@ class tracker:
             # this is a nested list with outer length = len(keep_planes) and inner length = len(idx_ses)
             # where the indices contain the indices to tracked ROIs (in order) for each plane/session combination
             # without the plane offset required for indexing into stacked data
-            idx_to_ucid = self.get_idx_to_tracked(
-                with_offset=False, idx_ses=idx_ses, keep_planes=keep_planes
-            )
+            idx_to_ucid = self.get_idx_to_tracked(with_offset=False, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # get number of ROIs per plane from each session (for requested planes)
-        first_last_roi = np.hstack(
-            (np.zeros((len(keep_planes), 1)), np.cumsum(self.roi_per_plane[keep_planes], axis=1))
-        ).astype(int)
+        first_last_roi = np.hstack((np.zeros((len(keep_planes), 1)), np.cumsum(self.roi_per_plane[keep_planes], axis=1))).astype(int)
 
         # concatenate slices of ROI from plane indices
         idx_roi_to_session = []
@@ -702,9 +610,7 @@ class tracker:
                 cindices = list(range(flr[ises], flr[ises + 1]))
                 if tracked and tracked == "not":
                     # filter out any that are tracked if requested
-                    cindices = [
-                        cind for ii, cind in enumerate(cindices) if ii not in idx_to_ucid[ii][jj]
-                    ]
+                    cindices = [cind for ii, cind in enumerate(cindices) if ii not in idx_to_ucid[ii][jj]]
                 elif tracked:
                     # filter for those that are tracked if requested
                     cindices = [cindices[i] for i in idx_to_ucid[ii][jj]]
@@ -743,9 +649,7 @@ class tracker:
                     row.append(list_sparse[ii])
                 else:
                     # otherwise make an empty (all 0s) csr matrix with the right dimensions
-                    row.append(
-                        sp.sparse.csr_array((list_sparse[ii].shape[0], list_sparse[jj].shape[1]))
-                    )
+                    row.append(sp.sparse.csr_array((list_sparse[ii].shape[0], list_sparse[jj].shape[1])))
 
             # concatenate columns within this row
             sparse_full_rows.append(sp.sparse.hstack(row, format="csr"))
@@ -755,9 +659,7 @@ class tracker:
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_similarity(
-        self, name, tracked=False, cat_planes=False, idx_ses=None, keep_planes=None
-    ):
+    def get_similarity(self, name, tracked=False, cat_planes=False, idx_ses=None, keep_planes=None):
         """
         retrieve sparse similarity data and consolidate across planes
 
@@ -774,9 +676,7 @@ class tracker:
         sparse = self.similarity_lookup(name, keep_planes=keep_planes, make_csr=True)
 
         # get idx to ROIs in each plane
-        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(
-            tracked=tracked, split_sessions=False, idx_ses=idx_ses, keep_planes=keep_planes
-        )
+        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, split_sessions=False, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # filter sparse matrices
         sparse = self._filter_sparse_by_index(sparse, idx_roi_to_session)
@@ -818,9 +718,7 @@ class tracker:
 
         # get idx to ROIs in each plane
         idx_ses = [source, target]
-        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(
-            tracked=tracked, split_sessions=True, idx_ses=idx_ses, keep_planes=keep_planes
-        )
+        idx_roi_to_session = self.get_idx_roi_to_session_by_plane(tracked=tracked, split_sessions=True, idx_ses=idx_ses, keep_planes=keep_planes)
 
         # filter sparse matrix
         sparse_pair = [s[idx[0]][:, idx[1]] for s, idx in zip(sparse, idx_roi_to_session)]
@@ -829,10 +727,7 @@ class tracker:
         if symmetric:
             # this is the same ROI pairs but organized by (target, source)
             # which isn't always symmetric...
-            sparse_reflection = [
-                s[idx[1]][:, idx[0]].transpose().tocsr()
-                for s, idx in zip(sparse, idx_roi_to_session)
-            ]
+            sparse_reflection = [s[idx[1]][:, idx[0]].transpose().tocsr() for s, idx in zip(sparse, idx_roi_to_session)]
             # average the data from the [source, target] and [target, source] looks
             for idx, (sp, sr) in enumerate(zip(sparse_pair, sparse_reflection)):
                 sparse_pair[idx].data = np.mean(np.stack((sp.data, sr.data)), axis=0)
@@ -845,9 +740,7 @@ class tracker:
 
     @handle_idx_ses
     @handle_keep_planes
-    def get_tracked_labels(
-        self, cat_planes=False, nan_untracked=True, idx_ses=None, keep_planes=None
-    ):
+    def get_tracked_labels(self, cat_planes=False, nan_untracked=True, idx_ses=None, keep_planes=None):
         """
         get tracking labels across sessions
         convert untracked to nans if requested (untracked are = -1), replace with np.nan if nan_untracked=True
@@ -862,10 +755,7 @@ class tracker:
             return out
 
         # list of lists of labels per plane for each session in idx_ses
-        labels = [
-            [retrieve_labels(self.results[plane], ses, nan_untracked) for plane in keep_planes]
-            for ses in idx_ses
-        ]
+        labels = [[retrieve_labels(self.results[plane], ses, nan_untracked) for plane in keep_planes] for ses in idx_ses]
 
         # concatenate across planes if requested
         if cat_planes:
@@ -876,27 +766,17 @@ class tracker:
 
     @handle_idx_ses
     @handle_keep_planes
-    def check_red_cell_consistency(
-        self, idx_ses=None, keep_planes=None, use_s2p=False, s2p_cutoff=0.65
-    ):
+    def check_red_cell_consistency(self, idx_ses=None, keep_planes=None, use_s2p=False, s2p_cutoff=0.65):
         # get idx of tracked ROIs
         idx_tracked = self.get_tracked_idx(idx_ses=idx_ses, keep_planes=keep_planes)
 
         # get red cell assignments
         if not (use_s2p):
-            idx_red = np.stack(
-                [
-                    self.sessions[ii].getRedIdx(keep_planes=keep_planes)[it]
-                    for ii, it in zip(idx_ses, idx_tracked)
-                ]
-            )
+            idx_red = np.stack([self.sessions[ii].getRedIdx(keep_planes=keep_planes)[it] for ii, it in zip(idx_ses, idx_tracked)])
         else:
             c_in_plane = [self.sessions[ii].idxToPlanes(keep_planes=keep_planes) for ii in idx_ses]
             idx_red = np.stack(
-                [
-                    self.sessions[ii].loadone("mpciROIs.redS2P")[cip][it] > s2p_cutoff
-                    for ii, cip, it in zip(idx_ses, c_in_plane, idx_tracked)
-                ]
+                [self.sessions[ii].loadone("mpciROIs.redS2P")[cip][it] > s2p_cutoff for ii, cip, it in zip(idx_ses, c_in_plane, idx_tracked)]
             )
 
         return idx_red

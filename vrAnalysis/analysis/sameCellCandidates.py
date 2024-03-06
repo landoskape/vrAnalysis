@@ -54,13 +54,9 @@ def getConnectedGroups(G):
     # now get connected groups
     N = G.shape[0]
     cG = 1 * (G > 0)  # 1 if connected, 0 otherwise
-    iG = (
-        np.arange(N).reshape(1, -1) * cG
-    )  # index of roi if connected, -1 if not connected (for row-column pairs)
+    iG = np.arange(N).reshape(1, -1) * cG  # index of roi if connected, -1 if not connected (for row-column pairs)
     iG[cG == 0] = -1  # set unconnected pairs to -1
-    graph = convert_to_set_representation(
-        iG
-    )  # retrieve set of just nonnegative indices (e.g. those that are connected) for each node
+    graph = convert_to_set_representation(iG)  # retrieve set of just nonnegative indices (e.g. those that are connected) for each node
     components = get_all_connected_groups(graph)  #
     return [list(c) for c in components]
 
@@ -102,11 +98,7 @@ class sameCellCandidates(standardAnalysis):
         self.name = "sameCellCandidates"
         self.onefile = onefile
         self.vrexp = vrexp
-        self.keep_planes = (
-            keep_planes
-            if keep_planes is not None
-            else [i for i in range(len(vrexp.value["roiPerPlane"]))]
-        )
+        self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value["roiPerPlane"]))]
 
         # automatically do measurements
         self.dataloaded = False
@@ -125,15 +117,9 @@ class sameCellCandidates(standardAnalysis):
         stackPosition = self.vrexp.loadone("mpciROIs.stackPosition")
         roiPlaneIdx = stackPosition[:, 2].astype(np.int32)  # plane index
         # figure out which ROIs are in the target planes
-        self.idxROI_inTargetPlane = np.any(
-            np.stack([roiPlaneIdx == pidx for pidx in self.keep_planes]), axis=0
-        )
+        self.idxROI_inTargetPlane = np.any(np.stack([roiPlaneIdx == pidx for pidx in self.keep_planes]), axis=0)
 
-        npix = np.array(
-            [s["npix"] for s in self.vrexp.loadS2P("stat")[self.idxROI_inTargetPlane]]
-        ).astype(
-            np.int32
-        )  # roi size (in pixels of mask)
+        npix = np.array([s["npix"] for s in self.vrexp.loadS2P("stat")[self.idxROI_inTargetPlane]]).astype(np.int32)  # roi size (in pixels of mask)
         data = self.vrexp.loadone(self.onefile)[:, self.idxROI_inTargetPlane]  # activity array
         xyPos = stackPosition[self.idxROI_inTargetPlane, 0:2] * 1.3  # xy position to um
         roiPlaneIdx = roiPlaneIdx[self.idxROI_inTargetPlane].astype(np.int32)
@@ -276,14 +262,10 @@ class sameCellCandidates(standardAnalysis):
         the "close" group is based purely on 'distanceCutoff'
         This uses a fast approximation of the cdf with prespecified cdfVals, which should be an increasing linspace like array.
         """
-        assert (
-            type(distanceDistant) == tuple and len(distanceDistant) == 2
-        ), "distanceDistant should be a tuple specifying the range"
+        assert type(distanceDistant) == tuple and len(distanceDistant) == 2, "distanceDistant should be a tuple specifying the range"
 
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        closeIdx = self.getPairFilter(
-            keep_planes=keep_planes, distanceCutoff=distanceCutoff, corrCutoff=corrCutoff
-        )
+        closeIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=distanceCutoff, corrCutoff=corrCutoff)
         farIdx = self.getPairFilter(
             keep_planes=keep_planes,
             distanceCutoff=distanceDistant[1],
@@ -375,12 +357,8 @@ class sameCellCandidates(standardAnalysis):
             idxMatches = xcROIs > cutoff  # True if pair is matched
             t = time.time()
             removeFull = np.full(len(pairIdx), False)  # Start with every pair being valid
-            removeFull[pairIdx] = (
-                idxMatches  # assign matched ROIs to their proper location in the full list
-            )
-            adjacencyMatrix = sp.spatial.distance.squareform(
-                1 * removeFull
-            )  # convert pair boolean to adjacency matrix (1 if connected)
+            removeFull[pairIdx] = idxMatches  # assign matched ROIs to their proper location in the full list
+            adjacencyMatrix = sp.spatial.distance.squareform(1 * removeFull)  # convert pair boolean to adjacency matrix (1 if connected)
             N = adjacencyMatrix.shape[0]
             assert N == self.numROIs, "oops!"
             graph = nx.from_numpy_array(adjacencyMatrix)
@@ -420,9 +398,7 @@ class sameCellCandidates(standardAnalysis):
             markersize=12,
             label="aggressive removal",
         )
-        ax[0].plot(
-            roiCountCutoffs, misCounts, c="b", marker=".", markersize=12, label="MIS removal"
-        )
+        ax[0].plot(roiCountCutoffs, misCounts, c="b", marker=".", markersize=12, label="MIS removal")
         ax[0].axhline(y=numROIs, c="k", linestyle="--", label="Total ROIs")
         ax[0].set_xlabel("Correlation Cutoff")
         ax[0].set_ylabel("ROIs removed")
@@ -438,9 +414,7 @@ class sameCellCandidates(standardAnalysis):
             markersize=12,
             label="aggressive removal",
         )
-        ax[1].plot(
-            roiCountCutoffs, misCountTime, c="b", marker=".", markersize=12, label="MIS removal"
-        )
+        ax[1].plot(roiCountCutoffs, misCountTime, c="b", marker=".", markersize=12, label="MIS removal")
         ax[1].set_xlabel("Correlation Cutoff")
         ax[1].set_ylabel("Time for removal (s)")
         ax[1].set_title("Speed of algorithm")
@@ -475,22 +449,14 @@ class sameCellCandidates(standardAnalysis):
         """clusterSize plots the histogram of cluster sizes as the correlation cutoff changes, given other parameters..."""
         numCutoffs = len(corrCutoffs)
         extraFilter = self.pwdist > minDistance if minDistance is not None else None
-        planeIdx = self.getPairFilter(
-            keep_planes=keep_planes
-        )  # just plane filter for pulling out the relevant pairs
-        pairIdx = self.getPairFilter(
-            distanceCutoff=distanceCutoff, keep_planes=keep_planes, extraFilter=extraFilter
-        )
+        planeIdx = self.getPairFilter(keep_planes=keep_planes)  # just plane filter for pulling out the relevant pairs
+        pairIdx = self.getPairFilter(distanceCutoff=distanceCutoff, keep_planes=keep_planes, extraFilter=extraFilter)
         connBins, connCounts = [], []
         corrBins, corrCounts = [], []
         for i, cc in enumerate(corrCutoffs):
             if verbose:
-                print(
-                    f"Measuring cluster & correlation distribution for cutoff {round(cc,2)} : {i+1}/{numCutoffs}"
-                )
-            cPairs = 1 * (
-                pairIdx[planeIdx] & (self.xcROIs[planeIdx] > cc)
-            )  # connected after filtering for requested planes
+                print(f"Measuring cluster & correlation distribution for cutoff {round(cc,2)} : {i+1}/{numCutoffs}")
+            cPairs = 1 * (pairIdx[planeIdx] & (self.xcROIs[planeIdx] > cc))  # connected after filtering for requested planes
             cAdjMat = sp.spatial.distance.squareform(cPairs)  # adjacency matrix of connected pairs
             cGroup = getConnectedGroups(cAdjMat)  # list of connected groups
 
@@ -522,12 +488,8 @@ class sameCellCandidates(standardAnalysis):
         cmap = mpl.colormaps["jet"].resampled(numCutoffs)
         fig, ax = plt.subplots(1, 2, figsize=(8, 4), layout="constrained")
         for i, (pConn, pCorr) in enumerate(zip(plotConnCounts, plotCorrCounts)):
-            ax[0].plot(
-                plotConnBins, pConn, color=cmap(i), marker=".", label=f"corr > {corrCutoffs[i]}"
-            )
-            ax[1].plot(
-                plotCorrBins, pCorr, color=cmap(i), marker=".", label=f"corr > {corrCutoffs[i]}"
-            )
+            ax[0].plot(plotConnBins, pConn, color=cmap(i), marker=".", label=f"corr > {corrCutoffs[i]}")
+            ax[1].plot(plotCorrBins, pCorr, color=cmap(i), marker=".", label=f"corr > {corrCutoffs[i]}")
         ax[0].set_xlabel("Size Connected Group")
         ax[1].set_xlabel("Number Correlated ROIs")
         ax[0].set_ylabel("Counts")
@@ -566,15 +528,10 @@ class sameCellCandidates(standardAnalysis):
             minCutoff = corrCutoff[0]
 
         # filter pairs based on optional cutoffs and plane indices (and more...)
-        pairIdx = self.getPairFilter(
-            corrCutoff=minCutoff, distanceCutoff=distanceCutoff
-        )  # no filtering at the moment
+        pairIdx = self.getPairFilter(corrCutoff=minCutoff, distanceCutoff=distanceCutoff)  # no filtering at the moment
 
         # get full list of possible plane/plane pair names
-        ppStr = [
-            str(int(p1)) + str(int(p2))
-            for (p1, p2) in zip(self.planePair1[pairIdx], self.planePair2[pairIdx])
-        ]
+        ppStr = [str(int(p1)) + str(int(p2)) for (p1, p2) in zip(self.planePair1[pairIdx], self.planePair2[pairIdx])]
         ppUniq = np.unique(ppStr)
 
         ppCounts = []
@@ -582,14 +539,7 @@ class sameCellCandidates(standardAnalysis):
             # get idx of current correlation cutoff
             cidx = self.xcROIs > cc
             # make string pair name for planePair indices within this cutoff
-            cppstr = np.array(
-                [
-                    str(int(p1)) + str(int(p2))
-                    for (p1, p2) in zip(
-                        self.planePair1[pairIdx & cidx], self.planePair2[pairIdx & cidx]
-                    )
-                ]
-            )
+            cppstr = np.array([str(int(p1)) + str(int(p2)) for (p1, p2) in zip(self.planePair1[pairIdx & cidx], self.planePair2[pairIdx & cidx])])
             # append counts to list
             ppCounts.append(np.array([sum(cppstr == puniq) for puniq in ppUniq]))
 
@@ -641,9 +591,7 @@ class sameCellCandidates(standardAnalysis):
         counts = [np.histogram(cdd, bins=bins)[0] for cdd in corrDistanceDistribution]
 
         samePlaneIdx = self.planePair1 == self.planePair2
-        planeIdx = self.getPairFilter(
-            keep_planes=keep_planes, distanceCutoff=maxDistance, extraFilter=samePlaneIdx
-        )
+        planeIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=maxDistance, extraFilter=samePlaneIdx)
         corrIdx = [planeIdx & (self.xcROIs > cc) for cc in corrCutoffs]
         corrDistanceDistribution = [self.pwDist[cidx] for cidx in corrIdx]
         maxDistance = max([np.max(cdd) for cdd in corrDistanceDistribution])
@@ -665,9 +613,7 @@ class sameCellCandidates(standardAnalysis):
         cmap = mpl.colormaps["jet"].resampled(len(corrCutoffs))
         plt.close("all")
         fig, ax = plt.subplots(1, 2, figsize=(8, 4), layout="constrained")
-        for i, (cc, count, samePlane_count) in enumerate(
-            zip(corrCutoffs, counts, samePlane_counts)
-        ):
+        for i, (cc, count, samePlane_count) in enumerate(zip(corrCutoffs, counts, samePlane_counts)):
             ax[0].plot(centers, count, color=cmap(i), label=f"corr>{round(cc,1)}")
             ax[1].plot(centers, samePlane_count, color=cmap(i), label=f"corr>{round(cc,1)}")
         ax[0].set_xlabel("Distance (um)")
@@ -727,19 +673,9 @@ class sameCellCandidates(standardAnalysis):
         closeCounts = [np.histogram(xcROIs[ic], bins=binEdges)[0] for ic in idxClose]
 
         # Then do it for each plane individually
-        fcPlane = np.stack(
-            [
-                np.histogram(xcROIs[planePair == planeIdx], bins=binEdges)[0]
-                for planeIdx in self.vrexp.value["planeIDs"]
-            ]
-        )
+        fcPlane = np.stack([np.histogram(xcROIs[planePair == planeIdx], bins=binEdges)[0] for planeIdx in self.vrexp.value["planeIDs"]])
         ccPlane = [
-            np.stack(
-                [
-                    np.histogram(xcROIs[(planePair == planeIdx) & ic], bins=binEdges)[0]
-                    for planeIdx in self.vrexp.value["planeIDs"]
-                ]
-            )
+            np.stack([np.histogram(xcROIs[(planePair == planeIdx) & ic], bins=binEdges)[0] for planeIdx in self.vrexp.value["planeIDs"]])
             for ic in idxClose
         ]
 
@@ -749,9 +685,7 @@ class sameCellCandidates(standardAnalysis):
         fig, ax = plt.subplots(1, 2, figsize=(12, 4))
 
         # Plot histograms for full count
-        ax[0].bar(
-            binCenters, fullCounts, width=barWidth, color="k", alpha=1, label="full distribution"
-        )
+        ax[0].bar(binCenters, fullCounts, width=barWidth, color="k", alpha=1, label="full distribution")
         for idx, counts in enumerate(closeCounts):
             ax[0].bar(
                 binCenters,
@@ -819,22 +753,14 @@ class clusterExplorer(sameCellCandidates):
         # Load activity and suite2p data
         self.timestamps = self.vrexp.loadone("mpci.times")
         self.activity = self.vrexp.loadone(activity)[:, self.idxROI_inTargetPlane]
-        self.neuropil = self.vrexp.loadone("mpci.roiNeuropilActivityF")[
-            :, self.idxROI_inTargetPlane
-        ]
+        self.neuropil = self.vrexp.loadone("mpci.roiNeuropilActivityF")[:, self.idxROI_inTargetPlane]
         self.stat = self.vrexp.loadS2P("stat")[self.idxROI_inTargetPlane]
-        self.roiCentroid = self.vrexp.loadone("mpciROIs.stackPosition")[
-            self.idxROI_inTargetPlane, :2
-        ]
-        self.roiPlaneIdx = self.vrexp.loadone("mpciROIs.stackPosition")[
-            self.idxROI_inTargetPlane, 2
-        ].astype(np.int32)
+        self.roiCentroid = self.vrexp.loadone("mpciROIs.stackPosition")[self.idxROI_inTargetPlane, :2]
+        self.roiPlaneIdx = self.vrexp.loadone("mpciROIs.stackPosition")[self.idxROI_inTargetPlane, 2].astype(np.int32)
 
         # Create look up table for plane colormap
         if keep_planes is None:
-            assert set(keep_planes) <= set(
-                self.keep_planes
-            ), "requested planes include some not stored in sameCellCandidate object"
+            assert set(keep_planes) <= set(self.keep_planes), "requested planes include some not stored in sameCellCandidate object"
         roiPlanes = np.unique(self.roiPlaneIdx) if keep_planes is None else copy(keep_planes)
         numPlanes = len(roiPlanes)
         self.planeColormap = mpl.colormaps.get_cmap("jet").resampled(numPlanes)
@@ -916,11 +842,7 @@ class clusterExplorer(sameCellCandidates):
                 )[0]
             )
             hull = self.getMinMaxHull(n)
-            self.roiHull.append(
-                self.ax[3].plot(
-                    hull[0], hull[1], c=self.planeColormap(hull[2]), lw=self.default_linewidth
-                )[0]
-            )
+            self.roiHull.append(self.ax[3].plot(hull[0], hull[1], c=self.planeColormap(hull[2]), lw=self.default_linewidth)[0])
         self.im = self.ax[2].imshow(
             self.activity[:, :10].T,
             vmin=0,
@@ -1004,9 +926,7 @@ class clusterExplorer(sameCellCandidates):
         # then make the new one black
         self.dLine[plotIndex].set(color="k", alpha=1, zorder=self.maxCluster + 10)
         self.nLine[plotIndex].set(color="k", alpha=1, zorder=self.maxCluster + 10)
-        self.roiHull[plotIndex].set(
-            color="k", zorder=self.maxCluster + 10, lw=self.default_linewidth * 2
-        )
+        self.roiHull[plotIndex].set(color="k", zorder=self.maxCluster + 10, lw=self.default_linewidth * 2)
         roiIndex = self.idxToPlot[plotIndex]
         roiPlane = int(self.roiPlaneIdx[roiIndex])
         inPlaneIndex = self.inPlaneIndex(roiIndex)
@@ -1016,9 +936,7 @@ class clusterExplorer(sameCellCandidates):
         ypix = self.stat[idxroi]["ypix"]
         xpix = self.stat[idxroi]["xpix"]
         allx, invx = np.unique(xpix, return_inverse=True)
-        miny, maxy = list(
-            map(list, zip(*[(min(ypix[xpix == u]), max(ypix[xpix == u])) for u in allx]))
-        )
+        miny, maxy = list(map(list, zip(*[(min(ypix[xpix == u]), max(ypix[xpix == u])) for u in allx])))
         xpoints = np.append(np.concatenate((allx, allx[::-1])), allx[0])
         ypoints = np.append(np.concatenate((miny, maxy[::-1])), miny[0])
         planeIdx = self.roiPlaneIdx[idxroi]
@@ -1056,16 +974,10 @@ class clusterExplorer(sameCellCandidates):
 
         self.ax[0].set_ylim(ydlim[0], ydlim[1])
         self.ax[1].set_ylim(ynlim[0], ynlim[1])
-        self.ax[3].set_xlim(
-            rhxcenter - rhrange / 2, rhxcenter + rhrange / 2
-        )  # rhxlim[0], rhxlim[1])
-        self.ax[3].set_ylim(
-            rhycenter - rhrange / 2, rhycenter + rhrange / 2
-        )  # ylim[0], rhylim[1])
+        self.ax[3].set_xlim(rhxcenter - rhrange / 2, rhxcenter + rhrange / 2)  # rhxlim[0], rhxlim[1])
+        self.ax[3].set_ylim(rhycenter - rhrange / 2, rhycenter + rhrange / 2)  # ylim[0], rhylim[1])
         self.plot_cmap = helpers.ncmap("plasma", self.numToPlot)
-        for i, (dl, nl, rh, d, n, hull) in enumerate(
-            zip(self.dLine, self.nLine, self.roiHull, dTraces, nTraces, self.hulls)
-        ):
+        for i, (dl, nl, rh, d, n, hull) in enumerate(zip(self.dLine, self.nLine, self.roiHull, dTraces, nTraces, self.hulls)):
             dl.set(ydata=d, color=self.plot_cmap(i), visible=True)
             nl.set(ydata=n, color=self.plot_cmap(i), visible=True)
             rh.set(
@@ -1080,21 +992,15 @@ class clusterExplorer(sameCellCandidates):
             self.roiHull[i].set(visible=False)
 
         self.ax[3].invert_yaxis()
-        newImshow = sp.signal.savgol_filter(
-            dTraces / np.max(dTraces, axis=1, keepdims=True), 15, 1, axis=1
-        )
+        newImshow = sp.signal.savgol_filter(dTraces / np.max(dTraces, axis=1, keepdims=True), 15, 1, axis=1)
         # newImshow = newImshow - np.mean(newImshow, axis=1, keepdims=True)
-        self.im.set(
-            data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot)
-        )
+        self.im.set(data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot))
         self.title1.set_text(f"Activity - idx:{newIdx}")
         self.title2.set_text(f"Neuropil - numInCluster:{self.numInCluster}")
         self.fig.canvas.draw_idle()
 
     def inPlaneIndex(self, roi):
-        idxToRoiPlane = self.keep_planes.index(
-            self.roiPlaneIdx[roi]
-        )  # if first keepPlane is 1 and roiPlane is 1, returns 0
+        idxToRoiPlane = self.keep_planes.index(self.roiPlaneIdx[roi])  # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])
 
 
@@ -1124,22 +1030,14 @@ class clusterExplorerROICaT(sameCellCandidates):
         # Load activity and suite2p data
         self.timestamps = self.vrexp.loadone("mpci.times")
         self.activity = self.vrexp.loadone(activity)[:, self.idxROI_inTargetPlane]
-        self.neuropil = self.vrexp.loadone("mpci.roiNeuropilActivityF")[
-            :, self.idxROI_inTargetPlane
-        ]
+        self.neuropil = self.vrexp.loadone("mpci.roiNeuropilActivityF")[:, self.idxROI_inTargetPlane]
         self.stat = self.vrexp.loadS2P("stat")[self.idxROI_inTargetPlane]
-        self.roiCentroid = self.vrexp.loadone("mpciROIs.stackPosition")[
-            self.idxROI_inTargetPlane, :2
-        ]
-        self.roiPlaneIdx = self.vrexp.loadone("mpciROIs.stackPosition")[
-            self.idxROI_inTargetPlane, 2
-        ].astype(np.int32)
+        self.roiCentroid = self.vrexp.loadone("mpciROIs.stackPosition")[self.idxROI_inTargetPlane, :2]
+        self.roiPlaneIdx = self.vrexp.loadone("mpciROIs.stackPosition")[self.idxROI_inTargetPlane, 2].astype(np.int32)
 
         # Create look up table for plane colormap
         if keep_planes is not None:
-            assert set(keep_planes) <= set(
-                self.keep_planes
-            ), "requested planes include some not stored in sameCellCandidate object"
+            assert set(keep_planes) <= set(self.keep_planes), "requested planes include some not stored in sameCellCandidate object"
         roiPlanes = np.unique(self.roiPlaneIdx) if keep_planes is None else copy(keep_planes)
         numPlanes = len(roiPlanes)
         self.planeColormap = mpl.colormaps.get_cmap("jet").resampled(numPlanes)
@@ -1201,11 +1099,7 @@ class clusterExplorerROICaT(sameCellCandidates):
                 )[0]
             )
             hull = self.getMinMaxHull(n)
-            self.roiHull.append(
-                self.ax[3].plot(
-                    hull[0], hull[1], c=self.planeColormap(hull[2]), lw=self.default_linewidth
-                )[0]
-            )
+            self.roiHull.append(self.ax[3].plot(hull[0], hull[1], c=self.planeColormap(hull[2]), lw=self.default_linewidth)[0])
         self.im = self.ax[2].imshow(
             self.activity[:, :10].T,
             vmin=0,
@@ -1289,9 +1183,7 @@ class clusterExplorerROICaT(sameCellCandidates):
         # then make the new one black
         self.dLine[plotIndex].set(color="k", alpha=1, zorder=self.maxCluster + 10)
         self.nLine[plotIndex].set(color="k", alpha=1, zorder=self.maxCluster + 10)
-        self.roiHull[plotIndex].set(
-            color="k", zorder=self.maxCluster + 10, lw=self.default_linewidth * 2
-        )
+        self.roiHull[plotIndex].set(color="k", zorder=self.maxCluster + 10, lw=self.default_linewidth * 2)
         roiIndex = self.idxToPlot[plotIndex]
         roiPlane = int(self.roiPlaneIdx[roiIndex])
         inPlaneIndex = self.inPlaneIndex(roiIndex)
@@ -1301,9 +1193,7 @@ class clusterExplorerROICaT(sameCellCandidates):
         ypix = self.stat[idxroi]["ypix"]
         xpix = self.stat[idxroi]["xpix"]
         allx, invx = np.unique(xpix, return_inverse=True)
-        miny, maxy = list(
-            map(list, zip(*[(min(ypix[xpix == u]), max(ypix[xpix == u])) for u in allx]))
-        )
+        miny, maxy = list(map(list, zip(*[(min(ypix[xpix == u]), max(ypix[xpix == u])) for u in allx])))
         xpoints = np.append(np.concatenate((allx, allx[::-1])), allx[0])
         ypoints = np.append(np.concatenate((miny, maxy[::-1])), miny[0])
         planeIdx = self.roiPlaneIdx[idxroi]
@@ -1341,16 +1231,10 @@ class clusterExplorerROICaT(sameCellCandidates):
 
         self.ax[0].set_ylim(ydlim[0], ydlim[1])
         self.ax[1].set_ylim(ynlim[0], ynlim[1])
-        self.ax[3].set_xlim(
-            rhxcenter - rhrange / 2, rhxcenter + rhrange / 2
-        )  # rhxlim[0], rhxlim[1])
-        self.ax[3].set_ylim(
-            rhycenter - rhrange / 2, rhycenter + rhrange / 2
-        )  # ylim[0], rhylim[1])
+        self.ax[3].set_xlim(rhxcenter - rhrange / 2, rhxcenter + rhrange / 2)  # rhxlim[0], rhxlim[1])
+        self.ax[3].set_ylim(rhycenter - rhrange / 2, rhycenter + rhrange / 2)  # ylim[0], rhylim[1])
         self.plot_cmap = helpers.ncmap("plasma", self.numToPlot)
-        for i, (dl, nl, rh, d, n, hull) in enumerate(
-            zip(self.dLine, self.nLine, self.roiHull, dTraces, nTraces, self.hulls)
-        ):
+        for i, (dl, nl, rh, d, n, hull) in enumerate(zip(self.dLine, self.nLine, self.roiHull, dTraces, nTraces, self.hulls)):
             dl.set(ydata=d, color=self.plot_cmap(i), visible=True)
             nl.set(ydata=n, color=self.plot_cmap(i), visible=True)
             rh.set(
@@ -1365,19 +1249,13 @@ class clusterExplorerROICaT(sameCellCandidates):
             self.roiHull[i].set(visible=False)
 
         self.ax[3].invert_yaxis()
-        newImshow = sp.signal.savgol_filter(
-            dTraces / np.max(dTraces, axis=1, keepdims=True), 15, 1, axis=1
-        )
+        newImshow = sp.signal.savgol_filter(dTraces / np.max(dTraces, axis=1, keepdims=True), 15, 1, axis=1)
         # newImshow = newImshow - np.mean(newImshow, axis=1, keepdims=True)
-        self.im.set(
-            data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot)
-        )
+        self.im.set(data=newImshow, extent=(self.timestamps[0], self.timestamps[-1], 0, self.numToPlot))
         self.title1.set_text(f"Activity - idx:{newIdx}")
         self.title2.set_text(f"Neuropil - numInCluster:{self.numInCluster}")
         self.fig.canvas.draw_idle()
 
     def inPlaneIndex(self, roi):
-        idxToRoiPlane = self.keep_planes.index(
-            self.roiPlaneIdx[roi]
-        )  # if first keepPlane is 1 and roiPlane is 1, returns 0
+        idxToRoiPlane = self.keep_planes.index(self.roiPlaneIdx[roi])  # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])

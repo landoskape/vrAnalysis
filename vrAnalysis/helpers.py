@@ -124,9 +124,7 @@ def powerset(iterable, ignore_empty=False):
     (https://docs.python.org/3/library/itertools.html#itertools-recipes)
     """
     s = list(iterable)
-    return chain.from_iterable(
-        combinations(s, r) for r in range(1 if ignore_empty else 0, len(s) + 1)
-    )
+    return chain.from_iterable(combinations(s, r) for r in range(1 if ignore_empty else 0, len(s) + 1))
 
 
 def index_in_target(value, target):
@@ -134,9 +132,7 @@ def index_in_target(value, target):
     value = check_iterable(value)
     target_to_index = {value: index for index, value in enumerate(target)}
     in_target = np.array([val in target_to_index for val in value], dtype=bool)
-    loc_target = np.array(
-        [target_to_index[val] if in_t else -1 for in_t, val in zip(in_target, value)], dtype=int
-    )
+    loc_target = np.array([target_to_index[val] if in_t else -1 for in_t, val in zip(in_target, value)], dtype=int)
     return in_target, loc_target
 
 
@@ -157,9 +153,7 @@ def cvFoldSplit(samples, numFold, even=False):
         *np.cumsum(samplesPerFold),
     ]  # defines where to start and stop for each fold
     randomOrder = samples[np.random.permutation(numSamples)]  # random permutation of samples
-    foldIdx = [
-        randomOrder[sampleIdxPerFold[i] : sampleIdxPerFold[i + 1]] for i in range(numFold)
-    ]  # assign samples to each cross-validation fold
+    foldIdx = [randomOrder[sampleIdxPerFold[i] : sampleIdxPerFold[i + 1]] for i in range(numFold)]  # assign samples to each cross-validation fold
     if even:
         foldIdx = [fi[:minimumSamples] for fi in foldIdx]
     return foldIdx
@@ -171,12 +165,8 @@ def nearestpoint(x, y, mode="nearest"):
     # returns index of y closest to each point in x and distance between points
     # if mode set to previous or next, will exact match or next closest in specified direction
     # if mode set to nearest and x[i] exactly in between two y's, will take next y rather than previous
-    assert (
-        mode == "nearest" or mode == "previous" or mode == "next"
-    ), "mode must be one of the following strings: ('nearest', 'previous', 'next')"
-    assert (
-        isinstance(x, np.ndarray) and isinstance(y, np.ndarray) and x.ndim == 1 and y.ndim == 1
-    ), "arrays must be one-dimensional numpy arrays"
+    assert mode == "nearest" or mode == "previous" or mode == "next", "mode must be one of the following strings: ('nearest', 'previous', 'next')"
+    assert isinstance(x, np.ndarray) and isinstance(y, np.ndarray) and x.ndim == 1 and y.ndim == 1, "arrays must be one-dimensional numpy arrays"
 
     # If either x or y is empty, return empty arrays
     if len(x) == 0 or len(y) == 0:
@@ -202,22 +192,15 @@ def nearestpoint(x, y, mode="nearest"):
     # Sort values and identities
     xyi = np.argsort(xy)
     cxy = cxy[xyi]  # cxy[i] = 0 -> xy[i] belongs to x, = 1 -> xy[i] belongs to y
-    ii = np.cumsum(
-        cxy
-    )  # what index of y is equal to or least greater than each x (index of "next" nearest neighbor)
+    ii = np.cumsum(cxy)  # what index of y is equal to or least greater than each x (index of "next" nearest neighbor)
     ii = ii[cxy == 0]  # only keep indices for each x value
 
     # Note: if m==previous or next, then will use previous or next closest even if exact match exists! (maybe include a conditional for that?)
     if mode == "previous":
         equalOrPrevious = np.array(
-            [
-                yidx if (yidx < ny and xs[xidx] - ys[yidx.astype(int)] == 0) else yidx - 1
-                for (xidx, yidx) in enumerate(ii)
-            ]
+            [yidx if (yidx < ny and xs[xidx] - ys[yidx.astype(int)] == 0) else yidx - 1 for (xidx, yidx) in enumerate(ii)]
         )  # preserve index if equal, otherwise use previous from y
-        ind = np.where(
-            equalOrPrevious >= 0, equalOrPrevious, np.nan
-        )  # Preserve index if within y, otherwise nan
+        ind = np.where(equalOrPrevious >= 0, equalOrPrevious, np.nan)  # Preserve index if within y, otherwise nan
     elif mode == "next":
         ind = np.where(ii < ny, ii, np.nan)  # Preserve index if within y, otherwise nan
     else:
@@ -230,9 +213,7 @@ def nearestpoint(x, y, mode="nearest"):
 
     ind[qx] = np.nan  # reset nan indices back to nan
     ind = ind[xi]  # resort to x
-    ind = np.array(
-        [yi[idx.astype(np.uint64)] if not np.isnan(idx) else np.nan for idx in ind]
-    )  # resort to y
+    ind = np.array([yi[idx.astype(np.uint64)] if not np.isnan(idx) else np.nan for idx in ind])  # resort to y
 
     # compute distance between nearest points
     ynearest = np.array([y[idx.astype(np.uint64)] if not np.isnan(idx) else np.nan for idx in ind])
@@ -375,9 +356,7 @@ def fivePointDer(signal, h, axis=-1, returnIndex=False):
     assert isinstance(signal, np.ndarray), "signal must be a numpy array"
     assert -1 <= axis <= signal.ndim, "requested axis does not exist"
     N = signal.shape[axis]
-    assert (
-        N >= 4 * h + 1
-    ), "h is too large for the given array -- it needs to be less than (N-1)/4!"
+    assert N >= 4 * h + 1, "h is too large for the given array -- it needs to be less than (N-1)/4!"
     signal = np.moveaxis(signal, axis, 0)
     n2 = slice(0, N - 4 * h)
     n1 = slice(h, N - 3 * h)
@@ -418,20 +397,12 @@ def butterworthbpf(image, lowcut, highcut, order=1, fs=None, returnFull=False):
     # establish frequency grid for ffts
     if fs is None:
         fs = 2  # as in scipy, this assumes the frequencies scale from 0 to 1, where 1 is the nyquist frequency
-    yfreq = np.fft.fftshift(
-        np.fft.fftfreq(ndfty, 1 / fs)
-    )  # dft frequencies along x axis (second axis)
-    xfreq = np.fft.fftshift(
-        np.fft.fftfreq(ndftx, 1 / fs)
-    )  # dft frequencies along y axis (first axis)
-    freq = np.sqrt(
-        yfreq.reshape(-1, 1) ** 2 + xfreq.reshape(1, -1) ** 2
-    )  # 2-D dft frequencies corresponds to fftshifted fft2 output
+    yfreq = np.fft.fftshift(np.fft.fftfreq(ndfty, 1 / fs))  # dft frequencies along x axis (second axis)
+    xfreq = np.fft.fftshift(np.fft.fftfreq(ndftx, 1 / fs))  # dft frequencies along y axis (first axis)
+    freq = np.sqrt(yfreq.reshape(-1, 1) ** 2 + xfreq.reshape(1, -1) ** 2)  # 2-D dft frequencies corresponds to fftshifted fft2 output
 
     # transfer function for butterworth filter
-    gain = lambda freq, cutoff, order: 1 / (
-        1 + (freq / cutoff) ** (2 * order)
-    )  # gain of butterworth filter
+    gain = lambda freq, cutoff, order: 1 / (1 + (freq / cutoff) ** (2 * order))  # gain of butterworth filter
     # highpass component
     if not (mode == "lowpass"):
         highpass = 1 - gain(freq, lowcut, order)  # lowpass transfer function
@@ -449,9 +420,7 @@ def butterworthbpf(image, lowcut, highcut, order=1, fs=None, returnFull=False):
     fftImage = np.fft.fftshift(np.fft.fft2(image, (ndfty, ndftx)), axes=(-2, -1))
 
     # filter image, shift back, take the real part
-    filteredImage = np.fft.ifft2(np.fft.ifftshift(bandpass * fftImage, axes=(-2, -1)))[
-        :ny, :nx
-    ].real
+    filteredImage = np.fft.ifft2(np.fft.ifftshift(bandpass * fftImage, axes=(-2, -1)))[:ny, :nx].real
 
     # if returnFull, provide all of these outputs because it's useful for making plots and debugging
     if returnFull:
@@ -466,9 +435,7 @@ def phaseCorrelation(staticImage, shiftedImage, eps=0, window=None):
     # softens ringing with eps when provided
     # if provided, window should be a 1-d or 2-d window function (if 1-d, uses the outer product of itself)
     # -- note -- I tried an ndim phase correlation (where both static and shifted images are 3-d), and it's slower than just doing the 2d version in a loop...
-    assert (
-        staticImage.shape[-2:] == shiftedImage.shape[-2:]
-    ), "images must have same shape in last two dimensions"
+    assert staticImage.shape[-2:] == shiftedImage.shape[-2:], "images must have same shape in last two dimensions"
     assert not (
         staticImage.ndim == 3 and shiftedImage.ndim == 3
     ), "can do multiple comparisons, but only one of the static or shifted image can be 3-dimensional"
@@ -495,9 +462,7 @@ def convolveToeplitz(data, kk, axis=-1, mode="same", device="cpu"):
     with torch.no_grad():
         # if there are not many signals to convolve, this is a tiny slower
         # if there are many signals to convolve (order of ROIs in a recording), this is waaaaayyyy faster
-        convMat = torch.tensor(sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T).to(
-            device
-        )
+        convMat = torch.tensor(sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T).to(device)
         dataReshape = torch.tensor(np.reshape(data, (-1, dataShape[-1]))).to(device)
         output = torch.matmul(dataReshape, convMat).cpu().numpy()
     newDataShape = (*dataShape[:-1], convMat.shape[1])
@@ -531,9 +496,7 @@ def printWorkspace(maxToPrint=12):
     # variables = [(name, sys.getsizeof(value)) for name, value in callerLocals.items()]
     totalMemory = sum([v[1] for v in variables])
     print(f"Workspace Size: {readableBytes(totalMemory)}")
-    print(
-        "Note: this method is not equipped to handle complicated variables, it is possible underestimating the workspace size!\n"
-    )
+    print("Note: this method is not equipped to handle complicated variables, it is possible underestimating the workspace size!\n")
     for name, size in variables[: min(maxToPrint, len(variables))]:
         print(f"{name:>30}: {readableBytes(size):>8}")
 
@@ -640,9 +603,7 @@ def smart_pca(input, centered=True, use_rank=True, correction=True):
     else:
         # if more samples than dimensions, it's more efficient to run eigh
         bcov = batch_cov(input, centered=centered, correction=correction)
-        w, v = named_transpose(
-            [eigendecomposition(C, use_rank=use_rank, hermitian=True) for C in bcov]
-        )
+        w, v = named_transpose([eigendecomposition(C, use_rank=use_rank, hermitian=True) for C in bcov])
 
     # return to stacked tensor across batch dimension
     w = torch.stack(w)

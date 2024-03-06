@@ -16,9 +16,7 @@ data_name = "roicatExample"
 
 def handle_inputs():
     parser = ArgumentParser(description="copy ROICaT input data for sharing")
-    parser.add_argument(
-        "--mouse-name", type=str, required=True, help="the mouse name to copy sharing data from"
-    )
+    parser.add_argument("--mouse-name", type=str, required=True, help="the mouse name to copy sharing data from")
     return parser.parse_args()
 
 
@@ -67,9 +65,7 @@ def generate_dictionary(mouse_name):
 
 def copy_files(mouse_name, files):
     for plane in files:
-        for date, stat, ops in zip(
-            files[plane]["date"], files[plane]["stat"], files[plane]["ops"]
-        ):
+        for date, stat, ops in zip(files[plane]["date"], files[plane]["stat"], files[plane]["ops"]):
             c_path = generate_filepath(mouse_name, plane) / date
             _copy_file(stat, c_path / "stat.npy")
             _copy_file(ops, c_path / "ops.npy")

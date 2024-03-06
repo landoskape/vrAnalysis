@@ -63,9 +63,7 @@ def generate_dictionary():
 
         # add data to dictionary
         cdata["timestamps"] = mpciTime
-        cdata["roi_activity_deconvolved"] = ses.loadone("mpci.roiActivityDeconvolved")[
-            :, idxUseROI
-        ]
+        cdata["roi_activity_deconvolved"] = ses.loadone("mpci.roiActivityDeconvolved")[:, idxUseROI]
         cdata["wheel_position_cm"] = wheelPosition[frame_to_tl]
 
         # add data dictionary to list

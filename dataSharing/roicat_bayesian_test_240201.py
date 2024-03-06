@@ -17,15 +17,9 @@ data_name = "roicat_bayesian_test"
 
 
 def handle_inputs():
-    parser = ArgumentParser(
-        description="generate ROICaT and place field data for testing a bayesian analysis"
-    )
-    parser.add_argument(
-        "--mouse-name", type=str, default="ATL027", help="the mouse name to copy sharing data from"
-    )
-    parser.add_argument(
-        "--cutoffs", default=[0.4, 0.7], nargs=2, type=float, help="reliability cutoffs"
-    )
+    parser = ArgumentParser(description="generate ROICaT and place field data for testing a bayesian analysis")
+    parser.add_argument("--mouse-name", type=str, default="ATL027", help="the mouse name to copy sharing data from")
+    parser.add_argument("--cutoffs", default=[0.4, 0.7], nargs=2, type=float, help="reliability cutoffs")
     return parser.parse_args()
 
 
@@ -63,10 +57,7 @@ def generate_dictionary(mouse_name, cutoffs):
         by_plane=True,
         idx_ses=idx_ses,
     )
-    idx_reliable = [
-        [(mse > cutoffs[0]) & (cor > cutoffs[1]) for mse, cor in zip(rmse, rcor)]
-        for rmse, rcor in zip(relmse, relcor)
-    ]
+    idx_reliable = [[(mse > cutoffs[0]) & (cor > cutoffs[1]) for mse, cor in zip(rmse, rcor)] for rmse, rcor in zip(relmse, relcor)]
     spkmap_centers = roistat.get_from_pcss("distcenters", idx_ses[0])
 
     # get ROICaT data from relevant planes

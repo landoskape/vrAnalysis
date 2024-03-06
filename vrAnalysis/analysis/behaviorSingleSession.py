@@ -48,10 +48,7 @@ class behaviorSingleSession(standardAnalysis):
         e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
         """
         envnum = helpers.check_iterable(envnum)
-        return [
-            np.where(self.environments == ev)[0][0] if ev in self.environments else np.nan
-            for ev in envnum
-        ]
+        return [np.where(self.environments == ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
 
     def load_fast_data(self):
         # get environment data

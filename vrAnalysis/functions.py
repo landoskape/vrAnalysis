@@ -14,9 +14,7 @@ def environmentRewardZone(vrexp):
     rewardZoneHalfwidth = vrexp.loadone("trials.rewardZoneHalfwidth")
     envRewPos = [np.unique(rewardPosition[environmentIndex == env]) for env in environments]
     envRewHW = [np.unique(rewardZoneHalfwidth[environmentIndex == env]) for env in environments]
-    assert all(
-        [len(erp) == 1 for erp in envRewPos]
-    ), f"reward position wasn't the same within each environment in session: {vrexp.sessionPrint()}"
+    assert all([len(erp) == 1 for erp in envRewPos]), f"reward position wasn't the same within each environment in session: {vrexp.sessionPrint()}"
     assert all(
         [len(erhw) == 1 for erhw in envRewHW]
     ), f"reward zone halfwidth wasn't the same within each environment in session: {vrexp.sessionPrint()}"
@@ -31,12 +29,7 @@ def checkDistStep(distStep):
             "distStep should be a two(or 3) element tuple of ints increasing in size"
             "with an optional third argument describing the standard deviation of the smoothing kernel (or False for no smoothing)"
         )
-        assert (
-            len(distStep) <= 3
-            and distStep[1] >= distStep[0]
-            and isinstance(distStep[0], int)
-            and isinstance(distStep[1], int)
-        ), message
+        assert len(distStep) <= 3 and distStep[1] >= distStep[0] and isinstance(distStep[0], int) and isinstance(distStep[1], int), message
     else:
         if not isinstance(distStep, tuple):
             distStep = distStep
@@ -46,9 +39,7 @@ def checkDistStep(distStep):
 def getBinEdges(vrexp, distStep):
     """get bin edges for virtual position"""
     roomLength = vrexp.loadone("trials.roomLength")
-    assert (
-        np.unique(roomLength).size == 1
-    ), f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
+    assert np.unique(roomLength).size == 1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
     roomLength = roomLength[0]
     numPosition = int(roomLength / distStep[0])
     distedges = np.linspace(0, roomLength, numPosition + 1)
@@ -72,25 +63,17 @@ def loadBehavioralData(vrexp, distStep, speedThreshold):
     trialStartSample = vrexp.loadone("trials.positionTracking")
     behaveTimeStamps = vrexp.loadone("positionTracking.times")
     behavePosition = vrexp.loadone("positionTracking.position")
-    lickSamples = vrexp.loadone(
-        "licksTracking.positionTracking"
-    )  # list of behave sample for each lick
+    lickSamples = vrexp.loadone("licksTracking.positionTracking")  # list of behave sample for each lick
 
-    behavePositionBin = (
-        np.digitize(behavePosition, distedges) - 1
-    )  # index of position bin for each sample
+    behavePositionBin = np.digitize(behavePosition, distedges) - 1  # index of position bin for each sample
     lickPositionBin = behavePositionBin[lickSamples]  # index of position bin for each lick
-    behaveTrialIdx = vrexp.getBehaveTrialIdx(
-        trialStartSample
-    )  # array of trial index for each sample
+    behaveTrialIdx = vrexp.getBehaveTrialIdx(trialStartSample)  # array of trial index for each sample
     lickTrialIdx = behaveTrialIdx[lickSamples]  # trial index of each lick
     withinTrialSample = np.append(
         np.diff(behaveTrialIdx) == 0, True
     )  # only true if next sample is from same trial (last sample from each trial == False)
 
-    sampleDuration = np.append(
-        np.diff(behaveTimeStamps), 0
-    )  # time between samples, assume zero time was spent in last sample for each trial
+    sampleDuration = np.append(np.diff(behaveTimeStamps), 0)  # time between samples, assume zero time was spent in last sample for each trial
     behaveSpeed = np.append(
         np.diff(behavePosition) / sampleDuration[:-1], 0
     )  # speed in each sample, assume speed was zero in last sample for each trial
@@ -143,9 +126,7 @@ def loadSpikeMap(
     numPosition = len(distcenter)
 
     frameTrialIdx, framePosition, frameSpeed = vrexp.getFrameBehavior()
-    framePositionBin = np.where(
-        ~np.isnan(framePosition), np.digitize(framePosition, distedges) - 1, np.nan
-    )
+    framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distedges) - 1, np.nan)
     idxAboveSpeedThreshold = frameSpeed >= speedThreshold
 
     # Now make spike map using frame position
@@ -155,9 +136,7 @@ def loadSpikeMap(
         std = np.std(spks, axis=1, keepdims=True)
         median = np.median(spks, axis=1, keepdims=True)
         idx_with_activity = (std > 0).squeeze()
-        spks[idx_with_activity] = (spks[idx_with_activity] - median[idx_with_activity]) / std[
-            idx_with_activity
-        ]
+        spks[idx_with_activity] = (spks[idx_with_activity] - median[idx_with_activity]) / std[idx_with_activity]
         spks[~idx_with_activity] = 0
 
     # back to frames x ROIs for getSpkMap method
@@ -181,9 +160,7 @@ def getBehaviorAndSpikeMaps(
     distStep = checkDistStep(distStep)
 
     # load key behavioral data (at higher resolution if distStep has multiple values)
-    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = (
-        loadBehavioralData(vrexp, distStep, speedThreshold)
-    )
+    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = loadBehavioralData(vrexp, distStep, speedThreshold)
     numPosition = int(roomLength / distStep[0])
 
     # load spiking data (at higher resolution if distStep has multiple values)
@@ -209,9 +186,7 @@ def getBehaviorAndSpikeMaps(
     else:
         if len(distStep) == 3:
             # Create spatial smoothing kernel
-            kk = helpers.getGaussKernel(
-                distcenter, distStep[2]
-            )  # standard deviation of kernel specified by distStep
+            kk = helpers.getGaussKernel(distcenter, distStep[2])  # standard deviation of kernel specified by distStep
 
             # Smooth maps with convolution (gauss kernel has unit norm so no correction needed)
             occmap = helpers.convolveToeplitz(occmap, kk, axis=1)
@@ -220,31 +195,21 @@ def getBehaviorAndSpikeMaps(
 
         # now correct spkmap by occupancy map after smoothing
         correctMap(occmap, spkmap)
-        spkmap = np.transpose(
-            spkmap, (2, 0, 1)
-        )  # convert to smart indexing (which is necessary for reshaping)
+        spkmap = np.transpose(spkmap, (2, 0, 1))  # convert to smart indexing (which is necessary for reshaping)
         numROIs = spkmap.shape[0]
 
         # True if a bin wasn't visited
-        didnt_visit = replaceMissingData(
-            np.zeros_like(occmap, dtype=bool), firstValidBin, lastValidBin, replaceWith=True
-        )
+        didnt_visit = replaceMissingData(np.zeros_like(occmap, dtype=bool), firstValidBin, lastValidBin, replaceWith=True)
 
         # True if every bin in a down-sampled sample wasn't visited
         dsFactor = int(distStep[1] / distStep[0])
-        all_didnt_visit = np.all(
-            np.reshape(didnt_visit, (vrexp.value["numTrials"], -1, dsFactor)), axis=2
-        )
+        all_didnt_visit = np.all(np.reshape(didnt_visit, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)
 
         # get downsampled maps
         occmap = np.mean(np.reshape(occmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)
         speedmap = np.mean(np.reshape(speedmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)
-        lickmap = np.sum(
-            np.reshape(lickmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2
-        )  # sum licks for each position (don't take average)
-        spkmap = np.mean(
-            np.reshape(spkmap, (numROIs, vrexp.value["numTrials"], -1, dsFactor)), axis=3
-        )
+        lickmap = np.sum(np.reshape(lickmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)  # sum licks for each position (don't take average)
+        spkmap = np.mean(np.reshape(spkmap, (numROIs, vrexp.value["numTrials"], -1, dsFactor)), axis=3)
         distedges = np.linspace(0, roomLength, int(numPosition / dsFactor) + 1)
 
         # set nan where mouse didn't visit at all
@@ -263,9 +228,7 @@ def getBehaviorMaps(vrexp, distStep=(1, 5), speedThreshold=0):
     distStep = checkDistStep(distStep)
 
     # load key behavioral data
-    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = (
-        loadBehavioralData(vrexp, distStep, speedThreshold)
-    )
+    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = loadBehavioralData(vrexp, distStep, speedThreshold)
     numPosition = int(roomLength / distStep[0])
 
     if len(distStep) == 1:
@@ -286,22 +249,16 @@ def getBehaviorMaps(vrexp, distStep=(1, 5), speedThreshold=0):
         speedmap = helpers.convolveToeplitz(speedmap, kk, axis=1)
 
         # True if a bin wasn't visited
-        didnt_visit = replaceMissingData(
-            np.zeros_like(occmap, dtype=bool), firstValidBin, lastValidBin, replaceWith=True
-        )
+        didnt_visit = replaceMissingData(np.zeros_like(occmap, dtype=bool), firstValidBin, lastValidBin, replaceWith=True)
 
         # True if every bin in a down-sampled sample wasn't visited
         dsFactor = int(distStep[1] / distStep[0])
-        all_didnt_visit = np.all(
-            np.isnan(np.reshape(didnt_visit, (vrexp.value["numTrials"], -1, dsFactor))), axis=2
-        )
+        all_didnt_visit = np.all(np.isnan(np.reshape(didnt_visit, (vrexp.value["numTrials"], -1, dsFactor))), axis=2)
 
         # get downsampled maps
         occmap = np.mean(np.reshape(occmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)
         speedmap = np.mean(np.reshape(speedmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)
-        lickmap = np.sum(
-            np.reshape(lickmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2
-        )  # sum licks for each position (don't take average)
+        lickmap = np.sum(np.reshape(lickmap, (vrexp.value["numTrials"], -1, dsFactor)), axis=2)  # sum licks for each position (don't take average)
         distedges = np.linspace(0, roomLength, int(numPosition / dsFactor) + 1)
 
         # set nan where mouse didn't visit at all
@@ -323,9 +280,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
         position_with_nan = np.any(np.isnan(spkmap), axis=(0, 1))
         fraction_nan = np.sum(position_with_nan) / len(position_with_nan)
         if fraction_nan > fraction_nan_permitted:
-            raise ValueError(
-                "found nans in more positions than fraction permitted. Increase value or choose trials differently!"
-            )
+            raise ValueError("found nans in more positions than fraction permitted. Increase value or choose trials differently!")
         idx_pos = ~position_with_nan
         spkmap = spkmap[:, :, idx_pos]
     spkmap = spkmap.transpose(1, 2, 0)
@@ -339,9 +294,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
             cTestTrial = foldIdx[fold]
             trainProfile = np.mean(spkmap[cTrainTrial], axis=0)
             testProfile = np.mean(spkmap[cTestTrial], axis=0)
-            meanTrain = np.mean(
-                trainProfile, axis=0, keepdims=True
-            )  # mean across positions for each ROI
+            meanTrain = np.mean(trainProfile, axis=0, keepdims=True)  # mean across positions for each ROI
             meanTest = np.mean(testProfile, axis=0, keepdims=True)
             numerator = np.sum((testProfile - trainProfile) ** 2, axis=0)
             denominator = np.sum((testProfile - meanTrain) ** 2, axis=0)
@@ -350,9 +303,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
             idxHasActivity = np.any(spkmap != 0, axis=(0, 1)) & (denominator != 0)
             relmse[idxHasActivity] += 1 - numerator[idxHasActivity] / denominator[idxHasActivity]
             relmse[~idxHasActivity] = np.nan  # otherwise set to nan
-            relcor += helpers.vectorCorrelation(
-                trainProfile, testProfile, axis=0
-            )  # vectorCorrelation returns 0 if data has 0 standard deviation
+            relcor += helpers.vectorCorrelation(trainProfile, testProfile, axis=0)  # vectorCorrelation returns 0 if data has 0 standard deviation
     relmse /= numcv * numRepeats
     relcor /= numcv * numRepeats
     return relmse, relcor
@@ -367,18 +318,10 @@ def measureSpatialInformation(omap, spkmap):
     spkmap is an (ROI x trial x position) map of the average firing rate in each spatial bin
     omap and spkmap must be nonegative as they represent probability distributions here
     """
-    assert np.all(omap >= 0) and np.all(
-        ~np.isnan(omap)
-    ), "occupancy map must be nonnegative and not have any nans"
-    assert np.all(spkmap >= 0) and np.all(
-        ~np.isnan(spkmap)
-    ), "spkmap must be nonnegative and not have any nans"
-    probOcc = np.sum(omap, axis=0) / np.sum(
-        omap
-    )  # probability of occupying each spatial position (Position,)
-    meanSpkPerPos = np.mean(
-        spkmap, axis=1
-    )  # mean spiking in each spatial position (ROI x Position)
+    assert np.all(omap >= 0) and np.all(~np.isnan(omap)), "occupancy map must be nonnegative and not have any nans"
+    assert np.all(spkmap >= 0) and np.all(~np.isnan(spkmap)), "spkmap must be nonnegative and not have any nans"
+    probOcc = np.sum(omap, axis=0) / np.sum(omap)  # probability of occupying each spatial position (Position,)
+    meanSpkPerPos = np.mean(spkmap, axis=1)  # mean spiking in each spatial position (ROI x Position)
     meanRoi = np.mean(meanSpkPerPos, axis=1, keepdims=True)  # mean spiking for each ROI (ROI,)
     logTerm = meanSpkPerPos / meanRoi  # ratio of mean in each position to overall mean
     validLog = logTerm > 0  # in mutual information, log2(x)=[log2(x) if x>0 else 0]

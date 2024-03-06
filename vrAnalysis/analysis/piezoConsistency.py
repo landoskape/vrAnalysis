@@ -38,10 +38,7 @@ class piezoConsistency(standardAnalysis):
         self.piezoCommand = self.vrreg.getTimelineVar("piezoCommand")
         self.piezoPosition = self.vrreg.getTimelineVar("piezoPosition")
         self.neuralFrames = self.vrreg.getTimelineVar("neuralFrames")
-        self.changeFrames = (
-            np.append(0, np.diff(np.ceil(self.neuralFrames / len(self.vrreg.value["planeIDs"]))))
-            == 1
-        )
+        self.changeFrames = np.append(0, np.diff(np.ceil(self.neuralFrames / len(self.vrreg.value["planeIDs"])))) == 1
         self.frameSamples = np.where(self.changeFrames)[0]
         self.changePlanes = np.append(0, np.diff(self.neuralFrames)) == 1
         self.planeSamples = np.where(self.changePlanes)[0]
@@ -58,16 +55,8 @@ class piezoConsistency(standardAnalysis):
                 np.diff(self.planeSamples), return_counts=True, return_inverse=True
             )
         if verbose:
-            print(
-                pd.DataFrame(
-                    {"Samples Per Frame": self.samplePerFrame, "Instances": self.frameCounts}
-                )
-            )
-            print(
-                pd.DataFrame(
-                    {"Samples Per Plane": self.samplePerPlane, "Instances": self.planeCounts}
-                )
-            )
+            print(pd.DataFrame({"Samples Per Frame": self.samplePerFrame, "Instances": self.frameCounts}))
+            print(pd.DataFrame({"Samples Per Plane": self.samplePerPlane, "Instances": self.planeCounts}))
 
     def plotAveragePiezo(self, extend=0.1, withSave=False, withShow=True):
         """Make plot of average piezo command and position for each frame (and return data).
@@ -77,9 +66,7 @@ class piezoConsistency(standardAnalysis):
         if not (hasattr(self, "samplePerFrame") and hasattr(self, "samplePerPlane")):
             self.checkFrameTiming(verbose=False)
         cycleSamples = min(self.samplePerFrame)  # number of samples to use for each frame cycle
-        extendSamples = int(
-            cycleSamples * extend
-        )  # number of samples to extend window before and after each frame cycle
+        extendSamples = int(cycleSamples * extend)  # number of samples to extend window before and after each frame cycle
         numCycles = len(self.frameSamples) - 1  # number of cycles to plot
         # Create an index for each cycle
         idx = np.full(self.timestamps.shape, True)  # initialize cycle index
@@ -106,9 +93,7 @@ class piezoConsistency(standardAnalysis):
         # And finally make time series for the cycle
         dt = np.median(np.diff(self.timestamps))
         timeCycle = np.arange(-extendSamples, cycleSamples + extendSamples) * dt
-        planeTimes = (
-            1000 * np.linspace(0, cycleSamples * dt, len(self.vrreg.value["planeNames"]) + 1)[:-1]
-        )
+        planeTimes = 1000 * np.linspace(0, cycleSamples * dt, len(self.vrreg.value["planeNames"]) + 1)[:-1]
         cmap = helpers.ncmap("brg", vmin=0, vmax=len(planeTimes) - 1)
 
         # plot it
@@ -117,9 +102,7 @@ class piezoConsistency(standardAnalysis):
         for ii, pt in enumerate(planeTimes):
             plt.axvline(x=pt, c=cmap(ii), label=f"plane{ii}")
         plt.axvline(x=1000 * cycleSamples * dt, c="k")
-        helpers.errorPlot(
-            timeCycle * 1000, fullCycle, axis=0, color="b", alpha=0.5, label="position"
-        )
+        helpers.errorPlot(timeCycle * 1000, fullCycle, axis=0, color="b", alpha=0.5, label="position")
         plt.plot(
             timeCycle * 1000,
             np.mean(fullCommand, axis=0),

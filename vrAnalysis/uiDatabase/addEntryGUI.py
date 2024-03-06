@@ -129,9 +129,7 @@ class newEntryGUI(QWidget):
         self.data_type = data_type
         self.size = size
         self.nullable = nullable
-        self.defaults = [
-            default_vals[cname] if cname in default_vals else None for cname in column_name
-        ]
+        self.defaults = [default_vals[cname] if cname in default_vals else None for cname in column_name]
 
         # GUI parameters
         self.params = copy(params)
@@ -196,17 +194,13 @@ class newEntryGUI(QWidget):
         self.entryLabels = []
         self.entryFields = []
         self.entryIndex = []
-        for idx, (ignore, name, dtype, ss, null) in enumerate(
-            zip(ignore_column, self.column_name, self.data_type, self.size, self.nullable)
-        ):
+        for idx, (ignore, name, dtype, ss, null) in enumerate(zip(ignore_column, self.column_name, self.data_type, self.size, self.nullable)):
             if ignore:
                 continue
 
             # otherwise, make a label and an edit field
             self.entryLabels.append(QLabel(f"{name}:"))  # name the entry
-            self.entryFields.append(
-                QLineEdit(placeholderText=self.constructPlaceholder(idx))
-            )  # create the edit field
+            self.entryFields.append(QLineEdit(placeholderText=self.constructPlaceholder(idx)))  # create the edit field
             self.entryIndex.append(idx)  # keep track of which ones were not ignored
 
         for label in self.entryLabels:
@@ -343,9 +337,7 @@ class newEntryGUI(QWidget):
         return placeholder
 
     def checkValidity(self):
-        validEntries = [
-            self.validate_input(idx=idx, entry=entry) for idx, entry in enumerate(self.entryIndex)
-        ]
+        validEntries = [self.validate_input(idx=idx, entry=entry) for idx, entry in enumerate(self.entryIndex)]
         return all(validEntries)
 
     def checkValues(self):
@@ -368,9 +360,7 @@ class newEntryGUI(QWidget):
         assert len(columns) == len(values), "columns and values have a different length!"
         column_names = ", ".join(columns)
         value_holders = ", ".join(["?"] * len(columns))
-        insert_statement = (
-            f"INSERT INTO {self.vrdb.tableName} ({column_names}) VALUES ({value_holders});"
-        )
+        insert_statement = f"INSERT INTO {self.vrdb.tableName} ({column_names}) VALUES ({value_holders});"
         return insert_statement
 
     def addNewEntry(self):
