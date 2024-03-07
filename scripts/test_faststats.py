@@ -87,6 +87,6 @@ if __name__ == "__main__":
                     speedup[m][i, j] = c_nptime / c_fstime
 
     for m, method in enumerate(methods):
-        print("method:", method, "allvalid:", np.all(valid[m]))
+        print("method:", method, "allvalid:", np.all(valid[m]), "speedup factor:")
         print(speedup[m])
         print("")
