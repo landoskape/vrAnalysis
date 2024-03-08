@@ -23,6 +23,7 @@ from ._numba import (
     _numba_nanmean,
     _numba_nanstd,
     _numba_nanvar,
+    _numba_zscore,
 )
 
 
@@ -42,10 +43,14 @@ _method_lookup = dict(
     nanmean=_numba_nanmean,
     nanstd=_numba_nanstd,
     nanvar=_numba_nanvar,
+    zscore=_numba_zscore,
 )
 
 # these methods require a "q" argument
 _requires_q = ["percentile", "nanpercentile", "quantile", "nanquantile"]
+
+# these methods don't have a final reduction
+_noreduction = ["zscore"]
 
 
 def faststat(data, method, axis=-1, keepdims=False, q=None):
@@ -73,7 +78,6 @@ def faststat(data, method, axis=-1, keepdims=False, q=None):
 
     # measure output and reduction shapes
     data_shape = data.shape
-    result_shape = _get_result_shape(data_shape, axis, keepdims)
     num_reduce = _get_reduce_size(data_shape, axis)
 
     # move reduction axis(s) to last dims in array
@@ -86,7 +90,12 @@ def faststat(data, method, axis=-1, keepdims=False, q=None):
     # implement numba speed of numpy stats method
     result = _func(data, q) if use_q else _func(data)
 
-    # return correctly shaped output
+    # if no reduction is required, then reorganize dimensions and put back into original shape
+    if method in _noreduction:
+        return np.reshape(np.moveaxis(result, target, axis), data_shape)
+
+    # otherwise return to desired output shape
+    result_shape = _get_result_shape(data_shape, axis, keepdims)
     return np.reshape(result, result_shape)
 
 
@@ -144,3 +153,7 @@ def nanstd(data, axis=None, keepdims=False):
 
 def nanvar(data, axis=None, keepdims=False):
     return faststat(data, "nanvar", axis=axis, keepdims=keepdims)
+
+
+def zscore(data, axis=None, keepdims=False):
+    return faststat(data, "zscore", axis=axis, keepdims=keepdims)

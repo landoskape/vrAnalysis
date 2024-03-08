@@ -13,4 +13,5 @@ from .faststats import (
     nanmean,
     nanstd,
     nanvar,
+    zscore,
 )

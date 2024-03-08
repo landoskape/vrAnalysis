@@ -126,3 +126,12 @@ def _numba_nanvar(data):
     for n in nb.prange(data.shape[0]):
         output[n] = np.nanvar(data[n])
     return output
+
+
+@nb.njit(parallel=True)
+def _numba_zscore(data):
+    """numba speed up for zscore"""
+    output = np.zeros_like(data)
+    for n in nb.prange(data.shape[0]):
+        output[n] = (data[n] - np.mean(data[n])) / np.std(data[n])
+    return output
