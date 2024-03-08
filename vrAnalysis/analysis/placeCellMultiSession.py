@@ -29,9 +29,7 @@ def handle_idx_ses(func):
         # check that requested environment is in all requested sessions
         envidx = [pcm_instance.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
         in_session = [~np.isnan(ei) for ei in envidx]
-        assert all(
-            in_session
-        ), f"requested environment only in following sessions: {[idx for idx, inses in zip(idx_ses, in_session) if inses]}"
+        assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(idx_ses, in_session) if inses]}"
 
         # return function with processed arguments
         return func(pcm_instance, envnum, *args, idx_ses=idx_ses, **kwargs)
@@ -58,7 +56,7 @@ class placeCellMultiSession(multipleAnalysis):
         onefile="mpci.roiActivityDeconvolvedOasis",
         autoload=False,
         keep_planes=[1, 2, 3, 4],
-        distStep=(1, 5, 2),
+        distStep=1,
         speedThreshold=5,
         numcv=2,
         standardizeSpks=True,
@@ -71,11 +69,7 @@ class placeCellMultiSession(multipleAnalysis):
         self.speedThreshold = speedThreshold
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
-        self.keep_planes = (
-            keep_planes
-            if keep_planes is not None
-            else [i for i in range(len(track.sessions[0].value["roiPerPlane"]))]
-        )
+        self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(track.sessions[0].value["roiPerPlane"]))]
 
         self.create_pcss()
 
@@ -89,13 +83,7 @@ class placeCellMultiSession(multipleAnalysis):
         present (e.g. env_stats()[1] is a list of session indices pointing to the
         self.pcss[i] such that environment 1 is in self.pcss[i].environments)
         """
-        envs = sorted(
-            list(
-                set(self.pcss[0].environments).union(
-                    *[pcss.environments for pcss in self.pcss[1:]]
-                )
-            )
-        )
+        envs = sorted(list(set(self.pcss[0].environments).union(*[pcss.environments for pcss in self.pcss[1:]])))
         return dict(zip(envs, [self.idx_ses_with_env(env) for env in envs]))
 
     def env_selector(self, envmethod="most"):
@@ -274,22 +262,16 @@ class placeCellMultiSession(multipleAnalysis):
 
     def get_place_field(self, snake, method="max"):
         """get sorting index based on spikemap, roi index, and trial index"""
-        assert (
-            method == "com" or method == "max"
-        ), f"invalid method ({method}), must be either 'com' or 'max'"
+        assert method == "com" or method == "max", f"invalid method ({method}), must be either 'com' or 'max'"
 
         # if method is 'com' (=center of mass), use weighted mean to get place field location
         if method == "com":
             # note that this can generate buggy behavior if spkmap isn't based on mostly positive signals!
             distcenters = list(set([tuple(self.pcss[i].distcenters) for i in self.idx_ses]))
-            assert (
-                len(distcenters) == 1
-            ), "more than 1 distcenter array found for the requested sessions!"
+            assert len(distcenters) == 1, "more than 1 distcenter array found for the requested sessions!"
             distcenters = np.array(distcenters[0])
             nonnegativeProfile = np.maximum(snake, 0)
-            pfloc = np.sum(nonnegativeProfile * distcenters.reshape(1, -1), axis=1) / np.sum(
-                nonnegativeProfile, axis=1
-            )
+            pfloc = np.sum(nonnegativeProfile * distcenters.reshape(1, -1), axis=1) / np.sum(nonnegativeProfile, axis=1)
 
         # if method is 'max' (=maximum rate), use maximum to get place field location
         if method == "max":
@@ -357,14 +339,10 @@ class placeCellMultiSession(multipleAnalysis):
             # Otherwise use all trials in requested environment
             idx_trials = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
         else:
-            raise ValueError(
-                f"Did not recognize 'trials' input, permitted is 'train', 'test', and 'full' but '{trials}' was provided."
-            )
+            raise ValueError(f"Did not recognize 'trials' input, permitted is 'train', 'test', and 'full' but '{trials}' was provided.")
 
         # get reliability values for ROIs
-        relmse, relcor = helpers.named_transpose(
-            [self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses]
-        )
+        relmse, relcor = helpers.named_transpose([self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses])
 
         # get_reliability_values returns a list of relmse/relcor values for each environment
         # since only envnum (len(envnum)==1) was requested, get the 0th index for each relmse & relcor
@@ -373,10 +351,7 @@ class placeCellMultiSession(multipleAnalysis):
 
         # get place field for ROIs
         pfloc, pfidx = helpers.named_transpose(
-            [
-                self.pcss[ises].get_place_field(trial_idx=idx_trials[ii], method=pf_method)
-                for ii, ises in enumerate(idx_ses)
-            ]
+            [self.pcss[ises].get_place_field(trial_idx=idx_trials[ii], method=pf_method) for ii, ises in enumerate(idx_ses)]
         )
 
         # if using tracked only, then filter and sort by tracking index
@@ -398,27 +373,13 @@ class placeCellMultiSession(multipleAnalysis):
 
         # if by_plane=True, then split each dataset up into lists of the data for each plane
         if by_plane:
-            spkmaps = self.track.split_by_plane(
-                spkmaps, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
-            idx_red = self.track.split_by_plane(
-                idx_red, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
-            relmse = self.track.split_by_plane(
-                relmse, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
-            relcor = self.track.split_by_plane(
-                relcor, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
-            pfloc = self.track.split_by_plane(
-                pfloc, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
-            pfidx = self.track.split_by_plane(
-                pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
-            roi_idx = self.track.split_by_plane(
-                roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes
-            )
+            spkmaps = self.track.split_by_plane(spkmaps, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            idx_red = self.track.split_by_plane(idx_red, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            relmse = self.track.split_by_plane(relmse, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            relcor = self.track.split_by_plane(relcor, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            pfloc = self.track.split_by_plane(pfloc, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            pfidx = self.track.split_by_plane(pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            roi_idx = self.track.split_by_plane(roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # return data
         return spkmaps, relmse, relcor, pfloc, pfidx, idx_red, roi_idx
@@ -443,13 +404,9 @@ class placeCellMultiSession(multipleAnalysis):
         if sortby is None:
             sortby = idx_ses[0]
         else:
-            assert (
-                sortby in idx_ses
-            ), f"sortby session ({sortby}) is not in requested sessions ({idx_ses})"
+            assert sortby in idx_ses, f"sortby session ({sortby}) is not in requested sessions ({idx_ses})"
 
-        idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[
-            sortby
-        ]  # get idx of sortby session from idx_ses
+        idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[sortby]  # get idx of sortby session from idx_ses
 
         self.load_pcss_data(
             idx_ses=idx_ses, with_test=True
@@ -461,36 +418,22 @@ class placeCellMultiSession(multipleAnalysis):
         # handle tracking
         idx_tracked_target, idx_tracked_sortby = map(
             list,
-            zip(
-                *[
-                    self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes)
-                    for i in idx_ses
-                ]
-            ),
+            zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes) for i in idx_ses]),
         )
 
         # get reliability values for all the cells - it's a tuple of relmse / relcor for each pcss
         relmse, relcor, relmse_test, relcor_test = map(
             list,
-            zip(
-                *[
-                    self.pcss[i].get_reliability_values(envnum=envnum, with_test=True)
-                    for i in idx_ses
-                ]
-            ),
+            zip(*[self.pcss[i].get_reliability_values(envnum=envnum, with_test=True) for i in idx_ses]),
         )
 
         # for consistency, the relmse value is a list, no matter how many envnum's there are. Since we only requested
         # one envnum, the first value of the list is the array of reliability values for each session
         relmse, relcor = list(map(lambda x: x[0], relmse)), list(map(lambda x: x[0], relcor))
-        relmse_test, relcor_test = list(map(lambda x: x[0], relmse_test)), list(
-            map(lambda x: x[0], relcor_test)
-        )
+        relmse_test, relcor_test = list(map(lambda x: x[0], relmse_test)), list(map(lambda x: x[0], relcor_test))
 
         # get index of red cells and filter by tracked
-        idx_red = [
-            self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses
-        ]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
 
         # get tracked reliability arrays (for each tracked (not sortby session), tuple of reliability on sortby / target for tracked across this pair of sessions)
         mse = []
@@ -529,28 +472,19 @@ class placeCellMultiSession(multipleAnalysis):
         return mse, cor, red, sortby, idx_ses
 
     @handle_idx_ses
-    def make_skew_data(
-        self, envnum, idx_ses=None, sortby=None, cutoffs=(0.2, 0.5), maxcutoffs=None
-    ):
+    def make_skew_data(self, envnum, idx_ses=None, sortby=None, cutoffs=(0.2, 0.5), maxcutoffs=None):
         # check sortby and get idx to sortby session
         if sortby is None:
             sortby = self.idx_ses[-1]
         else:
-            assert (
-                sortby in self.idx_ses
-            ), f"sortby session ({sortby}) is not in requested sessions ({self.idx_ses})"
+            assert sortby in self.idx_ses, f"sortby session ({sortby}) is not in requested sessions ({self.idx_ses})"
 
         # idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
 
         # handle tracking
         idx_tracked_target, idx_tracked_sortby = map(
             list,
-            zip(
-                *[
-                    self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes)
-                    for i in self.idx_ses
-                ]
-            ),
+            zip(*[self.track.get_tracked_idx(idx_ses=[i, sortby], keep_planes=self.keep_planes) for i in self.idx_ses]),
         )
 
         # handle environment request
@@ -563,38 +497,22 @@ class placeCellMultiSession(multipleAnalysis):
             self.load_pcss_data(idx_ses=self.idx_ses)
 
         # get spiking data (in time!)
-        idx_to_planes = [
-            self.pcss[i].vrexp.idxToPlanes(keep_planes=self.keep_planes) for i in self.idx_ses
-        ]
-        spkdata = [
-            self.pcss[i].vrexp.loadone(self.onefile).T[pi, :]
-            for i, pi in zip(self.idx_ses, idx_to_planes)
-        ]
+        idx_to_planes = [self.pcss[i].vrexp.idxToPlanes(keep_planes=self.keep_planes) for i in self.idx_ses]
+        spkdata = [self.pcss[i].vrexp.loadone(self.onefile).T[pi, :] for i, pi in zip(self.idx_ses, idx_to_planes)]
 
         # handle reliability (if environment requested)
         if envnum is not None:
-            idx_reliable = [
-                self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei]
-                for i, ei in zip(self.idx_ses, envidx)
-            ]
+            idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(self.idx_ses, envidx)]
         else:
-            idx_reliable = [
-                np.full(sd.shape[0], True) for sd in spkdata
-            ]  # if no environment requested, use all ROIs
+            idx_reliable = [np.full(sd.shape[0], True) for sd in spkdata]  # if no environment requested, use all ROIs
 
         # get red idx
-        idx_red = [
-            self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses
-        ]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
 
         # filter by tracked
         spkdata = [sd[idx_tracked] for sd, idx_tracked in zip(spkdata, idx_tracked_target)]
-        idx_reliable = [
-            ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, idx_tracked_target)
-        ]
-        idx_reliable_sortby = [
-            ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, idx_tracked_sortby)
-        ]
+        idx_reliable = [ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, idx_tracked_target)]
+        idx_reliable_sortby = [ir[idx_tracked] for ir, idx_tracked in zip(idx_reliable, idx_tracked_sortby)]
         idx_red = [ir[idx_tracked] for ir, idx_tracked in zip(idx_red, idx_tracked_target)]
 
         # filter by reliability
@@ -620,40 +538,27 @@ class placeCellMultiSession(multipleAnalysis):
         if sortby is None:
             sortby = self.idx_ses[-1]
         else:
-            assert (
-                sortby in self.idx_ses
-            ), f"sortby session ({sortby}) is not in requested sessions ({self.idx_ses})"
+            assert sortby in self.idx_ses, f"sortby session ({sortby}) is not in requested sessions ({self.idx_ses})"
 
         # idx of session to sort by
         idx_sortby = {val: idx for idx, val in enumerate(self.idx_ses)}[sortby]
 
         self.load_pcss_data(idx_ses=self.idx_ses)
-        self.idx_tracked = self.track.get_tracked_idx(
-            idx_ses=self.idx_ses, keep_planes=self.keep_planes
-        )
+        self.idx_tracked = self.track.get_tracked_idx(idx_ses=self.idx_ses, keep_planes=self.keep_planes)
 
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in self.idx_ses]
         in_session = [~np.isnan(ei) for ei in envidx]
-        assert all(
-            in_session
-        ), f"requested environment only in following sessions: {[idx for idx, inses in zip(self.idx_ses, in_session) if inses]}"
+        assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(self.idx_ses, in_session) if inses]}"
 
         spkmaps = self.get_from_pcss("spkmap", self.idx_ses)
-        idx_reliable = [
-            self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei]
-            for i, ei in zip(self.idx_ses, envidx)
-        ]
-        idx_red = [
-            self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses
-        ]
+        idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(self.idx_ses, envidx)]
+        idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
         idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(self.idx_ses, envidx)]
         idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(self.idx_ses, envidx)]
         idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(self.idx_ses, envidx)]
 
         track_spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, self.idx_tracked)]
-        track_idx_reliable = [
-            idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)
-        ]
+        track_idx_reliable = [idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)]
         track_idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, self.idx_tracked)]
 
         track_pfidx = self.pcss[sortby].get_place_field(
@@ -663,24 +568,18 @@ class placeCellMultiSession(multipleAnalysis):
         )[1]
 
         snake_data = []
-        idx_red_data = [
-            ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red
-        ]
+        idx_red_data = [ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red]
         for ii, idx_ses in enumerate(self.idx_ses):
             if idx_ses == sortby:
                 # use test trials
                 c_data = np.mean(
-                    track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][
-                        :, idx_test[ii]
-                    ],
+                    track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:, idx_test[ii]],
                     axis=1,
                 )
                 snake_data.append(c_data)
             else:
                 c_data = np.mean(
-                    track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][
-                        :, idx_full[ii]
-                    ],
+                    track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:, idx_full[ii]],
                     axis=1,
                 )
                 snake_data.append(c_data)
@@ -706,26 +605,19 @@ class placeCellMultiSession(multipleAnalysis):
         idx_ses = [target, sortby]
 
         self.load_pcss_data(idx_ses=idx_ses)
-        self.idx_tracked = self.track.get_tracked_idx(
-            idx_ses=idx_ses, keep_planes=self.keep_planes
-        )
+        self.idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
         assert all([~np.isnan(ei) for ei in envidx]), "requested environment not in all sessions"
 
         spkmaps = self.get_from_pcss("spkmap", idx_ses)
-        idx_reliable = [
-            self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei]
-            for i, ei in zip(idx_ses, envidx)
-        ]
+        idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(idx_ses, envidx)]
         idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
         idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(idx_ses, envidx)]
         idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
         idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
 
-        relmse, relcor = map(
-            list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses])
-        )
+        relmse, relcor = map(list, zip(*[self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses]))
         relmse = list(map(lambda x: x[0], relmse))
         relcor = list(map(lambda x: x[0], relcor))
 
@@ -734,9 +626,7 @@ class placeCellMultiSession(multipleAnalysis):
         #    print(type(mse), len(mse), mse.shape)
 
         track_spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, self.idx_tracked)]
-        track_idx_reliable = [
-            idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)
-        ]
+        track_idx_reliable = [idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)]
         track_idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, self.idx_tracked)]
         track_relmse = [mse[idx_track] for mse, idx_track in zip(relmse, self.idx_tracked)]
         track_relcor = [cor[idx_track] for cor, idx_track in zip(relcor, self.idx_tracked)]
@@ -753,19 +643,13 @@ class placeCellMultiSession(multipleAnalysis):
             method=method,
         )[1]
 
-        idx_red_data = [
-            ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red
-        ]
+        idx_red_data = [ti_red[track_idx_reliable[idx_sortby]][track_pfidx] for ti_red in track_idx_red]
         target_snake = np.mean(
-            track_spkmaps[idx_target][track_idx_reliable[idx_sortby]][track_pfidx][
-                :, idx_test[idx_target]
-            ],
+            track_spkmaps[idx_target][track_idx_reliable[idx_sortby]][track_pfidx][:, idx_test[idx_target]],
             axis=1,
         )
         sortby_snake = np.mean(
-            track_spkmaps[idx_sortby][track_idx_reliable[idx_sortby]][track_pfidx][
-                :, idx_full[idx_sortby]
-            ],
+            track_spkmaps[idx_sortby][track_idx_reliable[idx_sortby]][track_pfidx][:, idx_full[idx_sortby]],
             axis=1,
         )
         target_mse = track_relmse[idx_target][keep_idx_reliable][
@@ -788,9 +672,7 @@ class placeCellMultiSession(multipleAnalysis):
         )
 
     @handle_idx_ses
-    def measure_pfreliability(
-        self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method="max"
-    ):
+    def measure_pfreliability(self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method="max"):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
         store_idx_ses = copy(idx_ses)
         store_num_ses = len(store_idx_ses)
@@ -813,9 +695,7 @@ class placeCellMultiSession(multipleAnalysis):
             c_target_relcor = []
             c_sortby_relcor = []
             for target in store_idx_ses:
-                cdata, cired, crelmse, crelcor = self.make_paired_snake(
-                    envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method
-                )
+                cdata, cired, crelmse, crelcor = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
                 c_target_snake.append(cdata[0])
                 c_sortby_snake.append(cdata[1])
                 c_target_ired.append(cired[0])
@@ -837,9 +717,7 @@ class placeCellMultiSession(multipleAnalysis):
         return target_relmse, target_relcor, target_snake, target_red, sortby_red
 
     @handle_idx_ses
-    def measure_rel_plasticity(
-        self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method="max"
-    ):
+    def measure_rel_plasticity(self, envnum, idx_ses=None, cutoffs=None, maxcutoffs=None, method="max"):
         """method for getting change in reliability as a function of sessions apart for tracked cells"""
         if cutoffs is None:
             cutoffs = [-np.inf, -np.inf]
@@ -858,9 +736,7 @@ class placeCellMultiSession(multipleAnalysis):
             c_target_relmse = []
             c_target_relcor = []
             for target in store_idx_ses:
-                _, cired, crelmse, crelcor = self.make_paired_snake(
-                    envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method
-                )
+                _, cired, crelmse, crelcor = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, maxcutoffs=maxcutoffs, method=method)
                 crelmse = (crelmse[0] > cutoffs[0]) & (crelmse[0] < maxcutoffs[0])
                 crelcor = (crelcor[0] > cutoffs[1]) & (crelcor[0] < maxcutoffs[1])
                 c_target_ired.append(cired[0])
@@ -891,9 +767,7 @@ class placeCellMultiSession(multipleAnalysis):
             c_target_ired = []
             c_sortby_ired = []
             for target in store_idx_ses:
-                cdata, cired, _, _ = self.make_paired_snake(
-                    envnum, target, sortby, cutoffs=cutoffs, both_reliable=both_reliable
-                )
+                cdata, cired, _, _ = self.make_paired_snake(envnum, target, sortby, cutoffs=cutoffs, both_reliable=both_reliable)
                 c_target_snake.append(cdata[0])
                 c_sortby_snake.append(cdata[1])
                 c_target_ired.append(cired[0])
@@ -908,16 +782,12 @@ class placeCellMultiSession(multipleAnalysis):
         pc = []
         r2_stat = []
         pc_stat = []
-        for isort, (snakes_target, snakes_sortby, red_target, red_sortby) in enumerate(
-            zip(target_snake, sortby_snake, target_red, sortby_red)
-        ):
+        for isort, (snakes_target, snakes_sortby, red_target, red_sortby) in enumerate(zip(target_snake, sortby_snake, target_red, sortby_red)):
             c_r2 = []
             c_pc = []
             c_r2_stat = []
             c_pc_stat = []
-            for itarget, (snake_target, snake_sortby, r_target, r_sortby) in enumerate(
-                zip(snakes_target, snakes_sortby, red_target, red_sortby)
-            ):
+            for itarget, (snake_target, snake_sortby, r_target, r_sortby) in enumerate(zip(snakes_target, snakes_sortby, red_target, red_sortby)):
                 assert snake_target.shape[0] == snake_sortby.shape[0], "oops"
                 # red is only if red in both target and snake session
                 c_idx_red = r_target & r_sortby
@@ -1007,9 +877,7 @@ class placeCellMultiSession(multipleAnalysis):
         )
         distedges = self.pcss[self.idx_ses[0]].distedges
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in self.idx_ses]
-        assert all(
-            [ei >= 0 for ei in envidx]
-        ), "you requested some sessions that don't have the requested environment!"
+        assert all([ei >= 0 for ei in envidx]), "you requested some sessions that don't have the requested environment!"
 
         extent = [distedges[0], distedges[-1], 0, snake_data[0].shape[0]]
 
@@ -1022,9 +890,7 @@ class placeCellMultiSession(multipleAnalysis):
             magnitude = np.max(np.abs(np.concatenate(snake_data, axis=1)))
             vmin, vmax = -magnitude, magnitude
 
-        cb_ticks = np.linspace(
-            np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1))
-        )
+        cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
         labelSize = 12
         cb_unit = r"$\sigma$" if self.standardizeSpks else "au"
         cb_label = f"Activity ({cb_unit})"
@@ -1032,9 +898,7 @@ class placeCellMultiSession(multipleAnalysis):
         # load reward zone information
         if rewzone:
             # get reward zone start and stop, and filter to requested environments
-            rew_zone_data = [
-                functions.environmentRewardZone(self.pcss[i].vrexp) for i in self.idx_ses
-            ]
+            rew_zone_data = [functions.environmentRewardZone(self.pcss[i].vrexp) for i in self.idx_ses]
             rewPos, rewHW = zip(*rew_zone_data)
             rewPos = list(set([rp[ei] for rp, ei in zip(rewPos, envidx)]))
             rewHW = list(set([rh[ei] for rh, ei in zip(rewHW, envidx)]))
@@ -1085,9 +949,7 @@ class placeCellMultiSession(multipleAnalysis):
                 interpolation=interpolation,
             )
             if sort_by_red:
-                ax[idx].plot(
-                    [distedges[1], distedges[1]], [0, np.sum(idx_red[idx_sortby]) - 1], c="r", lw=5
-                )
+                ax[idx].plot([distedges[1], distedges[1]], [0, np.sum(idx_red[idx_sortby]) - 1], c="r", lw=5)
             ax[idx].set_xlabel("Virtual Position (cm)", fontsize=labelSize)
             if idx == 0:
                 ax[idx].set_ylabel("ROIs", fontsize=labelSize)
@@ -1114,12 +976,8 @@ class placeCellMultiSession(multipleAnalysis):
         return snake_data, sortby, idx_red
 
     @handle_idx_ses
-    def plot_rel_comparison(
-        self, envnum, idx_ses=None, sortby=None, rel_method="pc", withShow=True, withSave=False
-    ):
-        assert isinstance(rel_method, str) and (
-            rel_method.lower() == "pc" or rel_method.lower() == "r2"
-        ), "rel_method must be 'r2' or 'pc'"
+    def plot_rel_comparison(self, envnum, idx_ses=None, sortby=None, rel_method="pc", withShow=True, withSave=False):
+        assert isinstance(rel_method, str) and (rel_method.lower() == "pc" or rel_method.lower() == "r2"), "rel_method must be 'r2' or 'pc'"
 
         if sortby is None:
             sortby = idx_ses[0]
@@ -1161,15 +1019,9 @@ class placeCellMultiSession(multipleAnalysis):
                         getattr(ax[row, cidx].spines, spine).set(color="b", linewidth=3)
 
             # first measure 2d histograms and get bin edges
-            H_ctl, xe, ye = np.histogram2d(
-                crel[0][~cred], crel[1][~cred], bins=num_bins, density=False
-            )
-            H_red, _, _ = np.histogram2d(
-                crel[0][cred], crel[1][cred], bins=[xe, ye], density=False
-            )
-            H_ctl = (
-                100 * H_ctl / np.sum(H_ctl)
-            )  # normalize to percentage in each bin (not density by area!!)
+            H_ctl, xe, ye = np.histogram2d(crel[0][~cred], crel[1][~cred], bins=num_bins, density=False)
+            H_red, _, _ = np.histogram2d(crel[0][cred], crel[1][cred], bins=[xe, ye], density=False)
+            H_ctl = 100 * H_ctl / np.sum(H_ctl)  # normalize to percentage in each bin (not density by area!!)
             H_red = 100 * H_red / np.sum(H_red)
             H_diff = (H_red - H_ctl).T  # transpose for visualization (down is x...)
 
@@ -1284,9 +1136,7 @@ class placeCellMultiSession(multipleAnalysis):
         withShow=True,
         withSave=False,
     ):
-        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(
-            envnum, idx_ses=idx_ses, cutoffs=cutoffs
-        )
+        r2, pc, r2_stat, pc_stat, target_red, sortby_red = self.measure_pfplasticity(envnum, idx_ses=idx_ses, cutoffs=cutoffs)
         num_ses = len(idx_ses)
 
         labelSize = 18
@@ -1303,9 +1153,7 @@ class placeCellMultiSession(multipleAnalysis):
         else:
             raise ValueError("Only 'r2' or 'pc' allowed as 'present' argument!")
 
-        minval, maxval = np.nanmin([np.nanmin(np.concatenate(d)) for d in data]), np.nanmax(
-            [np.nanmax(np.concatenate(d)) for d in data]
-        )
+        minval, maxval = np.nanmin([np.nanmin(np.concatenate(d)) for d in data]), np.nanmax([np.nanmax(np.concatenate(d)) for d in data])
         minval = np.max([minval, -5])
         numBins = 11
 
@@ -1326,22 +1174,16 @@ class placeCellMultiSession(multipleAnalysis):
                 if split_red:
                     idx_keep_red = jtred & jsred
                 else:
-                    idx_keep_red = np.full(
-                        jtred.shape, False
-                    )  # none are red if not separating red cells
+                    idx_keep_red = np.full(jtred.shape, False)  # none are red if not separating red cells
 
                 ctl_counts = np.histogram(data[ii][jj][~idx_keep_red], bins=bins, density=False)[0]
                 ctl_counts = 100 * ctl_counts / np.sum(ctl_counts)
                 if split_red:
                     # print(ii, jj, "red stats:", f"Sortby red: {np.sum(jsred)}", f"Target red: {np.sum(jtred)}")
-                    red_counts = np.histogram(
-                        data[ii][jj][idx_keep_red], bins=bins, density=False
-                    )[0]
+                    red_counts = np.histogram(data[ii][jj][idx_keep_red], bins=bins, density=False)[0]
                     red_counts = 100 * red_counts / np.sum(red_counts)
                     # get stats on difference between control and red
-                    rs_stat, rs_pval = sp.stats.ranksums(
-                        data[ii][jj][~idx_keep_red], data[ii][jj][idx_keep_red]
-                    )
+                    rs_stat, rs_pval = sp.stats.ranksums(data[ii][jj][~idx_keep_red], data[ii][jj][idx_keep_red])
 
                 ax[ii, jj].bar(centers, ctl_counts, color="k", alpha=0.5, width=barwidth)
                 if split_red:
@@ -1442,9 +1284,7 @@ class placeCellMultiSession(multipleAnalysis):
                         r2_diff[ii, jj] = np.median(c_r2[idx_red]) - np.median(c_r2[~idx_red])
                         pc_diff[ii, jj] = np.median(c_pc[idx_red]) - np.median(c_pc[~idx_red])
                     else:
-                        raise ValueError(
-                            f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!"
-                        )
+                        raise ValueError(f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!")
                     # recompute pvals after clipping minimum values
                     r2_pval[ii, jj] = sp.stats.ranksums(c_r2[idx_red], c_r2[~idx_red])[1]
                     pc_pval[ii, jj] = sp.stats.ranksums(c_pc[idx_red], c_pc[~idx_red])[1]
@@ -1622,15 +1462,11 @@ class placeCellMultiSession(multipleAnalysis):
         )
         im_r2 = ax[0, 0].imshow(frac_relmse_ctl, origin="upper", cmap=cmap, norm=norm)
         ax[0, 1].imshow(frac_relmse_red, origin="upper", cmap=cmap, norm=norm)
-        im_r2_cmp = ax[0, 3].imshow(
-            frac_relmse_red - frac_relmse_ctl, origin="upper", cmap=cmap_cmp, norm=norm_cmp_rel
-        )
+        im_r2_cmp = ax[0, 3].imshow(frac_relmse_red - frac_relmse_ctl, origin="upper", cmap=cmap_cmp, norm=norm_cmp_rel)
 
         im_pc = ax[1, 0].imshow(frac_relcor_ctl, origin="upper", cmap=cmap, norm=norm)
         ax[1, 1].imshow(frac_relcor_red, origin="upper", cmap=cmap, norm=norm)
-        im_pc_cmp = ax[1, 3].imshow(
-            frac_relcor_red - frac_relcor_ctl, origin="upper", cmap=cmap_cmp, norm=norm_cmp_cor
-        )
+        im_pc_cmp = ax[1, 3].imshow(frac_relcor_red - frac_relcor_ctl, origin="upper", cmap=cmap_cmp, norm=norm_cmp_cor)
 
         # label no data with x's
         y, x = np.mgrid[range(num_ses), range(num_ses)]
@@ -1673,22 +1509,14 @@ class placeCellMultiSession(multipleAnalysis):
         ax[1, 1].set_title("frac(PC) - RED")
         ax[1, 3].set_title("diff(PC) - (r-c)")
 
-        fig.colorbar(
-            im_r2, orientation="vertical", cax=ax[0, 2], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_r2, orientation="vertical", cax=ax[0, 2], ticklocation="right", drawedges=False)
         ax[0, 2].set_ylabel("R^2")
-        fig.colorbar(
-            im_pc, orientation="vertical", cax=ax[1, 2], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_pc, orientation="vertical", cax=ax[1, 2], ticklocation="right", drawedges=False)
         ax[1, 2].set_ylabel("PC")
 
-        fig.colorbar(
-            im_r2_cmp, orientation="vertical", cax=ax[0, 4], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_r2_cmp, orientation="vertical", cax=ax[0, 4], ticklocation="right", drawedges=False)
         ax[0, 4].set_ylabel("$\Delta$ R^2")
-        fig.colorbar(
-            im_pc_cmp, orientation="vertical", cax=ax[1, 4], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_pc_cmp, orientation="vertical", cax=ax[1, 4], ticklocation="right", drawedges=False)
         ax[1, 4].set_ylabel("$\Delta$ PC")
 
         if withSave:
@@ -1742,9 +1570,7 @@ class placeCellMultiSession(multipleAnalysis):
                         r2_avg_red[ii, jj] = np.median(c_r2[idx_red])
                         pc_avg_red[ii, jj] = np.median(c_pc[idx_red])
                     else:
-                        raise ValueError(
-                            f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!"
-                        )
+                        raise ValueError(f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!")
 
         # 1 if nan -- this means there was no data (usually)
         zz = np.isnan(r2_avg_ctl) * 1.0
@@ -1787,13 +1613,9 @@ class placeCellMultiSession(multipleAnalysis):
         ax[1, 0].set_title("PC - CTL")
         ax[1, 1].set_title("PC - RED")
 
-        fig.colorbar(
-            im_r2, orientation="vertical", cax=ax[0, 2], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_r2, orientation="vertical", cax=ax[0, 2], ticklocation="right", drawedges=False)
         ax[0, 2].set_ylabel("R^2")
-        fig.colorbar(
-            im_pc, orientation="vertical", cax=ax[1, 2], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_pc, orientation="vertical", cax=ax[1, 2], ticklocation="right", drawedges=False)
         ax[1, 2].set_ylabel("PC")
 
         if withSave:
@@ -1818,8 +1640,8 @@ class placeCellMultiSession(multipleAnalysis):
         withSave=False,
     ):
         num_ses = len(idx_ses)
-        target_relmse, target_relcor, target_snake, target_red, sortby_red = (
-            self.measure_pfreliability(envnum, idx_ses=idx_ses, cutoffs=cutoffs, method="max")
+        target_relmse, target_relcor, target_snake, target_red, sortby_red = self.measure_pfreliability(
+            envnum, idx_ses=idx_ses, cutoffs=cutoffs, method="max"
         )
 
         # put the average reliability in a numpy array
@@ -1833,12 +1655,8 @@ class placeCellMultiSession(multipleAnalysis):
 
                 # copy r2 and pc (especially r2 since we're updating values)
                 c_mse = copy(target_relmse[ii][jj])
-                c_mse[c_mse < min_mse] = (
-                    min_mse  # prevent mse from being too low (it goes from 1 to -inf)
-                )
-                c_mse[np.isnan(c_mse)] = (
-                    min_mse  # prevent mse from being nan -- this happens if the "denominator" is 0
-                )
+                c_mse[c_mse < min_mse] = min_mse  # prevent mse from being too low (it goes from 1 to -inf)
+                c_mse[np.isnan(c_mse)] = min_mse  # prevent mse from being nan -- this happens if the "denominator" is 0
                 c_cor = copy(target_relcor[ii][jj])
                 if np.any(idx_red):
                     if reduction == "mean":
@@ -1852,9 +1670,7 @@ class placeCellMultiSession(multipleAnalysis):
                         cor_ctl[ii, jj] = np.median(c_cor[~idx_red])
                         cor_red[ii, jj] = np.median(c_cor[idx_red])
                     else:
-                        raise ValueError(
-                            f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!"
-                        )
+                        raise ValueError(f"reduction method not recognized ({reduction}), only 'mean' or 'median' are coded!")
 
         # 1 if nan -- this means there was no data (usually)
         zz = np.isnan(mse_ctl) * 1.0
@@ -1897,13 +1713,9 @@ class placeCellMultiSession(multipleAnalysis):
         ax[1, 0].set_title("PC - CTL")
         ax[1, 1].set_title("PC - RED")
 
-        fig.colorbar(
-            im_r2, orientation="vertical", cax=ax[0, 2], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_r2, orientation="vertical", cax=ax[0, 2], ticklocation="right", drawedges=False)
         ax[0, 2].set_ylabel("R^2")
-        fig.colorbar(
-            im_pc, orientation="vertical", cax=ax[1, 2], ticklocation="right", drawedges=False
-        )
+        fig.colorbar(im_pc, orientation="vertical", cax=ax[1, 2], ticklocation="right", drawedges=False)
         ax[1, 2].set_ylabel("PC")
 
         if withSave:
