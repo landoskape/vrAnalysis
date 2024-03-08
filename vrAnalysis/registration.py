@@ -570,7 +570,7 @@ class vrRegistration(vrExperiment):
             ospks = []
             print("Performing oasis...")
             for fc in tqdm(fcorr):
-                ospks.append(deconvolve(fc, g=(g,), penalty=1)[1])
+                ospks.append(deconvolve(fc, g=(g,), penalty=1)[1].astype(np.single))
             ospks = np.stack(ospks)
             assert (
                 ospks.shape == self.loadS2P("spks").shape
