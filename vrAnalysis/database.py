@@ -514,42 +514,6 @@ class session_database(base_database):
         """print list of unique mice names in session iterable"""
         print(self.miceInSessions(iterSession))
 
-    # def getRecord(self, mouseName, sessionDate, sessionID, verbose=True):
-    #     """
-    #     Retrieve single record from table in database and return as dataframe.
-
-    #     This method retrieves a single record(row) from the primary table in the database specified
-    #     in vrDatabase instance. It identifies which session has the unique combination of mouseName,
-    #     sessionDate, and sessionID, and returns that row.
-
-    #     Parameters
-    #     ----------
-    #     mouseName : string, required - the name of the mouse, e.g. ATL001
-    #     sessionDate : string, required - the date of the session in yyyy-mm-dd format
-    #     sessionID : int64/string, required - the code for the session, e.g. 701
-
-    #     Returns
-    #     -------
-    #     record : pandas Series
-
-    #     Example
-    #     -------
-    #     >>> vrdb = YourDatabaseClass()
-    #     >>> record = vrdb.getRecord('ATL001','2000-01-01','701')
-    #     """
-
-    #     df = self.getTable()
-    #     record = df[(df['mouseName']==mouseName)
-    #                 & (df['sessionDate'].apply(lambda sd : sd.strftime('%Y-%m-%d'))==sessionDate)
-    #                 & (df['sessionID']==int(sessionID))]
-    #     if len(record)==0:
-    #         if verbose:
-    #             print(f"No session found under: {mouseName}/{sessionDate}/{sessionID}")
-    #         return None
-    #     if len(record)>1:
-    #         raise ValueError(f"Multiple sessions found under: {mouseName}/{sessionDate}/{sessionID}")
-    #     return record.iloc[0]
-
     def iterSessions(self, **kwConditions):
         """Creates list of sessions that can be iterated through"""
         df = self.getTable(**kwConditions)
@@ -571,7 +535,7 @@ class session_database(base_database):
         for info on how to use the optional inputs of this function
         """
         df = self.getTable(**kwConditions)
-        for idx, row in df.iterrows():
+        for _, row in df.iterrows():
             print(self.vrSession(row).sessionPrint())
 
     # == helper functions for figuring out what needs work ==
