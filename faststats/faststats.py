@@ -9,48 +9,52 @@ from .utils import (
 )
 
 from ._numba import (
-    _numba_ptp,
-    _numba_percentile,
-    _numba_nanpercentile,
-    _numba_quantile,
-    _numba_nanquantile,
-    _numba_median,
-    _numba_average,
-    _numba_mean,
-    _numba_std,
-    _numba_var,
-    _numba_nanmedian,
-    _numba_nanmean,
-    _numba_nanstd,
-    _numba_nanvar,
-    _numba_zscore,
+    numba_sum,
+    numba_ptp,
+    numba_percentile,
+    numba_nanpercentile,
+    numba_quantile,
+    numba_nanquantile,
+    numba_median,
+    numba_average,
+    numba_mean,
+    numba_std,
+    numba_var,
+    numba_nanmedian,
+    numba_nanmean,
+    numba_nanstd,
+    numba_nanvar,
+    numba_zscore,
+    numba_median_zscore,
 )
 
 
 # for each string, lookup for which numba method to use
 _method_lookup = dict(
-    ptp=_numba_ptp,
-    percentile=_numba_percentile,
-    nanpercentile=_numba_nanpercentile,
-    quantile=_numba_quantile,
-    nanquantile=_numba_nanquantile,
-    median=_numba_median,
-    average=_numba_average,
-    mean=_numba_mean,
-    std=_numba_std,
-    var=_numba_var,
-    nanmedian=_numba_nanmedian,
-    nanmean=_numba_nanmean,
-    nanstd=_numba_nanstd,
-    nanvar=_numba_nanvar,
-    zscore=_numba_zscore,
+    sum=numba_sum,
+    ptp=numba_ptp,
+    percentile=numba_percentile,
+    nanpercentile=numba_nanpercentile,
+    quantile=numba_quantile,
+    nanquantile=numba_nanquantile,
+    median=numba_median,
+    average=numba_average,
+    mean=numba_mean,
+    std=numba_std,
+    var=numba_var,
+    nanmedian=numba_nanmedian,
+    nanmean=numba_nanmean,
+    nanstd=numba_nanstd,
+    nanvar=numba_nanvar,
+    zscore=numba_zscore,
+    median_zscore=numba_median_zscore,
 )
 
 # these methods require a "q" argument
 _requires_q = ["percentile", "nanpercentile", "quantile", "nanquantile"]
 
-# these methods don't have a final reduction
-_noreduction = ["zscore"]
+# these methods don't have a final reduction (their output should be same size as input)
+_noreduction = ["zscore", "median_zscore"]
 
 
 def faststat(data, method, axis=-1, keepdims=False, q=None):
@@ -97,6 +101,13 @@ def faststat(data, method, axis=-1, keepdims=False, q=None):
     # otherwise return to desired output shape
     result_shape = _get_result_shape(data_shape, axis, keepdims)
     return np.reshape(result, result_shape)
+
+
+# ==========================================================================================
+# ===================== library of functions for similar use as numpy ======================
+# ==========================================================================================
+def sum(data, axis=None, keepdims=False):
+    return faststat(data, "sum", axis=axis, keepdims=keepdims)
 
 
 def ptp(data, axis=None, keepdims=False):
@@ -157,3 +168,7 @@ def nanvar(data, axis=None, keepdims=False):
 
 def zscore(data, axis=None, keepdims=False):
     return faststat(data, "zscore", axis=axis, keepdims=keepdims)
+
+
+def median_zscore(data, axis=None, keepdims=False):
+    return faststat(data, "median_zscore", axis=axis, keepdims=keepdims)

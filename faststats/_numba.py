@@ -3,7 +3,16 @@ import numba as nb
 
 
 @nb.njit(parallel=True)
-def _numba_ptp(data):
+def numba_sum(data):
+    """numba speed up for sum"""
+    output = np.zeros(data.shape[0])
+    for n in nb.prange(data.shape[0]):
+        output[n] = np.sum(data[n])
+    return output
+
+
+@nb.njit(parallel=True)
+def numba_ptp(data):
     """numba speed up for ptp"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -12,7 +21,7 @@ def _numba_ptp(data):
 
 
 @nb.njit(parallel=True)
-def _numba_percentile(data, q):
+def numba_percentile(data, q):
     """numba speed up for percentile"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -21,7 +30,7 @@ def _numba_percentile(data, q):
 
 
 @nb.njit(parallel=True)
-def _numba_nanpercentile(data, q):
+def numba_nanpercentile(data, q):
     """numba speed up for nanpercentile"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -30,7 +39,7 @@ def _numba_nanpercentile(data, q):
 
 
 @nb.njit(parallel=True)
-def _numba_quantile(data, q):
+def numba_quantile(data, q):
     """numba speed up for quantile"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -39,7 +48,7 @@ def _numba_quantile(data, q):
 
 
 @nb.njit(parallel=True)
-def _numba_nanquantile(data, q):
+def numba_nanquantile(data, q):
     """numba speed up for nanquantile"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -48,7 +57,7 @@ def _numba_nanquantile(data, q):
 
 
 @nb.njit(parallel=True)
-def _numba_median(data):
+def numba_median(data):
     """numba speed up for median"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -57,7 +66,7 @@ def _numba_median(data):
 
 
 @nb.njit(parallel=True)
-def _numba_average(data):
+def numba_average(data):
     """numba speed up for average"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -66,7 +75,7 @@ def _numba_average(data):
 
 
 @nb.njit(parallel=True)
-def _numba_mean(data):
+def numba_mean(data):
     """numba speed up for mean"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -75,7 +84,7 @@ def _numba_mean(data):
 
 
 @nb.njit(parallel=True)
-def _numba_std(data):
+def numba_std(data):
     """numba speed up for nanstd"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -84,7 +93,7 @@ def _numba_std(data):
 
 
 @nb.njit(parallel=True)
-def _numba_var(data):
+def numba_var(data):
     """numba speed up for nanvar"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -93,7 +102,7 @@ def _numba_var(data):
 
 
 @nb.njit(parallel=True)
-def _numba_nanmedian(data):
+def numba_nanmedian(data):
     """numba speed up for nanmedian"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -102,7 +111,7 @@ def _numba_nanmedian(data):
 
 
 @nb.njit(parallel=True)
-def _numba_nanmean(data):
+def numba_nanmean(data):
     """numba speed up for nanmean"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -111,7 +120,7 @@ def _numba_nanmean(data):
 
 
 @nb.njit(parallel=True)
-def _numba_nanstd(data):
+def numba_nanstd(data):
     """numba speed up for nanstd"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -120,7 +129,7 @@ def _numba_nanstd(data):
 
 
 @nb.njit(parallel=True)
-def _numba_nanvar(data):
+def numba_nanvar(data):
     """numba speed up for nanvar"""
     output = np.zeros(data.shape[0])
     for n in nb.prange(data.shape[0]):
@@ -129,9 +138,18 @@ def _numba_nanvar(data):
 
 
 @nb.njit(parallel=True)
-def _numba_zscore(data):
+def numba_zscore(data):
     """numba speed up for zscore"""
     output = np.zeros_like(data)
     for n in nb.prange(data.shape[0]):
         output[n] = (data[n] - np.mean(data[n])) / np.std(data[n])
+    return output
+
+
+@nb.njit(parallel=True)
+def numba_median_zscore(data):
+    """numba speed up for median zscore"""
+    output = np.zeros_like(data)
+    for n in nb.prange(data.shape[0]):
+        output[n] = (data[n] - np.median(data[n])) / np.std(data[n])
     return output

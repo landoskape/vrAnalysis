@@ -1,4 +1,5 @@
 from .faststats import (
+    sum,
     ptp,
     percentile,
     nanpercentile,
@@ -14,4 +15,5 @@ from .faststats import (
     nanstd,
     nanvar,
     zscore,
+    median_zscore,
 )
