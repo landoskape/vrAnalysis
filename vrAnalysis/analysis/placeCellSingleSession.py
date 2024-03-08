@@ -337,7 +337,7 @@ class placeCellSingleSession(standardAnalysis):
         onefile="mpci.roiActivityDeconvolvedOasis",
         autoload=True,
         keep_planes=[1, 2, 3, 4],
-        distStep=(1, 5, 5),
+        distStep=1,
         speedThreshold=5,
         numcv=2,
         standardizeSpks=True,
@@ -365,11 +365,60 @@ class placeCellSingleSession(standardAnalysis):
         envnum = helpers.check_iterable(envnum)
         return [np.where(self.environments == ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
 
+    def get_plane_idx(self, keep_planes=None):
+        """simple method for getting index to ROIs in plane"""
+        if keep_planes is not None:
+            self.keep_planes = keep_planes
+
+        # get idx of rois within keep planes
+        stackPosition = self.vrexp.loadone("mpciROIs.stackPosition")
+        roiPlaneIdx = stackPosition[:, 2].astype(np.int32)  # plane index
+
+        # figure out which ROIs are in the target planes
+        self.idxUseROI = np.any(np.stack([roiPlaneIdx == pidx for pidx in self.keep_planes]), axis=0)
+        self.roiPlaneIdx = roiPlaneIdx[self.idxUseROI]
+        self.numROIs = self.vrexp.getNumROIs(self.keep_planes)
+
     def load_fast_data(self):
         # get environment data
         self.trial_envnum = self.vrexp.loadone("trials.environmentIndex")
         self.environments = np.unique(self.trial_envnum)
         self.numEnvironments = len(self.environments)
+        # get behavioral data
+        self.load_behavioral_data()
+        # get index to ROIs
+        self.get_plane_idx()
+
+    def load_behavioral_data(self, distStep=None, speedThreshold=None, full_trial_flexibility=None):
+        """load standard behavioral data for basic place cell analysis"""
+        # update analysis parameters if requested
+        if distStep is not None:
+            self.distStep = distStep
+        if speedThreshold is not None:
+            self.speedThreshold = speedThreshold
+
+        # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
+        kwargs = {
+            "distStep": self.distStep,
+            "speedThreshold": self.speedThreshold,
+        }
+        self.omap, self.smap, _, self.distedges = functions.getBehaviorMaps(self.vrexp, **kwargs)
+        self.distcenters = helpers.edge2center(self.distedges)
+
+        self.numTrials = self.omap.shape[0]
+
+        # find out which trials the mouse explored the whole environment
+        if full_trial_flexibility is None:
+            # if full trial flexiblity is None, then they need to have visited every bin
+            idx_to_required_bins = np.arange(self.omap.shape[1])
+        else:
+            start_idx = np.where(self.distedges >= full_trial_flexibility)[0][0]
+            end_idx = np.where(self.distedges <= self.distedges[-1] - full_trial_flexibility)[0][-1]
+            idx_to_required_bins = np.arange(start_idx, end_idx)
+
+        self.boolFullTrials = np.all(~np.isnan(self.omap[:, idx_to_required_bins]), axis=1)
+        self.idxFullTrials = np.where(self.boolFullTrials)[0]
+        self.idxFullTrialEachEnv = [np.where(self.boolFullTrials & (self.trial_envnum == env))[0] for env in self.environments]
 
     def load_data(
         self,
@@ -380,6 +429,9 @@ class placeCellSingleSession(standardAnalysis):
         keep_planes=None,
         with_test=False,
         full_trial_flexibility=None,
+        averaged=True,
+        total_folds=3,
+        train_folds=2,
     ):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
@@ -396,14 +448,7 @@ class placeCellSingleSession(standardAnalysis):
         if keep_planes is not None:
             self.keep_planes = keep_planes
 
-        # get idx of rois within keep planes
-        stackPosition = self.vrexp.loadone("mpciROIs.stackPosition")
-        roiPlaneIdx = stackPosition[:, 2].astype(np.int32)  # plane index
-
-        # figure out which ROIs are in the target planes
-        self.idxUseROI = np.any(np.stack([roiPlaneIdx == pidx for pidx in self.keep_planes]), axis=0)
-        self.roiPlaneIdx = roiPlaneIdx[self.idxUseROI]
-        self.numROIs = self.vrexp.getNumROIs(self.keep_planes)
+        self.get_plane_idx(keep_planes=self.keep_planes)
 
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
         kwargs = {
@@ -411,9 +456,10 @@ class placeCellSingleSession(standardAnalysis):
             "onefile": self.onefile,
             "speedThreshold": self.speedThreshold,
             "standardizeSpks": self.standardizeSpks,
+            "idxROIs": self.idxUseROI,
         }
         self.omap, self.smap, _, self.spkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
-        self.spkmap = self.spkmap[self.idxUseROI]
+        self.spkmap = self.spkmap
 
         self.distcenters = helpers.edge2center(self.distedges)
 
@@ -436,7 +482,7 @@ class placeCellSingleSession(standardAnalysis):
         self.dataloaded = True
 
         # measure reliability
-        self.measure_reliability(with_test=with_test)
+        self.measure_reliability(new_split=True, with_test=with_test)
 
     def clear_data(self):
         """method for clearing data to free up memory and/or resetting variables"""
@@ -466,14 +512,24 @@ class placeCellSingleSession(standardAnalysis):
 
         self.dataloaded = False
 
-    def measure_reliability(self, with_test=False):
+    def define_train_test_split(self, total_folds=3, train_folds=2):
+        """method for creating a train/test split"""
+        assert train_folds < total_folds, "train_folds can't be >= total_folds"
+        foldIdx = [helpers.cvFoldSplit(idxTrialEnv, total_folds) for idxTrialEnv in self.idxFullTrialEachEnv]
+        self.train_folds = train_folds
+        self.total_folds = total_folds
+        # each of these is a list of training/testing trials for each environment
+        self.train_idx = [np.concatenate(fidx[:train_folds]) for fidx in foldIdx]
+        self.test_idx = [np.concatenate(fidx[train_folds:]) for fidx in foldIdx]
+
+    def measure_reliability(self, new_split=True, with_test=False):
         """method for measuring reliability in each environment"""
         if not (self.dataloaded):
             self.load_data()
 
-        foldIdx = [helpers.cvFoldSplit(idxTrialEnv, 3) for idxTrialEnv in self.idxFullTrialEachEnv]
-        self.train_idx = [np.concatenate(fidx[:2]) for fidx in foldIdx]
-        self.test_idx = [fidx[2] for fidx in foldIdx]
+        # create a train/test split
+        if new_split:
+            self.define_train_test_split(total_folds=3, train_folds=2)
 
         # measure reliability of spiking (in two ways)
         relmse, relcor = zip(*[functions.measureReliability(self.spkmap[:, tidx], numcv=self.numcv) for tidx in self.train_idx])
