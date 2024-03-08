@@ -126,17 +126,8 @@ There are several options for creating a `pcss` object. Most of these options
 are utilized in the [`functions`](../vrAnalysis/functions.py) module, for more
 explanation look there. 
 - keep_planes: a list of planes to keep, usually ignoring the flyback plane
-- distStep: a tuple describing how to manage spatial resolution. It's a little
-  complicated so here's a full explanation. If only one value is provided, no
-  downsampling or gaussian smoothing is used. If only two values are provided,
-  then the second value is used to set the standard deviation of the
-  gaussian smoothing.
-  - the first value describes the initial spatial resolution to measure
-    occupancy, speed, licks, and spiking maps with.
-  - the second value describes how much to downsample the aforementioned maps.
-    If provided, it must be an integer multiple of the first value.
-  - the last value describes the standard deviation of a gaussian smoothing
-    kernel used to smooth the data (except the lick map).
+- distStep: the spatial resolution to measure occupancy, speed, licks, and 
+  spiking maps with.
 - speedThreshold: as is standard in the field, this sets a threshold at how
   fast the mouse is moving (in centimeters) for including data points.
 - standardizeSpks: if True, will use a median/normalization (subtract by the

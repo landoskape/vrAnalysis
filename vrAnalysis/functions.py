@@ -1,8 +1,14 @@
-import time
 import numpy as np
-import scipy as sp
 import numba as nb
 from . import helpers
+
+import os
+import sys
+
+mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
+sys.path.append(mainPath)
+
+import faststats as fs
 
 
 # ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
@@ -22,26 +28,12 @@ def environmentRewardZone(vrexp):
 
 
 # ------------------------------------------------- postprocessing functions for creating spatial maps -----------------------------------------------------
-def checkDistStep(distStep):
-    """distStep has particular requirements for the functions that use it!"""
-    if len(distStep) > 1:
-        message = (
-            "distStep should be a two(or 3) element tuple of ints increasing in size"
-            "with an optional third argument describing the standard deviation of the smoothing kernel (or False for no smoothing)"
-        )
-        assert len(distStep) <= 3 and distStep[1] >= distStep[0] and isinstance(distStep[0], int) and isinstance(distStep[1], int), message
-    else:
-        if not isinstance(distStep, tuple):
-            distStep = distStep
-    return distStep
-
-
 def getBinEdges(vrexp, distStep):
     """get bin edges for virtual position"""
     roomLength = vrexp.loadone("trials.roomLength")
     assert np.unique(roomLength).size == 1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
     roomLength = roomLength[0]
-    numPosition = int(roomLength / distStep[0])
+    numPosition = int(roomLength / distStep)
     distedges = np.linspace(0, roomLength, numPosition + 1)
     distcenter = helpers.edge2center(distedges)
     return distedges, distcenter, roomLength
@@ -110,20 +102,19 @@ def loadBehavioralData(vrexp, distStep, speedThreshold):
     firstValidBin = [np.min(bpb[1:] if len(bpb) > 1 else bpb) for bpb in bpbPerTrial]
     lastValidBin = [np.max(bpb) for bpb in bpbPerTrial]
 
-    return occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength
+    return occmap, speedmap, lickmap, firstValidBin, lastValidBin, distedges
 
 
 def loadSpikeMap(
     vrexp,
-    distStep=(1, 5),
+    distStep=1,
     onefile="mpci.roiActivityDeconvolved",
     speedThreshold=0,
     standardizeSpks=True,
+    idxROIs=None,
 ):
     """centralized method for loading spiking map"""
-    distStep = checkDistStep(distStep)
-    distedges, distcenter, roomLength = getBinEdges(vrexp, distStep)
-    numPosition = len(distcenter)
+    distedges = getBinEdges(vrexp, distStep)[0]
 
     frameTrialIdx, framePosition, frameSpeed = vrexp.getFrameBehavior()
     framePositionBin = np.where(~np.isnan(framePosition), np.digitize(framePosition, distedges) - 1, np.nan)
@@ -131,59 +122,53 @@ def loadSpikeMap(
 
     # Now make spike map using frame position
     spks = vrexp.loadone(onefile).T
+    if idxROIs is not None:
+        spks = spks[idxROIs]
+
     spks *= idxAboveSpeedThreshold  # set spks to 0 unless above speed threshold
     if standardizeSpks:
-        std = np.std(spks, axis=1, keepdims=True)
-        median = np.median(spks, axis=1, keepdims=True)
-        idx_with_activity = (std > 0).squeeze()
-        spks[idx_with_activity] = (spks[idx_with_activity] - median[idx_with_activity]) / std[idx_with_activity]
-        spks[~idx_with_activity] = 0
+        spks = fs.median_zscore(spks, axis=1)
 
     # back to frames x ROIs for getSpkMap method
     spks = spks.T
 
     # Now prepare spkmap
-    spkmap = np.zeros((vrexp.value["numTrials"], len(distedges) - 1, vrexp.value["numROIs"]))
-    count = np.zeros((vrexp.value["numTrials"], len(distedges) - 1))
-    getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap, count, useAverage=False)
+    spkmap = np.zeros((vrexp.value["numTrials"], len(distedges) - 1, spks.shape[1]))
+    getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap)
 
-    return spkmap, count
+    return spkmap
 
 
 def getBehaviorAndSpikeMaps(
     vrexp,
-    distStep=(1, 5),
+    distStep=1,
     onefile="mpci.roiActivityDeconvolved",
     speedThreshold=0,
     standardizeSpks=True,
+    idxROIs=None,
+    trials=None,
 ):
-    distStep = checkDistStep(distStep)
-
     # load key behavioral data (at higher resolution if distStep has multiple values)
-    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = loadBehavioralData(vrexp, distStep, speedThreshold)
-    numPosition = int(roomLength / distStep[0])
+    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distedges = loadBehavioralData(vrexp, distStep, speedThreshold)
 
     # load spiking data (at higher resolution if distStep has multiple values)
-    spkmap, count = loadSpikeMap(
+    spkmap = loadSpikeMap(
         vrexp,
         distStep=distStep,
         onefile=onefile,
         speedThreshold=speedThreshold,
         standardizeSpks=standardizeSpks,
+        idxROIs=idxROIs,
     )
 
-    # now handle conversion from sum of spikes to average
-    if len(distStep) == 1:
-        # no smoothing -- divide spkmap by occmap and set nans where necessary
-        correctMap(occmap, spkmap)
+    # set bins to nan when mouse didn't visit them
+    occmap = replaceMissingData(occmap, firstValidBin, lastValidBin)
+    speedmap = replaceMissingData(speedmap, firstValidBin, lastValidBin)
+    lickmap = replaceMissingData(lickmap, firstValidBin, lastValidBin)
+    spkmap = replaceMissingData(spkmap, firstValidBin, lastValidBin)
 
-        # set bins to nan when mouse didn't visit them
-        occmap = replaceMissingData(occmap, firstValidBin, lastValidBin)
-        speedmap = replaceMissingData(speedmap, firstValidBin, lastValidBin)
-        lickmap = replaceMissingData(lickmap, firstValidBin, lastValidBin)
-        spkmap = replaceMissingData(spkmap, firstValidBin, lastValidBin)
-
-    else:
+    # saving this for it's use elsewhere in the repo:
+    """
         if len(distStep) == 3:
             # Create spatial smoothing kernel
             kk = helpers.getGaussKernel(distcenter, distStep[2])  # standard deviation of kernel specified by distStep
@@ -217,28 +202,29 @@ def getBehaviorAndSpikeMaps(
         speedmap[all_didnt_visit] = np.nan
         lickmap[all_didnt_visit] = np.nan
         spkmap[:, all_didnt_visit] = np.nan
+    """
 
     return occmap, speedmap, lickmap, spkmap, distedges
 
 
-def getBehaviorMaps(vrexp, distStep=(1, 5), speedThreshold=0):
-    # Produce occupancy map and speed map using numba speed ups
-    # distStep is a two element tuple of integers - the first defines the spatial resolution of the initial measurement, the second defines the spatial filtering and the downsampling factor
-    # First computes the maps with high resolution, then spatially smooths them, then downsamples them
-    distStep = checkDistStep(distStep)
+def getBehaviorMaps(vrexp, distStep=1, speedThreshold=0):
+    """
+    Produce occupancy map and speed map using numba speed ups
+    distStep is defines the spatial resolution of the initial measurement
+    First computes the maps with high resolution, then spatially smooths them, then downsamples them
+    """
 
     # load key behavioral data
-    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distcenter, roomLength = loadBehavioralData(vrexp, distStep, speedThreshold)
-    numPosition = int(roomLength / distStep[0])
+    occmap, speedmap, lickmap, firstValidBin, lastValidBin, distedges = loadBehavioralData(vrexp, distStep, speedThreshold)
 
-    if len(distStep) == 1:
-        # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins)
-        # set bins to nan when mouse didn't visit them
-        occmap = replaceMissingData(occmap, firstValidBin, lastValidBin)
-        speedmap = replaceMissingData(speedmap, firstValidBin, lastValidBin)
-        lickmap = replaceMissingData(lickmap, firstValidBin, lastValidBin)
+    # switch to nan for any bins that the mouse didn't visit (excluding those in between visited bins)
+    # set bins to nan when mouse didn't visit them
+    occmap = replaceMissingData(occmap, firstValidBin, lastValidBin)
+    speedmap = replaceMissingData(speedmap, firstValidBin, lastValidBin)
+    lickmap = replaceMissingData(lickmap, firstValidBin, lastValidBin)
 
-    else:
+    """
+    saving code that is now obsolete
         # Create spatial smoothing kernel
         kk = helpers.getGaussKernel(
             distcenter, distStep[-1]
@@ -265,6 +251,7 @@ def getBehaviorMaps(vrexp, distStep=(1, 5), speedThreshold=0):
         occmap[all_didnt_visit] = np.nan
         speedmap[all_didnt_visit] = np.nan
         lickmap[all_didnt_visit] = np.nan
+    """
 
     return occmap, speedmap, lickmap, distedges
 
@@ -272,7 +259,7 @@ def getBehaviorMaps(vrexp, distStep=(1, 5), speedThreshold=0):
 def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.05):
     """
     Function to measure spatial reliability of spiking in the spkmap.
-    spkmap is (numROIs, numTrials, numPositions), trialIdx should be a valid index to the numTrials axis of spkmap.
+    spkmap is (numROIs, numTrials, numPositions),
     cross-validated estimate of reliability by measuring spatial profile on training trials and predicting test trials
     returns two measures of reliability- one compares prediction of estimate based on training profile or training mean, and one based on correlation between train/test
     """
@@ -412,16 +399,10 @@ def behaveToFrame(
 
 
 @nb.njit(parallel=True)
-def getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap, count, useAverage=True):
+def getSpkMap(spks, frameTrialIdx, framePositionBin, spkmap):
     for sample in nb.prange(len(frameTrialIdx)):
         if not np.isnan(frameTrialIdx[sample]):
             spkmap[int(frameTrialIdx[sample])][int(framePositionBin[sample])] += spks[sample]
-            count[int(frameTrialIdx[sample])][int(framePositionBin[sample])] += 1
-    if useAverage:
-        for ii in nb.prange(count.shape[0]):
-            for jj in nb.prange(count.shape[1]):
-                if count[ii][jj] > 0:
-                    spkmap[ii][jj] /= count[ii][jj]
 
 
 # ============================================================================================================================================

@@ -25,7 +25,7 @@ class behaviorSingleSession(standardAnalysis):
         self,
         vrexp,
         autoload=True,
-        distStep=(1, 5, 5),
+        distStep=1,
         speedThreshold=5,
         numcv=2,
         standardizeSpks=True,
