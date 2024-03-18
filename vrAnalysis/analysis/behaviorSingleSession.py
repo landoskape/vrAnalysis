@@ -62,8 +62,8 @@ class behaviorSingleSession(standardAnalysis):
 
     def clear_data(self):
         """method for clearing data to free up memory"""
-        del self.omap
-        del self.smap
+        del self.occmap
+        del self.speedmap
         del self.distedges
         del self.distcenters
         del self.numTrials
