@@ -98,9 +98,12 @@ def getBehaviorAndSpikeMaps(
         if idxROIs is not None:
             spks = spks[:, idxROIs]
 
-        # set spks to 0 unless above speed threshold
+        # standardize spks to zscore (across time!) (set to 0 where variance is 0)
         if standardizeSpks:
+            idx_zeros = fs.std(spks, axis=0) == 0
             spks = fs.median_zscore(spks, axis=0)
+            spks[:, idx_zeros] = 0
+
     else:
         # use empty (and small) array for consistent code even when get_spkmap is False
         spks = np.zeros_like(behavePositionBin).reshape(-1, 1)
@@ -186,7 +189,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
         idx_pos = ~position_with_nan
         spkmap = spkmap[:, :, idx_pos]
     spkmap = spkmap.transpose(1, 2, 0)
-    numTrials, numPosition, numROIs = spkmap.shape
+    numTrials, _, numROIs = spkmap.shape
     relmse = np.zeros(numROIs)
     relcor = np.zeros(numROIs)
     for repeat in range(numRepeats):

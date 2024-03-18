@@ -470,7 +470,8 @@ class placeCellSingleSession(standardAnalysis):
         numcv=None,
         keep_planes=None,
         with_test=False,
-        full_trial_flexibility=3,
+        full_trial_flexibility=5,
+        new_split=True,
     ):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
@@ -522,13 +523,26 @@ class placeCellSingleSession(standardAnalysis):
         self.dataloaded = True
 
         # measure reliability
-        # self.measure_reliability(new_split=True, with_test=with_test)
+        self.measure_reliability(new_split=new_split, with_test=with_test)
 
-    def make_spkmap(
-        self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}
-    ):  # new_split=False, total_folds=3, train_folds=2):
+    def make_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}):
         """
-        method for making a spkmap from a list of environments, averaging across trials
+        method for making a spkmap from a list of environments
+
+        can average across trials before smoothing & dividing (if requested)
+        can smooth across spatial positions if requested (smooth is None for no smoothing
+        and a number corresponding to the gaussian filter width in cm for smoothing)
+
+        can subselect trials, either "full", "train", or "test", and reset the train/test split with
+        "new_split" if requested (using split_params for how to divide trials into train/test)
+
+        how it works:
+        will get the occmap and spkmap for each environment (in a list), using the requested trials
+        will sum across trials if requested
+        will smooth across positions if requested
+        then will divide the spkmap by occupancy map to get a rate map in each position
+
+        transposes output to have shape (num_ROIs, num_trials, num_spatial_bins)
         """
         # use all environments if none requested
         if envnum is None:
@@ -558,7 +572,7 @@ class placeCellSingleSession(standardAnalysis):
         else:
             raise ValueError(f"Didn't recognize trials option (received '{trials}', expected 'full', 'train', or 'test')")
 
-        # average across trials if requested
+        # average (sum, because divide happens later) across trials if requested
         if average:
             env_occmap = [fs.sum(eom, axis=0, keepdims=True) for eom in env_occmap]
             env_spkmap = [fs.sum(esm, axis=0, keepdims=True) for esm in env_spkmap]
@@ -613,7 +627,7 @@ class placeCellSingleSession(standardAnalysis):
         self.train_idx = [np.concatenate(fidx[:train_folds]) for fidx in foldIdx]
         self.test_idx = [np.concatenate(fidx[train_folds:]) for fidx in foldIdx]
 
-    def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1):
+    def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1, total_folds=3, train_folds=2):
         """method for measuring reliability in each environment"""
         if smoothWidth == -1:
             smoothWidth = self.smoothWidth
@@ -623,12 +637,11 @@ class placeCellSingleSession(standardAnalysis):
 
         # create a train/test split
         if new_split:
-            self.define_train_test_split(total_folds=3, train_folds=2)
+            self.define_train_test_split(total_folds=total_folds, train_folds=train_folds)
 
         # measure reliability of spiking (in two ways)
         spkmap = self.make_spkmap(average=False, smooth=smoothWidth, trials="train")
         relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
-        # relmse, relcor = zip(*[functions.measureReliability(self.spkmap[:, tidx], numcv=self.numcv) for tidx in self.train_idx])
         self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
 
         if with_test:
