@@ -1,6 +1,7 @@
 import time
 from copy import copy
 from tqdm import tqdm
+import faststats as fs
 import numpy as np
 import numba as nb
 import scipy as sp
@@ -341,6 +342,7 @@ class placeCellSingleSession(standardAnalysis):
         speedThreshold=5,
         numcv=2,
         standardizeSpks=True,
+        smoothWidth=1,
     ):
         self.name = "placeCellSingleSession"
         self.onefile = onefile
@@ -349,6 +351,7 @@ class placeCellSingleSession(standardAnalysis):
         self.speedThreshold = speedThreshold
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
+        self.smoothWidth = smoothWidth
         self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value["roiPerPlane"]))]
 
         # automatically load data
@@ -357,13 +360,16 @@ class placeCellSingleSession(standardAnalysis):
         if autoload:
             self.load_data()
 
-    def envnum_to_idx(self, envnum):
+    def envnum_to_idx(self, envnum, validate=True):
         """
         convert list of environment numbers to indices of environment within this session
         e.g. if session has environments [1,3,4], and environment 3 is requested, turn it into index 1
         """
         envnum = helpers.check_iterable(envnum)
-        return [np.where(self.environments == ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
+        envidx = [np.where(self.environments == ev)[0][0] if ev in self.environments else np.nan for ev in envnum]
+        if validate:
+            assert all([~np.isnan(ei) for ei in envidx]), f"requested environment(s) not in session, contains={self.environments}, requested={envnum}"
+        return envidx
 
     def get_plane_idx(self, keep_planes=None):
         """simple method for getting index to ROIs in plane"""
@@ -389,6 +395,35 @@ class placeCellSingleSession(standardAnalysis):
         # get index to ROIs
         self.get_plane_idx()
 
+    def clear_data(self):
+        """method for clearing data to free up memory and/or resetting variables"""
+        attrs_to_delete = [
+            "idxUseROI",
+            "numROIs",
+            "occmap",
+            "speedmap",
+            "rawspkmap",
+            "spkmap",
+            "distedges",
+            "distcenters",
+            "numTrials",
+            "boolFullTrials",
+            "idxFullTrials",
+            "idxFullTrialEachEnv",
+            "train_idx",
+            "test_idx",
+            "relmse",
+            "relcor",
+            "test_relmse",
+            "test_relcor",
+        ]
+
+        for attr in attrs_to_delete:
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+        self.dataloaded = False
+
     def load_behavioral_data(self, distStep=None, speedThreshold=None, full_trial_flexibility=None):
         """load standard behavioral data for basic place cell analysis"""
         # update analysis parameters if requested
@@ -402,21 +437,28 @@ class placeCellSingleSession(standardAnalysis):
             "distStep": self.distStep,
             "speedThreshold": self.speedThreshold,
         }
-        self.omap, self.smap, _, self.distedges = functions.getBehaviorMaps(self.vrexp, **kwargs)
+        # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
+        kwargs = {
+            "distStep": self.distStep,
+            "speedThreshold": self.speedThreshold,
+            "speedSmoothing": self.smoothWidth,
+            "get_spkmap": False,
+        }
+        self.occmap, self.speedmap, _, _, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
         self.distcenters = helpers.edge2center(self.distedges)
 
-        self.numTrials = self.omap.shape[0]
+        self.numTrials = self.occmap.shape[0]
 
         # find out which trials the mouse explored the whole environment
         if full_trial_flexibility is None:
             # if full trial flexiblity is None, then they need to have visited every bin
-            idx_to_required_bins = np.arange(self.omap.shape[1])
+            idx_to_required_bins = np.arange(self.occmap.shape[1])
         else:
             start_idx = np.where(self.distedges >= full_trial_flexibility)[0][0]
             end_idx = np.where(self.distedges <= self.distedges[-1] - full_trial_flexibility)[0][-1]
             idx_to_required_bins = np.arange(start_idx, end_idx)
 
-        self.boolFullTrials = np.all(~np.isnan(self.omap[:, idx_to_required_bins]), axis=1)
+        self.boolFullTrials = np.all(~np.isnan(self.occmap[:, idx_to_required_bins]), axis=1)
         self.idxFullTrials = np.where(self.boolFullTrials)[0]
         self.idxFullTrialEachEnv = [np.where(self.boolFullTrials & (self.trial_envnum == env))[0] for env in self.environments]
 
@@ -428,10 +470,7 @@ class placeCellSingleSession(standardAnalysis):
         numcv=None,
         keep_planes=None,
         with_test=False,
-        full_trial_flexibility=None,
-        averaged=True,
-        total_folds=3,
-        train_folds=2,
+        full_trial_flexibility=3,
     ):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
@@ -457,24 +496,25 @@ class placeCellSingleSession(standardAnalysis):
             "speedThreshold": self.speedThreshold,
             "standardizeSpks": self.standardizeSpks,
             "idxROIs": self.idxUseROI,
+            "speedSmoothing": self.smoothWidth,
         }
-        self.omap, self.smap, _, self.spkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
-        self.spkmap = self.spkmap
+        self.occmap, self.speedmap, _, self.rawspkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
+        # self.occmap, self.speedmap, _, self.rawspkmap, self.distedges = functions.outdated_getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
 
         self.distcenters = helpers.edge2center(self.distedges)
 
-        self.numTrials = self.omap.shape[0]
+        self.numTrials = self.occmap.shape[0]
 
         # find out which trials the mouse explored the whole environment
         if full_trial_flexibility is None:
             # if full trial flexiblity is None, then they need to have visited every bin
-            idx_to_required_bins = np.arange(self.omap.shape[1])
+            idx_to_required_bins = np.arange(self.occmap.shape[1])
         else:
             start_idx = np.where(self.distedges >= full_trial_flexibility)[0][0]
             end_idx = np.where(self.distedges <= self.distedges[-1] - full_trial_flexibility)[0][-1]
             idx_to_required_bins = np.arange(start_idx, end_idx)
 
-        self.boolFullTrials = np.all(~np.isnan(self.omap[:, idx_to_required_bins]), axis=1)
+        self.boolFullTrials = np.all(~np.isnan(self.occmap[:, idx_to_required_bins]), axis=1)
         self.idxFullTrials = np.where(self.boolFullTrials)[0]
         self.idxFullTrialEachEnv = [np.where(self.boolFullTrials & (self.trial_envnum == env))[0] for env in self.environments]
 
@@ -482,38 +522,89 @@ class placeCellSingleSession(standardAnalysis):
         self.dataloaded = True
 
         # measure reliability
-        self.measure_reliability(new_split=True, with_test=with_test)
+        # self.measure_reliability(new_split=True, with_test=with_test)
 
-    def clear_data(self):
-        """method for clearing data to free up memory and/or resetting variables"""
-        attrs_to_delete = [
-            "idxUseROI",
-            "numROIs",
-            "omap",
-            "smap",
-            "spkmap",
-            "distedges",
-            "distcenters",
-            "numTrials",
-            "boolFullTrials",
-            "idxFullTrials",
-            "idxFullTrialEachEnv",
-            "train_idx",
-            "test_idx",
-            "relmse",
-            "relcor",
-            "test_relmse",
-            "test_relcor",
-        ]
+    def make_spkmap(
+        self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}
+    ):  # new_split=False, total_folds=3, train_folds=2):
+        """
+        method for making a spkmap from a list of environments, averaging across trials
+        """
+        # use all environments if none requested
+        if envnum is None:
+            envnum = np.copy(self.environments)
 
-        for attr in attrs_to_delete:
-            if hasattr(self, attr):
-                delattr(self, attr)
+        # convert envnum into iterable index to environment in session
+        envnum = helpers.check_iterable(envnum)  # make sure envnum is iterable
+        envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
 
-        self.dataloaded = False
+        # get occupancy and rawspkmap from requested trials
+        if trials == "full":
+            env_occmap = [self.occmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
+            env_spkmap = [self.rawspkmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
+
+        elif trials == "train":
+            if new_split:
+                self.define_train_test_split(**split_params)
+            env_occmap = [self.occmap[self.train_idx[ei]] for ei in envidx]
+            env_spkmap = [self.rawspkmap[self.train_idx[ei]] for ei in envidx]
+
+        elif trials == "test":
+            if new_split:
+                self.define_train_test_split(**split_params)
+            env_occmap = [self.occmap[self.test_idx[ei]] for ei in envidx]
+            env_spkmap = [self.rawspkmap[self.test_idx[ei]] for ei in envidx]
+
+        else:
+            raise ValueError(f"Didn't recognize trials option (received '{trials}', expected 'full', 'train', or 'test')")
+
+        # average across trials if requested
+        if average:
+            env_occmap = [fs.sum(eom, axis=0, keepdims=True) for eom in env_occmap]
+            env_spkmap = [fs.sum(esm, axis=0, keepdims=True) for esm in env_spkmap]
+
+        # do smoothing across spatial positions if requested
+        if smooth is not None:
+            # if smoothing, nans will get confusing so we need to reset nans with 0s then reset them
+            env_occ_idxnan = [np.isnan(eom) for eom in env_occmap]
+            env_spk_idxnan = [np.isnan(esm) for esm in env_spkmap]
+            for eom, eoin, esm, esin in zip(env_occmap, env_occ_idxnan, env_spkmap, env_spk_idxnan):
+                eom[eoin] = 0
+                esm[esin] = 0
+
+            # do smoothing
+            kk = helpers.getGaussKernel(self.distcenters, smooth)
+            env_occmap = [helpers.convolveToeplitz(eom, kk, axis=1) for eom in env_occmap]
+            env_spkmap = [helpers.convolveToeplitz(esm, kk, axis=1) for esm in env_spkmap]
+
+            # reset nans
+            for eom, eoin, esm, esin in zip(env_occmap, env_occ_idxnan, env_spkmap, env_spk_idxnan):
+                eom[eoin] = np.nan
+                esm[esin] = np.nan
+
+        # correct spkmap by occupancy
+        env_spkmap = [functions.correctMap(eom, esm) for eom, esm in zip(env_occmap, env_spkmap)]
+
+        # reshape to (numROIs, numTrials, numPositions)
+        env_spkmap = [esm.transpose(2, 0, 1) for esm in env_spkmap]
+
+        # return spkmap
+        return env_spkmap
 
     def define_train_test_split(self, total_folds=3, train_folds=2):
-        """method for creating a train/test split"""
+        """
+        method for creating a train/test split
+
+        how it works:
+        will divide the trials (for each environment, using idxFullTrialEachEnv) into
+        N=total_folds groups. Then, will take M=train_folds of these groups and concatenate
+        to make the "train_idx", a list of trials used for "training" and the rest into
+        "test_idx", a list of trials used for "testing".
+
+        In practice, I usually use total_folds=3 and train_folds=2 because I measure reliability
+        using the train_idx which requires it's own train/test split, then make snake plots
+        with the test_idx.
+        """
         assert train_folds < total_folds, "train_folds can't be >= total_folds"
         foldIdx = [helpers.cvFoldSplit(idxTrialEnv, total_folds) for idxTrialEnv in self.idxFullTrialEachEnv]
         self.train_folds = train_folds
@@ -522,8 +613,11 @@ class placeCellSingleSession(standardAnalysis):
         self.train_idx = [np.concatenate(fidx[:train_folds]) for fidx in foldIdx]
         self.test_idx = [np.concatenate(fidx[train_folds:]) for fidx in foldIdx]
 
-    def measure_reliability(self, new_split=True, with_test=False):
+    def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1):
         """method for measuring reliability in each environment"""
+        if smoothWidth == -1:
+            smoothWidth = self.smoothWidth
+
         if not (self.dataloaded):
             self.load_data()
 
@@ -532,12 +626,15 @@ class placeCellSingleSession(standardAnalysis):
             self.define_train_test_split(total_folds=3, train_folds=2)
 
         # measure reliability of spiking (in two ways)
-        relmse, relcor = zip(*[functions.measureReliability(self.spkmap[:, tidx], numcv=self.numcv) for tidx in self.train_idx])
+        spkmap = self.make_spkmap(average=False, smooth=smoothWidth, trials="train")
+        relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
+        # relmse, relcor = zip(*[functions.measureReliability(self.spkmap[:, tidx], numcv=self.numcv) for tidx in self.train_idx])
         self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
 
         if with_test:
             # measure on test trials
-            relmse, relcor = zip(*[functions.measureReliability(self.spkmap[:, tidx], numcv=self.numcv) for tidx in self.test_idx])
+            spkmap = self.make_spkmap(average=False, smooth=smoothWidth, trials="test")
+            relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
             self.test_relmse, self.test_relcor = np.stack(relmse), np.stack(relcor)
         else:
             # Alert the user that the training data was recalculated without testing
