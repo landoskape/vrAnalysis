@@ -1,5 +1,6 @@
 from tqdm import tqdm
 import numpy as np
+import matplotlib as mpl
 from matplotlib import pyplot as plt
 from .. import helpers
 from ..analysis import placeCellSingleSession
@@ -102,18 +103,19 @@ class SpikemapMethods(placeCellSingleSession):
         making spkmaps, along with showing the differences between averaging before or after dividing
         """
         figsize = 3
-        fig, ax = plt.subplots(1, 2, figsize=(figsize * 2, figsize), layout="constrained")
+        fig, ax = plt.subplots(1, 3, figsize=(figsize * 3, figsize), layout="constrained")
 
         bins = [np.linspace(-4, 1, 51), np.linspace(-1, 1, 51)]  # predefined bins for relmse and relcor
         centers = [helpers.edge2center(b) for b in bins]
+        cmap = mpl.colormaps["Dark2"].resampled(len(settings))
 
         for idx, setting in enumerate(settings):
             mse_counts = np.histogram(relmse[idx], bins=bins[0])[0]
             cor_counts = np.histogram(relcor[idx], bins=bins[1])[0]
-            ax[0].plot(centers[0], mse_counts, label=self.setting_as_string(setting))
-            ax[1].plot(centers[1], cor_counts, label=self.setting_as_string(setting))
-        ax[0].legend(loc="best")
-        ax[1].legend(loc="best")
+            ax[0].plot(centers[0], mse_counts, color=cmap(idx))
+            ax[1].plot(centers[1], cor_counts, color=cmap(idx))
+            ax[2].plot(centers[0], centers[0], color=cmap(idx), label=self.setting_as_string(setting))
+        ax[2].legend(loc="best")
         ax[0].set_title("MSE Reliability Histogram")
         ax[1].set_title("CORR Reliability Histogram")
 

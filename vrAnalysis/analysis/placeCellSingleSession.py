@@ -500,7 +500,6 @@ class placeCellSingleSession(standardAnalysis):
             "speedSmoothing": self.smoothWidth,
         }
         self.occmap, self.speedmap, _, self.rawspkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
-        # self.occmap, self.speedmap, _, self.rawspkmap, self.distedges = functions.outdated_getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
 
         self.distcenters = helpers.edge2center(self.distedges)
 
