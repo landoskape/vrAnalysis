@@ -192,17 +192,16 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
     numTrials, _, numROIs = spkmap.shape
     relmse = np.zeros(numROIs)
     relcor = np.zeros(numROIs)
-    for repeat in range(numRepeats):
+    for _ in range(numRepeats):
         foldIdx = helpers.cvFoldSplit(numTrials, numcv)
         for fold in range(numcv):
             cTrainTrial = np.concatenate(foldIdx[:fold] + foldIdx[fold + 1 :])
             cTestTrial = foldIdx[fold]
-            trainProfile = np.mean(spkmap[cTrainTrial], axis=0)
-            testProfile = np.mean(spkmap[cTestTrial], axis=0)
-            meanTrain = np.mean(trainProfile, axis=0, keepdims=True)  # mean across positions for each ROI
-            meanTest = np.mean(testProfile, axis=0, keepdims=True)
-            numerator = np.sum((testProfile - trainProfile) ** 2, axis=0)
-            denominator = np.sum((testProfile - meanTrain) ** 2, axis=0)
+            trainProfile = fs.mean(spkmap[cTrainTrial], axis=0)
+            testProfile = fs.mean(spkmap[cTestTrial], axis=0)
+            meanTrain = fs.mean(trainProfile, axis=0, keepdims=True)  # mean across positions for each ROI
+            numerator = fs.sum((testProfile - trainProfile) ** 2, axis=0)  # bigger when test and train are more different
+            denominator = fs.sum((trainProfile - meanTrain) ** 2, axis=0)  # bigger when train has variability
 
             # only measure reliability if it has activity (if denominator is 0, it doesn't have enough activity :) )
             idxHasActivity = np.any(spkmap != 0, axis=(0, 1)) & (denominator != 0)
