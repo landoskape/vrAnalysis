@@ -252,6 +252,23 @@ def getAllMaps(
     spkmap,
     count,
 ):
+    """
+    method for transforming temporal information into positional information to make spatial maps
+
+    behavioral and timing variables are:
+    behaveTrialIdx, behavePositionBin, sampleDuration, behaveSpeed, idxBehaveToFrame, distBehaveToFrame
+    where these are all (num_behavioral_samples,) and correspond to the relevant value for each sample.
+    idxBehaveToFrame refers to which index of spks is closest in time to each index in behavioral samples,
+    and distBehaveToFrame refers to the (temporal) "distance" between those two samples
+
+    requires output variables occmap, speedmap, spkmap, and count because it's numba
+    these are all (num_trials, num_positions, ...) (where ... indicates the extra dimension for ROIs in the spkmap and spks)
+
+    will accumulate time spent in occmap
+    will accumulate weighted speed in speedmap (speed per sample times time_spent in that sample)
+    will accumulate weighted spiking in spkmap (spk per sample for each ROI times time_spent in that sample)
+    also counts number of temporal samples per spatial bin in "count"
+    """
     # For each behavioral sample
     for sample in nb.prange(len(behaveTrialIdx)):
         # If mouse is fast enough and time between behavioral sample and imaging frame is within cutoff,
@@ -259,34 +276,76 @@ def getAllMaps(
             # add time spent in that trial/position to occupancy map
             occmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += sampleDuration[sample]
             # and speed in that trial/position to speedmap
-            speedmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += behaveSpeed[sample]
+            speedmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += behaveSpeed[sample] * sampleDuration[sample]
             # add spikes (usually deconvolved spike rate for each ROI) in that trial/position to spkmap
-            spkmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += spks[idxBehaveToFrame[sample]]
+            spkmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += spks[idxBehaveToFrame[sample]] * sampleDuration[sample]
             # add to count to indicate that samples were collected there
             count[behaveTrialIdx[sample]][behavePositionBin[sample]] += 1
 
 
 @nb.njit(parallel=True)
 def getMap(valueToSum, trialidx, positionbin, smap):
-    # this is the fastest way to get a single summation map
-    # -- accepts 1d arrays value, trialidx, positionbin of the same size --
-    # -- shape determines the number of trials and position bins (they might not all be represented in trialidx or positionbin, or we could just do np.max()) --
-    # -- each value represents some number to be summed as a function of which trial it was in and which positionbin it was in --
+    """
+    this is the fastest way to get a single summation map
+    -- accepts 1d arrays value, trialidx, positionbin of the same size --
+    -- shape determines the number of trials and position bins (they might not all be represented in trialidx or positionbin, or we could just do np.max()) --
+    -- each value represents some number to be summed as a function of which trial it was in and which positionbin it was in --
+    """
     for sample in nb.prange(len(valueToSum)):
         smap[trialidx[sample]][positionbin[sample]] += valueToSum[sample]
 
 
+def correctMap(smap, amap, raise_error=False):
+    """
+    divide amap by smap with broadcasting where smap isn't 0 (with some handling of other cases)
+
+    amap: [N, M, ...] "average map" where the values will be divided by relevant value in smap
+    smap: [N, M] "summation map" which is used to divide out values in amap
+
+    Why?
+    ----
+    amap is usually spiking activity or speed, and smap is usually occupancy. To convert temporal recordings
+    to spatial maps, I start by summing up the values of speed/spiking in each position, along with summing
+    up the time spent in each position. Then, with this method, I divide the summed speed/spiking by the time
+    spent, to get an average (weighted) speed or spiking.
+
+    correct amap by smap (where amap[i, j, r] output is set to amap[i, j, r] / smap[i, j] if smap[i, j]>0)
+
+    if raise_error=True, then:
+    - if smap[i, j] is 0 and amap[i, j, r]>0 for any r, will generate an error
+    - if smap[i, j] is nan and amap[i, j, r] is not nan for any r, will generate an error
+    otherwise,
+    - sets amap to 0 wherever smap is 0
+    - sets amap to nan wherever smap is nan
+
+    function:
+    correct a summation map (amap) by time spent (smap) if they were computed separately and the summation map should be averaged across time
+    """
+    zero_check = smap == 0
+    nan_check = np.isnan(smap)
+    if raise_error:
+        if np.any(amap[zero_check] > 0):
+            raise ValueError("amap was greater than 0 where smap was 0 in at least one location")
+        if np.any(~np.isnan(amap[nan_check])):
+            raise ValueError("amap was not nan where smap was nan in at least one location")
+    else:
+        amap[zero_check] = 0
+        amap[nan_check] = np.nan
+
+    # correct amap by smap and return corrected amap
+    _numba_correctMap(smap, amap)
+    return amap
+
+
 @nb.njit(parallel=True)
-def correctMap(smap, amap):
-    # this is the fastest way to correct a summation map (amap) by time spent (smap) if they were computed separately and the summation map should be averaged across time
+def _numba_correctMap(smap, amap):
+    """
+    correct amap by smap (where amap[i, j, r] output is set to amap[i, j, r] / smap[i, j] if smap[i, j]>0)
+    """
     for t in nb.prange(smap.shape[0]):
         for p in nb.prange(smap.shape[1]):
             if smap[t, p] > 0:
                 amap[t, p] /= smap[t, p]
-            else:
-                if np.any(amap[t, p] > 0):
-                    raise ValueError(f"occupancy was zero but spkmap was greater than 0 at [{t}, {p}]")
-    return amap
 
 
 # ============================================================================================================================================
