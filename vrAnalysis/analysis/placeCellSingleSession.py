@@ -1,14 +1,11 @@
-import time
 from copy import copy
 from tqdm import tqdm
+from functools import wraps
 import faststats as fs
 import numpy as np
-import numba as nb
-import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-from .. import session
 from .. import functions
 from .. import helpers
 from .. import database
@@ -16,6 +13,22 @@ from .. import fileManagement as fm
 from .standardAnalysis import standardAnalysis
 
 sessiondb = database.vrDatabase("vrSessions")
+
+
+# ---- decorators for pcss class methods ----
+def prepare_data(func):
+    """decorator to load data if not already autoloaded"""
+
+    @wraps(func)
+    def wrapper(pcss_instance, *args, **kwargs):
+        if not pcss_instance.dataloaded:
+            pcss_instance.load_data()
+
+        # return function with loaded data
+        return func(pcss_instance, *args, **kwargs)
+
+    # return decorated function
+    return wrapper
 
 
 def save_directory(name=""):
@@ -524,9 +537,10 @@ class placeCellSingleSession(standardAnalysis):
         # measure reliability
         self.measure_reliability(new_split=new_split, with_test=with_test)
 
-    def make_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}):
+    @prepare_data
+    def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}):
         """
-        method for making a spkmap from a list of environments
+        method for getting a spkmap from a list of environments
 
         can average across trials before smoothing & dividing (if requested)
         can smooth across spatial positions if requested (smooth is None for no smoothing
@@ -551,7 +565,7 @@ class placeCellSingleSession(standardAnalysis):
         envnum = helpers.check_iterable(envnum)  # make sure envnum is iterable
         envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
 
-        # get occupancy and rawspkmap from requested trials
+        # get occupancy and rawspkmap from requested trials (or across environments)
         if trials == "full":
             env_occmap = [self.occmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
             env_spkmap = [self.rawspkmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
@@ -571,38 +585,55 @@ class placeCellSingleSession(standardAnalysis):
         else:
             raise ValueError(f"Didn't recognize trials option (received '{trials}', expected 'full', 'train', or 'test')")
 
+        # get spkmaps for each environment
+        env_spkmap = [self.make_spkmap(maps=(eom, esm), average=average, smooth=smooth) for eom, esm in zip(env_occmap, env_spkmap)]
+
+        # return spkmap
+        return env_spkmap
+
+    @prepare_data
+    def make_spkmap(self, maps=None, average=False, smooth=None):
+        """
+        central method for doing averaging, smoothing, correcting, and transposing for spkmaps
+        will use self.occmap and self.rawspkmap if None provided
+        """
+        if maps is None:
+            occmap, spkmap = self.occmap, self.rawspkmap
+        else:
+            occmap, spkmap = maps
+            assert occmap.shape[0] == spkmap.shape[0], "number of trials isn't equal"
+            assert occmap.shape[1] == spkmap.shape[1], "number of spatial bins isn't equal"
+
         # average (sum, because divide happens later) across trials if requested
         if average:
-            env_occmap = [fs.sum(eom, axis=0, keepdims=True) for eom in env_occmap]
-            env_spkmap = [fs.sum(esm, axis=0, keepdims=True) for esm in env_spkmap]
+            occmap = fs.sum(occmap, axis=0, keepdims=True)
+            spkmap = fs.sum(spkmap, axis=0, keepdims=True)
 
         # do smoothing across spatial positions if requested
         if smooth is not None:
             # if smoothing, nans will get confusing so we need to reset nans with 0s then reset them
-            env_occ_idxnan = [np.isnan(eom) for eom in env_occmap]
-            env_spk_idxnan = [np.isnan(esm) for esm in env_spkmap]
-            for eom, eoin, esm, esin in zip(env_occmap, env_occ_idxnan, env_spkmap, env_spk_idxnan):
-                eom[eoin] = 0
-                esm[esin] = 0
+            occ_idxnan = np.isnan(occmap)
+            spk_idxnan = np.isnan(spkmap)
+            occmap[occ_idxnan] = 0
+            spkmap[spk_idxnan] = 0
 
             # do smoothing
             kk = helpers.getGaussKernel(self.distcenters, smooth)
-            env_occmap = [helpers.convolveToeplitz(eom, kk, axis=1) for eom in env_occmap]
-            env_spkmap = [helpers.convolveToeplitz(esm, kk, axis=1) for esm in env_spkmap]
+            occmap = helpers.convolveToeplitz(occmap, kk, axis=1)
+            spkmap = helpers.convolveToeplitz(spkmap, kk, axis=1)
 
             # reset nans
-            for eom, eoin, esm, esin in zip(env_occmap, env_occ_idxnan, env_spkmap, env_spk_idxnan):
-                eom[eoin] = np.nan
-                esm[esin] = np.nan
+            occmap[occ_idxnan] = np.nan
+            spkmap[spk_idxnan] = np.nan
 
         # correct spkmap by occupancy
-        env_spkmap = [functions.correctMap(eom, esm) for eom, esm in zip(env_occmap, env_spkmap)]
+        spkmap = functions.correctMap(occmap, spkmap)
 
         # reshape to (numROIs, numTrials, numPositions)
-        env_spkmap = [esm.transpose(2, 0, 1) for esm in env_spkmap]
+        spkmap = spkmap.transpose(2, 0, 1)
 
         # return spkmap
-        return env_spkmap
+        return spkmap
 
     def define_train_test_split(self, total_folds=3, train_folds=2):
         """
@@ -626,35 +657,33 @@ class placeCellSingleSession(standardAnalysis):
         self.train_idx = [np.concatenate(fidx[:train_folds]) for fidx in foldIdx]
         self.test_idx = [np.concatenate(fidx[train_folds:]) for fidx in foldIdx]
 
+    @prepare_data
     def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1, total_folds=3, train_folds=2):
         """method for measuring reliability in each environment"""
         if smoothWidth == -1:
             smoothWidth = self.smoothWidth
-
-        if not (self.dataloaded):
-            self.load_data()
 
         # create a train/test split
         if new_split:
             self.define_train_test_split(total_folds=total_folds, train_folds=train_folds)
 
         # measure reliability of spiking (in two ways)
-        spkmap = self.make_spkmap(average=False, smooth=smoothWidth, trials="train")
+        spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="train")
         relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
         self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
 
         if with_test:
             # measure on test trials
-            spkmap = self.make_spkmap(average=False, smooth=smoothWidth, trials="test")
+            spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="test")
             relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
             self.test_relmse, self.test_relcor = np.stack(relmse), np.stack(relcor)
         else:
             # Alert the user that the training data was recalculated without testing
             self.test_relmse, self.test_relcor = None, None
 
+    @prepare_data
     def get_reliability_values(self, envnum=None, with_test=False):
-        if not (self.dataloaded):
-            self.load_data()
+        """support for getting reliability values from requested or all environments"""
         if envnum is None:
             envnum = copy(self.environments)  # default environment is all of them
         envnum = helpers.check_iterable(envnum)  # make sure it's an iterable
@@ -670,10 +699,9 @@ class placeCellSingleSession(standardAnalysis):
         cortest = [self.test_relcor[ii] for ii in envidx]
         return mse, cor, msetest, cortest
 
+    @prepare_data
     def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None):
         """central method for getting reliable cells from list of environments (by environment index)"""
-        if not (self.dataloaded):
-            self.load_data()
         if envnum is None:
             envnum = copy(self.environments)  # default environment is all of them
         envnum = helpers.check_iterable(envnum)  # make sure it's an iterable
@@ -681,37 +709,28 @@ class placeCellSingleSession(standardAnalysis):
         cutoffs = (-np.inf, -np.inf) if cutoffs is None else cutoffs
         maxcutoffs = (np.inf, np.inf) if maxcutoffs is None else maxcutoffs
         idx_reliable = [
-            (self.relmse[ii] >= cutoffs[0])
-            & (self.relcor[ii] >= cutoffs[1])
-            & (self.relmse[ii] <= maxcutoffs[0])
-            & (self.relcor[ii] <= maxcutoffs[1])
-            for ii in envidx
+            (self.relmse[ei] >= cutoffs[0])
+            & (self.relcor[ei] >= cutoffs[1])
+            & (self.relmse[ei] <= maxcutoffs[0])
+            & (self.relcor[ei] <= maxcutoffs[1])
+            for ei in envidx
         ]
         return idx_reliable
 
-    def get_place_field(self, roi_idx=None, trial_idx=None, method="max"):
-        """get sorting index based on spikemap, roi index, and trial index"""
-        if not (self.dataloaded):
-            self.load_data()
-
+    def get_place_field(self, spkmap, method="max", force_with_negative=False):
+        """get sorting index and place field location for spkmap (numROIs, numTrials, numPositions)"""
         assert method == "com" or method == "max", f"invalid method ({method}), must be either 'com' or 'max'"
-        if roi_idx is None:
-            roi_idx = np.ones(self.numROIs, dtype=bool)
-        if trial_idx is None:
-            trial_idx = np.ones(self.numTrials, dtype=bool)
 
         # Get ROI x Position profile of activity for each ROI as a function of position
-        meanProfile = np.mean(self.spkmap[roi_idx][:, trial_idx], axis=1)
+        meanProfile = fs.mean(spkmap, axis=1)
 
         # if method is 'com' (=center of mass), use weighted mean to get place field location
         if method == "com":
             # note that this can generate buggy behavior if spkmap isn't based on mostly positive signals!
-            if np.any(meanProfile < 0):
-                print(
-                    f"Place field estimation with center-of-mass method is ignoring negative activity values found in session: {self.vrexp.sessionPrint()}"
-                )
+            if not force_with_negative and np.any(meanProfile < 0):
+                raise ValueError("cannot use center of mass method when spkmap data is negative")
             nonnegativeProfile = np.maximum(meanProfile, 0)
-            pfloc = np.sum(nonnegativeProfile * self.distcenters.reshape(1, -1), axis=1) / np.sum(nonnegativeProfile, axis=1)
+            pfloc = fs.sum(nonnegativeProfile * self.distcenters.reshape(1, -1), axis=1) / fs.sum(nonnegativeProfile, axis=1)
 
         # if method is 'max' (=maximum rate), use maximum to get place field location
         if method == "max":
@@ -722,11 +741,9 @@ class placeCellSingleSession(standardAnalysis):
 
         return pfloc, pfidx
 
+    @prepare_data
     def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method="max"):
         """make snake data from train and test sessions, for particular environment if requested"""
-        if not (self.dataloaded):
-            self.load_data()
-
         # default environment is all of them
         if envnum is None:
             envnum = copy(self.environments)
@@ -734,45 +751,30 @@ class placeCellSingleSession(standardAnalysis):
         # envnum must be an iterable
         envnum = helpers.check_iterable(envnum)
 
-        # convert environment numbers to indices
-        envidx = self.envnum_to_idx(envnum)
+        # get idx of reliable ROIs for each environment
+        idx_reliable = self.get_reliable(envnum, cutoffs=cutoffs, maxcutoffs=maxcutoffs)
 
-        # get specific trial indices for given environment(s)
-        ctrain_idx = [self.train_idx[ii] for ii in envidx]
-        ctest_idx = [self.test_idx[ii] for ii in envidx]
+        # get spkmaps for requested environments
+        train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train")
+        test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test")
 
-        # get roi indices to use
-        self.idx_in_snake = self.get_reliable(
-            envnum,
-            cutoffs=cutoffs if with_reliable else None,
-            maxcutoffs=maxcutoffs if with_reliable else None,
-        )
+        # filter by reliable ROIs
+        train_profile = [tp[ir] for tp, ir in zip(train_profile, idx_reliable)]
+        test_profile = [tp[ir] for tp, ir in zip(test_profile, idx_reliable)]
 
-        # get pf sort indices
-        train_pfidx = [
-            self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtrain, method=method)[1]
-            for idxroi, idxenvtrain in zip(self.idx_in_snake, ctrain_idx)
-        ]
+        # get place field indices
+        train_pfidx = [self.get_place_field(train_prof, method=method)[1] for train_prof in train_profile]
 
-        # get spkmap of only reliable ROIs in each environment
-        spkmap = [self.spkmap[idxroi] for idxroi in self.idx_in_snake]
-
-        # average (ROI x position) activity for each environment in training and testing trials
-        trainProfile = [np.mean(sm[:, idxenvtrain], axis=1) for sm, idxenvtrain in zip(spkmap, ctrain_idx)]
-        testProfile = [np.mean(sm[:, idxenvtest], axis=1) for sm, idxenvtest in zip(spkmap, ctest_idx)]
-
-        # average activity for each environment sorted by order on training trials
-        train_snake = [trainProf[pfidx] for trainProf, pfidx in zip(trainProfile, train_pfidx)]
-        test_snake = [testProf[pfidx] for testProf, pfidx in zip(testProfile, train_pfidx)]
+        # make train and test snakes by sorting and squeezing out trials
+        train_snake = [train_prof[tpi].squeeze() for train_prof, tpi in zip(train_profile, train_pfidx)]
+        test_snake = [test_prof[tpi].squeeze() for test_prof, tpi in zip(test_profile, train_pfidx)]
 
         # :)
         return train_snake, test_snake
 
+    @prepare_data
     def make_remap_data(self, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method="max"):
         """make snake data across environments with remapping indices (for N environments, an NxN grid of snakes and indices)"""
-        if not (self.dataloaded):
-            self.load_data()
-
         envnum = helpers.check_iterable(copy(self.environments))  # always use all environments (as an iterable)
         envidx = self.envnum_to_idx(envnum)
 
@@ -811,6 +813,7 @@ class placeCellSingleSession(standardAnalysis):
         # :)
         return snake_plots
 
+    @prepare_data
     def plot_snake(
         self,
         envnum=None,
@@ -825,9 +828,6 @@ class placeCellSingleSession(standardAnalysis):
         withSave=False,
     ):
         """method for plotting cross-validated snake plot"""
-        if not (self.dataloaded):
-            self.load_data()
-
         # default environment is all of them
         if envnum is None:
             envnum = copy(self.environments)

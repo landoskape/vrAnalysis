@@ -57,6 +57,7 @@ class placeCellMultiSession(multipleAnalysis):
         autoload=False,
         keep_planes=[1, 2, 3, 4],
         distStep=1,
+        smoothFilter=1,
         speedThreshold=5,
         numcv=2,
         standardizeSpks=True,
@@ -66,6 +67,7 @@ class placeCellMultiSession(multipleAnalysis):
         self.track = track
         self.autoload = autoload
         self.distStep = distStep
+        self.smoothFilter = smoothFilter
         self.speedThreshold = speedThreshold
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
@@ -289,6 +291,7 @@ class placeCellMultiSession(multipleAnalysis):
         *,
         trials="full",
         average=True,
+        smooth=None,
         tracked=True,
         pf_method="max",
         by_plane=False,
@@ -310,7 +313,8 @@ class placeCellMultiSession(multipleAnalysis):
         pf_method determines how to measure the place field location-- can either be
         'max' for the location at peak value or 'com' for a center of mass measurement
         """
-        envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in idx_ses]
+        if smooth is None:
+            smooth = self.smoothFilter
 
         # load all data now
         self.load_pcss_data(idx_ses=idx_ses, **kwargs)
@@ -320,26 +324,13 @@ class placeCellMultiSession(multipleAnalysis):
             idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # get spkmaps (#ROI, #Trials, #SpatialBins)
-        spkmaps = self.get_from_pcss("spkmap", idx_ses)
+        spkmaps = [self.pcss[i].get_spkmap(envnum, average=False, smooth=smooth, trials=trials)[0] for i in idx_ses]
 
         # make ROI index
         roi_idx = [np.arange(s.shape[0]) for s in spkmaps]
 
         # retrieve red index for ROIs
         idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
-
-        # retrieve requested trial indices (or all trial indices for requested environment)
-        if trials == "train":
-            # get train trials
-            idx_trials = [self.pcss[i].train_idx[ei] for i, ei in zip(idx_ses, envidx)]
-        elif trials == "test":
-            # get test trials
-            idx_trials = [self.pcss[i].test_idx[ei] for i, ei in zip(idx_ses, envidx)]
-        elif trials == "full":
-            # Otherwise use all trials in requested environment
-            idx_trials = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(idx_ses, envidx)]
-        else:
-            raise ValueError(f"Did not recognize 'trials' input, permitted is 'train', 'test', and 'full' but '{trials}' was provided.")
 
         # get reliability values for ROIs
         relmse, relcor = helpers.named_transpose([self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses])
@@ -350,9 +341,7 @@ class placeCellMultiSession(multipleAnalysis):
         relcor = list(map(lambda x: x[0], relcor))
 
         # get place field for ROIs
-        pfloc, pfidx = helpers.named_transpose(
-            [self.pcss[ises].get_place_field(trial_idx=idx_trials[ii], method=pf_method) for ii, ises in enumerate(idx_ses)]
-        )
+        pfloc, pfidx = helpers.named_transpose([self.pcss[ises].get_place_field(spkmap, method=pf_method) for ises, spkmap in zip(idx_ses, spkmaps)])
 
         # if using tracked only, then filter and sort by tracking index
         if tracked:
@@ -363,9 +352,6 @@ class placeCellMultiSession(multipleAnalysis):
             pfloc = [pfl[idx_track] for pfl, idx_track in zip(pfloc, idx_tracked)]
             pfidx = [pfi[idx_track] for pfi, idx_track in zip(pfidx, idx_tracked)]
             roi_idx = [ridx[idx_track] for ridx, idx_track in zip(roi_idx, idx_tracked)]
-
-        # always filter spkmaps by trials for requested environment (either train/test/all)
-        spkmaps = [spkmap[:, trials] for spkmap, trials in zip(spkmaps, idx_trials)]
 
         # if trial average requested, average over trials
         if average:
