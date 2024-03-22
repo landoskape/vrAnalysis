@@ -14,7 +14,7 @@ mousedb = database.vrDatabase("vrMice")
 sessiondb = database.vrDatabase("vrSessions")
 
 MICE = mousedb.getTable(experimentID=1)["mouseName"].tolist()  # list of mice with Imaging data
-CUTOFFS = (0.4, 0.7)
+CUTOFFS = (0.3, 0.6)
 MAXCUTOFFS = None
 
 
@@ -86,6 +86,7 @@ if __name__ == "__main__":
         # then go through sessions,
         for ses in ses_list:
             # Make a spikemap method analysis object
+            print(f"Analyzing {str(ses)}...")
             pcss = SpikemapMethods(ses, autoload=False)
 
             # load spkmaps and reliability with different settings
