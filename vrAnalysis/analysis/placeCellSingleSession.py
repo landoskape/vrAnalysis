@@ -470,7 +470,7 @@ class placeCellSingleSession(standardAnalysis):
         numcv=None,
         keep_planes=None,
         with_test=False,
-        full_trial_flexibility=5,
+        full_trial_flexibility=3,
         new_split=True,
     ):
         """load standard data for basic place cell analysis"""

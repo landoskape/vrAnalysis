@@ -43,7 +43,7 @@ class standardAnalysis:
             dirName.mkdir(parents=True)
         return dirName
 
-    def saveFigure(self, figNumber, name):
+    def saveFigure(self, figNumber, name, extra_name=""):
         """
         save a figure currently open in matplotlib
 
@@ -51,7 +51,10 @@ class standardAnalysis:
         """
         print(f"{self.name} is saving a {name} figure for session: {self.vrexp.sessionPrint()}")
         plt.figure(figNumber)
-        plt.savefig(self.saveDirectory(name) / str(self.vrexp))
+        figpath = self.saveDirectory(name) / str(self.vrexp) / extra_name
+        if not figpath.parent.is_dir():
+            figpath.parent.mkdir(parents=True)
+        plt.savefig(figpath)
 
 
 class multipleAnalysis(standardAnalysis):
