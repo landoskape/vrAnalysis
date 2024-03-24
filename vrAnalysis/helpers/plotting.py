@@ -1,18 +1,6 @@
-import sys
-from warnings import warn
-import inspect
-import math
-from copy import copy
-from itertools import chain, combinations
 import numpy as np
-import scipy as sp
-from sklearn.decomposition import PCA
-from sklearn.decomposition import IncrementalPCA
-import torch
 import matplotlib
 import matplotlib.pyplot as plt
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def fractional_histogram(*args, **kwargs):
