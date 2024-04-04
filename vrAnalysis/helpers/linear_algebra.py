@@ -286,56 +286,7 @@ def shuff_cvPCA(X1, X2, nshuff=5, cvmethod=cvPCA_from_MouseLandGithub):
     return ss
 
 
-def cvpca(spkmap, by_trial=False, noise_corr=False, max_trials=None, max_neurons=None, nshuff=10, cvmethods=[cvPCA_paper_neurons]):
-    # reduce number of neurons if requested
-    if max_neurons is not None:
-        idx_keep = np.random.permutation(spkmap.shape[0])[:max_neurons]
-        spkmap = spkmap[idx_keep]
-
-    # get shape of spkmap and define "train" vs "test" trials
-    num_rois, num_trials, num_bins = spkmap.shape
-    train, test = cvFoldSplit(num_trials, 2, even=True)
-
-    # clip trials if max provided
-    if max_trials is not None:
-        train = train[:max_trials]
-        test = test[:max_trials]
-
-    # retrieve and divide by train/test trials
-    spk_train = spkmap[:, train]
-    spk_test = spkmap[:, test]
-
-    # average across trials or concatenate across trials depending on request
-    if not by_trial:
-        if noise_corr:
-            print("note: noise_corr set to True, but only used when by_trial=True")
-
-        # average across trials
-        spk_train = np.mean(spk_train, axis=1)
-        spk_test = np.mean(spk_test, axis=1)
-
-    else:
-        # concatenate across trials
-        num_use_trials = len(train)
-        if noise_corr:
-            spk_train = spk_train - np.mean(spk_train, axis=1, keepdims=True)
-            spk_test = spk_test - np.mean(spk_test, axis=1, keepdims=True)
-        spk_train = np.reshape(spk_train, (num_rois, num_use_trials * num_bins))
-        spk_test = np.reshape(spk_test, (num_rois, num_use_trials * num_bins))
-
-    # center data
-    spk_train = spk_train - np.mean(spk_train, axis=1, keepdims=True)
-    spk_test = spk_test - np.mean(spk_test, axis=1, keepdims=True)
-
-    # inherited from stringer/pachitariu
-    ss = [shuff_cvPCA(spk_train.T, spk_test.T, nshuff=nshuff, cvmethod=cvm) for cvm in cvmethods]
-    ss = [np.nanmean(s, axis=0) for s in ss]
-
-    return ss
-
-
-def cvpca_multienv(spkmap, by_trial=False, noise_corr=False, max_trials=None, max_neurons=None, nshuff=10, cvmethods=[cvPCA_paper_neurons]):
-    """do cvpca across multiple environments"""
+def cvpca(spkmap, by_trial=False, noise_corr=False, max_trials=None, max_neurons=None, nshuff=3, cvmethods=[cvPCA_paper_neurons]):
     # reduce number of neurons if requested
     if max_neurons is not None:
         idx_keep = np.random.permutation(spkmap.shape[0])[:max_neurons]
