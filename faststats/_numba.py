@@ -12,6 +12,15 @@ def numba_sum(data):
 
 
 @nb.njit(parallel=True)
+def numba_nansum(data):
+    """numba speed up for nansum"""
+    output = np.zeros(data.shape[0])
+    for n in nb.prange(data.shape[0]):
+        output[n] = np.nansum(data[n])
+    return output
+
+
+@nb.njit(parallel=True)
 def numba_ptp(data):
     """numba speed up for ptp"""
     output = np.zeros(data.shape[0])

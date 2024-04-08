@@ -10,6 +10,7 @@ from .utils import (
 
 from ._numba import (
     numba_sum,
+    numba_nansum,
     numba_ptp,
     numba_percentile,
     numba_nanpercentile,
@@ -32,6 +33,7 @@ from ._numba import (
 # for each string, lookup for which numba method to use
 _method_lookup = dict(
     sum=numba_sum,
+    nansum=numba_nansum,
     ptp=numba_ptp,
     percentile=numba_percentile,
     nanpercentile=numba_nanpercentile,
@@ -108,6 +110,10 @@ def faststat(data, method, axis=-1, keepdims=False, q=None):
 # ==========================================================================================
 def sum(data, axis=None, keepdims=False):
     return faststat(data, "sum", axis=axis, keepdims=keepdims)
+
+
+def nansum(data, axis=None, keepdims=False):
+    return faststat(data, "nansum", axis=axis, keepdims=keepdims)
 
 
 def ptp(data, axis=None, keepdims=False):

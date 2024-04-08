@@ -1,5 +1,6 @@
 from .faststats import (
     sum,
+    nansum,
     ptp,
     percentile,
     nanpercentile,
