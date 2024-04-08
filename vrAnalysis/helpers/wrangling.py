@@ -19,6 +19,9 @@ class AttributeDict(dict):
     def __setattr__(self, attr, value):
         self[attr] = value
 
+    def asdict(self):
+        return dict(self)
+
 
 # ------------------------------------ data wrangling ------------------------------------
 def transpose_list(list_of_lists):
