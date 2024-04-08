@@ -3,8 +3,10 @@ import scipy as sp
 from sklearn.decomposition import PCA
 from sklearn.decomposition import IncrementalPCA
 import torch
+import faststats as fs
 from .indexing import cvFoldSplit
 from .wrangling import named_transpose
+from .signals import vectorCorrelation
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -286,14 +288,56 @@ def shuff_cvPCA(X1, X2, nshuff=5, cvmethod=cvPCA_from_MouseLandGithub):
     return ss
 
 
-def cvpca(spkmap, by_trial=False, noise_corr=False, max_trials=None, max_neurons=None, nshuff=3, cvmethods=[cvPCA_paper_neurons]):
+def cvFOURIER(train, test, basis, covariance=False):
+    """
+    train/test are neurons x stimuli(position)
+    basis is (num_bases x stimuli(position))
+    """
+    # project onto columns
+    train = train @ basis.T
+    test = test @ basis.T
+
+    # get real/imaginary components (sine/cosine)
+    cos_train = np.real(train)
+    sin_train = np.imag(train)
+    cos_test = np.real(test)
+    sin_test = np.imag(test)
+
+    # get correlation of projections across neurons for train/test
+    cos_corr = vectorCorrelation(cos_train, cos_test, axis=0, covariance=covariance)
+    sin_corr = vectorCorrelation(sin_train, sin_test, axis=0, covariance=covariance)
+
+    # stack for simple variable handling
+    corr = np.stack((cos_corr, sin_corr))
+
+    # return correlation and projections
+    return corr, cos_train, sin_train, cos_test, sin_test
+
+
+def _prepare_cv(spkmap, extra=None, by_trial=False, noise_corr=False, center=True, max_trials=None, max_neurons=None):
+    """
+    helper for preparing cross-validated spkmap datasets
+
+    spkmap is a (num_rois, num_trials, num_bins) array
+    this will turn it into a train/test set with several options
+
+    if extra is not None, will tile extra on second dimension (axis=1) to have same number of trial repeats as spkmap
+
+    if by_trial: will expand across trials (grouping by trial randomly in a single permutation)
+    if noise_corr: will only look at noise correlations (subtract mean from data -- requires by_trial)
+    if center: will subtract mean after preparing train/test set
+    max_trials: will filter by max trials (random trials selected) to normalize number of trials across cvPCA repeats
+    max_neurons: will filter by max neurons (random neurons selected) to normalize number of neurons across cvPCA repeats
+    """
     # reduce number of neurons if requested
     if max_neurons is not None:
         idx_keep = np.random.permutation(spkmap.shape[0])[:max_neurons]
         spkmap = spkmap[idx_keep]
 
-    # get shape of spkmap and define "train" vs "test" trials
+    # get shape of spkmap
     num_rois, num_trials, num_bins = spkmap.shape
+
+    # generate a train/test set
     train, test = cvFoldSplit(num_trials, 2, even=True)
 
     # clip trials if max provided
@@ -311,24 +355,131 @@ def cvpca(spkmap, by_trial=False, noise_corr=False, max_trials=None, max_neurons
             print("note: noise_corr set to True, but only used when by_trial=True")
 
         # average across trials
-        spk_train = np.mean(spk_train, axis=1)
-        spk_test = np.mean(spk_test, axis=1)
+        spk_train = fs.nanmean(spk_train, axis=1)
+        spk_test = fs.nanmean(spk_test, axis=1)
 
     else:
         # concatenate across trials
         num_use_trials = len(train)
         if noise_corr:
-            spk_train = spk_train - np.mean(spk_train, axis=1, keepdims=True)
-            spk_test = spk_test - np.mean(spk_test, axis=1, keepdims=True)
+            spk_train = spk_train - fs.nanmean(spk_train, axis=1, keepdims=True)
+            spk_test = spk_test - fs.nanmean(spk_test, axis=1, keepdims=True)
         spk_train = np.reshape(spk_train, (num_rois, num_use_trials * num_bins))
         spk_test = np.reshape(spk_test, (num_rois, num_use_trials * num_bins))
 
-    # center data
-    spk_train = spk_train - np.mean(spk_train, axis=1, keepdims=True)
-    spk_test = spk_test - np.mean(spk_test, axis=1, keepdims=True)
+        if extra is not None:
+            extra = np.tile(extra, [1, num_use_trials])
 
-    # inherited from stringer/pachitariu
-    ss = [shuff_cvPCA(spk_train.T, spk_test.T, nshuff=nshuff, cvmethod=cvm) for cvm in cvmethods]
-    ss = [np.nanmean(s, axis=0) for s in ss]
+    # center data if requested
+    if center:
+        spk_train = spk_train - fs.nanmean(spk_train, axis=1, keepdims=True)
+        spk_test = spk_test - fs.nanmean(spk_test, axis=1, keepdims=True)
 
-    return ss
+    # return train/test set and extra if included
+    if extra is not None:
+        return spk_train, spk_test, extra
+
+    # otherwise just train/test set
+    return spk_train, spk_test
+
+
+def cvpca(
+    spkmap, by_trial=False, noise_corr=False, center=True, max_trials=None, max_neurons=None, nshuff=3, cvshuff=1, cvmethod=cvPCA_paper_neurons
+):
+    """
+    cvpca method -- run cvPCA on spkmap with various options and repeats of train/test set and cv-shuffling
+
+    nshuff is how many times to repeat the train/test set generation
+    cvshuff is how many times to do the specialized cvPCA shuffling method (see shuff_cvPCA method above)
+    cvmethod is which method to use to directly calculate the cv-eigenspectrum
+
+    spkmap is a (num_rois, num_trials, num_bins) array
+
+    if by_trial: will expand across trials (grouping by trial randomly in a single permutation)
+    if noise_corr: will only look at noise correlations (subtract mean from data -- requires by_trial)
+    if center: will subtract mean after preparing train/test set
+    max_trials: will filter by max trials (random trials selected) to normalize number of trials across cvPCA repeats
+    max_neurons: will filter by max neurons (random neurons selected) to normalize number of neurons across cvPCA repeats
+
+    """
+
+    ss = []
+    for _ in range(nshuff):
+        # generate train/test set
+        spk_train, spk_test = _prepare_cv(
+            spkmap, by_trial=by_trial, noise_corr=noise_corr, center=center, max_trials=max_trials, max_neurons=max_neurons
+        )
+
+        # do cvPCA (with optional cv shuffling) for this train/test set
+        c_ss = shuff_cvPCA(spk_train.T, spk_test.T, nshuff=cvshuff, cvmethod=cvmethod)
+        c_ss = np.nanmean(c_ss, axis=0)
+        ss.append(c_ss)
+
+    # return average of all shuffles
+    return np.nanmean(np.stack(ss), axis=0)
+
+
+def cv_fourier(
+    spkmap, basis, by_trial=False, noise_corr=False, max_trials=None, max_neurons=None, center=True, covariance=False, return_full=False, nshuff=3
+):
+    """
+    cv_fourier method -- run cv_fourier on spkmap with various options and repeats of train/test set and cv-shuffling
+
+    nshuff is how many times to repeat the train/test set generation
+
+    spkmap is a (num_rois, num_trials, num_bins) array
+
+    if by_trial: will expand across trials (grouping by trial randomly in a single permutation)
+    if noise_corr: will only look at noise correlations (subtract mean from data -- requires by_trial)
+    if center: will subtract mean after preparing train/test set
+    if covariance: will measure covariance of projections rather than correlation
+    max_trials: will filter by max trials (random trials selected) to normalize number of trials across cvPCA repeats
+    max_neurons: will filter by max neurons (random neurons selected) to normalize number of neurons across cvPCA repeats
+
+    returns
+    -------
+    the average correlation (2 x num frequencies) across shuffles
+    if return_full=True, also returns the projections onto train/test for cosine/sine bases
+
+    """
+    # if this isn't true, generate an immediate error
+    assert basis.shape[1] == spkmap.shape[2], "shape of basis doesn't match number of spatial bins in spkmap"
+
+    # find any positions with nan across train/test sets
+    idx_not_nan = np.any(np.isnan(spkmap), axis=(0, 1))
+
+    # remove from spkmap and basis (basis has gaps where appropriate rather than discontinuous stitched sine/cosines)
+    spkmap = spkmap[:, :, ~idx_not_nan]
+    basis = basis[:, ~idx_not_nan]
+
+    corr = []
+    if return_full:
+        cos_train, sin_train, cos_test, sin_test = [], [], [], []
+
+    for _ in range(nshuff):
+        # generate train/test set
+        spk_train, spk_test, c_basis = _prepare_cv(
+            spkmap, extra=basis, by_trial=by_trial, noise_corr=noise_corr, center=center, max_trials=max_trials, max_neurons=max_neurons
+        )
+
+        # do cvFOURIER method
+        c_corr, c_cos_train, c_sin_train, c_cos_test, c_sin_test = cvFOURIER(spk_train, spk_test, c_basis, covariance=covariance)
+
+        # add correlation of this shuffle to result
+        corr.append(c_corr)
+
+        if return_full:
+            cos_train.append(c_cos_train)
+            cos_test.append(c_cos_test)
+            sin_train.append(c_sin_train)
+            sin_test.append(c_sin_test)
+
+    # return average of all shuffles
+    corr = np.nanmean(np.stack(corr), axis=0)
+
+    # return all if requested
+    if return_full:
+        return corr, np.stack(cos_train), np.stack(cos_test), np.stack(sin_train), np.stack(sin_test)
+
+    # otherwise just return correlation averages
+    return corr
