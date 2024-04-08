@@ -112,22 +112,30 @@ def crossCorrelation(x, y):
     return std
 
 
-def vectorCorrelation(x, y, axis=-1):
-    """measure the correlation of every element in x with every element in y on axis=axis"""
+def vectorCorrelation(x, y, covariance=False, axis=-1):
+    """
+    measure the correlation of every element in x with every element in y on axis=axis
+    if covariance=True, will measure the covariance
+    """
     assert x.shape == y.shape, "x and y need to have the same shape!"
     N = x.shape[axis]
     xDev = x - np.mean(x, axis=axis, keepdims=True)
     yDev = y - np.mean(y, axis=axis, keepdims=True)
-    xSampleStd = np.sqrt(np.sum(xDev**2, axis=axis, keepdims=True) / (N - 1))
-    ySampleStd = np.sqrt(np.sum(yDev**2, axis=axis, keepdims=True) / (N - 1))
-    xIdxValid = xSampleStd > 0
-    yIdxValid = ySampleStd > 0
-    xSampleStdCorrected = xSampleStd + 1 * (~xIdxValid)
-    ySampleStdCorrected = ySampleStd + 1 * (~yIdxValid)
+    if not covariance:
+        xSampleStd = np.sqrt(np.sum(xDev**2, axis=axis, keepdims=True) / (N - 1))
+        ySampleStd = np.sqrt(np.sum(yDev**2, axis=axis, keepdims=True) / (N - 1))
+        xIdxValid = xSampleStd > 0
+        yIdxValid = ySampleStd > 0
+        xSampleStdCorrected = xSampleStd + 1 * (~xIdxValid)
+        ySampleStdCorrected = ySampleStd + 1 * (~yIdxValid)
+    else:
+        xSampleStdCorrected = 1
+        ySampleStdCorrected = 1
     xDev /= xSampleStdCorrected
     yDev /= ySampleStdCorrected
     std = np.sum(xDev * yDev, axis=axis) / (N - 1)
-    std *= 1 * np.squeeze(xIdxValid & yIdxValid)
+    if not covariance:
+        std *= 1 * np.squeeze(xIdxValid & yIdxValid)
     return std
 
 
@@ -291,3 +299,24 @@ def convolveToeplitz(data, kk, axis=-1, mode="same", device="cpu"):
         del convMat, dataReshape  # delete variables
         torch.cuda.empty_cache()  # clear memory
     return np.moveaxis(output, -1, axis)
+
+
+def get_fourier_basis(L, Fs=1.0):
+    """
+    create discrete fourier basis set
+    returns
+    -------
+    f: frequencies
+    basis: (N x L) basis set of fourier modes
+
+    """
+
+    x = np.linspace(0, L - 1, L)  # each column is a different position
+    n = sp.fft.rfftfreq(L, 1 / L)  # get one-sided frequencies (in integers)
+    f = n * Fs / L  # get frequencies (according to sampling rate)
+
+    # get a one-sided fourier basis
+    basis = np.exp(-2j * np.pi * x.reshape(1, -1) * n.reshape(-1, 1) / L)
+
+    # return frequency and basis
+    return f, basis
