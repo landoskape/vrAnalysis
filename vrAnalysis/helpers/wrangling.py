@@ -3,6 +3,23 @@ import inspect
 import math
 
 
+class AttributeDict(dict):
+    """
+    helper class for accessing dictionary values as attributes
+
+    for example, if d = {"a": 1, "b": 2}, then you can access d["a"] as d.a
+    very helpful for situations when a method requires "args" as an input, which
+    is usually the output of argparse.ArgumentParser.parse_args(), but you want to
+    run that method without an argparse object
+    """
+
+    def __getattr__(self, attr):
+        return self[attr]
+
+    def __setattr__(self, attr, value):
+        self[attr] = value
+
+
 # ------------------------------------ data wrangling ------------------------------------
 def transpose_list(list_of_lists):
     """helper function for transposing the order of a list of lists"""
