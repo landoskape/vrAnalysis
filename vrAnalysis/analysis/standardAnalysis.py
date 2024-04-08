@@ -1,3 +1,4 @@
+import pickle
 import matplotlib.pyplot as plt
 
 from .. import session
@@ -19,6 +20,26 @@ class standardAnalysis:
         self.name = "standardAnalysis"
         self.vrexp = vrexp
         assert type(self.vrexp) == session.vrExperiment, "vrexp is not a vrExperiment object"
+
+    def save_temp_file(self, data, name):
+        """
+        save a temporary file
+
+        saves a temporary file in the analysis directory with the name provided
+        """
+        print(f"{self.name} is saving a temporary file for session: {self.vrexp.sessionPrint()}")
+        with open(self.saveDirectory("temp") / name, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def clear_temp_files(self):
+        """
+        clear temporary files
+
+        clears all temporary files in the analysis directory
+        """
+        print(f"{self.name} is clearing temporary files for session: {self.vrexp.sessionPrint()}")
+        for f in (self.saveDirectory("temp")).iterdir():
+            f.unlink()
 
     def analysisDirectory(self):
         """
@@ -70,6 +91,16 @@ class multipleAnalysis(standardAnalysis):
         Also names the analysis type, this should be overwritten!!
         """
         self.name = "multipleAnalysis"
+
+    def save_temp_file(self, data, name):
+        """
+        save a temporary file
+
+        saves a temporary file in the analysis directory with the name provided
+        """
+        print(f"{self.name} is saving a temporary file:")
+        with open(self.saveDirectory("temp") / name, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     def saveFigure(self, figNumber, multiname, name):
         """
