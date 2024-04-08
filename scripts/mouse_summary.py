@@ -8,6 +8,7 @@ sys.path.append(mainPath)
 from argparse import ArgumentParser
 from tqdm import tqdm
 import pickle
+from matplotlib import pyplot as plt
 
 from vrAnalysis.helpers import (
     cutoff_type,
@@ -15,7 +16,7 @@ from vrAnalysis.helpers import (
 )
 from vrAnalysis import tracking
 from vrAnalysis import analysis
-from vrAnalysis.analysis.variance_structure import load_spectra_data, plot_spectral_data
+from vrAnalysis.analysis.variance_structure import load_spectra_data, plot_spectral_data, plot_fourier_data
 
 CUTOFFS = (0.4, 0.7)
 MAXCUTOFFS = None
@@ -37,24 +38,50 @@ def handle_inputs():
 def analyze_spectra(pcm, args):
     """method for analyzing and plotting spectra with cvPCA and cvFOURIER analyses"""
     # load spectra data (use temp if it matches)
-    spectra_data = load_spectra_data(pcm, args, save_as_temp=True)
-    names, envstats, cv_by_env_all, cv_by_env_rel, cv_across_all, cv_across_rel, cvf_freqs, cvf_by_env_all, cvf_by_env_rel = spectra_data
+    (
+        names,
+        envstats,
+        cv_by_env_all,
+        cv_by_env_rel,
+        cv_across_all,
+        cv_across_rel,
+        cvf_freqs,
+        cvf_by_env_all,
+        cvf_by_env_rel,
+        cvf_by_env_cov_all,
+        cvf_by_env_cov_rel,
+    ) = load_spectra_data(pcm, args, save_as_temp=True)
 
     # make plots
+    plt.close("all")
     for color_by_session in [True, False]:
-        plot_spectral_data(
-            pcm,
-            args,
-            names,
-            envstats,
-            cv_by_env_all,
-            cv_by_env_rel,
-            cv_across_all,
-            cv_across_rel,
-            color_by_session=color_by_session,
-            with_show=False,
-            with_save=True,
-        )
+        for normalize in [True, False]:
+            plot_spectral_data(
+                pcm,
+                names,
+                envstats,
+                cv_by_env_all,
+                cv_by_env_rel,
+                cv_across_all,
+                cv_across_rel,
+                color_by_session=color_by_session,
+                normalize=normalize,
+                with_show=False,
+                with_save=True,
+            )
+        for cvf_all, cvf_rel, covariance in zip([cvf_by_env_all, cvf_by_env_cov_all], [cvf_by_env_rel, cvf_by_env_cov_rel], [False, True]):
+            plot_fourier_data(
+                pcm,
+                names,
+                envstats,
+                cvf_freqs,
+                cvf_all,
+                cvf_rel,
+                color_by_session=color_by_session,
+                covariance=covariance,
+                with_show=False,
+                with_save=True,
+            )
 
 
 if __name__ == "__main__":

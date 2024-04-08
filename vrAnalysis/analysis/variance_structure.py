@@ -69,7 +69,7 @@ class VarianceStructure(placeCellSingleSession):
         allspkmaps = self.concatenate_envs(spkmaps)
 
         # get maximum number of trials / neurons for consistent rank of matrices across environments / all envs
-        max_trials = int(self._get_min_trials(spkmaps) / 2)
+        max_trials = int(self._get_min_trials(spkmaps) // 2)
         max_neurons = int(self._get_min_neurons(spkmaps))
 
         # do cvpca
@@ -83,7 +83,7 @@ class VarianceStructure(placeCellSingleSession):
         freqs, basis = helpers.get_fourier_basis(spkmaps[0].shape[2], Fs=self.distStep)
 
         # get maximum number of trials / neurons for consistent rank of matrices across environments / all envs
-        max_trials = int(self._get_min_trials(spkmaps) / 2)
+        max_trials = int(self._get_min_trials(spkmaps) // 2)
         max_neurons = int(self._get_min_neurons(spkmaps))
 
         # do cvpca
@@ -146,8 +146,9 @@ def load_spectra_data(pcm, args, save_as_temp=True):
 
         # check if arguments are correct
         if not load_data:
+            check_args = args if isinstance(args, dict) else vars(args)
             for key in ["cutoffs", "maxcutoffs", "smooth", "mouse_name", "dist_step"]:
-                if temp_files["args"][key] != vars(args)[key]:
+                if temp_files["args"][key] != check_args[key]:
                     load_data = True
 
     else:
@@ -209,10 +210,11 @@ def load_spectra_data(pcm, args, save_as_temp=True):
 
         if save_as_temp:
             # save data as temporary files
+            temp_save_args = args if type(args) == dict else args.asdict() if type(args) == helpers.AttributeDict else vars(args)
             temp_files = {
                 "names": [v.vrexp.sessionPrint() for v in vss],
                 "envstats": envstats,
-                "args": vars(args),
+                "args": temp_save_args,
                 "cv_by_env_all": cv_by_env_all,
                 "cv_by_env_rel": cv_by_env_rel,
                 "cv_across_all": cv_across_all,
@@ -245,13 +247,29 @@ def load_spectra_data(pcm, args, save_as_temp=True):
 
 
 def plot_spectral_data(
-    pcm, names, envstats, cv_by_env_all, cv_by_env_rel, cv_across_all, cv_across_rel, color_by_session=True, with_show=True, with_save=False
+    pcm,
+    names,
+    envstats,
+    cv_by_env_all,
+    cv_by_env_rel,
+    cv_across_all,
+    cv_across_rel,
+    color_by_session=True,
+    normalize=False,
+    with_show=True,
+    with_save=False,
 ):
     # make plots of spectra data
     num_sessions = len(names)
     num_envs = len(envstats)
 
     cmap = mpl.colormaps["turbo"].resampled(num_sessions)
+
+    def norm(data):
+        """helper for optionally normalizing data"""
+        if normalize:
+            return data / np.sum(data)
+        return data
 
     def get_color(env, sesnum):
         """helper for getting color based on color method"""
@@ -272,10 +290,10 @@ def plot_spectral_data(
                 eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
 
                 cdata = cv_by_env_all[j][eidx]
-                ax[0, i].plot(range(1, len(cdata) + 1), cdata, color=get_color(c_env, j))
+                ax[0, i].plot(range(1, len(cdata) + 1), norm(cdata), color=get_color(c_env, j))
 
                 cdata = cv_by_env_rel[j][eidx]
-                ax[1, i].plot(range(1, len(cdata) + 1), cdata, color=get_color(c_env, j))
+                ax[1, i].plot(range(1, len(cdata) + 1), norm(cdata), color=get_color(c_env, j))
 
             ax[0, i].set_title(f"Environment {c_env}")
             ax[0, i].set_ylabel("Eigenspectrum")
@@ -287,9 +305,9 @@ def plot_spectral_data(
 
     for j in range(num_sessions):
         cdata = cv_across_all[j]
-        ax[0, -1].plot(range(1, len(cdata) + 1), cdata, color=cmap(j))
+        ax[0, -1].plot(range(1, len(cdata) + 1), norm(cdata), color=cmap(j))
         cdata = cv_across_rel[j]
-        ax[1, -1].plot(range(1, len(cdata) + 1), cdata, color=cmap(j))
+        ax[1, -1].plot(range(1, len(cdata) + 1), norm(cdata), color=cmap(j))
         ax[0, -1].set_title(f"All Environments")
         ax[1, -1].set_xlabel("Dimension")
 
@@ -298,4 +316,65 @@ def plot_spectral_data(
 
     if with_save:
         special_name = "by_session" if color_by_session else "by_relative_session"
+        special_name = special_name + "_normalized" if normalize else special_name
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name)
+
+
+def plot_fourier_data(
+    pcm, names, envstats, cvf_freqs, cvf_by_env_all, cvf_by_env_rel, covariance=False, color_by_session=True, with_show=True, with_save=False
+):
+    """
+    plot fourier data for variance structure analysis
+    """
+
+    # make plots of spectra data
+    num_sessions = len(names)
+    num_envs = len(envstats)
+
+    cmap = mpl.colormaps["turbo"].resampled(num_sessions)
+
+    def get_color(env, sesnum):
+        """helper for getting color based on color method"""
+        if color_by_session:
+            # color by absolute session number
+            return cmap(sesnum)
+        else:
+            # color by relative session number (within environment)
+            sesnum_for_env = envstats[env].index(sesnum)
+            return cmap(sesnum_for_env)
+
+    figdim = 3
+    fig, ax = plt.subplots(2, num_envs * 2, figsize=(2 * num_envs * figdim, 2 * figdim), layout="constrained", sharex=True, sharey=True)
+    for i in range(num_envs):
+        c_env = pcm.environments[i]
+        for j in range(num_sessions):
+            c_freqs = cvf_freqs[j]
+            if j in envstats[c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+
+                cdata = cvf_by_env_all[j][eidx]
+                ax[0, 2 * i].plot(c_freqs, cdata[0], color=get_color(c_env, j), linestyle="-")
+                ax[0, 2 * i + 1].plot(c_freqs, cdata[1], color=get_color(c_env, j), linestyle="--")
+
+                cdata = cvf_by_env_rel[j][eidx]
+                ax[1, 2 * i].plot(c_freqs, cdata[0], color=get_color(c_env, j), linestyle="-")
+                ax[1, 2 * i + 1].plot(c_freqs, cdata[1], color=get_color(c_env, j), linestyle="--")
+
+            ax[0, 2 * i].set_title(f"Environment {c_env} (cosines)")
+            ax[0, 2 * i + 1].set_title(f"Environment {c_env} (sines)")
+            if i == 0:
+                ax[0, i].set_ylabel("Fourier Reliability")
+                ax[1, i].set_ylabel("Fourier Reliability (reliable)")
+            ax[1, 2 * i].set_xlabel("1 / SpatialWidth (1/cm)")
+            ax[1, 2 * i + 1].set_xlabel("1 / SpatialWidth (1/cm)")
+
+        ax[0, i].set_xscale("log")
+        ax[1, i].set_xscale("log")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "by_session" if color_by_session else "by_relative_session"
+        special_name = special_name + "_covariance" if covariance else special_name + "_correlation"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_fourier_" + special_name)
