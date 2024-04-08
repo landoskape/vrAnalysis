@@ -10,3 +10,4 @@ from .spikemap_methods import SpikemapMethods
 from .placeCellMultiSession import placeCellMultiSession
 from .roicat_stats import RoicatStats
 from .sessionStats import sessionStats, plot_environmentStats, plot_roiCountStats
+from .variance_structure import VarianceStructure
