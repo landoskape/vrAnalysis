@@ -205,9 +205,8 @@ def load_spectra_data(pcm, args, save_as_temp=True):
             cvf_by_env_rel.append(c_rel)
 
             # get cvFOURIER for all/rel cell spike maps using covariance (always do by_trial=False until we have a theory for all trial=True)
-            c_freqs, c_all = v.do_cvfourier(allmap, by_trial=False, covariance=True)
+            _, c_all = v.do_cvfourier(allmap, by_trial=False, covariance=True)
             _, c_rel = v.do_cvfourier(relmap, by_trial=False, covariance=True)
-            cvf_freqs.append(c_freqs)
             cvf_by_env_cov_all.append(c_all)
             cvf_by_env_cov_rel.append(c_rel)
 
