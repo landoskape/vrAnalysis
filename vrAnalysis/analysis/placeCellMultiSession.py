@@ -516,7 +516,7 @@ class placeCellMultiSession(multipleAnalysis):
         envnum,
         idx_ses=None,
         sortby=None,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         maxcutoffs=None,
         method="max",
         include_red=True,
@@ -579,7 +579,7 @@ class placeCellMultiSession(multipleAnalysis):
         envnum,
         target,
         sortby,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         maxcutoffs=None,
         method="max",
         both_reliable=False,
@@ -738,7 +738,7 @@ class placeCellMultiSession(multipleAnalysis):
         return target_relmse, target_relcor, target_red, sortby_red
 
     @handle_idx_ses
-    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.5, 0.8), both_reliable=False):
+    def measure_pfplasticity(self, envnum, idx_ses=None, cutoffs=(0.4, 0.7), both_reliable=False):
         """method for getting change in place field plasticity as a function of sessions apart for tracked cells"""
         store_idx_ses = copy(idx_ses)
         store_num_ses = len(store_idx_ses)
@@ -840,7 +840,7 @@ class placeCellMultiSession(multipleAnalysis):
         envnum,
         idx_ses=None,
         sortby=None,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         maxcutoffs=None,
         sort_by_red=False,
         method="max",
@@ -1115,7 +1115,7 @@ class placeCellMultiSession(multipleAnalysis):
         self,
         envnum,
         idx_ses=None,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         present="r2",
         method="max",
         split_red=False,
@@ -1236,7 +1236,7 @@ class placeCellMultiSession(multipleAnalysis):
         self,
         envnum,
         idx_ses=None,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         both_reliable=False,
         reduction="mean",
         min_mse=-8,
@@ -1387,7 +1387,7 @@ class placeCellMultiSession(multipleAnalysis):
         self,
         envnum,
         idx_ses=None,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         maxcutoffs=None,
         withShow=True,
         withSave=False,
@@ -1518,7 +1518,7 @@ class placeCellMultiSession(multipleAnalysis):
         self,
         envnum,
         idx_ses=None,
-        cutoffs=(0.5, 0.8),
+        cutoffs=(0.4, 0.7),
         both_reliable=False,
         reduction="mean",
         min_mse=-8,
