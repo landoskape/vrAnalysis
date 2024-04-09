@@ -36,7 +36,7 @@ class SpikemapMethods(placeCellSingleSession):
             if verbose:
                 iterate.set_description(self.setting_as_string(setting))
             self.load_data(distStep=setting["distStep"], full_trial_flexibility=3)
-            spkmaps.append([np.squeeze(sm) for sm in self.get_spkmap(smooth=setting["smooth"])])
+            spkmaps.append([sm for sm in self.get_spkmap(smooth=setting["smooth"])])
             rawspkmaps.append([np.mean(rsm, axis=1) for rsm in self.get_spkmap(average=False, smooth=setting["smooth"])])
             relmse.append(self.relmse)
             relcor.append(self.relcor)
