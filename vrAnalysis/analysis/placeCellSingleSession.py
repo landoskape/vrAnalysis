@@ -39,7 +39,7 @@ def save_directory(name=""):
 
 
 def red_reliability(
-    cutoffs=(0.5, 0.8),
+    cutoffs=(0.4, 0.7),
     ises=None,
     ipcss=None,
     include_manual=True,
@@ -179,7 +179,7 @@ def red_reliability(
 
 
 def plot_reliable_difference(
-    cutoffs=(0.5, 0.8),
+    cutoffs=(0.4, 0.7),
     withSave=False,
     withShow=True,
     ises=None,
@@ -251,7 +251,7 @@ def plot_reliable_difference(
 
 
 def plot_reliable_fraction(
-    cutoffs=(0.5, 0.8),
+    cutoffs=(0.4, 0.7),
     withSave=False,
     withShow=True,
     ises=None,
@@ -556,6 +556,7 @@ class placeCellSingleSession(standardAnalysis):
         then will divide the spkmap by occupancy map to get a rate map in each position
 
         transposes output to have shape (num_ROIs, num_trials, num_spatial_bins)
+        or (num_ROIs, num_spatial_bins) if average=True
         """
         # use all environments if none requested
         if envnum is None:
@@ -586,13 +587,13 @@ class placeCellSingleSession(standardAnalysis):
             raise ValueError(f"Didn't recognize trials option (received '{trials}', expected 'full', 'train', or 'test')")
 
         # get spkmaps for each environment
-        env_spkmap = [self.make_spkmap(maps=(eom, esm), average=average, smooth=smooth) for eom, esm in zip(env_occmap, env_spkmap)]
+        env_spkmap = [self._make_spkmap(maps=(eom, esm), average=average, smooth=smooth) for eom, esm in zip(env_occmap, env_spkmap)]
 
         # return spkmap
         return env_spkmap
 
     @prepare_data
-    def make_spkmap(self, maps=None, average=False, smooth=None):
+    def _make_spkmap(self, maps=None, average=False, smooth=None):
         """
         central method for doing averaging, smoothing, correcting, and transposing for spkmaps
         will use self.occmap and self.rawspkmap if None provided
@@ -631,6 +632,10 @@ class placeCellSingleSession(standardAnalysis):
 
         # reshape to (numROIs, numTrials, numPositions)
         spkmap = spkmap.transpose(2, 0, 1)
+
+        # squeeze out trials dimension if averaging
+        if average:
+            spkmap = spkmap.squeeze()
 
         # return spkmap
         return spkmap
@@ -690,6 +695,7 @@ class placeCellSingleSession(standardAnalysis):
         envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
         mse = [self.relmse[ii] for ii in envidx]
         cor = [self.relcor[ii] for ii in envidx]
+
         # if not with_test trials, just return mse/cor on train trials
         if not with_test:
             return mse, cor
@@ -718,23 +724,29 @@ class placeCellSingleSession(standardAnalysis):
         return idx_reliable
 
     def get_place_field(self, spkmap, method="max", force_with_negative=False):
-        """get sorting index and place field location for spkmap (numROIs, numTrials, numPositions)"""
+        """
+        get sorting index and place field location for spkmap
+
+        If spkmap has shape: (numROIs, numTrials, numPositions) will average across trials
+        If spkmap has shape: (numROIs, numPositions) will use as is
+        """
         assert method == "com" or method == "max", f"invalid method ({method}), must be either 'com' or 'max'"
 
-        # Get ROI x Position profile of activity for each ROI as a function of position
-        meanProfile = fs.mean(spkmap, axis=1)
+        # Get ROI x Position profile of activity for each ROI as a function of position if trials included in spkmap
+        if spkmap.ndim == 3:
+            spkmap = fs.nanmean(spkmap, axis=1)
 
         # if method is 'com' (=center of mass), use weighted mean to get place field location
         if method == "com":
             # note that this can generate buggy behavior if spkmap isn't based on mostly positive signals!
-            if not force_with_negative and np.any(meanProfile < 0):
+            if not force_with_negative and np.any(spkmap < 0):
                 raise ValueError("cannot use center of mass method when spkmap data is negative")
-            nonnegativeProfile = np.maximum(meanProfile, 0)
-            pfloc = fs.sum(nonnegativeProfile * self.distcenters.reshape(1, -1), axis=1) / fs.sum(nonnegativeProfile, axis=1)
+            nonnegative_map = np.maximum(spkmap, 0)
+            pfloc = fs.nansum(nonnegative_map * self.distcenters.reshape(1, -1), axis=1) / fs.nansum(nonnegative_map, axis=1)
 
         # if method is 'max' (=maximum rate), use maximum to get place field location
         if method == "max":
-            pfloc = np.argmax(meanProfile, axis=1)
+            pfloc = np.nanargmax(spkmap, axis=1)
 
         # Then sort...
         pfidx = np.argsort(pfloc)
@@ -742,7 +754,7 @@ class placeCellSingleSession(standardAnalysis):
         return pfloc, pfidx
 
     @prepare_data
-    def make_snake(self, envnum=None, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method="max"):
+    def make_snake(self, envnum=None, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max"):
         """make snake data from train and test sessions, for particular environment if requested"""
         # default environment is all of them
         if envnum is None:
@@ -751,63 +763,64 @@ class placeCellSingleSession(standardAnalysis):
         # envnum must be an iterable
         envnum = helpers.check_iterable(envnum)
 
-        # get idx of reliable ROIs for each environment
-        idx_reliable = self.get_reliable(envnum, cutoffs=cutoffs, maxcutoffs=maxcutoffs)
-
         # get spkmaps for requested environments
         train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train")
         test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test")
 
-        # filter by reliable ROIs
-        train_profile = [tp[ir] for tp, ir in zip(train_profile, idx_reliable)]
-        test_profile = [tp[ir] for tp, ir in zip(test_profile, idx_reliable)]
+        # filter by reliable ROIs if requested
+        if reliable:
+            # get idx of reliable ROIs for each environment
+            idx_reliable = self.get_reliable(envnum, cutoffs=cutoffs, maxcutoffs=maxcutoffs)
+            train_profile = [tp[ir] for tp, ir in zip(train_profile, idx_reliable)]
+            test_profile = [tp[ir] for tp, ir in zip(test_profile, idx_reliable)]
 
         # get place field indices
         train_pfidx = [self.get_place_field(train_prof, method=method)[1] for train_prof in train_profile]
 
         # make train and test snakes by sorting and squeezing out trials
-        train_snake = [train_prof[tpi].squeeze() for train_prof, tpi in zip(train_profile, train_pfidx)]
-        test_snake = [test_prof[tpi].squeeze() for test_prof, tpi in zip(test_profile, train_pfidx)]
+        train_snake = [train_prof[tpi] for train_prof, tpi in zip(train_profile, train_pfidx)]
+        test_snake = [test_prof[tpi] for test_prof, tpi in zip(test_profile, train_pfidx)]
 
         # :)
         return train_snake, test_snake
 
     @prepare_data
-    def make_remap_data(self, with_reliable=True, cutoffs=(0.5, 0.8), maxcutoffs=None, method="max"):
+    def make_remap_data(self, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max"):
         """make snake data across environments with remapping indices (for N environments, an NxN grid of snakes and indices)"""
-        envnum = helpers.check_iterable(copy(self.environments))  # always use all environments (as an iterable)
-        envidx = self.envnum_to_idx(envnum)
+        # get index to each environment for this session
+        envnum = helpers.check_iterable(copy(self.environments))
+        num_envs = len(envnum)
 
-        # get roi indices to use
-        self.idx_in_snake = self.get_reliable(
-            envnum,
-            cutoffs=cutoffs if with_reliable else None,
-            maxcutoffs=maxcutoffs if with_reliable else None,
-        )
+        # get train/test spkmap profile for each environment (average across trials)
+        train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train")
+        test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test")
+        full_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="full")
 
-        # get pf sort indices
-        train_pfidx = [
-            self.get_place_field(roi_idx=idxroi, trial_idx=idxenvtrain, method=method)[1]
-            for idxroi, idxenvtrain in zip(self.idx_in_snake, self.train_idx)
-        ]
+        # filter by reliable ROIs if requested
+        if reliable:
+            idx_reliable = self.get_reliable(envnum, cutoffs=cutoffs, maxcutoffs=maxcutoffs)
+        else:
+            idx_reliable = [np.ones(tp.shape[0], dtype=bool) for tp in train_profile]
 
-        # get spkmap of only reliable ROIs in each environment
-        spkmap = [self.spkmap[idxroi] for idxroi in self.idx_in_snake]
+        # get sorting index for each environment (including only reliable cells if requested)
+        train_pfidx = [self.get_place_field(tp[ir], method=method)[1] for tp, ir in zip(train_profile, idx_reliable)]
 
         # make c-v snake plots across all environment combinations
         snake_plots = []
-        for ii, env in enumerate(envidx):
-            # choose ROIs and sort by environment ii (on test trials if ii==jj and full trials if ii!=jj)
+        for ii in range(num_envs):
+            # sort by environment ii (on test trials if ii==jj and full trials if ii!=jj)
             c_plots = []
-            for jj, env in enumerate(envidx):
+            for jj in range(num_envs):
                 if ii == jj:
-                    # snake of reliable in env @ii, on test trials for env @jj, sorted by pf on train trials in env @ii
-                    c_snake = np.mean(spkmap[ii][:, self.test_idx[jj]], axis=1)[train_pfidx[ii]]
+                    # snake of test trials for env @ii, sorted by pf on train trials in env @ii, filtered by reliable on train @ii if requested
+                    c_snake = test_profile[ii][idx_reliable[ii]][train_pfidx[ii]]
                     c_plots.append(c_snake)
                 else:
-                    # snake of reliable in env @ii, on full trials for env @jj, sorted by pf on train trials in env @ii
-                    c_snake = np.mean(spkmap[ii][:, self.idxFullTrialEachEnv[jj]], axis=1)[train_pfidx[ii]]
+                    # snake of full trials for env @jj, sorted by pf on train trials in env @ii, filtered by reliable on @ii if requested
+                    c_snake = full_profile[jj][idx_reliable[ii]][train_pfidx[ii]]
                     c_plots.append(c_snake)
+
+            # add row to snake_plots
             snake_plots.append(c_plots)
 
         # :)
@@ -817,8 +830,8 @@ class placeCellSingleSession(standardAnalysis):
     def plot_snake(
         self,
         envnum=None,
-        with_reliable=True,
-        cutoffs=(0.5, 0.8),
+        reliable=True,
+        cutoffs=(0.4, 0.7),
         maxcutoffs=None,
         method="max",
         normalize=0,
@@ -842,7 +855,7 @@ class placeCellSingleSession(standardAnalysis):
         # make snakes and prepare plotting data
         train_snake, test_snake = self.make_snake(
             envnum=envnum,
-            with_reliable=with_reliable,
+            reliable=reliable,
             cutoffs=cutoffs,
             maxcutoffs=maxcutoffs,
             method=method,
@@ -851,10 +864,10 @@ class placeCellSingleSession(standardAnalysis):
         if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
         elif normalize < 0:
-            maxrois = np.concatenate([np.max(np.abs(ts), axis=1) for ts in train_snake] + [np.max(np.abs(ts), axis=1) for ts in test_snake])
+            maxrois = np.concatenate([np.nanmax(np.abs(ts), axis=1) for ts in train_snake] + [np.nanmax(np.abs(ts), axis=1) for ts in test_snake])
             vmin, vmax = -np.percentile(maxrois, -normalize), np.percentile(maxrois, -normalize)
         else:
-            magnitude = np.max(np.abs(np.concatenate((np.concatenate(train_snake), np.concatenate(test_snake)))))
+            magnitude = np.nanmax(np.abs(np.concatenate((np.concatenate(train_snake), np.concatenate(test_snake)))))
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
@@ -934,8 +947,8 @@ class placeCellSingleSession(standardAnalysis):
 
     def plot_remap_snakes(
         self,
-        with_reliable=True,
-        cutoffs=(0.5, 0.8),
+        reliable=True,
+        cutoffs=(0.4, 0.7),
         method="max",
         normalize=0,
         rewzone=True,
@@ -948,7 +961,6 @@ class placeCellSingleSession(standardAnalysis):
         """method for plotting cross-validated snake plot"""
         # plotting remap snakes always uses all environments
         envnum = helpers.check_iterable(copy(self.environments))  # always use all environments (as an iterable)
-        envidx = self.envnum_to_idx(envnum)
         numEnv = len(envnum)
 
         if numEnv == 1 and not (force_single_env):
@@ -956,7 +968,7 @@ class placeCellSingleSession(standardAnalysis):
             return None
 
         # make snakes
-        snake_remap = self.make_remap_data(with_reliable=with_reliable, cutoffs=cutoffs, method=method)
+        snake_remap = self.make_remap_data(reliable=reliable, cutoffs=cutoffs, method=method)
 
         # prepare plotting data
         extent = lambda ii, jj: [
@@ -968,10 +980,10 @@ class placeCellSingleSession(standardAnalysis):
         if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
         elif normalize < 0:
-            maxrois = np.concatenate([np.concatenate([np.max(np.abs(srp), axis=1) for srp in s_remap]) for s_remap in snake_remap])
+            maxrois = np.concatenate([np.concatenate([np.nanmax(np.abs(srp), axis=1) for srp in s_remap]) for s_remap in snake_remap])
             vmin, vmax = -np.percentile(maxrois, -normalize), np.percentile(maxrois, -normalize)
         else:
-            magnitude = np.max(np.abs(np.vstack([np.concatenate(srp) for srp in snake_remap])))
+            magnitude = np.nanmax(np.abs(np.vstack([np.concatenate(srp) for srp in snake_remap])))
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
