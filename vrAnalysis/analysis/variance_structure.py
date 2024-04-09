@@ -157,6 +157,9 @@ def load_spectra_data(pcm, args, save_as_temp=True):
 
     # if data doesn't exist or is incorrect, then load data
     if load_data:
+        names = [v.vrexp.sessionPrint() for v in vss]
+        envstats = pcm.env_stats()
+
         # first load session data (this can take a while)
         for v in tqdm(vss, leave=True, desc="loading session data"):
             v.load_data()
@@ -212,8 +215,8 @@ def load_spectra_data(pcm, args, save_as_temp=True):
             # save data as temporary files
             temp_save_args = args if type(args) == dict else args.asdict() if type(args) == helpers.AttributeDict else vars(args)
             temp_files = {
-                "names": [v.vrexp.sessionPrint() for v in vss],
-                "envstats": pcm.env_stats(),
+                "names": names,
+                "envstats": envstats,
                 "args": temp_save_args,
                 "cv_by_env_all": cv_by_env_all,
                 "cv_by_env_rel": cv_by_env_rel,
