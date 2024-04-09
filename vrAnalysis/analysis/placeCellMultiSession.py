@@ -273,11 +273,11 @@ class placeCellMultiSession(multipleAnalysis):
             assert len(distcenters) == 1, "more than 1 distcenter array found for the requested sessions!"
             distcenters = np.array(distcenters[0])
             nonnegativeProfile = np.maximum(snake, 0)
-            pfloc = np.sum(nonnegativeProfile * distcenters.reshape(1, -1), axis=1) / np.sum(nonnegativeProfile, axis=1)
+            pfloc = np.nansum(nonnegativeProfile * distcenters.reshape(1, -1), axis=1) / np.nansum(nonnegativeProfile, axis=1)
 
         # if method is 'max' (=maximum rate), use maximum to get place field location
         if method == "max":
-            pfloc = np.argmax(snake, axis=1)
+            pfloc = np.nanargmax(snake, axis=1)
 
         # Then sort...
         pfidx = np.argsort(pfloc)
