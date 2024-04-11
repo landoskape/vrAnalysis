@@ -224,6 +224,55 @@ def fast_rank(input):
     return int(torch.linalg.matrix_rank(input))
 
 
+def SVCA(X):
+    """
+    Shared Variance Component Analysis
+
+    From Stringer et al 2019, https://www.biorxiv.org/content/10.1101/679324v1
+    This is adapted almost directly from their github repository:
+    https://github.com/MouseLand/stringer-et-al-2019/blob/master/utils.py#L172
+    """
+    # compute power law
+    # SVCA
+    # X -= X.mean(axis=1)[:,np.newaxis]
+
+    NN, NT = X.shape
+
+    # split cells into test and train
+    norder = np.random.permutation(NN)
+    nhalf = int(norder.size / 2)
+    ntrain = norder[:nhalf]
+    ntest = norder[nhalf:]
+
+    # split time into test and train
+    torder = np.random.permutation(NT)
+    thalf = int(torder.size / 2)
+    ttrain = torder[:thalf]
+    ttest = torder[thalf:]
+    # if ntrain.size > ttrain.size:
+    #    cov = X[np.ix_(ntrain, ttrain)].T @ X[np.ix_(ntest, ttrain)]
+    #    u,sv,v = svdecon(cov, k=min(1024, nhalf-1))
+    #    u = X[np.ix_(ntrain, ttrain)] @ u
+    #    u /= (u**2).sum(axis=0)**0.5
+    #    v = X[np.ix_(ntest, ttrain)] @ v
+    #    v /= (v**2).sum(axis=0)**0.5
+    # else:
+    cov = X[np.ix_(ntrain, ttrain)] @ X[np.ix_(ntest, ttrain)].T
+    u = PCA(n_components=min(1024, nhalf - 1), svd_solver="randomized").fit_transform(cov)
+    u /= (u**2).sum(axis=0) ** 0.5
+    v = cov.T @ u
+    v /= (v**2).sum(axis=0) ** 0.5
+
+    strain = u.T @ X[np.ix_(ntrain, ttest)]
+    stest = v.T @ X[np.ix_(ntest, ttest)]
+
+    # covariance k is uk.T * F * G.T * vk / npts
+    scov = (strain * stest).mean(axis=1)
+    varcov = (strain**2 + stest**2).mean(axis=1) / 2
+
+    return scov, varcov
+
+
 def cvPCA_from_MouseLandGithub(X1, X2, nc=None):
     """X is stimuli x neurons"""
     S, N = X1.shape
