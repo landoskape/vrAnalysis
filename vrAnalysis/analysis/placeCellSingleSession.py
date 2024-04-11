@@ -683,7 +683,7 @@ class placeCellSingleSession(standardAnalysis):
             relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
             self.test_relmse, self.test_relcor = np.stack(relmse), np.stack(relcor)
         else:
-            # Alert the user that the training data was recalculated without testing
+            # Alert the user that the training data was (re)calculated without testing
             self.test_relmse, self.test_relcor = None, None
 
     @prepare_data
