@@ -1,6 +1,7 @@
 from tqdm import tqdm
 import pickle
 import numpy as np
+import faststats as fs
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from .. import helpers
@@ -63,14 +64,14 @@ class VarianceStructure(placeCellSingleSession):
         neurons_to_use = [np.random.permutation(s.shape[0])[:num_neurons_to_use] for s in spkmaps]
         return np.concatenate([s[n2u][:, t2u] for s, n2u, t2u in zip(spkmaps, neurons_to_use, trials_to_use)], axis=2)
 
-    def do_cvpca(self, spkmaps, by_trial=False, nshuff=3):
+    def do_cvpca(self, spkmaps, by_trial=False, nshuff=5, max_trials=None, max_neurons=None):
         """helper for running the full cvPCA gamut on spkmaps"""
         spkmaps = self.filter_nans(spkmaps)
         allspkmaps = self.concatenate_envs(spkmaps)
 
         # get maximum number of trials / neurons for consistent rank of matrices across environments / all envs
-        max_trials = int(self._get_min_trials(spkmaps) // 2)
-        max_neurons = int(self._get_min_neurons(spkmaps))
+        max_trials = max_trials or int(self._get_min_trials(spkmaps) // 2)
+        max_neurons = max_neurons or int(self._get_min_neurons(spkmaps))
 
         # do cvpca
         cv_by_env = [helpers.cvpca(spkmap, by_trial=by_trial, max_trials=max_trials, max_neurons=max_neurons, nshuff=nshuff) for spkmap in spkmaps]
@@ -130,6 +131,17 @@ def load_spectra_data(pcm, args, save_as_temp=True):
             cvf_by_env_rel = temp_files["cvf_by_env_rel"]
             cvf_by_env_cov_all = temp_files["cvf_by_env_cov_all"]
             cvf_by_env_cov_rel = temp_files["cvf_by_env_cov_rel"]
+            rel_mse = temp_files["rel_mse"]
+            rel_cor = temp_files["rel_cor"]
+            all_pf_mean = temp_files["all_pf_mean"]
+            all_pf_var = temp_files["all_pf_var"]
+            all_pf_cv = temp_files["all_pf_cv"]
+            all_pf_tcv = temp_files["all_pf_tcv"]
+            rel_pf_mean = temp_files["rel_pf_mean"]
+            rel_pf_var = temp_files["rel_pf_var"]
+            rel_pf_cv = temp_files["rel_pf_cv"]
+            rel_pf_tcv = temp_files["rel_pf_tcv"]
+
         except KeyError:
             load_data = True
 
@@ -167,14 +179,66 @@ def load_spectra_data(pcm, args, save_as_temp=True):
         # get spkmaps of all cells / just reliable cells
         allcell_maps = []
         relcell_maps = []
+        rel_mse = []
+        rel_cor = []
+        all_pf_mean = []
+        all_pf_var = []
+        all_pf_cv = []
+        all_pf_tcv = []
+        rel_pf_mean = []
+        rel_pf_var = []
+        rel_pf_cv = []
+        rel_pf_tcv = []
         for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
             # get reliable cells (for each environment) and spkmaps for each environment (with all cells)
             c_idx_reliable = v.get_reliable(envnum=None, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs)
             c_spkmaps = v.prepare_spkmaps(envnum=None, smooth=args.smooth, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs, reliable=False)
+            c_rel_spkmaps = [spkmap[cir] for spkmap, cir in zip(c_spkmaps, c_idx_reliable)]
+
+            # get reliable values for each environment
+            c_mse, c_cor = v.get_reliability_values(envnum=None, with_test=False)
+
+            # get place field for each cell
+            c_placefields_all = [np.mean(spkmap, axis=1) for spkmap in c_spkmaps]
+            c_placefields_rel = [np.mean(spkmap[cir], axis=1) for spkmap, cir in zip(c_spkmaps, c_idx_reliable)]
+            # make place field a unit vector
+            c_all_unitpf = [placefield / np.linalg.norm(placefield, axis=1, keepdims=True) for placefield in c_placefields_all]
+            c_rel_unitpf = [placefield / np.linalg.norm(placefield, axis=1, keepdims=True) for placefield in c_placefields_rel]
 
             # add each to list
             allcell_maps.append(c_spkmaps)
-            relcell_maps.append([spkmap[ir] for spkmap, ir in zip(c_spkmaps, c_idx_reliable)])
+            relcell_maps.append(c_rel_spkmaps)
+            rel_mse.append(c_mse)
+            rel_cor.append(c_cor)
+            all_pf_var.append([np.var(placefield, axis=1) for placefield in c_placefields_all])
+            rel_pf_var.append([np.var(placefield, axis=1) for placefield in c_placefields_rel])
+
+            # get other place field statistics
+            c_all_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
+            c_all_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
+            c_all_pf_amplitude = [fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_all_unitpf, c_spkmaps)]
+            c_all_pf_tcv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
+
+            all_pf_mean.append(c_all_pf_mean)
+            all_pf_cv.append(c_all_pf_cv)
+            all_pf_tcv.append(c_all_pf_tcv)
+
+            c_rel_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_rel]
+            c_rel_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields_rel]
+            c_rel_pf_amplitude = [
+                fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_rel_unitpf, c_rel_spkmaps)
+            ]
+            c_rel_pf_tcv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
+
+            rel_pf_mean.append(c_rel_pf_mean)
+            rel_pf_cv.append(c_rel_pf_cv)
+            rel_pf_tcv.append(c_rel_pf_tcv)
+
+        # make analyses consistent by using same (randomly subsampled) numbers of trials & neurons for each analysis
+        all_max_trials = min([int(v._get_min_trials(allmap) // 2) for v, allmap in zip(vss, allcell_maps)])
+        all_max_neurons = min([int(v._get_min_neurons(allmap)) for v, allmap in zip(vss, allcell_maps)])
+        rel_max_trials = min([int(v._get_min_trials(relmap) // 2) for v, relmap in zip(vss, relcell_maps)])
+        rel_max_neurons = min([int(v._get_min_neurons(relmap)) for v, relmap in zip(vss, relcell_maps)])
 
         # get cvPCA and cvFOURIER analyses for all cells / just reliable cells
         cv_by_env_all = []
@@ -188,12 +252,12 @@ def load_spectra_data(pcm, args, save_as_temp=True):
         cvf_by_env_cov_rel = []
         for allmap, relmap, v in tqdm(zip(allcell_maps, relcell_maps, vss), leave=False, desc="running cvPCA and cvFOURIER", total=len(vss)):
             # get cvPCA for all cell spike maps (always do by_trial=False until we have a theory for all trial=True)
-            c_env, c_acc = v.do_cvpca(allmap, by_trial=False)
+            c_env, c_acc = v.do_cvpca(allmap, by_trial=False, max_trials=all_max_trials, max_neurons=all_max_neurons)
             cv_by_env_all.append(c_env)
             cv_across_all.append(c_acc)
 
             # get cvPCA for rel cell spike maps (always do by_trial=False until we have a theory for all trial=True)
-            c_env, c_acc = v.do_cvpca(relmap, by_trial=False)
+            c_env, c_acc = v.do_cvpca(relmap, by_trial=False, max_trials=rel_max_trials, max_neurons=rel_max_neurons)
             cv_by_env_rel.append(c_env)
             cv_across_rel.append(c_acc)
 
@@ -226,6 +290,16 @@ def load_spectra_data(pcm, args, save_as_temp=True):
                 "cvf_by_env_rel": cvf_by_env_rel,
                 "cvf_by_env_cov_all": cvf_by_env_cov_all,
                 "cvf_by_env_cov_rel": cvf_by_env_cov_rel,
+                "rel_mse": rel_mse,
+                "rel_cor": rel_cor,
+                "all_pf_mean": all_pf_mean,
+                "all_pf_var": all_pf_var,
+                "all_pf_cv": all_pf_cv,
+                "all_pf_tcv": all_pf_tcv,
+                "rel_pf_mean": rel_pf_mean,
+                "rel_pf_var": rel_pf_var,
+                "rel_pf_cv": rel_pf_cv,
+                "rel_pf_tcv": rel_pf_tcv,
             }
             pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
 
@@ -245,7 +319,41 @@ def load_spectra_data(pcm, args, save_as_temp=True):
         cvf_by_env_rel,
         cvf_by_env_cov_all,
         cvf_by_env_cov_rel,
+        rel_mse,
+        rel_cor,
+        all_pf_mean,
+        all_pf_var,
+        all_pf_cv,
+        all_pf_tcv,
+        rel_pf_mean,
+        rel_pf_var,
+        rel_pf_cv,
+        rel_pf_tcv,
     )
+
+
+def add_to_spectra_data(pcm, args):
+    """skeleton for adding something without reloading everything"""
+    with open(pcm.saveDirectory("temp") / f"{args.mouse_name}_spectra_data.pkl", "rb") as f:
+        temp_files = pickle.load(f)
+
+    vss = []
+    for p in pcm.pcss:
+        vss.append(VarianceStructure(p.vrexp, distStep=args.dist_step, autoload=False))
+
+    # first load session data (this can take a while)
+    for v in tqdm(vss, leave=True, desc="loading session data"):
+        v.load_data()
+
+    # get spkmaps of all cells / just reliable cells
+    variable = []
+    for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
+        # get ~variable~ for each session
+        # variable.append(v.get_variable(...))
+        pass
+
+    # temp_files["variable"] = variable
+    pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
 
 
 def plot_spectral_data(
@@ -284,7 +392,7 @@ def plot_spectral_data(
             return cmap(sesnum_for_env)
 
     figdim = 3
-    fig, ax = plt.subplots(2, num_envs + 1, figsize=((num_envs + 1) * figdim, 2 * figdim), layout="constrained", sharex=True, sharey=True)
+    fig, ax = plt.subplots(2, num_envs + 1, figsize=((num_envs + 1) * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
     for i in range(num_envs):
         c_env = pcm.environments[i]
         for j in range(num_sessions):
@@ -323,7 +431,17 @@ def plot_spectral_data(
 
 
 def plot_fourier_data(
-    pcm, names, envstats, cvf_freqs, cvf_by_env_all, cvf_by_env_rel, covariance=False, color_by_session=True, with_show=True, with_save=False
+    pcm,
+    names,
+    envstats,
+    cvf_freqs,
+    cvf_by_env_all,
+    cvf_by_env_rel,
+    covariance=False,
+    color_by_session=True,
+    ignore_dc=True,
+    with_show=True,
+    with_save=False,
 ):
     """
     plot fourier data for variance structure analysis
@@ -346,19 +464,25 @@ def plot_fourier_data(
             return cmap(sesnum_for_env)
 
     figdim = 3
-    fig, ax = plt.subplots(2, num_envs * 2, figsize=(2 * num_envs * figdim, 2 * figdim), layout="constrained", sharex=True, sharey=True)
+    fig, ax = plt.subplots(2, num_envs * 2, figsize=(2 * num_envs * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
     for i in range(num_envs):
         c_env = pcm.environments[i]
         for j in range(num_sessions):
             c_freqs = cvf_freqs[j]
+            if ignore_dc:
+                c_freqs = c_freqs[1:]
             if j in envstats[c_env]:
                 eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
 
                 cdata = cvf_by_env_all[j][eidx]
+                if ignore_dc:
+                    cdata = [c[1:] for c in cdata]
                 ax[0, 2 * i].plot(c_freqs, cdata[0], color=get_color(c_env, j), linestyle="-")
                 ax[0, 2 * i + 1].plot(c_freqs, cdata[1], color=get_color(c_env, j), linestyle="--")
 
                 cdata = cvf_by_env_rel[j][eidx]
+                if ignore_dc:
+                    cdata = [c[1:] for c in cdata]
                 ax[1, 2 * i].plot(c_freqs, cdata[0], color=get_color(c_env, j), linestyle="-")
                 ax[1, 2 * i + 1].plot(c_freqs, cdata[1], color=get_color(c_env, j), linestyle="--")
 
@@ -380,3 +504,121 @@ def plot_fourier_data(
         special_name = "by_session" if color_by_session else "by_relative_session"
         special_name = special_name + "_covariance" if covariance else special_name + "_correlation"
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_fourier_" + special_name)
+
+
+def plot_reliability_data(pcm, names, envstats, rel_mse, rel_cor, color_by_session=True, with_show=True, with_save=False):
+    """
+    plot fourier data for variance structure analysis
+    """
+
+    # make plots of spectra data
+    num_sessions = len(names)
+    num_envs = len(envstats)
+
+    # some plotting supporting variables
+    cmap = mpl.colormaps["turbo"].resampled(num_sessions)
+    mse_bins = np.linspace(-4, 1, 31)
+    cor_bins = np.linspace(-1, 1, 31)
+    mse_centers = helpers.edge2center(mse_bins)
+    cor_centers = helpers.edge2center(cor_bins)
+
+    def get_color(env, sesnum):
+        """helper for getting color based on color method"""
+        if color_by_session:
+            # color by absolute session number
+            return cmap(sesnum)
+        else:
+            # color by relative session number (within environment)
+            sesnum_for_env = envstats[env].index(sesnum)
+            return cmap(sesnum_for_env)
+
+    figdim = 3
+    fig, ax = plt.subplots(2, num_envs, figsize=(num_envs * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
+    for i in range(num_envs):
+        c_env = pcm.environments[i]
+        for j in range(num_sessions):
+            if j in envstats[c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+
+                cdata = helpers.fractional_histogram(rel_mse[j][eidx], bins=mse_bins)[0]
+                ax[0, i].plot(mse_centers, cdata, color=get_color(c_env, j), linestyle="-")
+                ax[0, i].axvline(np.mean(rel_mse[j][eidx]), color=get_color(c_env, j))
+
+                cdata = helpers.fractional_histogram(rel_cor[j][eidx], bins=cor_bins)[0]
+                ax[1, i].plot(cor_centers, cdata, color=get_color(c_env, j), linestyle="-")
+                ax[1, i].axvline(np.mean(rel_cor[j][eidx]), color=get_color(c_env, j))
+
+            ax[0, i].set_title(f"Environment {c_env} Rel-MSE")
+            ax[1, i].set_title(f"Environment {c_env} Rel-Corr")
+            if i == 0:
+                ax[0, i].set_ylabel("Counts")
+                ax[1, i].set_ylabel("Counts")
+            ax[0, i].set_xlabel("Reliability (MSE)")
+            ax[1, i].set_xlabel("Reliability (Corr)")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "by_session" if color_by_session else "by_relative_session"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "reliability_" + special_name)
+
+
+def plot_pf_var_data(pcm, names, envstats, all_pf_var, rel_pf_var, color_by_session=True, with_show=True, with_save=False):
+    """
+    plot place field variance data for variance structure analysis
+    """
+
+    # make plots of spectra data
+    num_sessions = len(names)
+    num_envs = len(envstats)
+
+    # some plotting supporting variables
+    cmap = mpl.colormaps["turbo"].resampled(num_sessions)
+    # concatenate a list of lists of np arrays
+    min_pf_var = np.nanmin(np.concatenate([np.concatenate(apf) for apf in all_pf_var] + [np.concatenate(rpf) for rpf in rel_pf_var]))
+    max_pf_var = np.nanmax(np.concatenate([np.concatenate(apf) for apf in all_pf_var] + [np.concatenate(rpf) for rpf in rel_pf_var]))
+    pf_bins = np.linspace(min_pf_var, max_pf_var, 21)
+    pf_centers = helpers.edge2center(pf_bins)
+
+    def get_color(env, sesnum):
+        """helper for getting color based on color method"""
+        if color_by_session:
+            # color by absolute session number
+            return cmap(sesnum)
+        else:
+            # color by relative session number (within environment)
+            sesnum_for_env = envstats[env].index(sesnum)
+            return cmap(sesnum_for_env)
+
+    figdim = 3
+    fig, ax = plt.subplots(2, num_envs, figsize=(num_envs * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
+    for i in range(num_envs):
+        c_env = pcm.environments[i]
+        for j in range(num_sessions):
+            if j in envstats[c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+
+                cdata = helpers.fractional_histogram(all_pf_var[j][eidx], bins=pf_bins)[0]
+                ax[0, i].plot(pf_centers, cdata, color=get_color(c_env, j), linestyle="-")
+
+                cdata = helpers.fractional_histogram(rel_pf_var[j][eidx], bins=pf_bins)[0]
+                ax[1, i].plot(pf_centers, cdata, color=get_color(c_env, j), linestyle="-")
+
+            ax[0, i].set_title(f"Environment {c_env} All Cell PF Var")
+            ax[1, i].set_title(f"Environment {c_env} Rel Cell PF Var")
+            if i == 0:
+                ax[0, i].set_ylabel("Counts")
+                ax[1, i].set_ylabel("Counts")
+            ax[0, i].set_xlabel("Variance")
+            ax[1, i].set_xlabel("Variance")
+
+        ax[0, i].set_yscale("log")
+        ax[1, i].set_yscale("log")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "by_session" if color_by_session else "by_relative_session"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "pf_variance_" + special_name)

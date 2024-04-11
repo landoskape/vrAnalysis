@@ -16,7 +16,7 @@ from vrAnalysis.helpers import (
 )
 from vrAnalysis import tracking
 from vrAnalysis import analysis
-from vrAnalysis.analysis.variance_structure import load_spectra_data, plot_spectral_data, plot_fourier_data
+from vrAnalysis.analysis.variance_structure import load_spectra_data, plot_spectral_data, plot_fourier_data, plot_reliability_data, plot_pf_var_data
 
 CUTOFFS = (0.4, 0.7)
 MAXCUTOFFS = None
@@ -50,38 +50,50 @@ def analyze_spectra(pcm, args):
         cvf_by_env_rel,
         cvf_by_env_cov_all,
         cvf_by_env_cov_rel,
+        rel_mse,
+        rel_cor,
+        all_pf_mean,
+        all_pf_var,
+        all_pf_cv,
+        all_pf_tcv,
+        rel_pf_mean,
+        rel_pf_var,
+        rel_pf_cv,
+        rel_pf_tcv,
     ) = load_spectra_data(pcm, args, save_as_temp=True)
 
     # make plots
     plt.close("all")
     for color_by_session in [True, False]:
-        for normalize in [True, False]:
-            plot_spectral_data(
-                pcm,
-                names,
-                envstats,
-                cv_by_env_all,
-                cv_by_env_rel,
-                cv_across_all,
-                cv_across_rel,
-                color_by_session=color_by_session,
-                normalize=normalize,
-                with_show=False,
-                with_save=True,
-            )
-        for cvf_all, cvf_rel, covariance in zip([cvf_by_env_all, cvf_by_env_cov_all], [cvf_by_env_rel, cvf_by_env_cov_rel], [False, True]):
-            plot_fourier_data(
-                pcm,
-                names,
-                envstats,
-                cvf_freqs,
-                cvf_all,
-                cvf_rel,
-                color_by_session=color_by_session,
-                covariance=covariance,
-                with_show=False,
-                with_save=True,
-            )
+        # for normalize in [True, False]:
+        #     plot_spectral_data(
+        #         pcm,
+        #         names,
+        #         envstats,
+        #         cv_by_env_all,
+        #         cv_by_env_rel,
+        #         cv_across_all,
+        #         cv_across_rel,
+        #         color_by_session=color_by_session,
+        #         normalize=normalize,
+        #         with_show=False,
+        #         with_save=True,
+        #     )
+        # for cvf_all, cvf_rel, covariance in zip([cvf_by_env_all, cvf_by_env_cov_all], [cvf_by_env_rel, cvf_by_env_cov_rel], [False, True]):
+        #     plot_fourier_data(
+        #         pcm,
+        #         names,
+        #         envstats,
+        #         cvf_freqs,
+        #         cvf_all,
+        #         cvf_rel,
+        #         color_by_session=color_by_session,
+        #         covariance=covariance,
+        #         with_show=False,
+        #         with_save=True,
+        #     )
+        plot_reliability_data(pcm, names, envstats, rel_mse, rel_cor, color_by_session=color_by_session, with_show=False, with_save=True)
+        # plot_pf_var_data(pcm, names, envstats, all_pf_var, rel_pf_var, color_by_session=color_by_session, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":
