@@ -570,7 +570,12 @@ class vrRegistration(vrExperiment):
             ospks = []
             print("Performing oasis...")
             for fc in tqdm(fcorr):
-                ospks.append(deconvolve(fc, g=(g,), penalty=1)[1].astype(np.single))
+                # do oasis and cast as single to match with suite2p data
+                c_oasis = deconvolve(fc, g=(g,), penalty=1)[1].astype(np.single)
+                # oasis sometimes produces random highly negative values... just set them to 0
+                c_oasis = np.maximum(c_oasis, 0)
+                ospks.append(c_oasis)
+
             ospks = np.stack(ospks)
             assert (
                 ospks.shape == self.loadS2P("spks").shape
