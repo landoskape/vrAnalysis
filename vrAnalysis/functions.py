@@ -88,6 +88,9 @@ def getBehaviorAndSpikeMaps(
     if get_spkmap:
         # load spiking data and timing of imaging frames
         spks = vrexp.loadone(onefile)
+        if "deconvolved" in onefile:
+            # set negative values to 0 (because they shouldn't be there for deconvolved data)
+            spks = np.maximum(spks, 0)
         frameTimeStamps = vrexp.loadone("mpci.times")  # timestamps for each imaging frame
         idxBehaveToFrame = vrexp.loadone("positionTracking.mpci")  # mpci frame index associated with each behavioral frame
         sampling_period = np.median(np.diff(frameTimeStamps))
@@ -100,9 +103,15 @@ def getBehaviorAndSpikeMaps(
 
         # standardize spks to zscore (across time!) (set to 0 where variance is 0)
         if standardizeSpks:
-            idx_zeros = fs.std(spks, axis=0) == 0
-            spks = fs.median_zscore(spks, axis=0)
-            spks[:, idx_zeros] = 0
+            if "deconvolved" in onefile:
+                # If using deconvolved traces, should have zero baseline
+                spks = spks / fs.std(spks, axis=0, keepdims=True)
+
+            else:
+                # If using fluorescence traces, should have non-zero baseline
+                idx_zeros = fs.std(spks, axis=0) == 0
+                spks = fs.median_zscore(spks, axis=0)
+                spks[:, idx_zeros] = 0
 
     else:
         # use empty (and small) array for consistent code even when get_spkmap is False
