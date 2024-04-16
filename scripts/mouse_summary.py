@@ -68,6 +68,8 @@ def analyze_spectra(pcm, args):
         rel_pf_var,
         rel_pf_cv,
         rel_pf_tcv,
+        svca_shared,
+        svca_total,
     ) = load_spectra_data(pcm, args, save_as_temp=True)
 
     # make plots

@@ -86,6 +86,8 @@ def get_spectra(mouse_name, args):
         rel_pf_var,
         rel_pf_cv,
         rel_pf_tcv,
+        svca_shared,
+        svca_total,
     ) = load_spectra_data(pcm, single_args, save_as_temp=False, reload=False)
 
     # save this mouses spectra data as a dictionary
@@ -111,6 +113,8 @@ def get_spectra(mouse_name, args):
         rel_pf_var=rel_pf_var,
         rel_pf_cv=rel_pf_cv,
         rel_pf_tcv=rel_pf_tcv,
+        svca_shared=svca_shared,
+        svca_total=svca_total,
     )
 
     # return the dictionary

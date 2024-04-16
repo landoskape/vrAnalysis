@@ -142,6 +142,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             rel_pf_var = temp_files["rel_pf_var"]
             rel_pf_cv = temp_files["rel_pf_cv"]
             rel_pf_tcv = temp_files["rel_pf_tcv"]
+            svca_shared = temp_files["svca_shared"]
+            svca_total = temp_files["svca_total"]
 
         except KeyError:
             load_data = True
@@ -278,6 +280,21 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             cvf_by_env_cov_all.append(c_all)
             cvf_by_env_cov_rel.append(c_rel)
 
+        # get spks of all cells (in time, not space) -- filter by good planes (which is defaulted to all but first, which is usually flyback)
+        idx_rois = []
+        for v in vss:
+            v.get_plane_idx(keep_planes=[1, 2, 3, 4])
+            idx_rois.append(v.idxUseROI)
+        ospks = [v.vrexp.loadone("mpci.roiActivityDeconvolvedOasis")[:, idx] for v, idx in zip(vss, idx_rois)]
+
+        # get spkmaps of all cells / just reliable cells
+        svca_shared = []
+        svca_total = []
+        for ospk in tqdm(ospks, leave=False, desc="doing SVCA"):
+            c_shared_var, c_tot_cov_space_var = helpers.split_and_svca(ospk.T, verbose=False)
+            svca_shared.append(c_shared_var)
+            svca_total.append(c_tot_cov_space_var)
+
         if save_as_temp:
             # save data as temporary files
             temp_save_args = args if type(args) == dict else args.asdict() if type(args) == helpers.AttributeDict else vars(args)
@@ -304,6 +321,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "rel_pf_var": rel_pf_var,
                 "rel_pf_cv": rel_pf_cv,
                 "rel_pf_tcv": rel_pf_tcv,
+                "svca_shared": svca_shared,
+                "svca_total": svca_total,
             }
             pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
 
@@ -333,6 +352,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         rel_pf_var,
         rel_pf_cv,
         rel_pf_tcv,
+        svca_shared,
+        svca_total,
     )
 
 
