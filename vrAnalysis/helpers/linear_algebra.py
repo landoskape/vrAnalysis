@@ -224,55 +224,6 @@ def fast_rank(input):
     return int(torch.linalg.matrix_rank(input))
 
 
-def SVCA(X):
-    """
-    Shared Variance Component Analysis
-
-    From Stringer et al 2019, https://www.biorxiv.org/content/10.1101/679324v1
-    This is adapted almost directly from their github repository:
-    https://github.com/MouseLand/stringer-et-al-2019/blob/master/utils.py#L172
-    """
-    # compute power law
-    # SVCA
-    # X -= X.mean(axis=1)[:,np.newaxis]
-
-    NN, NT = X.shape
-
-    # split cells into test and train
-    norder = np.random.permutation(NN)
-    nhalf = int(norder.size / 2)
-    ntrain = norder[:nhalf]
-    ntest = norder[nhalf:]
-
-    # split time into test and train
-    torder = np.random.permutation(NT)
-    thalf = int(torder.size / 2)
-    ttrain = torder[:thalf]
-    ttest = torder[thalf:]
-    # if ntrain.size > ttrain.size:
-    #    cov = X[np.ix_(ntrain, ttrain)].T @ X[np.ix_(ntest, ttrain)]
-    #    u,sv,v = svdecon(cov, k=min(1024, nhalf-1))
-    #    u = X[np.ix_(ntrain, ttrain)] @ u
-    #    u /= (u**2).sum(axis=0)**0.5
-    #    v = X[np.ix_(ntest, ttrain)] @ v
-    #    v /= (v**2).sum(axis=0)**0.5
-    # else:
-    cov = X[np.ix_(ntrain, ttrain)] @ X[np.ix_(ntest, ttrain)].T
-    u = PCA(n_components=min(1024, nhalf - 1), svd_solver="randomized").fit_transform(cov)
-    u /= (u**2).sum(axis=0) ** 0.5
-    v = cov.T @ u
-    v /= (v**2).sum(axis=0) ** 0.5
-
-    strain = u.T @ X[np.ix_(ntrain, ttest)]
-    stest = v.T @ X[np.ix_(ntest, ttest)]
-
-    # covariance k is uk.T * F * G.T * vk / npts
-    scov = (strain * stest).mean(axis=1)
-    varcov = (strain**2 + stest**2).mean(axis=1) / 2
-
-    return scov, varcov
-
-
 def cvPCA_from_MouseLandGithub(X1, X2, nc=None):
     """X is stimuli x neurons"""
     S, N = X1.shape
@@ -532,3 +483,100 @@ def cv_fourier(
 
     # otherwise just return correlation averages
     return corr
+
+
+def svca(a0, a1, b0, b1, n_comp=None, verbose=True):
+    # a,b are two sets of non-overlapping cells
+    # 1,2 are two sets of non-overlapping timepoints
+
+    # covariance matrix of two halves of cells at train time
+    cov = a0 @ b0.T
+    # svd
+    uf, sf, vf = np.linalg.svd(cov)
+    u = uf[:, :n_comp]
+    s = sf[:n_comp]
+    v = vf[:n_comp]
+    svd = (u, s, v)
+    # project test time of each set of cells to cov-space
+    a1p = u.T @ a1
+    b1p = v @ b1
+
+    # shared variance of the test set timepoints in the cov-space defined by the train times
+    shared_var = (a1p * b1p).sum(axis=1)
+    # total variance of test set timepoints projected into cov-space
+    # if two populations are identical, cov-space will capture all of the variance,
+    # and shared_var == tot_var
+    a1pvar = (a1p**2).sum(axis=1)
+    b1pvar = (b1p**2).sum(axis=1)
+    proj_vars = (a1pvar, b1pvar)
+    tot_cov_space_var = (a1pvar + b1pvar) / 2
+
+    # total variance in neural space of the test timepoints
+    a1var = (a1**2).sum(axis=1)
+    b1var = (b1**2).sum(axis=1)
+    full_vars = (a1var, b1var)
+
+    if verbose:
+        frac_shared_variance = shared_var.sum() / tot_cov_space_var.sum()
+        frac_cov_space_a1 = a1pvar.sum() / a1var.sum()
+        frac_cov_space_b1 = b1pvar.sum() / b1var.sum()
+
+        frac_shared_of_cov_space_a1 = shared_var.sum() / a1pvar.sum()
+        frac_shared_of_cov_space_b1 = shared_var.sum() / b1pvar.sum()
+
+        print("%%%.2f of the variance in the cov-space is shared" % (100 * frac_shared_variance))
+        print("Cov space captures %%%.2f of variance in a1, %%%.2f of this is shared" % (100 * frac_cov_space_a1, 100 * frac_shared_of_cov_space_a1))
+        print("Cov space captures %%%.2f of variance in b1, %%%.2f of this is shared" % (100 * frac_cov_space_b1, 100 * frac_shared_of_cov_space_b1))
+
+    return shared_var, tot_cov_space_var, proj_vars, full_vars, svd
+
+
+def split_and_svca(spks, cell_split=None, t_split=None, n_comp=None, verbose=True):
+    nc, nt = spks.shape
+    if cell_split is None:
+        crand = np.random.permutation(np.arange(nc))
+        cell_split = crand[: nc // 2], crand[nc // 2 :]
+
+    if t_split is None:
+        t_split = chunk_indices(nt, 20, 10, (0.5, 0.5), sort=True)
+
+    if n_comp is None:
+        n_comp = np.min([len(cs) for cs in cell_split] + [len(ts) for ts in t_split])
+        print("Using %d components" % n_comp)
+
+    # first half of cells
+    a0 = spks[cell_split[0]][:, t_split[0]]
+    a1 = spks[cell_split[0]][:, t_split[1]]
+    # second half of cells
+    b0 = spks[cell_split[1]][:, t_split[0]]
+    b1 = spks[cell_split[1]][:, t_split[1]]
+
+    return svca(a0, a1, b0, b1, n_comp=n_comp, verbose=verbose)
+
+
+def chunk_indices(n_dataset, n_chunks, n_buffer=10, splits=None, cv_fold=False, sort=False):
+    chunks = []
+    chunksize = (n_dataset - (n_buffer * (n_chunks - 1))) // n_chunks
+    i = 0
+    while i < n_dataset:
+        chunks.append(np.arange(i, i + chunksize))
+        i += chunksize
+        i += n_buffer
+
+    if splits is not None:
+        assert not cv_fold
+        assert np.sum(splits) == 1
+        chunks_per_split = [int(n_chunks * split) for split in splits]
+        chunk_rand_order = np.random.choice(np.arange(n_chunks), n_chunks, replace=False)
+        new_chunks = []
+        chunks = np.array(chunks)
+        idx = 0
+        for i, n_chunks_split in enumerate(chunks_per_split):
+            split_chunk_idxs = chunk_rand_order[idx : idx + n_chunks_split]
+            idx += n_chunks_split
+            new_chunks.append(np.concatenate(chunks[split_chunk_idxs], axis=0))
+        chunks = new_chunks
+        if sort:
+            for i, chunk in enumerate(chunks):
+                chunks[i] = np.sort(chunk)
+        return chunks
