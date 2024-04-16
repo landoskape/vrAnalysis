@@ -450,8 +450,11 @@ class base_database:
         >>> record = vrdb.getRecord(*uniqueConditions)
         """
 
-        # Check if correct values are provided
-        if len(unique_values) != len(self.uniqueFields):
+        # Check if correct values are provided (or if a session object is provided)
+        if len(unique_values) == 1 and isinstance(unique_values[0], session.vrSession):
+            unique_values = [unique_values[0].mouseName, unique_values[0].dateString, unique_values[0].sessionid]
+
+        elif len(unique_values) != len(self.uniqueFields):
             expected_list = ", ".join([uf[0] for uf in self.uniqueFields])
             raise ValueError(f"{len(unique_values)} values provided but *getRecord* is expecting values for: {expected_list}")
 
