@@ -1,3 +1,4 @@
+from copy import copy
 from tqdm import tqdm
 import pickle
 import numpy as np
@@ -428,6 +429,81 @@ def plot_spectral_data(
         special_name = "by_session" if color_by_session else "by_relative_session"
         special_name = special_name + "_normalized" if normalize else special_name
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name)
+
+
+def plot_spectral_averages(
+    pcm,
+    cv_by_env_all,
+    cv_across_all,
+    do_xlog=False,
+    do_ylog=False,
+    ylog_min=1e-3,
+    with_show=True,
+    with_save=False,
+):
+    # make plots of spectra data
+    norm = lambda x: x / np.nansum(x)
+
+    if not do_ylog:
+        ylog_min = -np.inf
+
+    all_be = []
+    all_across = []
+
+    figdim = 3
+    fig, ax = plt.subplots(2, 3, figsize=(3 * figdim, 2 * figdim), layout="constrained")
+    for ii, cc in enumerate(cv_by_env_all):
+        for jj, c in enumerate(cc):
+            label = "Single Env" if (ii == 0) and (jj == 0) else None
+            c_c = copy(c)
+            c_c[c_c < ylog_min] = np.nan
+            all_be.append(c_c)
+            ax[0, 0].plot(range(1, len(c) + 1), norm(c_c), c=("k", 0.3), label=None)
+            ax[1, 0].plot(range(1, len(c) + 1), np.cumsum(norm(c_c)), c=("k", 0.3))
+
+    for ii, c in enumerate(cv_across_all):
+        label = "Across Envs" if ii == 0 else None
+        c_c = copy(c)
+        c_c[c_c < ylog_min] = np.nan
+        all_across.append(c_c)
+        ax[0, 1].plot(range(1, len(c) + 1), norm(c_c), c=("r", 0.3), label=label)
+        ax[1, 1].plot(range(1, len(c) + 1), np.cumsum(norm(c_c)), c=("r", 0.3))
+
+    all_be = np.stack(all_be)
+    all_across = np.stack(all_across)
+
+    ax[0, 2].plot(range(1, all_be.shape[1] + 1), norm(np.nanmean(all_be, axis=0)), c="k", label="Average Single Env")
+    ax[0, 2].plot(range(1, all_across.shape[1] + 1), norm(np.nanmean(all_across, axis=0)), c="r")
+
+    ax[1, 2].plot(range(1, all_be.shape[1] + 1), np.cumsum(norm(np.nanmean(all_be, axis=0))), c="k", label="Average Across Envs")
+    ax[1, 2].plot(range(1, all_across.shape[1] + 1), np.cumsum(norm(np.nanmean(all_across, axis=0))), c="r")
+
+    ax[1, 0].set_xlabel("Dimension")
+    ax[1, 1].set_xlabel("Dimension")
+    ax[1, 2].set_xlabel("Dimension")
+    ax[0, 0].set_ylabel("Variance")
+    ax[1, 0].set_ylabel("Cumulative Variance")
+    ax[0, 0].set_title("Single Environments")
+    ax[0, 1].set_title("Across Environments")
+    ax[0, 2].set_title("Averages")
+
+    if do_xlog:
+        for aa in ax:
+            for a in aa:
+                a.set_xscale("log")
+
+    if do_ylog:
+        for aa in ax:
+            for a in aa:
+                a.set_yscale("log")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "logx_" if do_xlog else "linx_"
+        special_name = special_name + ("logy" if do_ylog else "liny")
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_norm_spectra_" + special_name)
 
 
 def plot_spectral_energy(
