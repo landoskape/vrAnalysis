@@ -542,7 +542,8 @@ def split_and_svca(spks, cell_split=None, t_split=None, n_comp=None, verbose=Tru
 
     if n_comp is None:
         n_comp = np.min([len(cs) for cs in cell_split] + [len(ts) for ts in t_split])
-        print("Using %d components" % n_comp)
+        if verbose:
+            print("Using %d components" % n_comp)
 
     # first half of cells
     a0 = spks[cell_split[0]][:, t_split[0]]
