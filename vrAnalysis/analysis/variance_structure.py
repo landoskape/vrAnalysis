@@ -430,6 +430,58 @@ def plot_spectral_data(
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name)
 
 
+def plot_spectral_energy(
+    pcm,
+    names,
+    envstats,
+    cv_by_env_all,
+    cv_by_env_rel,
+    with_show=True,
+    with_save=False,
+):
+    # make plots of spectra data
+    num_sessions = len(names)
+    num_envs = len(envstats)
+
+    cmap = mpl.colormaps["Set1"].resampled(num_envs)
+
+    # get total energy for each env/session
+    var_by_env_all = np.full((num_sessions, num_envs), np.nan)
+    var_by_env_rel = np.full((num_sessions, num_envs), np.nan)
+
+    for i in range(num_envs):
+        c_env = pcm.environments[i]
+        for j in range(num_sessions):
+            if j in envstats[c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+
+                cdata = cv_by_env_all[j][eidx]
+                var_by_env_all[j, i] = np.sum(cdata)
+
+                cdata = cv_by_env_rel[j][eidx]
+                var_by_env_rel[j, i] = np.sum(cdata)
+
+    figdim = 3
+    fig, ax = plt.subplots(1, 2, figsize=(2 * figdim, figdim), layout="constrained")
+    for i in range(num_envs):
+        ax[0].plot(range(num_sessions), var_by_env_all[:, i], color=cmap(i), marker=".", label=f"Environment {pcm.environments[i]}")
+        ax[1].plot(range(num_sessions), var_by_env_rel[:, i], color=cmap(i), marker=".", label=f"Environment {pcm.environments[i]}")
+
+    ax[0].set_title("All Cells")
+    ax[1].set_title("Reliable Cells")
+    ax[0].set_ylabel("Total Variance")
+    ax[1].set_ylabel("Total Variance")
+    ax[0].set_xlabel("Session")
+    ax[1].set_xlabel("Session")
+    ax[0].legend(fontsize=8)
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_total_variance")
+
+
 def plot_fourier_data(
     pcm,
     names,
