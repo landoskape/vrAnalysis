@@ -99,7 +99,7 @@ class VarianceStructure(placeCellSingleSession):
         return freqs, cv_by_env
 
 
-def load_spectra_data(pcm, args, save_as_temp=True):
+def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
     """
     load data for variance structure analysis of cvPCA and cvFOURIER spectra
 
@@ -169,6 +169,9 @@ def load_spectra_data(pcm, args, save_as_temp=True):
         load_data = True
 
     # if data doesn't exist or is incorrect, then load data
+    if load_data and not reload:
+        raise ValueError("No temporary data found (or args.reload_spectra_data is True) for variance structure analysis, but reload set to False.")
+
     if load_data:
         names = [v.vrexp.sessionPrint() for v in vss]
         envstats = pcm.env_stats()
@@ -750,3 +753,90 @@ def plot_pf_var_data(pcm, names, envstats, all_pf_var, rel_pf_var, color_by_sess
     if with_save:
         special_name = "by_session" if color_by_session else "by_relative_session"
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "pf_variance_" + special_name)
+
+
+# =================================== code for comparing spectral data across mice =================================== #
+def compare_spectral_averages(summary_dicts):
+    """
+    get average spectral data for each mouse (specifically the average eigenspectra for single / all environments)
+
+    summary dicts is a list of dictionaries containing full spectra data for each mouse to be compared
+    returns a list of lists, where the outer list corresponds to each mouse (e.g. each summary_dict)
+    and the inner list contains the eigenspectra for each session / environment
+    """
+    # get average eigenspectra for each mouse
+    single_env = []
+    across_env = []
+    for summary_dict in summary_dicts:
+        all_single_env = []
+        all_across_env = []
+        # go through each session's single environment eigenspectra
+        for cc in summary_dict["cv_by_env_all"]:
+            # it'll be a list of eigenspectra for each environment, group them together nondiscriminately
+            for c in cc:
+                all_single_env.append(c)  # normalize each eigenspectrum and add to list
+
+        # go through each session's across environment eigenspectra
+        for c in summary_dict["cv_across_all"]:
+            all_across_env.append(c)
+
+        # add them all to master list
+        single_env.append(all_single_env)
+        across_env.append(all_across_env)
+
+    return single_env, across_env
+
+
+def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=False, do_ylog=False, ylog_min=1e-3, with_show=True, with_save=False):
+
+    # if not using a y-log axis, then set the minimum to -inf to not change any data
+    if not do_ylog:
+        ylog_min = -np.inf
+
+    # create processing method
+    def _process(data):
+        """internal function for processing a set of eigenspectra"""
+        data = np.stack(data)
+        data = data / np.nansum(data, axis=1, keepdims=True)
+        data[data < ylog_min] = np.nan
+        return np.nanmean(data, axis=0)
+
+    num_mice = len(pcms)
+    mouse_names = [pcm.track.mouse_name for pcm in pcms]
+    cmap = mpl.colormaps["turbo"].resampled(num_mice)
+
+    figdim = 3
+    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex=True, sharey="row")
+    for imouse, (mouse_name, c_single_env, c_across_env) in enumerate(zip(mouse_names, single_env, across_env)):
+        c_single_data = _process(c_single_env)
+        c_across_data = _process(c_across_env)
+        ax[0, 0].plot(range(1, len(c_single_data) + 1), c_single_data, color=cmap(imouse), label=mouse_name)
+        ax[0, 1].plot(range(1, len(c_across_data) + 1), c_across_data, color=cmap(imouse), label=mouse_name)
+        ax[1, 0].plot(range(1, len(c_single_data) + 1), np.cumsum(c_single_data), color=cmap(imouse), label=mouse_name)
+        ax[1, 1].plot(range(1, len(c_across_data) + 1), np.cumsum(c_across_data), color=cmap(imouse), label=mouse_name)
+
+    ax[1, 0].set_xlabel("Dimension")
+    ax[1, 1].set_xlabel("Dimension")
+    ax[0, 0].set_ylabel("Variance")
+    ax[1, 0].set_ylabel("Cumulative Variance")
+    ax[0, 0].set_title("Single Environments")
+    ax[0, 1].set_title("Across Environments")
+    ax[1, 1].legend(fontsize=8)
+
+    if do_xlog:
+        for aa in ax:
+            for a in aa:
+                a.set_xscale("log")
+
+    if do_ylog:
+        for aa in ax:
+            for a in aa:
+                a.set_yscale("log")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "logx_" if do_xlog else "linx_"
+        special_name = special_name + ("logy" if do_ylog else "liny")
+        pcms[0].saveFigure(fig.number, "comparisons", "cv_spectral_average_comparison_" + special_name)
