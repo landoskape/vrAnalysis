@@ -2,6 +2,7 @@
 import time
 from datetime import datetime
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
 import numpy as np
 import scipy as sp
 import scipy.io as scio
@@ -565,21 +566,29 @@ class vrRegistration(vrExperiment):
             except ImportError as error:
                 print("Failed to import deconvolve from oasis -- this probably means you only installed the core requirements")
                 raise error
-            g = np.exp(-1 / self.opts["tau"] / self.opts["fs"])
-            fcorr = self.loadfcorr(loadFromOne=False)
-            ospks = []
-            print("Performing oasis...")
-            for fc in tqdm(fcorr):
+
+            # define function for performing oasis on each trace (using parallel pool)
+            def process_fc(fc):
                 # do oasis and cast as single to match with suite2p data
                 c_oasis = deconvolve(fc, g=(g,), penalty=1)[1].astype(np.single)
                 # oasis sometimes produces random highly negative values... just set them to 0
                 c_oasis = np.maximum(c_oasis, 0)
-                ospks.append(c_oasis)
+                # return deconvolved trace
+                return c_oasis
 
-            ospks = np.stack(ospks)
-            assert (
-                ospks.shape == self.loadS2P("spks").shape
-            ), f"In session {self.sessionPrint()}, oasis was run and did not produce the same shaped array as suite2p spks..."
+            # set parameters for oasis and get corrected fluorescence traces
+            g = np.exp(-1 / self.opts["tau"] / self.opts["fs"])
+            fcorr = self.loadfcorr(loadFromOne=False)
+
+            # deconvolve all traces
+            num_processes = cpu_count() - 1  # Number of available CPU cores
+            with Pool(num_processes) as pool:
+                results = list(tqdm(pool.imap(process_fc, fcorr), total=len(fcorr)))
+            ospks = np.stack(results)
+
+            # Check that the shape is correct
+            msg = f"In session {self.sessionPrint()}, oasis was run and did not produce the same shaped array as suite2p spks..."
+            assert ospks.shape == self.loadS2P("spks").shape, msg
 
         # save onedata (no assertions needed, loadS2P() handles shape checks and this function already handled any mismatch between frameSamples and suite2p output
         self.saveone(frame2time, "mpci.times")
