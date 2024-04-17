@@ -31,13 +31,15 @@ from vrAnalysis.analysis.variance_structure import (
 
 CUTOFFS = (0.4, 0.7)
 MAXCUTOFFS = None
-MOUSE_NAMES = ["ATL012", "ATL020", "ATL022", "ATL027", "ATL028", "CR_Hippocannula6"]
+MOUSE_NAMES = ["ATL012", "ATL020", "ATL022", "ATL027", "ATL028", "ATL045", "CR_Hippocannula6"]
 
 
 def handle_inputs():
     """method for creating and parsing input arguments"""
     parser = ArgumentParser(description="do summary plots for a mouse")
-    parser.add_argument("--mouse-names", type=str, nargs="*", default="all", help="which mice to compare (default='all')")
+    parser.add_argument(
+        "--mouse-names", type=str, nargs="*", default="all", help="which mice to compare (list of mouse names, or like default), (default='all')"
+    )
     parser.add_argument("--cutoffs", nargs="*", type=cutoff_type, default=CUTOFFS, help=f"cutoffs for reliability (default={CUTOFFS})")
     parser.add_argument("--maxcutoffs", nargs="*", type=cutoff_type, default=MAXCUTOFFS, help="maxcutoffs for reliability cells (default=None)")
     parser.add_argument("--do-spectra", default=False, action="store_true", help="create spectrum plots for mouse (default=False)")
@@ -48,11 +50,12 @@ def handle_inputs():
 
     # if mouse_names is "all", get all mouse names from the database
     if args.mouse_names == "all":
-        # sessiondb = database.vrDatabase("vrSessions")
-        # df = sessiondb.getTable(imaging=True, experimentType="Blender VR")
-        # mouse_names = df["mouseName"].unique()
-        # args.mouse_names = mouse_names
-        args.mouse_names = MOUSE_NAMES
+        # mousedb = database.vrDatabase("vrSessions")
+        mousedb = database.vrDatabase("vrMice")
+        df = mousedb.getTable(trackerExists=True)
+        mouse_names = df["mouseName"].unique()
+        args.mouse_names = mouse_names
+        # args.mouse_names = MOUSE_NAMES
 
     # return the parsed arguments
     return args

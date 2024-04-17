@@ -75,40 +75,40 @@ def analyze_spectra(pcm, args):
 
     # make plots
     plt.close("all")
-    # for color_by_session in [True, False]:
-    #     for normalize in [True, False]:
-    #         plot_spectral_data(
-    #             pcm,
-    #             names,
-    #             envstats,
-    #             cv_by_env_all,
-    #             cv_by_env_rel,
-    #             cv_across_all,
-    #             cv_across_rel,
-    #             color_by_session=color_by_session,
-    #             normalize=normalize,
-    #             with_show=False,
-    #             with_save=True,
-    #         )
-    #     for cvf_all, cvf_rel, covariance in zip([cvf_by_env_all, cvf_by_env_cov_all], [cvf_by_env_rel, cvf_by_env_cov_rel], [False, True]):
-    #         plot_fourier_data(
-    #             pcm,
-    #             names,
-    #             envstats,
-    #             cvf_freqs,
-    #             cvf_all,
-    #             cvf_rel,
-    #             color_by_session=color_by_session,
-    #             covariance=covariance,
-    #             with_show=False,
-    #             with_save=True,
-    #         )
-    #     plot_reliability_data(pcm, names, envstats, rel_mse, rel_cor, color_by_session=color_by_session, with_show=False, with_save=True)
-    #     plot_pf_var_data(pcm, names, envstats, all_pf_var, rel_pf_var, color_by_session=color_by_session, with_show=False, with_save=True)
-    # for do_xlog in [True, False]:
-    #     for do_ylog in [True, False]:
-    #         plot_spectral_averages(pcm, cv_by_env_all, cv_across_all, do_xlog=do_xlog, do_ylog=do_ylog, with_show=False, with_save=True)
-    # plot_spectral_energy(pcm, names, envstats, cv_by_env_all, cv_by_env_rel, with_show=False, with_save=True)
+    for color_by_session in [True, False]:
+        for normalize in [True, False]:
+            plot_spectral_data(
+                pcm,
+                names,
+                envstats,
+                cv_by_env_all,
+                cv_by_env_rel,
+                cv_across_all,
+                cv_across_rel,
+                color_by_session=color_by_session,
+                normalize=normalize,
+                with_show=False,
+                with_save=True,
+            )
+        for cvf_all, cvf_rel, covariance in zip([cvf_by_env_all, cvf_by_env_cov_all], [cvf_by_env_rel, cvf_by_env_cov_rel], [False, True]):
+            plot_fourier_data(
+                pcm,
+                names,
+                envstats,
+                cvf_freqs,
+                cvf_all,
+                cvf_rel,
+                color_by_session=color_by_session,
+                covariance=covariance,
+                with_show=False,
+                with_save=True,
+            )
+        plot_reliability_data(pcm, names, envstats, rel_mse, rel_cor, color_by_session=color_by_session, with_show=False, with_save=True)
+        plot_pf_var_data(pcm, names, envstats, all_pf_var, rel_pf_var, color_by_session=color_by_session, with_show=False, with_save=True)
+    for do_xlog in [True, False]:
+        for do_ylog in [True, False]:
+            plot_spectral_averages(pcm, cv_by_env_all, cv_across_all, do_xlog=do_xlog, do_ylog=do_ylog, with_show=False, with_save=True)
+    plot_spectral_energy(pcm, names, envstats, cv_by_env_all, cv_by_env_rel, with_show=False, with_save=True)
     for normalize in [True, False]:
         plot_svca_data(pcm, names, envstats, svca_shared, svca_total, normalize=normalize, with_show=False, with_save=True)
 
