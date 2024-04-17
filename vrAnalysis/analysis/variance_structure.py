@@ -99,7 +99,7 @@ class VarianceStructure(placeCellSingleSession):
         return freqs, cv_by_env
 
 
-def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
+def load_spectra_data(pcm, args, save_as_temp=True, reload=True, return_as_dict=False):
     """
     load data for variance structure analysis of cvPCA and cvFOURIER spectra
 
@@ -295,41 +295,45 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             svca_shared.append(c_shared_var)
             svca_total.append(c_tot_cov_space_var)
 
+        # save data as temporary files
+        temp_save_args = args if type(args) == dict else args.asdict() if type(args) == helpers.AttributeDict else vars(args)
+        temp_files = {
+            "names": names,
+            "envstats": envstats,
+            "args": temp_save_args,
+            "cv_by_env_all": cv_by_env_all,
+            "cv_by_env_rel": cv_by_env_rel,
+            "cv_across_all": cv_across_all,
+            "cv_across_rel": cv_across_rel,
+            "cvf_freqs": cvf_freqs,
+            "cvf_by_env_all": cvf_by_env_all,
+            "cvf_by_env_rel": cvf_by_env_rel,
+            "cvf_by_env_cov_all": cvf_by_env_cov_all,
+            "cvf_by_env_cov_rel": cvf_by_env_cov_rel,
+            "rel_mse": rel_mse,
+            "rel_cor": rel_cor,
+            "all_pf_mean": all_pf_mean,
+            "all_pf_var": all_pf_var,
+            "all_pf_cv": all_pf_cv,
+            "all_pf_tcv": all_pf_tcv,
+            "rel_pf_mean": rel_pf_mean,
+            "rel_pf_var": rel_pf_var,
+            "rel_pf_cv": rel_pf_cv,
+            "rel_pf_tcv": rel_pf_tcv,
+            "svca_shared": svca_shared,
+            "svca_total": svca_total,
+        }
         if save_as_temp:
-            # save data as temporary files
-            temp_save_args = args if type(args) == dict else args.asdict() if type(args) == helpers.AttributeDict else vars(args)
-            temp_files = {
-                "names": names,
-                "envstats": envstats,
-                "args": temp_save_args,
-                "cv_by_env_all": cv_by_env_all,
-                "cv_by_env_rel": cv_by_env_rel,
-                "cv_across_all": cv_across_all,
-                "cv_across_rel": cv_across_rel,
-                "cvf_freqs": cvf_freqs,
-                "cvf_by_env_all": cvf_by_env_all,
-                "cvf_by_env_rel": cvf_by_env_rel,
-                "cvf_by_env_cov_all": cvf_by_env_cov_all,
-                "cvf_by_env_cov_rel": cvf_by_env_cov_rel,
-                "rel_mse": rel_mse,
-                "rel_cor": rel_cor,
-                "all_pf_mean": all_pf_mean,
-                "all_pf_var": all_pf_var,
-                "all_pf_cv": all_pf_cv,
-                "all_pf_tcv": all_pf_tcv,
-                "rel_pf_mean": rel_pf_mean,
-                "rel_pf_var": rel_pf_var,
-                "rel_pf_cv": rel_pf_cv,
-                "rel_pf_tcv": rel_pf_tcv,
-                "svca_shared": svca_shared,
-                "svca_total": svca_total,
-            }
             pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
 
     else:
         print("Successfully loaded temporary data for variance structure analysis.")
 
     # return all the variables
+    if return_as_dict:
+        return temp_files
+
+    # if not returning as dictionary, return as tuple of all the variables
     return (
         names,
         envstats,
@@ -355,6 +359,76 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         svca_shared,
         svca_total,
     )
+
+
+def plot_svca_data(
+    pcm,
+    names,
+    envstats,
+    svca_shared,
+    svca_total,
+    normalize=False,
+    y_min=1e-5,
+    with_show=True,
+    with_save=False,
+):
+    # make plots of spectra data
+    num_sessions = len(names)
+    num_envs = len(envstats)
+
+    cmap_ses = mpl.colormaps["turbo"].resampled(num_sessions)
+    cmap_env = mpl.colormaps["Set1"].resampled(num_envs)
+
+    def norm(data):
+        """helper for optionally normalizing data"""
+        if normalize:
+            data = data / np.nansum(data)
+        data[data < y_min] = np.nan
+        return data
+
+    alpha = 1
+    figdim = 3
+    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex=True, sharey="row")
+    for i in range(num_sessions):
+        c_num_env = -1
+        for seslist in envstats.values():
+            if i in seslist:
+                c_num_env += 1
+        cdata = svca_shared[i]
+        ax[0, 0].plot(range(1, len(cdata) + 1), norm(cdata), color=(cmap_ses(i), alpha))
+        ax[0, 1].plot(range(1, len(cdata) + 1), norm(cdata), color=(cmap_env(c_num_env), alpha))
+        ax[1, 0].plot(range(1, len(cdata) + 1), np.nancumsum(norm(cdata)), color=(cmap_ses(i), alpha))
+        ax[1, 1].plot(range(1, len(cdata) + 1), np.nancumsum(norm(cdata)), color=(cmap_env(c_num_env), alpha))
+
+    ax[0, 0].set_title("Shared Variance - (by session)")
+    ax[0, 1].set_title("Shared Variance - (by #env/session)")
+    ax[0, 0].set_ylabel("Variance")
+    ax[1, 0].set_ylabel("Cumulative Variance")
+    ax[1, 0].set_xlabel("Dimension")
+    ax[1, 1].set_xlabel("Dimension")
+
+    for ax_row in ax:
+        for a in ax_row:
+            a.set_xscale("log")
+            a.set_yscale("log")
+
+    axins0 = ax[0, 0].inset_axes([0.05, 0.18, 0.4, 0.075])
+    axins0.xaxis.set_ticks_position("bottom")
+    m = mpl.cm.ScalarMappable(cmap=cmap_ses)
+    cb0 = fig.colorbar(m, cax=axins0, orientation="horizontal")
+    cb0.set_label("session #", loc="center", y=10)
+
+    axins1 = ax[0, 1].inset_axes([0.05, 0.18, 0.4, 0.075])
+    axins1.xaxis.set_ticks_position("bottom")
+    m = mpl.cm.ScalarMappable(cmap=cmap_env)
+    fig.colorbar(m, cax=axins1, orientation="horizontal", label="#env/ses")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "_normalized" if normalize else ""
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "svca_spectra_" + special_name)
 
 
 def add_to_spectra_data(pcm, args):
@@ -833,8 +907,8 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         c_across_data = _process(c_across_env)
         ax[0, 0].plot(range(1, len(c_single_data) + 1), c_single_data, color=cmap(imouse), label=mouse_name)
         ax[0, 1].plot(range(1, len(c_across_data) + 1), c_across_data, color=cmap(imouse), label=mouse_name)
-        ax[1, 0].plot(range(1, len(c_single_data) + 1), np.cumsum(c_single_data), color=cmap(imouse), label=mouse_name)
-        ax[1, 1].plot(range(1, len(c_across_data) + 1), np.cumsum(c_across_data), color=cmap(imouse), label=mouse_name)
+        ax[1, 0].plot(range(1, len(c_single_data) + 1), np.nancumsum(c_single_data), color=cmap(imouse), label=mouse_name)
+        ax[1, 1].plot(range(1, len(c_across_data) + 1), np.nancumsum(c_across_data), color=cmap(imouse), label=mouse_name)
 
     ax[1, 0].set_xlabel("Dimension")
     ax[1, 1].set_xlabel("Dimension")
@@ -861,3 +935,98 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         special_name = "logx_" if do_xlog else "linx_"
         special_name = special_name + ("logy" if do_ylog else "liny")
         pcms[0].saveFigure(fig.number, "comparisons", "cv_spectral_average_comparison_" + special_name)
+
+
+def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=False):
+    single_env, across_env = compare_spectral_averages(spectra_data)
+    single_amp = []
+    single_decay = []
+    single_r2 = []
+    across_amp = []
+    across_decay = []
+    across_r2 = []
+    for senv, aenv in zip(single_env, across_env):
+        # get exponential fits and r2 for single environment spectra
+        (a, d), r = helpers.fit_exponentials(np.stack(senv), bias=False)
+        single_amp.append(a)
+        single_decay.append(d)
+        single_r2.append(r)
+
+        # get exponential fits and r2 for across environment spectra
+        (a, d), r = helpers.fit_exponentials(np.stack(aenv), bias=False)
+        across_amp.append(a)
+        across_decay.append(d)
+        across_r2.append(r)
+
+    single_mouse_id = np.concatenate([i * np.ones(len(single_env[i])) for i in range(len(single_env))])
+    across_mouse_id = np.concatenate([i * np.ones(len(across_env[i])) for i in range(len(across_env))])
+
+    mouse_cmap = mpl.colormaps["Dark2"].resampled(len(single_env))
+    r2_cmap = mpl.colormaps["plasma"]
+
+    figdim = 3
+    alpha = 0.7
+    s = 25
+
+    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex="col", sharey="col")
+    ax[0, 0].scatter(
+        np.concatenate(single_decay), np.concatenate(single_amp), s=s, c=single_mouse_id, cmap=mouse_cmap, alpha=alpha, lw=0.5, edgecolor="k"
+    )
+    ax[0, 1].scatter(
+        np.concatenate(single_decay),
+        np.concatenate(single_amp),
+        s=s,
+        c=np.concatenate(single_r2),
+        cmap=r2_cmap,
+        vmin=0,
+        vmax=1,
+        alpha=alpha,
+        lw=0.5,
+        edgecolor="k",
+    )
+
+    ax[1, 0].scatter(
+        np.concatenate(across_decay), np.concatenate(across_amp), s=s, c=across_mouse_id, cmap=mouse_cmap, alpha=alpha, lw=0.5, edgecolor="k"
+    )
+    ax[1, 1].scatter(
+        np.concatenate(across_decay),
+        np.concatenate(across_amp),
+        s=s,
+        c=np.concatenate(across_r2),
+        cmap=r2_cmap,
+        vmin=0,
+        vmax=1,
+        alpha=alpha,
+        lw=0.5,
+        edgecolor="k",
+    )
+
+    ax[1, 0].set_xlabel("Decay")
+    ax[1, 1].set_xlabel("Decay")
+    ax[0, 0].set_ylabel("Amplitude")
+    ax[1, 0].set_ylabel("Amplitude")
+    ax[0, 0].set_title("Single Env Spectra")
+    ax[0, 1].set_title("Single Env Spectra")
+    ax[1, 0].set_title("Across Env Spectra")
+    ax[1, 1].set_title("Across Env Spectra")
+
+    for a in ax:
+        for _a in a:
+            _a.set_yscale("log")
+
+    iax = ax[0, 0].inset_axes([0.6, 0.85, 0.29, 0.07])
+    iax.xaxis.set_ticks_position("bottom")
+    norm = mpl.colors.Normalize(vmin=0, vmax=len(single_env) - 1)
+    m = mpl.cm.ScalarMappable(cmap=mouse_cmap, norm=norm)
+    fig.colorbar(m, cax=iax, orientation="horizontal", label="Mouse ID")
+
+    iax = ax[0, 1].inset_axes([0.6, 0.85, 0.29, 0.07])
+    iax.xaxis.set_ticks_position("bottom")
+    m = mpl.cm.ScalarMappable(cmap=r2_cmap)
+    fig.colorbar(m, cax=iax, orientation="horizontal", label="R**2")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        pcms[0].saveFigure(fig.number, "comparisons", "exponential_fit_results")

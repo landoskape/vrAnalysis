@@ -8,9 +8,11 @@ sys.path.append(mainPath)
 from argparse import ArgumentParser
 from tqdm import tqdm
 import pickle
+import numpy as np
 from matplotlib import pyplot as plt
+import matplotlib as mpl
 
-from vrAnalysis.helpers import cutoff_type, positive_float, AttributeDict
+from vrAnalysis.helpers import cutoff_type, positive_float, AttributeDict, fit_exponentials
 from vrAnalysis import database
 from vrAnalysis import tracking
 from vrAnalysis import analysis
@@ -24,6 +26,7 @@ from vrAnalysis.analysis.variance_structure import (
     plot_pf_var_data,
     compare_spectral_averages,
     plot_spectral_averages_comparison,
+    plot_all_exponential_fits,
 )
 
 CUTOFFS = (0.4, 0.7)
@@ -64,58 +67,7 @@ def get_spectra(mouse_name, args):
     single_args = AttributeDict(vars(args))
     single_args["mouse_name"] = mouse_name
 
-    (
-        names,
-        envstats,
-        cv_by_env_all,
-        cv_by_env_rel,
-        cv_across_all,
-        cv_across_rel,
-        cvf_freqs,
-        cvf_by_env_all,
-        cvf_by_env_rel,
-        cvf_by_env_cov_all,
-        cvf_by_env_cov_rel,
-        rel_mse,
-        rel_cor,
-        all_pf_mean,
-        all_pf_var,
-        all_pf_cv,
-        all_pf_tcv,
-        rel_pf_mean,
-        rel_pf_var,
-        rel_pf_cv,
-        rel_pf_tcv,
-        svca_shared,
-        svca_total,
-    ) = load_spectra_data(pcm, single_args, save_as_temp=False, reload=False)
-
-    # save this mouses spectra data as a dictionary
-    spectra_dictionary = dict(
-        names=names,
-        envstats=envstats,
-        cv_by_env_all=cv_by_env_all,
-        cv_by_env_rel=cv_by_env_rel,
-        cv_across_all=cv_across_all,
-        cv_across_rel=cv_across_rel,
-        cvf_freqs=cvf_freqs,
-        cvf_by_env_all=cvf_by_env_all,
-        cvf_by_env_rel=cvf_by_env_rel,
-        cvf_by_env_cov_all=cvf_by_env_cov_all,
-        cvf_by_env_cov_rel=cvf_by_env_cov_rel,
-        rel_mse=rel_mse,
-        rel_cor=rel_cor,
-        all_pf_mean=all_pf_mean,
-        all_pf_var=all_pf_var,
-        all_pf_cv=all_pf_cv,
-        all_pf_tcv=all_pf_tcv,
-        rel_pf_mean=rel_pf_mean,
-        rel_pf_var=rel_pf_var,
-        rel_pf_cv=rel_pf_cv,
-        rel_pf_tcv=rel_pf_tcv,
-        svca_shared=svca_shared,
-        svca_total=svca_total,
-    )
+    spectra_dictionary = load_spectra_data(pcm, single_args, save_as_temp=False, reload=False, return_as_dict=True)
 
     # return the dictionary
     return spectra_dictionary
@@ -128,6 +80,7 @@ def make_comparison_plots(pcms, spectra_data):
             plot_spectral_averages_comparison(
                 pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=1e-3, with_show=False, with_save=True
             )
+    plot_all_exponential_fits(pcms, spectra_data, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":

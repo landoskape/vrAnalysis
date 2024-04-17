@@ -2,6 +2,8 @@ import numpy as np
 import scipy as sp
 import torch
 
+from .wrangling import transpose_list
+
 
 # ---------------------------------- signal processing ----------------------------------
 def nearestpoint(x, y, mode="nearest"):
@@ -320,3 +322,59 @@ def get_fourier_basis(L, Fs=1.0):
 
     # return frequency and basis
     return f, basis
+
+
+def fit_exponentials(data, bias=False):
+    """
+    Fit exponential functions to data.
+
+    Assumes that each row of data is the exponential to fit,
+    with x values being np.arange(0, data.shape[1])
+
+    returns a list of popt for each row of data
+    """
+
+    def _exp_func_bias(x, amplitude, decay, bias):
+        return amplitude * np.exp(-x / decay) + bias
+
+    def _exp_func(x, amplitude, decay):
+        return amplitude * np.exp(-x / decay)
+
+    assert data.ndim == 2, "data has to be a 2D numpy array"
+
+    # Prepare initial estimates of the parameters
+    init_amplitude = data[:, 0]
+    init_decay = data.shape[1] / 10 * np.ones(data.shape[0])
+
+    # set bounds for amplitude and decay
+    bounds = [[-np.inf, np.inf], [0, np.inf]]
+
+    # handle possibility of bias term
+    if bias:
+        init_bias = data[:, -1]
+        bounds.append([-np.inf, np.inf])
+
+    _func = _exp_func_bias if bias else _exp_func
+
+    # convert to expected format for scipy.optimize.curve_fit
+    bounds = list(zip(*bounds))
+
+    # Do fit
+    x_vals = np.arange(0, data.shape[1])
+    popts = []
+    for idx, y in enumerate(data):
+        # set initial parameter
+        p0 = [init_amplitude[idx], init_decay[idx]]
+        if bias:
+            p0.append(init_bias[idx])
+
+        # fit data
+        popts.append(sp.optimize.curve_fit(_func, x_vals, y, p0=p0, bounds=bounds)[0])
+
+    # Measure R2
+    residuals = data - np.array([_func(x_vals, *popt) for popt in popts])
+    ss_res = np.sum(residuals**2, axis=1)
+    ss_tot = np.sum((data - np.mean(data, axis=1, keepdims=True)) ** 2, axis=1)
+    r_squared = 1 - ss_res / ss_tot
+
+    return transpose_list(popts), r_squared
