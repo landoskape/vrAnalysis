@@ -291,7 +291,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True, return_as_dict=
         svca_shared = []
         svca_total = []
         for ospk in tqdm(ospks, leave=False, desc="doing SVCA"):
-            c_shared_var, c_tot_cov_space_var = helpers.split_and_svca(ospk.T, verbose=False)
+            c_shared_var, c_tot_cov_space_var = helpers.split_and_svca(ospk.T, verbose=False)[:2]
             svca_shared.append(c_shared_var)
             svca_total.append(c_tot_cov_space_var)
 
