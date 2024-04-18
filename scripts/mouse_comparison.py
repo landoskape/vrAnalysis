@@ -31,7 +31,6 @@ from vrAnalysis.analysis.variance_structure import (
 
 CUTOFFS = (0.4, 0.7)
 MAXCUTOFFS = None
-MOUSE_NAMES = ["ATL012", "ATL020", "ATL022", "ATL027", "ATL028", "ATL045", "CR_Hippocannula6"]
 
 
 def handle_inputs():
@@ -55,7 +54,6 @@ def handle_inputs():
         df = mousedb.getTable(trackerExists=True)
         mouse_names = df["mouseName"].unique()
         args.mouse_names = mouse_names
-        # args.mouse_names = MOUSE_NAMES
 
     # return the parsed arguments
     return args
