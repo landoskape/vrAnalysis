@@ -68,7 +68,7 @@ def get_spectra(mouse_name, args):
     single_args = AttributeDict(vars(args))
     single_args["mouse_name"] = mouse_name
 
-    spectra_dictionary = load_spectra_data(pcm, single_args, save_as_temp=False, reload=False, return_as_dict=True)
+    spectra_dictionary = load_spectra_data(pcm, single_args, save_as_temp=False, reload=False)
 
     # return the dictionary
     return spectra_dictionary
