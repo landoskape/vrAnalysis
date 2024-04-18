@@ -860,7 +860,7 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
 
     # make the plot
     figdim = 2
-    fig, ax = plt.subplots(num_envs, num_vars, figsize=(num_vars * figdim, num_envs * figdim), layout="constrained", sharex="col", sharey="row")
+    fig, ax = plt.subplots(num_envs, num_vars, figsize=(num_vars * figdim, num_envs * figdim), layout="constrained", sharex="col", sharey=True)
     for i in range(num_envs):
         c_env = pcm.environments[i]
         for j in range(num_sessions):
@@ -872,6 +872,7 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
                         print(f"Warning: {c_pfvar} is all nan for {pcm.track.mouse_name} {c_env} {j}")
 
                     ax[i, ipf].scatter(cdata, single[j][eidx], color=get_color(c_env, j), marker=".")
+
                     if ipf == 0:
                         ax[i, ipf].set_ylabel(f"Environment {c_env}\n{'Amplitude' if amplitude else 'Decay'}")
                     else:
@@ -880,6 +881,8 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
                         ax[i, ipf].set_title(c_pfvar)
                     ax[i, ipf].set_xlabel(c_pfvar)
                     ax[i, ipf].set_yscale("linear")
+
+    ax[0, 0].set_ylim(bottom=0)
 
     if with_show:
         plt.show()
