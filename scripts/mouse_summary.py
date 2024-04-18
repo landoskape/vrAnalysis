@@ -25,6 +25,7 @@ from vrAnalysis.analysis.variance_structure import (
     plot_reliability_data,
     plot_pf_var_data,
     plot_svca_data,
+    compare_exp_fits,
 )
 
 CUTOFFS = (0.4, 0.7)
@@ -47,70 +48,32 @@ def handle_inputs():
 def analyze_spectra(pcm, args):
     """method for analyzing and plotting spectra with cvPCA and cvFOURIER analyses"""
     # load spectra data (use temp if it matches)
-    (
-        names,
-        envstats,
-        cv_by_env_all,
-        cv_by_env_rel,
-        cv_across_all,
-        cv_across_rel,
-        cvf_freqs,
-        cvf_by_env_all,
-        cvf_by_env_rel,
-        cvf_by_env_cov_all,
-        cvf_by_env_cov_rel,
-        rel_mse,
-        rel_cor,
-        all_pf_mean,
-        all_pf_var,
-        all_pf_cv,
-        all_pf_tcv,
-        rel_pf_mean,
-        rel_pf_var,
-        rel_pf_cv,
-        rel_pf_tcv,
-        svca_shared,
-        svca_total,
-    ) = load_spectra_data(pcm, args, save_as_temp=True)
+    spectra_data = load_spectra_data(pcm, args, save_as_temp=True)
 
     # make plots
     plt.close("all")
+    # for color_by_session in [True, False]:
+    #     for normalize in [True, False]:
+    #         plot_spectral_data(
+    #             pcm,
+    #             spectra_data,
+    #             color_by_session=color_by_session,
+    #             normalize=normalize,
+    #             with_show=False,
+    #             with_save=True,
+    #         )
+    #     for covariance in [False, True]:
+    #         plot_fourier_data(pcm, spectra_data, color_by_session=color_by_session, covariance=covariance, with_show=False, with_save=True)
+    #     plot_reliability_data(pcm, spectra_data, color_by_session=color_by_session, with_show=False, with_save=True)
+    #     plot_pf_var_data(pcm, spectra_data, color_by_session=color_by_session, with_show=False, with_save=True)
+    # for do_xlog in [True, False]:
+    #     for do_ylog in [True, False]:
+    #         plot_spectral_averages(pcm, spectra_data, do_xlog=do_xlog, do_ylog=do_ylog, with_show=False, with_save=True)
+    # plot_spectral_energy(pcm, spectra_data, with_show=False, with_save=True)
+    # for normalize in [True, False]:
+    #     plot_svca_data(pcm, spectra_data, normalize=normalize, with_show=False, with_save=True)
     for color_by_session in [True, False]:
-        for normalize in [True, False]:
-            plot_spectral_data(
-                pcm,
-                names,
-                envstats,
-                cv_by_env_all,
-                cv_by_env_rel,
-                cv_across_all,
-                cv_across_rel,
-                color_by_session=color_by_session,
-                normalize=normalize,
-                with_show=False,
-                with_save=True,
-            )
-        for cvf_all, cvf_rel, covariance in zip([cvf_by_env_all, cvf_by_env_cov_all], [cvf_by_env_rel, cvf_by_env_cov_rel], [False, True]):
-            plot_fourier_data(
-                pcm,
-                names,
-                envstats,
-                cvf_freqs,
-                cvf_all,
-                cvf_rel,
-                color_by_session=color_by_session,
-                covariance=covariance,
-                with_show=False,
-                with_save=True,
-            )
-        plot_reliability_data(pcm, names, envstats, rel_mse, rel_cor, color_by_session=color_by_session, with_show=False, with_save=True)
-        plot_pf_var_data(pcm, names, envstats, all_pf_var, rel_pf_var, color_by_session=color_by_session, with_show=False, with_save=True)
-    for do_xlog in [True, False]:
-        for do_ylog in [True, False]:
-            plot_spectral_averages(pcm, cv_by_env_all, cv_across_all, do_xlog=do_xlog, do_ylog=do_ylog, with_show=False, with_save=True)
-    plot_spectral_energy(pcm, names, envstats, cv_by_env_all, cv_by_env_rel, with_show=False, with_save=True)
-    for normalize in [True, False]:
-        plot_svca_data(pcm, names, envstats, svca_shared, svca_total, normalize=normalize, with_show=False, with_save=True)
+        compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=color_by_session, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":

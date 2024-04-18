@@ -645,6 +645,9 @@ def plot_fourier_data(
             sesnum_for_env = spectra_data["envstats"][env].index(sesnum)
             return cmap(sesnum_for_env)
 
+    cvf_all = spectra_data["cvf_by_env_cov_all" if covariance else "cvf_by_env_all"]
+    cvf_rel = spectra_data["cvf_by_env_cov_rel" if covariance else "cvf_by_env_rel"]
+
     figdim = 3
     fig, ax = plt.subplots(2, num_envs * 2, figsize=(2 * num_envs * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
     for i in range(num_envs):
@@ -656,13 +659,13 @@ def plot_fourier_data(
             if j in spectra_data["envstats"][c_env]:
                 eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
 
-                cdata = spectra_data["cvf_by_env_all"][j][eidx]
+                cdata = cvf_all[j][eidx]
                 if ignore_dc:
                     cdata = [c[1:] for c in cdata]
                 ax[0, 2 * i].plot(c_freqs, cdata[0], color=get_color(c_env, j), linestyle="-")
                 ax[0, 2 * i + 1].plot(c_freqs, cdata[1], color=get_color(c_env, j), linestyle="--")
 
-                cdata = spectra_data["cvf_by_env_rel"][j][eidx]
+                cdata = cvf_rel[j][eidx]
                 if ignore_dc:
                     cdata = [c[1:] for c in cdata]
                 ax[1, 2 * i].plot(c_freqs, cdata[0], color=get_color(c_env, j), linestyle="-")
@@ -810,11 +813,13 @@ def plot_pf_var_data(pcm, spectra_data, color_by_session=True, with_show=True, w
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "pf_variance_" + special_name)
 
 
-def predict_exp_fits(pcm, spectra_data, with_show=True, with_save=False):
+def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, with_show=True, with_save=False):
     """
     First make exponential fits of the eigenspectra, then use place field and other properties to predict the fit parameters
     """
     num_sessions = len(spectra_data["names"])
+    num_envs = len(spectra_data["envstats"])
+
     single_amplitude = []
     single_decay = []
     single_r2 = []
@@ -833,6 +838,54 @@ def predict_exp_fits(pcm, spectra_data, with_show=True, with_save=False):
         across_amplitude[ii] = a[0]
         across_decay[ii] = d[0]
         across_r2[ii] = r[0]
+
+    # names of place-field related variables to compare with exponential fit data
+    pfvars = ["rel_cor", "all_pf_mean", "all_pf_var", "all_pf_cv", "all_pf_tcv"]
+    num_vars = len(pfvars)
+
+    cmap = mpl.colormaps["turbo"].resampled(num_sessions)
+
+    def get_color(env, sesnum):
+        """helper for getting color based on color method"""
+        if color_by_session:
+            # color by absolute session number
+            return cmap(sesnum)
+        else:
+            # color by relative session number (within environment)
+            sesnum_for_env = spectra_data["envstats"][env].index(sesnum)
+            return cmap(sesnum_for_env)
+
+    # determine which parameter to plot based on amplitude kwarg
+    single = single_amplitude if amplitude else single_decay
+
+    # make the plot
+    figdim = 2
+    fig, ax = plt.subplots(num_envs, num_vars, figsize=(num_vars * figdim, num_envs * figdim), layout="constrained", sharex="col", sharey="row")
+    for i in range(num_envs):
+        c_env = pcm.environments[i]
+        for j in range(num_sessions):
+            if j in spectra_data["envstats"][c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+                for ipf, c_pfvar in enumerate(pfvars):
+                    cdata = np.nanmean(spectra_data[c_pfvar][j][eidx])
+                    if np.all(np.isnan(spectra_data[c_pfvar][j][eidx])):
+                        print(f"Warning: {c_pfvar} is all nan for {pcm.track.mouse_name} {c_env} {j}")
+
+                    ax[i, ipf].scatter(cdata, single[j][eidx], color=get_color(c_env, j), marker=".")
+                    if ipf == 0:
+                        ax[i, ipf].set_ylabel(f"Environment {c_env}\n{'Amplitude' if amplitude else 'Decay'}")
+                    else:
+                        ax[i, ipf].set_ylabel("Amplitude" if amplitude else "Decay")
+                    if i == 0:
+                        ax[i, ipf].set_title(c_pfvar)
+                    ax[i, ipf].set_xlabel(c_pfvar)
+                    ax[i, ipf].set_yscale("linear")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "comparison_pfvars_eigenspectra")
 
 
 # =================================== code for comparing spectral data across mice =================================== #
@@ -877,9 +930,14 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
     def _process(data):
         """internal function for processing a set of eigenspectra"""
         data = np.stack(data)
-        data = data / np.nansum(data, axis=1, keepdims=True)
+        # normalize each row so they sum to 1
+        data = data / np.sum(data, axis=1, keepdims=True)
+        # take the average across rows (across sessions / environments)
+        data = np.mean(data, axis=0)
+        # remove any values below the minimum for log scaling
         data[data < ylog_min] = np.nan
-        return np.nanmean(data, axis=0)
+        # return processed data
+        return data
 
     num_mice = len(pcms)
     mouse_names = [pcm.track.mouse_name for pcm in pcms]
