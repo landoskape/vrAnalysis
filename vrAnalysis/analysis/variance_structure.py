@@ -121,42 +121,56 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
 
         # populate variables
         try:
-            names = temp_files["names"]
-            envstats = temp_files["envstats"]
-            cv_by_env_all = temp_files["cv_by_env_all"]
-            cv_by_env_rel = temp_files["cv_by_env_rel"]
-            cv_across_all = temp_files["cv_across_all"]
-            cv_across_rel = temp_files["cv_across_rel"]
-            cvf_freqs = temp_files["cvf_freqs"]
-            cvf_by_env_all = temp_files["cvf_by_env_all"]
-            cvf_by_env_rel = temp_files["cvf_by_env_rel"]
-            cvf_by_env_cov_all = temp_files["cvf_by_env_cov_all"]
-            cvf_by_env_cov_rel = temp_files["cvf_by_env_cov_rel"]
-            rel_mse = temp_files["rel_mse"]
-            rel_cor = temp_files["rel_cor"]
-            all_pf_mean = temp_files["all_pf_mean"]
-            all_pf_var = temp_files["all_pf_var"]
-            all_pf_cv = temp_files["all_pf_cv"]
-            all_pf_tcv = temp_files["all_pf_tcv"]
-            rel_pf_mean = temp_files["rel_pf_mean"]
-            rel_pf_var = temp_files["rel_pf_var"]
-            rel_pf_cv = temp_files["rel_pf_cv"]
-            rel_pf_tcv = temp_files["rel_pf_tcv"]
-            svca_shared = temp_files["svca_shared"]
-            svca_total = temp_files["svca_total"]
+            required_keys = [
+                "names",
+                "envstats",
+                "cv_by_env_all",
+                "cv_by_env_rel",
+                "cv_across_all",
+                "cv_across_rel",
+                "cvf_freqs",
+                "cvf_by_env_all",
+                "cvf_by_env_rel",
+                "cvf_by_env_cov_all",
+                "cvf_by_env_cov_rel",
+                "rel_mse",
+                "rel_cor",
+                "all_pf_mean",
+                "all_pf_var",
+                "all_pf_cv",
+                "all_pf_tdot_mean",
+                "all_pf_tdot_std",
+                "all_pf_tdot_cv",
+                "all_pf_tcorr_mean",
+                "all_pf_tcorr_std",
+                "rel_pf_mean",
+                "rel_pf_var",
+                "rel_pf_cv",
+                "rel_pf_tdot_mean",
+                "rel_pf_tdot_std",
+                "rel_pf_tdot_cv",
+                "rel_pf_tcorr_mean",
+                "rel_pf_tcorr_std",
+                "svca_shared",
+                "svca_total",
+            ]
+            for key in required_keys:
+                if key not in temp_files:
+                    load_data = True
+                    break
 
         except KeyError:
             load_data = True
 
         if not load_data:
             # check if variables are correct
-            for name, v in zip(names, vss):
+            for name, v in zip(temp_files["names"], vss):
                 if name != v.vrexp.sessionPrint():
                     load_data = True
                     continue
 
         # check if envstats is correct
-        if not load_data and (envstats != pcm.env_stats()):
+        if not load_data and (temp_files["envstats"] != pcm.env_stats()):
             load_data = True
 
         # check if arguments are correct
@@ -190,11 +204,19 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         all_pf_mean = []
         all_pf_var = []
         all_pf_cv = []
-        all_pf_tcv = []
+        all_pf_tdot_mean = []
+        all_pf_tdot_std = []
+        all_pf_tdot_cv = []
+        all_pf_tcorr_mean = []
+        all_pf_tcorr_std = []
         rel_pf_mean = []
         rel_pf_var = []
         rel_pf_cv = []
-        rel_pf_tcv = []
+        rel_pf_tdot_mean = []
+        rel_pf_tdot_std = []
+        rel_pf_tdot_cv = []
+        rel_pf_tcorr_mean = []
+        rel_pf_tcorr_std = []
         for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
             # get reliable cells (for each environment) and spkmaps for each environment (with all cells)
             c_idx_reliable = v.get_reliable(envnum=None, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs)
@@ -223,22 +245,45 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             c_all_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
             c_all_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
             c_all_pf_amplitude = [fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_all_unitpf, c_spkmaps)]
-            c_all_pf_tcv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
+            c_all_pf_tdot_mean = [np.nanmean(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
+            c_all_pf_tdot_std = [np.nanstd(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
+            c_all_pf_tdot_cv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
 
             all_pf_mean.append(c_all_pf_mean)
             all_pf_cv.append(c_all_pf_cv)
-            all_pf_tcv.append(c_all_pf_tcv)
+            all_pf_tdot_mean.append(c_all_pf_tdot_mean)
+            all_pf_tdot_std.append(c_all_pf_tdot_std)
+            all_pf_tdot_cv.append(c_all_pf_tdot_cv)
 
             c_rel_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_rel]
             c_rel_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields_rel]
             c_rel_pf_amplitude = [
                 fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_rel_unitpf, c_rel_spkmaps)
             ]
-            c_rel_pf_tcv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
+            c_rel_pf_tdot_mean = [np.nanmean(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
+            c_rel_pf_tdot_std = [np.nanstd(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
+            c_rel_pf_tdot_cv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
 
             rel_pf_mean.append(c_rel_pf_mean)
             rel_pf_cv.append(c_rel_pf_cv)
-            rel_pf_tcv.append(c_rel_pf_tcv)
+            rel_pf_tdot_mean.append(c_rel_pf_tdot_mean)
+            rel_pf_tdot_std.append(c_rel_pf_tdot_std)
+            rel_pf_tdot_cv.append(c_rel_pf_tdot_cv)
+
+            # get trial by trial correlation with the mean place field and the trial by trial place field
+            c_all_pf_tcorr = [
+                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2)
+                for spkmap, placefield in zip(c_spkmaps, c_placefields_all)
+            ]
+            c_rel_pf_tcorr = [
+                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2)
+                for spkmap, placefield in zip(c_rel_spkmaps, c_placefields_rel)
+            ]
+
+            all_pf_tcorr_mean.append([np.nanmean(tcorr, axis=1) for tcorr in c_all_pf_tcorr])
+            all_pf_tcorr_std.append([np.nanstd(tcorr, axis=1) for tcorr in c_all_pf_tcorr])
+            rel_pf_tcorr_mean.append([np.nanmean(tcorr, axis=1) for tcorr in c_rel_pf_tcorr])
+            rel_pf_tcorr_std.append([np.nanstd(tcorr, axis=1) for tcorr in c_rel_pf_tcorr])
 
         # make analyses consistent by using same (randomly subsampled) numbers of trials & neurons for each analysis
         all_max_trials = min([int(v._get_min_trials(allmap) // 2) for v, allmap in zip(vss, allcell_maps)])
@@ -315,11 +360,19 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "all_pf_mean": all_pf_mean,
             "all_pf_var": all_pf_var,
             "all_pf_cv": all_pf_cv,
-            "all_pf_tcv": all_pf_tcv,
+            "all_pf_tdot_mean": all_pf_tdot_mean,
+            "all_pf_tdot_std": all_pf_tdot_std,
+            "all_pf_tdot_cv": all_pf_tdot_cv,
+            "all_pf_tcorr_mean": all_pf_tcorr_mean,
+            "all_pf_tcorr_std": all_pf_tcorr_std,
             "rel_pf_mean": rel_pf_mean,
             "rel_pf_var": rel_pf_var,
             "rel_pf_cv": rel_pf_cv,
-            "rel_pf_tcv": rel_pf_tcv,
+            "rel_pf_tdot_mean": rel_pf_tdot_mean,
+            "rel_pf_tdot_std": rel_pf_tdot_std,
+            "rel_pf_tdot_cv": rel_pf_tdot_cv,
+            "rel_pf_tcorr_mean": rel_pf_tcorr_mean,
+            "rel_pf_tcorr_std": rel_pf_tcorr_std,
             "svca_shared": svca_shared,
             "svca_total": svca_total,
         }
@@ -840,7 +893,17 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
         across_r2[ii] = r[0]
 
     # names of place-field related variables to compare with exponential fit data
-    pfvars = ["rel_cor", "all_pf_mean", "all_pf_var", "all_pf_cv", "all_pf_tcv"]
+    pfvars = [
+        "rel_cor",
+        "all_pf_mean",
+        "all_pf_var",
+        "all_pf_cv",
+        "all_pf_tdot_mean",
+        "all_pf_tdot_std",
+        "all_pf_tdot_cv",
+        "all_pf_tcorr_mean",
+        "all_pf_tcorr_std",
+    ]
     num_vars = len(pfvars)
 
     cmap = mpl.colormaps["turbo"].resampled(num_sessions)
@@ -859,7 +922,7 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
     single = single_amplitude if amplitude else single_decay
 
     # make the plot
-    figdim = 2
+    figdim = 1.5
     fig, ax = plt.subplots(num_envs, num_vars, figsize=(num_vars * figdim, num_envs * figdim), layout="constrained", sharex="col", sharey=True)
     for i in range(num_envs):
         c_env = pcm.environments[i]
@@ -881,6 +944,8 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
                         ax[i, ipf].set_title(c_pfvar)
                     ax[i, ipf].set_xlabel(c_pfvar)
                     ax[i, ipf].set_yscale("linear")
+                    if c_pfvar == "rel_mse":
+                        ax[i, ipf].set_xlim(-4, 1)
 
     ax[0, 0].set_ylim(bottom=0)
 
@@ -888,7 +953,9 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
         plt.show()
 
     if with_save:
-        pcm.saveFigure(fig.number, pcm.track.mouse_name, "comparison_pfvars_eigenspectra")
+        special_name = "amplitude" if amplitude else "decay"
+        special_name = special_name + ("_by_session" if color_by_session else "_by_relative_session")
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "comparison_pfvars_eigenspectra_" + special_name)
 
 
 # =================================== code for comparing spectral data across mice =================================== #
