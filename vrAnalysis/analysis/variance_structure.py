@@ -133,6 +133,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "cvf_by_env_rel",
                 "cvf_by_env_cov_all",
                 "cvf_by_env_cov_rel",
+                "kernels",
+                "cv_kernels",
                 "rel_mse",
                 "rel_cor",
                 "all_pf_mean",
@@ -217,6 +219,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         rel_pf_tdot_cv = []
         rel_pf_tcorr_mean = []
         rel_pf_tcorr_std = []
+        kernels = []
+        cv_kernels = []
         for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
             # get reliable cells (for each environment) and spkmaps for each environment (with all cells)
             c_idx_reliable = v.get_reliable(envnum=None, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs)
@@ -229,6 +233,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             # get place field for each cell
             c_placefields_all = [np.nanmean(spkmap, axis=1) for spkmap in c_spkmaps]
             c_placefields_rel = [np.nanmean(spkmap[cir], axis=1) for spkmap, cir in zip(c_spkmaps, c_idx_reliable)]
+
             # make place field a unit vector
             c_all_unitpf = [placefield / np.linalg.norm(placefield, axis=1, keepdims=True) for placefield in c_placefields_all]
             c_rel_unitpf = [placefield / np.linalg.norm(placefield, axis=1, keepdims=True) for placefield in c_placefields_rel]
@@ -240,6 +245,16 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             rel_cor.append(c_cor)
             all_pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields_all])
             rel_pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields_rel])
+
+            # compute spatial kernel matrices
+            train_idx, test_idx = helpers.named_transpose([helpers.cvFoldSplit(np.arange(spkmap.shape[1]), 2) for spkmap in c_spkmaps])
+            c_pf_train = [np.nanmean(spkmap[:, tidx], axis=1) for spkmap, tidx in zip(c_spkmaps, train_idx)]
+            c_pf_test = [np.nanmean(spkmap[:, tidx], axis=1) for spkmap, tidx in zip(c_spkmaps, test_idx)]
+            c_pf_train_centered = [pf - np.nanmean(pf, axis=0) for pf in c_pf_train]
+            c_pf_test_centered = [pf - np.nanmean(pf, axis=0) for pf in c_pf_test]
+
+            kernels.append([np.cov(pf.T) for pf in c_placefields_all])
+            cv_kernels.append([cpftrain.T @ cpftest / (cpftrain.shape[0] - 1) for cpftrain, cpftest in zip(c_pf_train_centered, c_pf_test_centered)])
 
             # get other place field statistics
             c_all_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
@@ -355,6 +370,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "cvf_by_env_rel": cvf_by_env_rel,
             "cvf_by_env_cov_all": cvf_by_env_cov_all,
             "cvf_by_env_cov_rel": cvf_by_env_cov_rel,
+            "kernels": kernels,
+            "cv_kernels": cv_kernels,
             "rel_mse": rel_mse,
             "rel_cor": rel_cor,
             "all_pf_mean": all_pf_mean,

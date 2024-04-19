@@ -75,11 +75,12 @@ def get_spectra(mouse_name, args):
 
 
 def make_comparison_plots(pcms, spectra_data):
+    ylog_min = 1e-3
     single_env, across_env = compare_spectral_averages(spectra_data)
     for do_xlog in [True, False]:
         for do_ylog in [True, False]:
             plot_spectral_averages_comparison(
-                pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=1e-3, with_show=False, with_save=True
+                pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=ylog_min, with_show=False, with_save=True
             )
     plot_all_exponential_fits(pcms, spectra_data, with_show=False, with_save=True)
 
