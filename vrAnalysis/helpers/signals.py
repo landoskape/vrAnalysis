@@ -114,18 +114,22 @@ def crossCorrelation(x, y):
     return std
 
 
-def vectorCorrelation(x, y, covariance=False, axis=-1):
+def vectorCorrelation(x, y, covariance=False, axis=-1, ignore_nan=False):
     """
     measure the correlation of every element in x with every element in y on axis=axis
     if covariance=True, will measure the covariance
+    if ignore_nan=True, will ignore NaN values in the correlation calculation
     """
     assert x.shape == y.shape, "x and y need to have the same shape!"
+    meanfunc = np.mean if not ignore_nan else np.nanmean
+    sumfunc = np.sum if not ignore_nan else np.nansum
+
     N = x.shape[axis]
-    xDev = x - np.mean(x, axis=axis, keepdims=True)
-    yDev = y - np.mean(y, axis=axis, keepdims=True)
+    xDev = x - meanfunc(x, axis=axis, keepdims=True)
+    yDev = y - meanfunc(y, axis=axis, keepdims=True)
     if not covariance:
-        xSampleStd = np.sqrt(np.sum(xDev**2, axis=axis, keepdims=True) / (N - 1))
-        ySampleStd = np.sqrt(np.sum(yDev**2, axis=axis, keepdims=True) / (N - 1))
+        xSampleStd = np.sqrt(sumfunc(xDev**2, axis=axis, keepdims=True) / (N - 1))
+        ySampleStd = np.sqrt(sumfunc(yDev**2, axis=axis, keepdims=True) / (N - 1))
         xIdxValid = xSampleStd > 0
         yIdxValid = ySampleStd > 0
         xSampleStdCorrected = xSampleStd + 1 * (~xIdxValid)
@@ -135,7 +139,7 @@ def vectorCorrelation(x, y, covariance=False, axis=-1):
         ySampleStdCorrected = 1
     xDev /= xSampleStdCorrected
     yDev /= ySampleStdCorrected
-    std = np.sum(xDev * yDev, axis=axis) / (N - 1)
+    std = sumfunc(xDev * yDev, axis=axis) / (N - 1)
     if not covariance:
         std *= 1 * np.squeeze(xIdxValid & yIdxValid)
     return std
