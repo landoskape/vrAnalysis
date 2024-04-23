@@ -110,4 +110,7 @@ class multipleAnalysis(standardAnalysis):
         """
         print(f"{self.name} is saving a {multiname} figure for {name}")
         plt.figure(figNumber)
-        plt.savefig(self.saveDirectory(multiname) / name)
+        figpath = self.saveDirectory(multiname) / name
+        if not figpath.parent.is_dir():
+            figpath.parent.mkdir(parents=True)
+        plt.savefig(figpath)
