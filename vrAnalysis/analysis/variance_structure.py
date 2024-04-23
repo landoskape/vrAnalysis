@@ -1,11 +1,15 @@
 from copy import copy
+from pathlib import Path
 from tqdm import tqdm
 import pickle
 import numpy as np
 import faststats as fs
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from .. import helpers
+from ..functions import environmentRewardZone
 from ..analysis import placeCellSingleSession
 
 """
@@ -99,6 +103,20 @@ class VarianceStructure(placeCellSingleSession):
         return freqs, cv_by_env
 
 
+def _catdata(list_of_dicts, key):
+    """helper function for concatenating data from a list of dictionaries"""
+    data, ises, ienv = helpers.named_transpose(
+        [
+            helpers.named_transpose(
+                [(env_data, ises, ienv) for ises, ses_data in enumerate(each_dict[key]) for ienv, env_data in enumerate(ses_data)],
+                map_func=np.array,
+            )
+            for each_dict in list_of_dicts
+        ]
+    )
+    return data, ises, ienv
+
+
 def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
     """
     load data for variance structure analysis of cvPCA and cvFOURIER spectra
@@ -140,6 +158,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "all_pf_mean",
                 "all_pf_var",
                 "all_pf_cv",
+                "all_pf_max",
                 "all_pf_tdot_mean",
                 "all_pf_tdot_std",
                 "all_pf_tdot_cv",
@@ -148,6 +167,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "rel_pf_mean",
                 "rel_pf_var",
                 "rel_pf_cv",
+                "rel_pf_max",
                 "rel_pf_tdot_mean",
                 "rel_pf_tdot_std",
                 "rel_pf_tdot_cv",
@@ -205,7 +225,9 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         rel_cor = []
         all_pf_mean = []
         all_pf_var = []
+        all_pf_norm = []
         all_pf_cv = []
+        all_pf_max = []
         all_pf_tdot_mean = []
         all_pf_tdot_std = []
         all_pf_tdot_cv = []
@@ -213,7 +235,9 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         all_pf_tcorr_std = []
         rel_pf_mean = []
         rel_pf_var = []
+        rel_pf_norm = []
         rel_pf_cv = []
+        rel_pf_max = []
         rel_pf_tdot_mean = []
         rel_pf_tdot_std = []
         rel_pf_tdot_cv = []
@@ -232,11 +256,12 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
 
             # get place field for each cell
             c_placefields_all = [np.nanmean(spkmap, axis=1) for spkmap in c_spkmaps]
-            c_placefields_rel = [np.nanmean(spkmap[cir], axis=1) for spkmap, cir in zip(c_spkmaps, c_idx_reliable)]
+            c_placefields_rel = [np.nanmean(spkmap, axis=1) for spkmap in c_rel_spkmaps]
 
             # make place field a unit vector
-            c_all_unitpf = [placefield / np.linalg.norm(placefield, axis=1, keepdims=True) for placefield in c_placefields_all]
-            c_rel_unitpf = [placefield / np.linalg.norm(placefield, axis=1, keepdims=True) for placefield in c_placefields_rel]
+            nan_norm = lambda x: np.nansum(x**2, axis=1, keepdims=True) ** 0.5
+            c_all_unitpf = [placefield / nan_norm(placefield) for placefield in c_placefields_all]
+            c_rel_unitpf = [placefield / nan_norm(placefield) for placefield in c_placefields_rel]
 
             # add each to list
             allcell_maps.append(c_spkmaps)
@@ -245,6 +270,10 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             rel_cor.append(c_cor)
             all_pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields_all])
             rel_pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields_rel])
+            all_pf_norm.append([np.nansum(placefield**2, axis=1) for placefield in c_placefields_all])
+            rel_pf_norm.append([np.nansum(placefield**2, axis=1) for placefield in c_placefields_rel])
+            all_pf_max.append([np.nanmax(placefield, axis=1) for placefield in c_placefields_all])
+            rel_pf_max.append([np.nanmax(placefield, axis=1) for placefield in c_placefields_rel])
 
             # compute spatial kernel matrices
             train_idx, test_idx = helpers.named_transpose([helpers.cvFoldSplit(np.arange(spkmap.shape[1]), 2) for spkmap in c_spkmaps])
@@ -287,11 +316,11 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
 
             # get trial by trial correlation with the mean place field and the trial by trial place field
             c_all_pf_tcorr = [
-                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2)
+                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2, ignore_nan=True)
                 for spkmap, placefield in zip(c_spkmaps, c_placefields_all)
             ]
             c_rel_pf_tcorr = [
-                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2)
+                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2, ignore_nan=True)
                 for spkmap, placefield in zip(c_rel_spkmaps, c_placefields_rel)
             ]
 
@@ -377,6 +406,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "all_pf_mean": all_pf_mean,
             "all_pf_var": all_pf_var,
             "all_pf_cv": all_pf_cv,
+            "all_pf_max": all_pf_max,
             "all_pf_tdot_mean": all_pf_tdot_mean,
             "all_pf_tdot_std": all_pf_tdot_std,
             "all_pf_tdot_cv": all_pf_tdot_cv,
@@ -385,6 +415,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "rel_pf_mean": rel_pf_mean,
             "rel_pf_var": rel_pf_var,
             "rel_pf_cv": rel_pf_cv,
+            "rel_pf_max": rel_pf_max,
             "rel_pf_tdot_mean": rel_pf_tdot_mean,
             "rel_pf_tdot_std": rel_pf_tdot_std,
             "rel_pf_tdot_cv": rel_pf_tdot_cv,
@@ -401,6 +432,30 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
 
     # return spectra data
     return temp_files
+
+
+def add_to_spectra_data(pcm, args):
+    """skeleton for adding something without reloading everything"""
+    with open(pcm.saveDirectory("temp") / f"{args.mouse_name}_spectra_data.pkl", "rb") as f:
+        temp_files = pickle.load(f)
+
+    vss = []
+    for p in pcm.pcss:
+        vss.append(VarianceStructure(p.vrexp, distStep=args.dist_step, autoload=False))
+
+    # first load session data (this can take a while)
+    for v in tqdm(vss, leave=True, desc="loading session data"):
+        v.load_data()
+
+    # get spkmaps of all cells / just reliable cells
+    variable = []
+    for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
+        # get ~variable~ for each session
+        # variable.append(v.get_variable(...))
+        pass
+
+    # temp_files["variable"] = variable
+    # pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
 
 
 def plot_svca_data(
@@ -470,28 +525,78 @@ def plot_svca_data(
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "svca_spectra_" + special_name)
 
 
-def add_to_spectra_data(pcm, args):
-    """skeleton for adding something without reloading everything"""
-    with open(pcm.saveDirectory("temp") / f"{args.mouse_name}_spectra_data.pkl", "rb") as f:
-        temp_files = pickle.load(f)
+def generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=True, with_save=False):
+    """some example plots of different cells and their place field statistics"""
+    if ises < 0:
+        ises = len(pcm.pcss) + ises
 
-    vss = []
-    for p in pcm.pcss:
-        vss.append(VarianceStructure(p.vrexp, distStep=args.dist_step, autoload=False))
+    envidx = pcm.pcss[ises].envnum_to_idx(envnum)[0]
+    pfvars = [
+        "rel_cor",
+        "all_pf_mean",
+        "all_pf_var",
+        "all_pf_norm",
+        "all_pf_cv",
+        "all_pf_max",
+        "all_pf_tdot_mean",
+        "all_pf_tdot_std",
+        "all_pf_tdot_cv",
+        "all_pf_tcorr_mean",
+        "all_pf_tcorr_std",
+    ]
+    num_vars = len(pfvars)
+    get_vpos = lambda ii: np.linspace(0, 1, num_vars + 4)[num_vars - ii]  # extra position for "legend"
 
-    # first load session data (this can take a while)
-    for v in tqdm(vss, leave=True, desc="loading session data"):
-        v.load_data()
+    # get normalizing values for each variable
+    all_pfvars = {var: np.concatenate([envvar for sesvar in spectra_data[var] for envvar in sesvar]) for var in pfvars}
+    pfvars_mean = {var: np.nanmean(all_pfvars[var]) for var in pfvars}
+    pfvars_std = {var: np.nanstd(all_pfvars[var]) for var in pfvars}
 
-    # get spkmaps of all cells / just reliable cells
-    variable = []
-    for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
-        # get ~variable~ for each session
-        # variable.append(v.get_variable(...))
-        pass
+    cmap = mpl.colormaps["hot"]
+    cmap.set_bad("black")
+    spkmap = pcm.pcss[ises].get_spkmap(envnum=envnum, average=False, smooth=0.1)[0]
+    vmin = 0
+    vmax = np.nanmax(np.nanmean(spkmap, axis=1))
+    icells = np.random.choice(spkmap.shape[0], num_cells // 2, replace=False)  # get some random cells
+    idx_pf_var_high = np.argsort(spectra_data["all_pf_var"][ises][envidx])[-num_cells * 4 :]
+    icells = np.concatenate([icells, np.random.choice(idx_pf_var_high, num_cells - (num_cells // 2), replace=False)])  # get some more random cells
+    for ic in icells:
+        # A figure with a heatmap in the top left, a small line plot below it, and text to the right
+        fig = plt.figure(layout="constrained")
+        gs = fig.add_gridspec(nrows=4, ncols=3, left=0.05, right=0.95, hspace=0.1, wspace=0.05)
+        ax_heatmap = fig.add_subplot(gs[:-1, :-1])
+        ax_curve = fig.add_subplot(gs[-1, :-1])
+        ax_text = fig.add_subplot(gs[:, -1])
+        helpers.clear_axis(ax_text)
 
-    # temp_files["variable"] = variable
-    pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
+        fig.suptitle(f"Session: {pcm.pcss[ises].vrexp.sessionPrint()} - Cell: {ic} - Env: {envnum}")
+
+        # plot heatmap of spikemap
+        extent = [pcm.pcss[ises].distedges[0], pcm.pcss[ises].distedges[-1], 0, spkmap.shape[1]]
+        ax_heatmap.imshow(spkmap[ic], cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", extent=extent, interpolation="none")
+        ax_heatmap.set_xlabel("Virtual Position (cm)")
+        ax_heatmap.set_ylabel("Trials")
+
+        # plot place field average across trials
+        ax_curve.plot(pcm.pcss[ises].distcenters, np.nanmean(spkmap[ic], axis=0), color="k", linewidth=2)
+        ax_curve.set_xlabel("Virtual Position (cm)")
+        ax_curve.set_ylabel("dec. [Ca]")
+        ax_curve.set_ylim(0, vmax)
+
+        # plot text of place field statistics
+        for ii, var in enumerate(pfvars):
+            c_value = spectra_data[var][ises][envidx][ic]
+            c_norm_value = (c_value - pfvars_mean[var]) / pfvars_std[var]
+            ax_text.text(0.5, get_vpos(ii), f"{var}: {c_norm_value:.3f}", ha="center", va="center")
+        ax_text.text(0.5, get_vpos(-2), f"variable: z-scored value", ha="center", va="center", fontstyle="italic")
+
+        if with_show:
+            plt.show()
+
+        if with_save:
+            folder = Path(f"example_ROIs_pfvars_env{envnum}")
+            special_name = f"ses{ises}_env{envnum}_cell{ic}"
+            pcm.saveFigure(fig.number, pcm.track.mouse_name, folder / special_name)
 
 
 def plot_spectral_data(
@@ -541,7 +646,15 @@ def plot_spectral_data(
             ax[0, i].set_title(f"Environment {c_env}")
             ax[0, i].set_ylabel("Eigenspectrum")
             ax[1, i].set_ylabel("Eigenspectrum (reliable)")
+            ax[0, i].set_xlabel("Dimension")
             ax[1, i].set_xlabel("Dimension")
+
+        # make inset colorbar for session id
+        iax = ax[0, i].inset_axes([0.6, 0.85, 0.29, 0.07])
+        iax.xaxis.set_ticks_position("bottom")
+        cmap_norm = mpl.colors.Normalize(vmin=0, vmax=num_sessions - 1)
+        m = mpl.cm.ScalarMappable(cmap=cmap, norm=cmap_norm)
+        fig.colorbar(m, cax=iax, orientation="horizontal", label="Session ID" + ("\n(relative for env)" if not color_by_session else ""))
 
         ax[0, i].set_xscale("log")
         ax[1, i].set_xscale("log")
@@ -761,134 +874,9 @@ def plot_fourier_data(
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_fourier_" + special_name)
 
 
-def plot_reliability_data(pcm, spectra_data, color_by_session=True, with_show=True, with_save=False):
-    """
-    plot fourier data for variance structure analysis
-    """
-
-    # make plots of spectra data
+def get_exp_fits(spectra_data):
+    """Helper method for getting the exponential fits from spectra data in the standard format"""
     num_sessions = len(spectra_data["names"])
-    num_envs = len(spectra_data["envstats"])
-
-    # some plotting supporting variables
-    cmap = mpl.colormaps["turbo"].resampled(num_sessions)
-    mse_bins = np.linspace(-4, 1, 31)
-    cor_bins = np.linspace(-1, 1, 31)
-    mse_centers = helpers.edge2center(mse_bins)
-    cor_centers = helpers.edge2center(cor_bins)
-
-    def get_color(env, sesnum):
-        """helper for getting color based on color method"""
-        if color_by_session:
-            # color by absolute session number
-            return cmap(sesnum)
-        else:
-            # color by relative session number (within environment)
-            sesnum_for_env = spectra_data["envstats"][env].index(sesnum)
-            return cmap(sesnum_for_env)
-
-    figdim = 3
-    fig, ax = plt.subplots(2, num_envs, figsize=(num_envs * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
-    for i in range(num_envs):
-        c_env = pcm.environments[i]
-        for j in range(num_sessions):
-            if j in spectra_data["envstats"][c_env]:
-                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
-
-                cdata = helpers.fractional_histogram(spectra_data["rel_mse"][j][eidx], bins=mse_bins)[0]
-                ax[0, i].plot(mse_centers, cdata, color=get_color(c_env, j), linestyle="-")
-                ax[0, i].axvline(np.mean(spectra_data["rel_mse"][j][eidx]), color=get_color(c_env, j))
-
-                cdata = helpers.fractional_histogram(spectra_data["rel_cor"][j][eidx], bins=cor_bins)[0]
-                ax[1, i].plot(cor_centers, cdata, color=get_color(c_env, j), linestyle="-")
-                ax[1, i].axvline(np.mean(spectra_data["rel_cor"][j][eidx]), color=get_color(c_env, j))
-
-            ax[0, i].set_title(f"Environment {c_env} Rel-MSE")
-            ax[1, i].set_title(f"Environment {c_env} Rel-Corr")
-            if i == 0:
-                ax[0, i].set_ylabel("Counts")
-                ax[1, i].set_ylabel("Counts")
-            ax[0, i].set_xlabel("Reliability (MSE)")
-            ax[1, i].set_xlabel("Reliability (Corr)")
-
-    if with_show:
-        plt.show()
-
-    if with_save:
-        special_name = "by_session" if color_by_session else "by_relative_session"
-        pcm.saveFigure(fig.number, pcm.track.mouse_name, "reliability_" + special_name)
-
-
-def plot_pf_var_data(pcm, spectra_data, color_by_session=True, with_show=True, with_save=False):
-    """
-    plot place field variance data for variance structure analysis
-    """
-
-    # make plots of spectra data
-    num_sessions = len(spectra_data["names"])
-    num_envs = len(spectra_data["envstats"])
-
-    # some plotting supporting variables
-    cmap = mpl.colormaps["turbo"].resampled(num_sessions)
-    # concatenate a list of lists of np arrays
-    min_pf_var = np.nanmin(
-        np.concatenate([np.concatenate(apf) for apf in spectra_data["all_pf_var"]] + [np.concatenate(rpf) for rpf in spectra_data["rel_pf_var"]])
-    )
-    max_pf_var = np.nanmax(
-        np.concatenate([np.concatenate(apf) for apf in spectra_data["all_pf_var"]] + [np.concatenate(rpf) for rpf in spectra_data["rel_pf_var"]])
-    )
-    pf_bins = np.linspace(min_pf_var, max_pf_var, 21)
-    pf_centers = helpers.edge2center(pf_bins)
-
-    def get_color(env, sesnum):
-        """helper for getting color based on color method"""
-        if color_by_session:
-            # color by absolute session number
-            return cmap(sesnum)
-        else:
-            # color by relative session number (within environment)
-            sesnum_for_env = spectra_data["envstats"][env].index(sesnum)
-            return cmap(sesnum_for_env)
-
-    figdim = 3
-    fig, ax = plt.subplots(2, num_envs, figsize=(num_envs * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
-    for i in range(num_envs):
-        c_env = pcm.environments[i]
-        for j in range(num_sessions):
-            if j in spectra_data["envstats"][c_env]:
-                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
-
-                cdata = helpers.fractional_histogram(spectra_data["all_pf_var"][j][eidx], bins=pf_bins)[0]
-                ax[0, i].plot(pf_centers, cdata, color=get_color(c_env, j), linestyle="-")
-
-                cdata = helpers.fractional_histogram(spectra_data["rel_pf_var"][j][eidx], bins=pf_bins)[0]
-                ax[1, i].plot(pf_centers, cdata, color=get_color(c_env, j), linestyle="-")
-
-            ax[0, i].set_title(f"Environment {c_env} All Cell PF Var")
-            ax[1, i].set_title(f"Environment {c_env} Rel Cell PF Var")
-            if i == 0:
-                ax[0, i].set_ylabel("Counts")
-                ax[1, i].set_ylabel("Counts")
-            ax[0, i].set_xlabel("Variance")
-            ax[1, i].set_xlabel("Variance")
-
-        ax[0, i].set_yscale("log")
-        ax[1, i].set_yscale("log")
-
-    if with_show:
-        plt.show()
-
-    if with_save:
-        special_name = "by_session" if color_by_session else "by_relative_session"
-        pcm.saveFigure(fig.number, pcm.track.mouse_name, "pf_variance_" + special_name)
-
-
-def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, with_show=True, with_save=False):
-    """
-    First make exponential fits of the eigenspectra, then use place field and other properties to predict the fit parameters
-    """
-    num_sessions = len(spectra_data["names"])
-    num_envs = len(spectra_data["envstats"])
 
     single_amplitude = []
     single_decay = []
@@ -909,19 +897,95 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
         across_decay[ii] = d[0]
         across_r2[ii] = r[0]
 
+    fit_data = dict(
+        single_amplitude=single_amplitude,
+        single_decay=single_decay,
+        single_r2=single_r2,
+        across_amplitude=across_amplitude,
+        across_decay=across_decay,
+        across_r2=across_r2,
+    )
+
+    return fit_data
+
+
+def get_pf_summary(pcm, spectra_data, mean=True, reliable=False):
+    """Helper method for getting the summarized place field variables in the spectra data in the standard format"""
+
     # names of place-field related variables to compare with exponential fit data
+    relvars = ["rel_mse", "rel_cor"]  # these are always used
+    # these need either "all" or "rel" appended to the front
     pfvars = [
+        "_pf_mean",
+        "_pf_var",
+        "_pf_norm",
+        "_pf_cv",
+        "_pf_max",
+        "_pf_tdot_mean",
+        "_pf_tdot_std",
+        "_pf_tdot_cv",
+        "_pf_tcorr_mean",
+        "_pf_tcorr_std",
+    ]
+    append_str = "rel" if reliable else "all"
+    pfvars = [append_str + pfv for pfv in pfvars]
+
+    num_sessions = len(spectra_data["names"])
+    num_envs = len(spectra_data["envstats"])
+
+    # summary function
+    sum_func = np.nanmean if mean else np.nanstd
+
+    allvars = relvars + pfvars
+    var_dict = {cvar: [] for cvar in allvars}
+
+    # get all the variables and append them with the usual structure
+    for cvar in allvars:
+        # go through each variable
+        for j in range(num_sessions):
+            # make a list for the variable summary across each environment in this session
+            cc = []
+            for i in range(num_envs):
+                # check if this session has data for this environment
+                c_env = pcm.environments[i]
+                if j in spectra_data["envstats"][c_env]:
+                    # if it does, then summarize the current variable, check nans, and add it to the session list
+                    eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+                    cdata = sum_func(spectra_data[cvar][j][eidx])
+                    if np.all(np.isnan(spectra_data[cvar][j][eidx])):
+                        print(f"Warning: {cvar} is all nan for {pcm.track.mouse_name} {c_env} {j}")
+                    cc.append(cdata)
+            # append this sessions data to vardict
+            var_dict[cvar].append(cc)
+
+    return var_dict
+
+
+def compare_exp_fits(pcm, spectra_data, amplitude=True, mean=True, color_by_session=True, with_show=True, with_save=False):
+    """
+    First make exponential fits of the eigenspectra, then use place field and other properties to predict the fit parameters
+    """
+    num_sessions = len(spectra_data["names"])
+    num_envs = len(spectra_data["envstats"])
+
+    fit_data = get_exp_fits(spectra_data)
+    pfv_data = get_pf_summary(pcm, spectra_data, mean=mean, reliable=False)
+
+    # names of place-field related variables to compare with exponential fit data
+    use_vars = [
         "rel_cor",
         "all_pf_mean",
         "all_pf_var",
+        "all_pf_norm",
         "all_pf_cv",
+        "all_pf_max",
         "all_pf_tdot_mean",
         "all_pf_tdot_std",
         "all_pf_tdot_cv",
         "all_pf_tcorr_mean",
         "all_pf_tcorr_std",
     ]
-    num_vars = len(pfvars)
+    num_vars = len(use_vars)
 
     cmap = mpl.colormaps["turbo"].resampled(num_sessions)
 
@@ -936,7 +1000,7 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
             return cmap(sesnum_for_env)
 
     # determine which parameter to plot based on amplitude kwarg
-    single = single_amplitude if amplitude else single_decay
+    single = fit_data["single_amplitude"] if amplitude else fit_data["single_decay"]
 
     # make the plot
     figdim = 1.5
@@ -946,22 +1010,17 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
         for j in range(num_sessions):
             if j in spectra_data["envstats"][c_env]:
                 eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
-                for ipf, c_pfvar in enumerate(pfvars):
-                    cdata = np.nanmean(spectra_data[c_pfvar][j][eidx])
-                    if np.all(np.isnan(spectra_data[c_pfvar][j][eidx])):
-                        print(f"Warning: {c_pfvar} is all nan for {pcm.track.mouse_name} {c_env} {j}")
-
-                    ax[i, ipf].scatter(cdata, single[j][eidx], color=get_color(c_env, j), marker=".")
-
+                for ipf, c_var in enumerate(use_vars):
+                    ax[i, ipf].scatter(pfv_data[c_var][j][eidx], single[j][eidx], color=get_color(c_env, j), marker=".")
                     if ipf == 0:
                         ax[i, ipf].set_ylabel(f"Environment {c_env}\n{'Amplitude' if amplitude else 'Decay'}")
                     else:
                         ax[i, ipf].set_ylabel("Amplitude" if amplitude else "Decay")
                     if i == 0:
-                        ax[i, ipf].set_title(c_pfvar)
-                    ax[i, ipf].set_xlabel(c_pfvar)
+                        ax[i, ipf].set_title(c_var)
+                    ax[i, ipf].set_xlabel(c_var)
                     ax[i, ipf].set_yscale("linear")
-                    if c_pfvar == "rel_mse":
+                    if c_var == "rel_mse":
                         ax[i, ipf].set_xlim(-4, 1)
 
     ax[0, 0].set_ylim(bottom=0)
@@ -971,8 +1030,73 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=True, w
 
     if with_save:
         special_name = "amplitude" if amplitude else "decay"
+        special_name = special_name + ("_mean" if mean else "_std")
         special_name = special_name + ("_by_session" if color_by_session else "_by_relative_session")
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "comparison_pfvars_eigenspectra_" + special_name)
+
+
+def plot_spatial_kernels(pcm, spectra_data, cv=False, rewzone=True, with_show=True, with_save=False):
+    """
+    plot spatial kernels for variance structure analysis
+    """
+
+    # make plots of spectra data
+    num_sessions = len(spectra_data["names"])
+    num_envs = len(spectra_data["envstats"])
+
+    cmap = mpl.colormaps["inferno"]
+
+    kernel_key = "cv_kernels" if cv else "kernels"
+    kernel_opposite = "kernels" if cv else "cv_kernels"
+
+    figdim = 2
+    fig, ax = plt.subplots(num_envs, num_sessions, figsize=(num_sessions * figdim, num_envs * figdim), layout="constrained", sharex=True, sharey=True)
+    for i in range(num_envs):
+        c_env = pcm.environments[i]
+        made_ylabel = False
+        for j in range(num_sessions):
+            rewpos, rewhw = environmentRewardZone(pcm.pcss[j].vrexp)
+            if j in spectra_data["envstats"][c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+
+                rewloc = rewpos[eidx] - rewhw[eidx]
+
+                cdata = spectra_data[kernel_key][j][eidx]
+                codata = spectra_data[kernel_opposite][j][eidx]
+                vmin, vmax = np.nanpercentile(cdata, 2), np.nanpercentile(cdata, 98)
+                vmino, vmaxo = np.nanpercentile(codata, 2), np.nanpercentile(codata, 98)
+                vmin, vmax = min(vmin, vmino), max(vmax, vmaxo)
+
+                cim = ax[i, j].imshow(cdata, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="none")
+
+                # plot vertical & horizontal lines at reward zone
+                if rewzone:
+                    ax[i, j].axvline(rewloc, color="w", linestyle="--", alpha=0.5)
+                    ax[i, j].axhline(rewloc, color="w", linestyle="--", alpha=0.5)
+                    ax[i, j].text(0.99, 0.99, "-- reward zone", color="w", fontsize=6, ha="right", va="top", transform=ax[i, j].transAxes)
+                ax[i, j].set_title(f"Session {j}")
+                if not made_ylabel:
+                    ax[i, j].set_ylabel(f"Environment {c_env}\n\nSpatial Position")
+                    made_ylabel = True
+                if i == num_envs - 1:
+                    ax[i, j].set_xlabel("Spatial Position")
+
+                # make inset colorbar
+                axins = ax[i, j].inset_axes([0.1, 0.15, 0.3, 0.05])
+                cb = fig.colorbar(cim, cax=axins, orientation="horizontal")
+                cb.set_ticks([vmin, vmax])
+                cb.set_ticklabels([f"{vmin:.2f}", f"{vmax:.2f}"], color="w", fontsize=8)
+
+            else:
+                # clear axis
+                ax[i, j].axis("off")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "cv" if cv else "noncv"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "kernels_" + special_name)
 
 
 # =================================== code for comparing spectral data across mice =================================== #
@@ -1031,7 +1155,7 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
     cmap = mpl.colormaps["turbo"].resampled(num_mice)
 
     figdim = 3
-    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex=True, sharey="row")
+    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
     for imouse, (mouse_name, c_single_env, c_across_env) in enumerate(zip(mouse_names, single_env, across_env)):
         c_single_data = _process(c_single_env)
         c_across_data = _process(c_across_env)
@@ -1046,6 +1170,7 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
     ax[1, 0].set_ylabel("Cumulative Variance")
     ax[0, 0].set_title("Single Environments")
     ax[0, 1].set_title("Across Environments")
+    ax[0, 1].legend(fontsize=8)
     ax[1, 1].legend(fontsize=8)
 
     if do_xlog:
@@ -1067,7 +1192,7 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         pcms[0].saveFigure(fig.number, "comparisons", "cv_spectral_average_comparison_" + special_name)
 
 
-def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=False):
+def plot_all_exponential_fits(pcms, spectra_data, relative_session=True, with_show=True, with_save=False):
     single_env, across_env = compare_spectral_averages(spectra_data)
     single_amp = []
     single_decay = []
@@ -1091,14 +1216,25 @@ def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=Fals
     single_mouse_id = np.concatenate([i * np.ones(len(single_env[i])) for i in range(len(single_env))])
     across_mouse_id = np.concatenate([i * np.ones(len(across_env[i])) for i in range(len(across_env))])
 
-    mouse_cmap = mpl.colormaps["Dark2"].resampled(len(single_env))
+    single_session_id = np.concatenate(
+        [
+            ises * np.ones(len(sdenv)) / (len(sd["cv_by_env_all"]) - 1 if relative_session else 1)
+            for sd in spectra_data
+            for ises, sdenv in enumerate(sd["cv_by_env_all"])
+        ]
+    )
+    across_session_id = np.concatenate([np.arange(len(aenv)) / (len(aenv) - 1 if relative_session else 1) for aenv in across_env])
+    max_session = 1 if relative_session else max([len(aenv) for aenv in across_env])
+
+    mouse_cmap = mpl.colormaps["Dark2"].resampled(len(single_env) - 1)
     r2_cmap = mpl.colormaps["plasma"]
+    session_cmap = mpl.colormaps["cool"]
 
     figdim = 3
     alpha = 0.7
     s = 25
 
-    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex="col", sharey="col")
+    fig, ax = plt.subplots(2, 3, figsize=(3 * figdim, 2 * figdim), layout="constrained", sharex="col", sharey="col")
     ax[0, 0].scatter(
         np.concatenate(single_decay), np.concatenate(single_amp), s=s, c=single_mouse_id, cmap=mouse_cmap, alpha=alpha, lw=0.5, edgecolor="k"
     )
@@ -1110,6 +1246,18 @@ def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=Fals
         cmap=r2_cmap,
         vmin=0,
         vmax=1,
+        alpha=alpha,
+        lw=0.5,
+        edgecolor="k",
+    )
+    ax[0, 2].scatter(
+        np.concatenate(single_decay),
+        np.concatenate(single_amp),
+        s=s,
+        c=single_session_id,
+        cmap=session_cmap,
+        vmin=0,
+        vmax=max_session,
         alpha=alpha,
         lw=0.5,
         edgecolor="k",
@@ -1130,6 +1278,18 @@ def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=Fals
         lw=0.5,
         edgecolor="k",
     )
+    ax[1, 2].scatter(
+        np.concatenate(across_decay),
+        np.concatenate(across_amp),
+        s=s,
+        c=across_session_id,
+        cmap=session_cmap,
+        vmin=0,
+        vmax=max_session,
+        alpha=alpha,
+        lw=0.5,
+        edgecolor="k",
+    )
 
     ax[1, 0].set_xlabel("Decay")
     ax[1, 1].set_xlabel("Decay")
@@ -1137,8 +1297,10 @@ def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=Fals
     ax[1, 0].set_ylabel("Amplitude")
     ax[0, 0].set_title("Single Env Spectra")
     ax[0, 1].set_title("Single Env Spectra")
+    ax[0, 1].set_title("Single Env Spectra")
     ax[1, 0].set_title("Across Env Spectra")
     ax[1, 1].set_title("Across Env Spectra")
+    ax[1, 2].set_title("Across Env Spectra")
 
     for a in ax:
         for _a in a:
@@ -1155,8 +1317,84 @@ def plot_all_exponential_fits(pcms, spectra_data, with_show=True, with_save=Fals
     m = mpl.cm.ScalarMappable(cmap=r2_cmap)
     fig.colorbar(m, cax=iax, orientation="horizontal", label="R**2")
 
+    iax = ax[0, 2].inset_axes([0.6, 0.85, 0.29, 0.07])
+    iax.xaxis.set_ticks_position("bottom")
+    norm = mpl.colors.Normalize(vmin=0, vmax=max_session)
+    m = mpl.cm.ScalarMappable(cmap=session_cmap, norm=norm)
+    fig.colorbar(m, cax=iax, orientation="horizontal", label=f"{'Relative' if relative_session else 'Absolute'} Session ID")
+
     if with_show:
         plt.show()
 
     if with_save:
-        pcms[0].saveFigure(fig.number, "comparisons", "exponential_fit_results")
+        special_name = "relative_session" if relative_session else "absolute_session"
+        pcms[0].saveFigure(fig.number, "comparisons", "exponential_fit_results_" + special_name)
+
+
+def predict_exp_fits_across_mice(pcms, spectra_data, amplitude=True, with_show=True, with_save=False):
+    """
+    predict exponential fits of eigenspectra from pfvars across mice
+    """
+    exponential_fits = [get_exp_fits(sd) for sd in spectra_data]
+    pfv_data_means = [get_pf_summary(pcm, sd, mean=True, reliable=False) for pcm, sd in zip(pcms, spectra_data)]
+    pfv_data_stds = [get_pf_summary(pcm, sd, mean=False, reliable=False) for pcm, sd in zip(pcms, spectra_data)]
+
+    ignore_vars = ["rel_mse"]
+    pfv_names = [k for k in pfv_data_means[0].keys() if k not in ignore_vars]
+    fit_target = "single_amplitude" if amplitude else "single_decay"
+
+    # get all the data in a format that can be used for comparison (within each mouse)
+    fit_data, fit_session, fit_env = _catdata(exponential_fits, fit_target)
+
+    # concatenated target data for all mice
+    all_fit_data = np.concatenate(fit_data)
+    all_fit_mouse = np.concatenate([i * np.ones(len(f)) for i, f in enumerate(fit_data)])
+    all_fit_session = np.concatenate(fit_session)
+    all_fit_env = np.concatenate(fit_env)
+
+    target_norm = np.mean(all_fit_data), np.std(all_fit_data)
+
+    # dictionary of all the concatenated data
+    pfv_all = {}
+    for k in pfv_names:
+        pfv_all[k + "_mean"] = _catdata(pfv_data_means, k)[0]
+        pfv_all[k + "_std"] = _catdata(pfv_data_stds, k)[0]
+
+    pfv_data_norms = {k: (np.mean(np.concatenate(v)), np.std(np.concatenate(v))) for k, v in pfv_all.items()}
+
+    # measure fit coefficient and r2 for each pfvar
+    def _get_fit(data, target, data_norm=(0, 1), target_norm=(0, 1)):
+        """internal function for getting the fit coefficient and r2 for a given target"""
+        norm_data = [(d - data_norm[0]) / data_norm[1] for d in data]
+        norm_targets = [(t - target_norm[0]) / target_norm[1] for t in target]
+        fits = [LinearRegression().fit(d.reshape(-1, 1), t) for d, t in zip(norm_data, norm_targets)]
+        preds = [f.predict(d.reshape(-1, 1)) for f, d in zip(fits, norm_data)]
+        coefs = [f.coef_[0] for f in fits]
+        r2s = [r2_score(t, p) for t, p in zip(norm_targets, preds)]
+        return np.array(coefs), np.array(r2s)
+
+    coefs, r2s = helpers.named_transpose(
+        [
+            _get_fit(value, fit_data, data_norm=data_norm, target_norm=target_norm)
+            for value, data_norm in zip(pfv_all.values(), pfv_data_norms.values())
+        ]
+    )
+
+    cmap = mpl.colormaps["turbo"].resampled(len(pfv_names))
+    cmap_idx = {k: i for i, k in enumerate(pfv_names)}
+    figdim = 3
+    fig, ax = plt.subplots(2, 1, figsize=(4 * figdim, 2 * figdim), layout="constrained", sharex=True)
+    for i, (k, c, r) in enumerate(zip(pfv_all.keys(), coefs, r2s)):
+        name = "_".join(k.split("_")[:-1])
+        ax[0].scatter(i + 0.1 * helpers.beeswarm(c), c, label=k, color=cmap(cmap_idx[name]), s=15, alpha=0.7)
+        ax[1].scatter(i + 0.1 * helpers.beeswarm(r), r, label=k, color=cmap(cmap_idx[name]), s=15, alpha=0.7)
+    ax[1].set_xticks(range(len(pfv_all.keys())))
+    ax[1].set_xticklabels(pfv_all.keys(), rotation=45, ha="right")
+    ax[0].set_ylabel("Fit Coefficient")
+    ax[1].set_ylabel("R**2")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        pcms[0].saveFigure(fig.number, "comparisons", "exponential_fit_predictions")
