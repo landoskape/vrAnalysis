@@ -8,6 +8,7 @@ sys.path.append(mainPath)
 from argparse import ArgumentParser
 from tqdm import tqdm
 import pickle
+import numpy as np
 from matplotlib import pyplot as plt
 
 from vrAnalysis.helpers import (
@@ -22,10 +23,10 @@ from vrAnalysis.analysis.variance_structure import (
     plot_spectral_averages,
     plot_spectral_energy,
     plot_fourier_data,
-    plot_reliability_data,
-    plot_pf_var_data,
     plot_svca_data,
     compare_exp_fits,
+    plot_spatial_kernels,
+    generate_example_pfvars,
 )
 
 CUTOFFS = (0.4, 0.7)
@@ -64,16 +65,23 @@ def analyze_spectra(pcm, args):
     #         )
     #     for covariance in [False, True]:
     #         plot_fourier_data(pcm, spectra_data, color_by_session=color_by_session, covariance=covariance, with_show=False, with_save=True)
-    #     plot_reliability_data(pcm, spectra_data, color_by_session=color_by_session, with_show=False, with_save=True)
-    #     plot_pf_var_data(pcm, spectra_data, color_by_session=color_by_session, with_show=False, with_save=True)
     # for do_xlog in [True, False]:
     #     for do_ylog in [True, False]:
     #         plot_spectral_averages(pcm, spectra_data, do_xlog=do_xlog, do_ylog=do_ylog, with_show=False, with_save=True)
     # plot_spectral_energy(pcm, spectra_data, with_show=False, with_save=True)
     # for normalize in [True, False]:
     #     plot_svca_data(pcm, spectra_data, normalize=normalize, with_show=False, with_save=True)
-    for color_by_session in [True, False]:
-        compare_exp_fits(pcm, spectra_data, amplitude=True, color_by_session=color_by_session, with_show=False, with_save=True)
+    # for color_by_session in [True, False]:
+    #     for mean in [True, False]:
+    #         compare_exp_fits(pcm, spectra_data, amplitude=True, mean=mean, color_by_session=color_by_session, with_show=False, with_save=True)
+    # for cv in [True, False]:
+    #     plot_spatial_kernels(pcm, spectra_data, cv=cv, with_show=False, with_save=True)
+    sesidx = np.arange(len(pcm.pcss))
+    num_sessions = min([5, len(sesidx)])
+    ses_to_plot = np.random.choice(sesidx, num_sessions, replace=False)
+    for ises in ses_to_plot:
+        for envnum in pcm.pcss[ises].environments:
+            generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":

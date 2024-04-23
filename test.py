@@ -32,23 +32,26 @@ def add_to_spectra_data(pcm, args):
         v.load_data()
 
     # get spkmaps of all cells / just reliable cells
-    kernels = []
-    cv_kernels = []
+    all_pf_max = []
+    rel_pf_max = []
     for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
+        # get reliable cells (for each environment) and spkmaps for each environment (with all cells)
+        c_idx_reliable = v.get_reliable(envnum=None, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs)
         c_spkmaps = v.prepare_spkmaps(envnum=None, smooth=args.smooth, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs, reliable=False)
-        train_idx, test_idx = helpers.named_transpose([helpers.cvFoldSplit(np.arange(spkmap.shape[1]), 2) for spkmap in c_spkmaps])
+        c_rel_spkmaps = [spkmap[cir] for spkmap, cir in zip(c_spkmaps, c_idx_reliable)]
 
-        # full place fields
+        # get place field for each cell
         c_placefields_all = [np.nanmean(spkmap, axis=1) for spkmap in c_spkmaps]
-        c_pf_train = [np.nanmean(spkmap[:, tidx], axis=1) for spkmap, tidx in zip(c_spkmaps, train_idx)]
-        c_pf_test = [np.nanmean(spkmap[:, tidx], axis=1) for spkmap, tidx in zip(c_spkmaps, test_idx)]
-        c_pf_train_centered = [pf - np.nanmean(pf, axis=0) for pf in c_pf_train]
-        c_pf_test_centered = [pf - np.nanmean(pf, axis=0) for pf in c_pf_test]
+        c_placefields_rel = [np.nanmean(spkmap, axis=1) for spkmap in c_rel_spkmaps]
 
-        kernels.append([np.cov(pf.T) for pf in c_placefields_all])
-        cv_kernels.append([cpftrain.T @ cpftest / (cpftrain.shape[0] - 1) for cpftrain, cpftest in zip(c_pf_train_centered, c_pf_test_centered)])
+        # get place field maximum
+        all_pf_max.append([np.nanmax(pf, axis=1) for pf in c_placefields_all])
+        rel_pf_max.append([np.nanmax(pf, axis=1) for pf in c_placefields_rel])
 
-    update_dict = {"kernels": kernels, "cv_kernels": cv_kernels}
+    update_dict = {
+        "all_pf_max": all_pf_max,
+        "rel_pf_max": rel_pf_max,
+    }
 
     temp_files.update(update_dict)
 
@@ -59,22 +62,22 @@ if __name__ == "__main__":
     for mouse_name in mouse_names:
         print(f"Analyzing {mouse_name}")
 
-        # load spectra data for target mouse
-        track = tracking.tracker(mouse_name)  # get tracker object for mouse
-        pcm = analysis.placeCellMultiSession(track, autoload=False)  # open up place cell multi session analysis object (don't autoload!!!)
+        # # load spectra data for target mouse
+        # track = tracking.tracker(mouse_name)  # get tracker object for mouse
+        # pcm = analysis.placeCellMultiSession(track, autoload=False)  # open up place cell multi session analysis object (don't autoload!!!)
 
-        # load spectra data (use temp if it matches)
-        args = helpers.AttributeDict(
-            dict(
-                mouse_name=mouse_name,
-                dist_step=1,
-                smooth=0.1,
-                cutoffs=(0.4, 0.7),
-                maxcutoffs=None,
-                reload_spectra_data=False,
-            )
-        )
+        # # load spectra data (use temp if it matches)
+        # args = helpers.AttributeDict(
+        #     dict(
+        #         mouse_name=mouse_name,
+        #         dist_step=1,
+        #         smooth=0.1,
+        #         cutoffs=(0.4, 0.7),
+        #         maxcutoffs=None,
+        #         reload_spectra_data=False,
+        #     )
+        # )
 
-        add_to_spectra_data(pcm, args)
+        # add_to_spectra_data(pcm, args)
 
-        # os.system(f"python scripts/mouse_summary.py --mouse-name {mouse_name} --do-spectra")
+        os.system(f"python scripts/mouse_summary.py --mouse-name {mouse_name} --do-spectra")
