@@ -29,7 +29,7 @@ def transpose_list(list_of_lists):
     return list(map(list, zip(*list_of_lists)))
 
 
-def named_transpose(list_of_lists):
+def named_transpose(list_of_lists, map_func=list):
     """
     helper function for transposing lists without forcing the output to be a list like transpose_list
 
@@ -37,7 +37,7 @@ def named_transpose(list_of_lists):
     want to name "A", "B", and "C", then write:
     A, B, C = named_transpose(list_of_lists)
     """
-    return map(list, zip(*list_of_lists))
+    return map(map_func, zip(*list_of_lists))
 
 
 # ---------------------------------- type checks ----------------------------------
