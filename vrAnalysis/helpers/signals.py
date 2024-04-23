@@ -78,6 +78,15 @@ def digitizeEqual(data, mn, mx, nbins):
     return binidx.astype(int)
 
 
+def norm01(data, axis=None):
+    """
+    normalize data to 0-1 range on a particular axis (or all)
+    """
+    datamin = np.nanmin(data, axis=axis, keepdims=True)
+    datamax = np.nanmax(data, axis=axis, keepdims=True)
+    return (data - datamin) / (datamax - datamin)
+
+
 def pairdist(XA, XB):
     """
     measure euclidean distance between set of points in XA and XB
