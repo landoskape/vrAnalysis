@@ -66,7 +66,6 @@ def getBehaviorAndSpikeMaps(
     behaveTimeStamps = vrexp.loadone("positionTracking.times")
     behavePosition = vrexp.loadone("positionTracking.position")
     lickSamples = vrexp.loadone("licksTracking.positionTracking")  # list of behave sample for each lick
-    behaveTimes = vrexp.loadone("positionTracking.times")  # time of each positionTracking sample
 
     # process behavioral variables
     behavePositionBin = np.digitize(behavePosition, distedges) - 1  # index of position bin for each sample
@@ -95,7 +94,7 @@ def getBehaviorAndSpikeMaps(
         idxBehaveToFrame = vrexp.loadone("positionTracking.mpci")  # mpci frame index associated with each behavioral frame
         sampling_period = np.median(np.diff(frameTimeStamps))
         distCutoff = sampling_period / 2  # (time) of cutoff for associating imaging frame with behavioral frame
-        distBehaveToFrame = frameTimeStamps[idxBehaveToFrame] - behaveTimes
+        distBehaveToFrame = frameTimeStamps[idxBehaveToFrame] - behaveTimeStamps
 
         # filter by requested ROIs if provided
         if idxROIs is not None:
