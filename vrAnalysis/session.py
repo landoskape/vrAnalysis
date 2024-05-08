@@ -364,7 +364,7 @@ class vrExperiment(vrSession):
         return [data[trialIndex == tidx] for tidx in range(len(trialStartFrame))]
 
     # ------------------- convert between imaging and behavioral time -------------------
-    def get_frame_behavior(self):
+    def get_frame_behavior(self, speedThreshold=5, use_average=True):
         """
         get position and environment data for each frame in imaging data
         nan if no position data is available for that frame (e.g. if the closest
@@ -375,30 +375,61 @@ class vrExperiment(vrSession):
         environmentIndex = self.loadone("trials.environmentIndex")
         behaveTimeStamps = self.loadone("positionTracking.times")  # times of position tracking
         behavePosition = self.loadone("positionTracking.position")  # position for position tracking
+        idxBehaveToFrame = self.loadone("positionTracking.mpci")
         behaveTrialIdx = self.getBehaveTrialIdx(trialStartSample)  # array of trial index for each sample
         behaveEnvironment = environmentIndex[behaveTrialIdx]  # environment for each sample
 
-        frameTimeStamps = self.loadone("mpci.times")  # timestamps for each imaging frame
-        sampling_period = np.median(np.diff(frameTimeStamps))
+        # only true if next sample is from same trial (last sample from each trial == False)
+        withinTrialSample = np.append(np.diff(behaveTrialIdx) == 0, True)
 
+        # time between samples, assume zero time was spent in last sample for each trial
+        sampleDuration = np.append(np.diff(behaveTimeStamps), 0)
+        # speed in each sample, assume speed was zero in last sample for each trial
+        behaveSpeed = np.append(np.diff(behavePosition) / sampleDuration[:-1], 0)
+        # keep sample duration when speed above threshold and sample within trial
+        sampleDuration = sampleDuration * withinTrialSample
+        # keep speed when above threshold and sample within trial
+        behaveSpeed = behaveSpeed * withinTrialSample
+
+        frameTimeStamps = self.loadone("mpci.times")  # timestamps for each imaging frame
+        distBehaveToFrame = np.abs(behaveTimeStamps - frameTimeStamps[idxBehaveToFrame])
+        sampling_period = np.median(np.diff(frameTimeStamps))
         distCutoff = sampling_period / 2  # (time) of cutoff for associating imaging frame with behavioral frame
+
         idxFrameToBehave, distFrameToBehave = helpers.nearestpoint(frameTimeStamps, behaveTimeStamps)
         idx_get_position = distFrameToBehave < distCutoff
-        frame_position = np.full(len(frameTimeStamps), np.nan)
-        frame_position[idx_get_position] = behavePosition[idxFrameToBehave[idx_get_position]]
+        if use_average:
+            frame_position = np.zeros_like(frameTimeStamps)
+            count = np.zeros_like(frameTimeStamps)
+            functions.getAverageFramePosition(
+                behavePosition,
+                behaveSpeed,
+                speedThreshold,
+                idxBehaveToFrame,
+                distBehaveToFrame,
+                distCutoff,
+                frame_position,
+                count,
+            )
+            frame_position[count > 0] /= count[count > 0]
+            frame_position[count == 0] = np.nan
+        else:
+            frame_position = np.full(len(frameTimeStamps), np.nan)
+            frame_position[idx_get_position] = behavePosition[idxFrameToBehave[idx_get_position]]
+
         frame_environment = np.full(len(frameTimeStamps), np.nan)
         frame_environment[idx_get_position] = behaveEnvironment[idxFrameToBehave[idx_get_position]]
 
         return frame_position, frame_environment, np.unique(environmentIndex)
 
-    def get_position_by_env(self, idx_ignore=-100):
+    def get_position_by_env(self, speedThreshold=5, use_average=True, idx_ignore=-100):
         """
         get position index for each frame in imaging data, separated by each environment
 
         nan if no position data is available for that frame (e.g. if the closest
         behavioral sample is further away in time than the sampling period)
         """
-        frame_position, frame_environment, environments = self.get_frame_behavior()
+        frame_position, frame_environment, environments = self.get_frame_behavior(speedThreshold=speedThreshold, use_average=use_average)
 
         idx_valid_pos = ~np.isnan(frame_position)
         frame_pos_index = np.full(len(frame_position), idx_ignore, dtype=int)
