@@ -10,7 +10,7 @@ from subprocess import run
 
 from . import session
 from . import registration
-from . import helpers
+from .helpers import readableBytes
 from . import fileManagement as fm
 
 
@@ -746,7 +746,7 @@ class session_database(base_database):
                 True,
                 sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()]),
             )  # accumulate oneData
-            print(f"Session {vrExpReg.sessionPrint()} registered with {helpers.readableBytes(out[1])} oneData.")
+            print(f"Session {vrExpReg.sessionPrint()} registered with {readableBytes(out[1])} oneData.")
         finally:
             del vrExpReg
         return out
@@ -771,7 +771,7 @@ class session_database(base_database):
 
         for idx, (_, row) in enumerate(dfToRegister.iterrows()):
             if totalOneData > maxData:
-                print(f"\nMax data limit reached. Total processed: {helpers.readableBytes(totalOneData)}. Limit: {helpers.readableBytes(maxData)}")
+                print(f"\nMax data limit reached. Total processed: {readableBytes(totalOneData)}. Limit: {readableBytes(maxData)}")
                 return
             print("")
             out = self.registerRecord(row, **opts)
@@ -780,9 +780,9 @@ class session_database(base_database):
                 totalOneData += out[1]  # accumulated oneData registered
                 estimateRemaining = len(dfToRegister) - idx
                 print(
-                    f"Accumulated oneData registered: {helpers.readableBytes(totalOneData)}. "
-                    f"Averaging: {helpers.readableBytes(totalOneData/countSessions)} / session. "
-                    f"Estimate remaining: {helpers.readableBytes(totalOneData/countSessions*estimateRemaining)}"
+                    f"Accumulated oneData registered: {readableBytes(totalOneData)}. "
+                    f"Averaging: {readableBytes(totalOneData/countSessions)} / session. "
+                    f"Estimate remaining: {readableBytes(totalOneData/countSessions*estimateRemaining)}"
                 )
 
     def printRegistrationErrors(self, **kwargs):
