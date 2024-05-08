@@ -8,7 +8,6 @@ import scipy as sp
 import scipy.io as scio
 import numba as nb
 from numpyencoder import NumpyEncoder
-from . import functions
 from . import helpers
 from . import fileManagement as fm
 
@@ -401,7 +400,7 @@ class vrExperiment(vrSession):
         if use_average:
             frame_position = np.zeros_like(frameTimeStamps)
             count = np.zeros_like(frameTimeStamps)
-            functions.getAverageFramePosition(
+            helpers.getAverageFramePosition(
                 behavePosition,
                 behaveSpeed,
                 speedThreshold,

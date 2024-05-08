@@ -13,7 +13,6 @@ from typing import List
 
 # import package
 from . import session
-from . import functions
 from . import helpers
 from . import database
 from . import fileManagement as fm

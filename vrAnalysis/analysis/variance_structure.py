@@ -10,7 +10,6 @@ from sklearn.metrics import r2_score
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from .. import helpers
-from ..functions import environmentRewardZone
 from ..analysis import placeCellSingleSession
 
 from .. import database
@@ -1112,7 +1111,7 @@ def plot_spatial_kernels(pcm, spectra_data, cv=False, rewzone=True, with_show=Tr
         c_env = pcm.environments[i]
         made_ylabel = False
         for j in range(num_sessions):
-            rewpos, rewhw = environmentRewardZone(pcm.pcss[j].vrexp)
+            rewpos, rewhw = helpers.environmentRewardZone(pcm.pcss[j].vrexp)
             if j in spectra_data["envstats"][c_env]:
                 eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
 

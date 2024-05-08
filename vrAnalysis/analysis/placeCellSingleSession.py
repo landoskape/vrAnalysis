@@ -6,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-from .. import functions
 from .. import helpers
 from .. import database
 from .. import fileManagement as fm
@@ -458,7 +457,7 @@ class placeCellSingleSession(standardAnalysis):
             "speedSmoothing": self.smoothWidth,
             "get_spkmap": False,
         }
-        self.occmap, self.speedmap, _, _, self.sample_counts, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
+        self.occmap, self.speedmap, _, _, self.sample_counts, self.distedges = helpers.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
         self.distcenters = helpers.edge2center(self.distedges)
 
         self.numTrials = self.occmap.shape[0]
@@ -513,7 +512,7 @@ class placeCellSingleSession(standardAnalysis):
             "idxROIs": self.idxUseROI,
             "speedSmoothing": self.smoothWidth,
         }
-        self.occmap, self.speedmap, _, self.rawspkmap, self.sample_counts, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
+        self.occmap, self.speedmap, _, self.rawspkmap, self.sample_counts, self.distedges = helpers.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
 
         self.distcenters = helpers.edge2center(self.distedges)
 
@@ -629,7 +628,7 @@ class placeCellSingleSession(standardAnalysis):
             spkmap[spk_idxnan] = np.nan
 
         # correct spkmap by occupancy
-        spkmap = functions.correctMap(occmap, spkmap)
+        spkmap = helpers.correctMap(occmap, spkmap)
 
         # reshape to (numROIs, numTrials, numPositions)
         spkmap = spkmap.transpose(2, 0, 1)
@@ -675,13 +674,13 @@ class placeCellSingleSession(standardAnalysis):
 
         # measure reliability of spiking (in two ways)
         spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="train")
-        relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
+        relmse, relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
         self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
 
         if with_test:
             # measure on test trials
             spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="test")
-            relmse, relcor = helpers.named_transpose([functions.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
+            relmse, relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
             self.test_relmse, self.test_relcor = np.stack(relmse), np.stack(relcor)
         else:
             # Alert the user that the training data was (re)calculated without testing
@@ -879,7 +878,7 @@ class placeCellSingleSession(standardAnalysis):
         # load reward zone information
         if rewzone:
             # get reward zone start and stop, and filter to requested environments
-            rewPos, rewHalfwidth = functions.environmentRewardZone(self.vrexp)
+            rewPos, rewHalfwidth = helpers.environmentRewardZone(self.vrexp)
             rewPos = [rewPos[np.where(self.environments == ev)[0][0]] for ev in envnum]
             rewHalfwidth = [rewHalfwidth[np.where(self.environments == ev)[0][0]] for ev in envnum]
             rect_train = [
@@ -995,7 +994,7 @@ class placeCellSingleSession(standardAnalysis):
         # load reward zone information
         if rewzone:
             # get reward zone start and stop, and filter to requested environments
-            rewPos, rewHalfwidth = functions.environmentRewardZone(self.vrexp)
+            rewPos, rewHalfwidth = helpers.environmentRewardZone(self.vrexp)
             rewPos = [rewPos[np.where(self.environments == ev)[0][0]] for ev in envnum]
             rewHalfwidth = [rewHalfwidth[np.where(self.environments == ev)[0][0]] for ev in envnum]
             rect = lambda ii, jj: mpl.patches.Rectangle(

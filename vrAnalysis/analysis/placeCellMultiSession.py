@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
 
-from .. import functions
 from .. import helpers
 from .standardAnalysis import multipleAnalysis
 from . import placeCellSingleSession
@@ -884,7 +883,7 @@ class placeCellMultiSession(multipleAnalysis):
         # load reward zone information
         if rewzone:
             # get reward zone start and stop, and filter to requested environments
-            rew_zone_data = [functions.environmentRewardZone(self.pcss[i].vrexp) for i in self.idx_ses]
+            rew_zone_data = [helpers.environmentRewardZone(self.pcss[i].vrexp) for i in self.idx_ses]
             rewPos, rewHW = zip(*rew_zone_data)
             rewPos = list(set([rp[ei] for rp, ei in zip(rewPos, envidx)]))
             rewHW = list(set([rh[ei] for rh, ei in zip(rewHW, envidx)]))
