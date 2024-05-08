@@ -416,6 +416,7 @@ class placeCellSingleSession(standardAnalysis):
             "occmap",
             "speedmap",
             "rawspkmap",
+            "sample_counts",
             "spkmap",
             "distedges",
             "distcenters",
@@ -457,7 +458,7 @@ class placeCellSingleSession(standardAnalysis):
             "speedSmoothing": self.smoothWidth,
             "get_spkmap": False,
         }
-        self.occmap, self.speedmap, _, _, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
+        self.occmap, self.speedmap, _, _, self.sample_counts, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
         self.distcenters = helpers.edge2center(self.distedges)
 
         self.numTrials = self.occmap.shape[0]
@@ -512,7 +513,7 @@ class placeCellSingleSession(standardAnalysis):
             "idxROIs": self.idxUseROI,
             "speedSmoothing": self.smoothWidth,
         }
-        self.occmap, self.speedmap, _, self.rawspkmap, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
+        self.occmap, self.speedmap, _, self.rawspkmap, self.sample_counts, self.distedges = functions.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
 
         self.distcenters = helpers.edge2center(self.distedges)
 
@@ -871,7 +872,7 @@ class placeCellSingleSession(standardAnalysis):
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
-        labelSize = 20
+        labelSize = 14
         cb_unit = r"$\sigma$" if self.standardizeSpks else "au"
         cb_label = f"Activity ({cb_unit})"
 
@@ -987,7 +988,7 @@ class placeCellSingleSession(standardAnalysis):
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
-        labelSize = 20
+        labelSize = 14
         cb_unit = r"$\sigma$" if self.standardizeSpks else "au"
         cb_label = f"Activity ({cb_unit})"
 
