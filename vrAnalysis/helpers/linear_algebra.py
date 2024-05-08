@@ -240,11 +240,13 @@ def cvPCA_from_MouseLandGithub(X1, X2, nc=None):
     return ss
 
 
-def cvPCA_paper_stimuli(X1, X2, nc=None):
+def cvPCA_paper_stimuli(X1, X2, nc=None, center=False):
     """X is stimuli x neurons"""
     S, N = X1.shape
     assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
     nc = get_num_components(nc, (S, N))
+    X1 = X1 - X1.mean(axis=0) if center else X1
+    X2 = X2 - X2.mean(axis=0) if center else X2
     pca = PCA(n_components=nc).fit(X1.T)
     u = pca.components_.T
 
@@ -254,11 +256,13 @@ def cvPCA_paper_stimuli(X1, X2, nc=None):
     return ss
 
 
-def cvPCA_paper_neurons(X1, X2, nc=None):
+def cvPCA_paper_neurons(X1, X2, nc=None, center=False):
     """X is stimuli x neurons"""
     S, N = X1.shape
     assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
     nc = get_num_components(nc, (S, N))
+    X1 = X1 - X1.mean(axis=1, keepdims=True) if center else X1
+    X2 = X2 - X2.mean(axis=1, keepdims=True) if center else X2
     pca = PCA(n_components=nc).fit(X1)
     u = pca.components_.T
 
@@ -581,3 +585,50 @@ def chunk_indices(n_dataset, n_chunks, n_buffer=10, splits=None, cv_fold=False, 
             for i, chunk in enumerate(chunks):
                 chunks[i] = np.sort(chunk)
         return chunks
+
+
+def compute_signal_related_variance(resp_a, resp_b, mean_center=True):
+    """
+    compute the fraction of signal-related variance for each neuron,
+    as per Stringer et al Nature 2019. Cross-validated by splitting
+    responses into two halves. Note, this only is "correct" if resp_a
+    and resp_b are *not* averages of many trials.
+
+    Args:
+        resp_a (ndarray): n_stimuli, n_cells
+        resp_b (ndarray): n_stimuli, n_cells
+
+    Returns:
+        fraction_of_stimulus_variance: 0-1, 0 is non-stimulus-caring, 1 is only-stimulus-caring neurons
+        stim_to_noise_ratio: ratio of the stim-related variance to all other variance
+    """
+    if len(resp_a.shape) > 2:
+        # if the stimulus is multi-dimensional, flatten across all stimuli
+        resp_a = resp_a.reshape(-1, resp_a.shape[-1])
+        resp_b = resp_b.reshape(-1, resp_b.shape[-1])
+
+    ns, nc = resp_a.shape
+    if mean_center:
+        # mean-center the activity of each cell
+        resp_a = resp_a - resp_a.mean(axis=0)
+        resp_b = resp_b - resp_b.mean(axis=0)
+
+    # compute the cross-trial stimulus covariance of each cell
+    # dot-product each cell's (n_stim, ) vector from one half
+    # with its own (n_stim, ) vector on the other half
+
+    covariance = (resp_a * resp_b).sum(axis=0) / ns
+
+    # compute the variance of each cell across both halves
+    resp_a_variance = (resp_a**2).sum(axis=0) / ns
+    resp_b_variance = (resp_b**2).sum(axis=0) / ns
+    total_variance = (resp_a_variance + resp_b_variance) / 2
+
+    # compute the fraction of the total variance that is
+    # captured in the covariance
+    fraction_of_stimulus_variance = covariance / total_variance
+
+    # if you want, you can compute SNR as well:
+    stim_to_noise_ratio = fraction_of_stimulus_variance / (1 - fraction_of_stimulus_variance)
+
+    return fraction_of_stimulus_variance, stim_to_noise_ratio
