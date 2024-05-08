@@ -2,6 +2,8 @@ name: vrAnalysis
 channels:
   - numba
   - conda-forge
+  - pytorch 
+  - nvidia
   - defaults
 dependencies:
   - python=3.9
@@ -10,6 +12,7 @@ dependencies:
   - scipy
   - numba
   - matplotlib
+  - seaborn
   - ipympl
   - jupyterlab
   - oasis-deconv
