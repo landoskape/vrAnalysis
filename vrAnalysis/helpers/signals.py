@@ -2,7 +2,7 @@ import numpy as np
 import scipy as sp
 import torch
 
-from .wrangling import transpose_list
+from .wrangling import transpose_list, named_transpose
 
 
 # ---------------------------------- signal processing ----------------------------------
@@ -391,3 +391,82 @@ def fit_exponentials(data, bias=False):
     r_squared = 1 - ss_res / ss_tot
 
     return transpose_list(popts), r_squared
+
+
+def gaussian(x, amplitude, center, width):
+    """gaussian function"""
+    return amplitude * np.exp(-(((x - center) / width) ** 2))
+
+
+def get_fit(args):
+    """
+    Fit a function to data
+
+    x: x values
+    y: y values
+    func: function to fit
+    p0: initial parameters
+    bounds: bounds for the parameters
+
+    returns the popt and pcov
+    """
+    x, y, func, p0 = args
+    try:
+        popt = sp.optimize.curve_fit(func, x, y, p0=p0, bounds=None)[0]
+    except RuntimeError:
+        # if fit failed, append nans
+        popt = [np.nan, np.nan, np.nan]
+    except Exception as e:
+        # raise all other exceptions
+        raise e
+    return popt
+
+
+def fit_gaussians(data, x=None):
+    """
+    Fit gaussians to data
+
+    Assumes that each row of data is the data to fit,
+    with x values being np.arange(0, data.shape[1])
+    unless provided
+
+    returns a list of popt for each row of data
+    and an r2 value for each fit
+
+    note: will ignore nans, so those need to be handled as expected outside this method!
+    """
+
+    assert data.ndim == 2, "data has to be a 2D numpy array"
+    if x is None:
+        x = np.arange(data.shape[1])
+
+    # Prepare initial estimates of the parameters
+    init_amplitude = np.nanmax(data, axis=1)
+    init_center = x[np.nanargmax(data, axis=1)]
+    init_width = 5
+
+    # Do fit
+    popts = []
+    for idx, y in enumerate(data):
+        # set initial parameter
+        p0 = [init_amplitude[idx], init_center[idx], init_width]
+        idx_nan = np.isnan(y)
+
+        # fit data
+        try:
+            popts.append(sp.optimize.curve_fit(gaussian, x[~idx_nan], y[~idx_nan], p0=p0)[0])
+        except RuntimeError:
+            # if fit failed, append nans
+            popts.append([np.nan, np.nan, np.nan])
+        except Exception as e:
+            # raise all other exceptions
+            raise e
+
+    # Measure R2
+    residuals = data - np.array([gaussian(x, *popt) for popt in popts])
+    ss_res = np.nansum(residuals**2, axis=1)
+    ss_tot = np.nansum((data - np.nanmean(data, axis=1, keepdims=True)) ** 2, axis=1)
+    r_squared = 1 - ss_res / ss_tot
+
+    amplitude, center, width = named_transpose(popts)
+    return amplitude, center, width, r_squared
