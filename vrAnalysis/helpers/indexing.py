@@ -58,13 +58,10 @@ def cvFoldSplit(samples, numFold, even=False):
     # generates list of indices of equally sized randomly selected samples to be used in numFold-crossvalidation for a given number of samples
     minimumSamples = int(np.floor(numSamples / numFold))
     remainder = numSamples - numFold * minimumSamples
-    samplesPerFold = [
-        int(minimumSamples + 1 * (f < remainder)) for f in range(numFold)
-    ]  # each fold gets minimum number of samples, assign remainder evenly to as many as necessary
-    sampleIdxPerFold = [
-        0,
-        *np.cumsum(samplesPerFold),
-    ]  # defines where to start and stop for each fold
+    # each fold gets minimum number of samples, assign remainder evenly to as many as necessary
+    samplesPerFold = [int(minimumSamples + 1 * (f < remainder)) for f in range(numFold)]
+    # defines where to start and stop for each fold
+    sampleIdxPerFold = [0, *np.cumsum(samplesPerFold)]
     randomOrder = samples[np.random.permutation(numSamples)]  # random permutation of samples
     foldIdx = [randomOrder[sampleIdxPerFold[i] : sampleIdxPerFold[i + 1]] for i in range(numFold)]  # assign samples to each cross-validation fold
     if even:
