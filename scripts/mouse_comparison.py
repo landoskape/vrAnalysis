@@ -6,6 +6,7 @@ mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
 from argparse import ArgumentParser
+from functools import partial
 from tqdm import tqdm
 import pickle
 import numpy as np
@@ -22,12 +23,15 @@ from vrAnalysis.analysis.variance_structure import (
     plot_spectral_averages,
     plot_spectral_energy,
     plot_fourier_data,
-    plot_reliability_data,
-    plot_pf_var_data,
     compare_spectral_averages,
     plot_spectral_averages_comparison,
     plot_all_exponential_fits,
     predict_exp_fits_across_mice,
+    plot_value_comparison,
+    plot_value_to_value_comparison,
+    plot_total_variance_comparison,
+    predict_total_variance_across_mice,
+    plot_svca_vs_cvpca,
 )
 
 CUTOFFS = (0.4, 0.7)
@@ -83,9 +87,57 @@ def make_comparison_plots(pcms, spectra_data):
     #         plot_spectral_averages_comparison(
     #             pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=ylog_min, with_show=False, with_save=True
     #         )
+    for include_cvpca in [True, False]:
+        plot_svca_vs_cvpca(pcms, spectra_data, include_cvpca=include_cvpca, do_ylog=True, with_show=False, with_save=True)
     # for relative_session in [True, False]:
     #     plot_all_exponential_fits(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
-    predict_exp_fits_across_mice(pcms, spectra_data, with_show=False, with_save=True)
+    #     plot_total_variance_comparison(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
+    # summary_val = ["map_var", "map_corr", "map_frob_norm"]
+    # for relative_value in [True, False]:
+    #     for sval_name in summary_val:
+    #         plot_value_comparison(
+    #             pcms,
+    #             spectra_data,
+    #             sval_name,
+    #             reduction=("", np.mean),
+    #             relative_value=relative_value,
+    #             relative_session=True,
+    #             with_show=False,
+    #             with_save=True,
+    #         )
+    #         plot_value_to_value_comparison(
+    #             pcms,
+    #             spectra_data,
+    #             sval_name,
+    #             "cv_by_env_all",
+    #             first_reduction=("", np.mean),
+    #             second_reduction="sum",
+    #             relative_value=relative_value,
+    #             relative_session=True,
+    #             first_offset=0,
+    #             with_show=False,
+    #             with_save=True,
+    #         )
+    # rel_cor_cutoffs = [0.7]
+
+    # def frac_gt(x, rcc):
+    #     return np.sum(x > rcc) / len(x)
+
+    # reductions = [(f"frac_gt_{rcc}", partial(frac_gt, rcc=rcc)) for rcc in rel_cor_cutoffs]
+    # for relative_session in [True, False]:
+    #     for reduction in reductions:
+    #         plot_value_comparison(
+    #             pcms,
+    #             spectra_data,
+    #             "rel_cor",
+    #             reduction=reduction,
+    #             relative_value=False,
+    #             relative_session=relative_session,
+    #             with_show=False,
+    #             with_save=True,
+    #         )
+    # predict_exp_fits_across_mice(pcms, spectra_data, with_show=False, with_save=True)
+    # predict_total_variance_across_mice(pcms, spectra_data, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":
