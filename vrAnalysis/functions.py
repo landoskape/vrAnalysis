@@ -179,7 +179,7 @@ def getBehaviorAndSpikeMaps(
     else:
         spkmap = None
 
-    return occmap, speedmap, lickmap, spkmap, distedges
+    return occmap, speedmap, lickmap, spkmap, count, distedges
 
 
 def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.05):
@@ -289,6 +289,17 @@ def getAllMaps(
             spkmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += spks[idxBehaveToFrame[sample]] * sampleDuration[sample]
             # add to count to indicate that samples were collected there
             count[behaveTrialIdx[sample]][behavePositionBin[sample]] += 1
+
+
+@nb.njit(parallel=True)
+def getAverageFramePosition(behavePosition, behaveSpeed, speedThreshold, idxBehaveToFrame, distBehaveToFrame, distCutoff, frame_position, count):
+    """
+    get the position of each frame by averaging across positions within a sample
+    """
+    for sample in nb.prange(len(behavePosition)):
+        if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
+            frame_position[idxBehaveToFrame[sample]] += behavePosition[sample]
+            count[idxBehaveToFrame[sample]] += 1
 
 
 @nb.njit(parallel=True)
