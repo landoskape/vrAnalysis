@@ -72,7 +72,7 @@ class standardAnalysis:
         """
         print(f"{self.name} is saving a {name} figure for session: {self.vrexp.sessionPrint()}")
         plt.figure(figNumber)
-        figpath = self.saveDirectory(name) / str(self.vrexp) / extra_name
+        figpath = self.saveDirectory(name) / str(self.vrexp) / (extra_name + ".png")
         if not figpath.parent.is_dir():
             figpath.parent.mkdir(parents=True)
         plt.savefig(figpath)
@@ -110,7 +110,7 @@ class multipleAnalysis(standardAnalysis):
         """
         print(f"{self.name} is saving a {multiname} figure for {name}")
         plt.figure(figNumber)
-        figpath = self.saveDirectory(multiname) / name
+        figpath = self.saveDirectory(multiname) / (name + ".png")
         if not figpath.parent.is_dir():
             figpath.parent.mkdir(parents=True)
         plt.savefig(figpath)
