@@ -4,6 +4,7 @@ from tqdm import tqdm
 import pickle
 import numpy as np
 import faststats as fs
+from scipy.signal import find_peaks
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 import matplotlib as mpl
@@ -11,6 +12,10 @@ from matplotlib import pyplot as plt
 from .. import helpers
 from ..functions import environmentRewardZone
 from ..analysis import placeCellSingleSession
+
+from .. import database
+
+mousedb = database.vrDatabase("vrMice")
 
 """
 Documentation:
@@ -30,10 +35,10 @@ class VarianceStructure(placeCellSingleSession):
         super().__init__(*args, **kwargs)
         self.name = "varianceStructure"
 
-    def prepare_spkmaps(self, envnum=None, cutoffs=(0.4, 0.7), maxcutoffs=None, smooth=0.1, reliable=False):
+    def prepare_spkmaps(self, envnum=None, average=False, trials="full", cutoffs=(0.4, 0.7), maxcutoffs=None, smooth=0.1, reliable=False):
         """prepare spkmaps for cvPCA"""
         # get spkmap with particular smoothing settings (don't smooth because we need all the trials)
-        spkmaps = self.get_spkmap(envnum=envnum, average=False, smooth=smooth, trials="full")
+        spkmaps = self.get_spkmap(envnum=envnum, average=average, smooth=smooth, trials=trials)
 
         # Filter by reliable cells if requested
         if reliable:
@@ -42,6 +47,59 @@ class VarianceStructure(placeCellSingleSession):
 
         # return data
         return spkmaps
+
+    def prepare_spks(self, onefile="mpci.roiActivityDeconvolvedOasis", standardize=True):
+        """get spks (imaging frames x neurons) for the session, only using neurons in standard planes"""
+        spks = self.vrexp.loadone(onefile)[:, self.idxUseROI]
+        if standardize:
+            if "deconvolved" in onefile:
+                # If using deconvolved traces, should have zero baseline
+                spks = spks / fs.std(spks, axis=0, keepdims=True)
+
+            else:
+                # If using fluorescence traces, should have non-zero baseline
+                idx_zeros = fs.std(spks, axis=0) == 0
+                spks = fs.median_zscore(spks, axis=0)
+                spks[:, idx_zeros] = 0
+
+        return spks
+
+    def get_frame_behavior(self, speedThreshold=-1, use_average=True, ignore_to_nan=True):
+        """get behavioral variables for session and convert to frame timing"""
+        frame_position, idx_valid, ses_envs = self.vrexp.get_position_by_env(speedThreshold=speedThreshold, use_average=use_average)
+        if ignore_to_nan:
+            frame_position = frame_position.astype(float)
+            frame_position[frame_position == -100] = np.nan
+
+        msg = f"pcss environments {self.environments} doesn't match session environments {ses_envs}"
+        assert np.array_equal(self.environments, ses_envs), msg
+
+        return frame_position, idx_valid
+
+    def generate_spks_prediction(self, spks, spkmaps, frame_position, idx_valid, background_value=0):
+        """generate spks prediction from spkmaps and frame_position data"""
+        spks_prediction = np.full(spks.shape, background_value)
+        for spkmap, frame_pos, idx in zip(spkmaps, frame_position, idx_valid):
+            spks_prediction[idx] = spkmap[:, frame_pos[idx].astype(int)].T
+
+        return spks_prediction
+
+    def get_traversals(self, spks, spks_prediction, spkmaps, frame_position, envidx, cellidx, width=10):
+        """for every time the mouse passes the peak of the place field, get the traversal of the spks timecourse and the prediction"""
+        pos_peak = self.distcenters[np.nanargmax(spkmaps[envidx][cellidx])]
+        idx_traversal = find_peaks(-np.abs(frame_position[envidx] - pos_peak), distance=width)[0]
+
+        traversals = np.zeros((len(idx_traversal), width * 2 + 1))
+        pred_travs = np.zeros((len(idx_traversal), width * 2 + 1))
+        for ii, it in enumerate(idx_traversal):
+            istart = it - width
+            iend = it + width + 1
+            istartoffset = max(0, -istart)
+            iendoffset = max(0, iend - spks.shape[0])
+            traversals[ii, istartoffset : width * 2 + 1 - iendoffset] = spks[istart + istartoffset : iend - iendoffset, cellidx]
+            pred_travs[ii, istartoffset : width * 2 + 1 - iendoffset] = spks_prediction[istart + istartoffset : iend - iendoffset, cellidx]
+
+        return traversals, pred_travs
 
     def _get_min_trials(self, spkmaps):
         """helper for getting minimum number of trials for a particular environment's spkmap"""
@@ -155,24 +213,22 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "cv_kernels",
                 "rel_mse",
                 "rel_cor",
-                "all_pf_mean",
-                "all_pf_var",
-                "all_pf_cv",
-                "all_pf_max",
-                "all_pf_tdot_mean",
-                "all_pf_tdot_std",
-                "all_pf_tdot_cv",
-                "all_pf_tcorr_mean",
-                "all_pf_tcorr_std",
-                "rel_pf_mean",
-                "rel_pf_var",
-                "rel_pf_cv",
-                "rel_pf_max",
-                "rel_pf_tdot_mean",
-                "rel_pf_tdot_std",
-                "rel_pf_tdot_cv",
-                "rel_pf_tcorr_mean",
-                "rel_pf_tcorr_std",
+                "idx_rel",
+                "map_corr",
+                "map_frob_norm",
+                "map_var",
+                "pf_gauss_width",
+                "pf_gauss_amp",
+                "pf_gauss_r2",
+                "pf_mean",
+                "pf_var",
+                "pf_cv",
+                "pf_max",
+                "pf_tdot_mean",
+                "pf_tdot_std",
+                "pf_tdot_cv",
+                "pf_tcorr_mean",
+                "pf_tcorr_std",
                 "svca_shared",
                 "svca_total",
             ]
@@ -221,28 +277,25 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         # get spkmaps of all cells / just reliable cells
         allcell_maps = []
         relcell_maps = []
+        map_corr = []
+        map_frob_norm = []
+        map_var = []
         rel_mse = []
         rel_cor = []
-        all_pf_mean = []
-        all_pf_var = []
-        all_pf_norm = []
-        all_pf_cv = []
-        all_pf_max = []
-        all_pf_tdot_mean = []
-        all_pf_tdot_std = []
-        all_pf_tdot_cv = []
-        all_pf_tcorr_mean = []
-        all_pf_tcorr_std = []
-        rel_pf_mean = []
-        rel_pf_var = []
-        rel_pf_norm = []
-        rel_pf_cv = []
-        rel_pf_max = []
-        rel_pf_tdot_mean = []
-        rel_pf_tdot_std = []
-        rel_pf_tdot_cv = []
-        rel_pf_tcorr_mean = []
-        rel_pf_tcorr_std = []
+        idx_rel = []
+        pf_gauss_width = []
+        pf_gauss_amp = []
+        pf_gauss_r2 = []
+        pf_mean = []
+        pf_var = []
+        pf_norm = []
+        pf_cv = []
+        pf_max = []
+        pf_tdot_mean = []
+        pf_tdot_std = []
+        pf_tdot_cv = []
+        pf_tcorr_mean = []
+        pf_tcorr_std = []
         kernels = []
         cv_kernels = []
         for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
@@ -251,29 +304,41 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             c_spkmaps = v.prepare_spkmaps(envnum=None, smooth=args.smooth, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs, reliable=False)
             c_rel_spkmaps = [spkmap[cir] for spkmap, cir in zip(c_spkmaps, c_idx_reliable)]
 
+            # record index of reliable cells (for later analyses)
+            idx_rel.append(c_idx_reliable)
+
             # get reliable values for each environment
             c_mse, c_cor = v.get_reliability_values(envnum=None, with_test=False)
 
             # get place field for each cell
-            c_placefields_all = [np.nanmean(spkmap, axis=1) for spkmap in c_spkmaps]
-            c_placefields_rel = [np.nanmean(spkmap, axis=1) for spkmap in c_rel_spkmaps]
+            c_placefields = [np.nanmean(spkmap, axis=1) for spkmap in c_spkmaps]
+
+            # get place field gaussian fit
+            amp, _, width, r2 = helpers.named_transpose([helpers.fit_gaussians(cpf, x=v.distcenters) for cpf in c_placefields])
+            pf_gauss_width.append(width)
+            pf_gauss_amp.append(amp)
+            pf_gauss_r2.append(r2)
+
+            # define a train and test index for each environment
+            c_train_idx, c_test_idx = helpers.named_transpose([helpers.cvFoldSplit(np.arange(spkmap.shape[1]), 2) for spkmap in c_spkmaps])
+            train_maps = [np.nanmean(spkmap[:, tidx], axis=1) for spkmap, tidx in zip(c_spkmaps, c_train_idx)]
+            test_maps = [np.nanmean(spkmap[:, tidx], axis=1) for spkmap, tidx in zip(c_spkmaps, c_test_idx)]
+            map_corr.append([helpers.vectorCorrelation(train.reshape(-1), test.reshape(-1)) for train, test in zip(train_maps, test_maps)])
+            map_frob_norm.append([np.linalg.norm(cpf, ord="fro") for cpf in c_placefields])
+            map_var.append([np.nanvar(cpf.reshape(-1)) for cpf in c_placefields])
 
             # make place field a unit vector
             nan_norm = lambda x: np.nansum(x**2, axis=1, keepdims=True) ** 0.5
-            c_all_unitpf = [placefield / nan_norm(placefield) for placefield in c_placefields_all]
-            c_rel_unitpf = [placefield / nan_norm(placefield) for placefield in c_placefields_rel]
+            c_unitpf = [placefield / nan_norm(placefield) for placefield in c_placefields]
 
             # add each to list
             allcell_maps.append(c_spkmaps)
             relcell_maps.append(c_rel_spkmaps)
             rel_mse.append(c_mse)
             rel_cor.append(c_cor)
-            all_pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields_all])
-            rel_pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields_rel])
-            all_pf_norm.append([np.nansum(placefield**2, axis=1) for placefield in c_placefields_all])
-            rel_pf_norm.append([np.nansum(placefield**2, axis=1) for placefield in c_placefields_rel])
-            all_pf_max.append([np.nanmax(placefield, axis=1) for placefield in c_placefields_all])
-            rel_pf_max.append([np.nanmax(placefield, axis=1) for placefield in c_placefields_rel])
+            pf_var.append([np.nanvar(placefield, axis=1) for placefield in c_placefields])
+            pf_norm.append([np.nansum(placefield**2, axis=1) for placefield in c_placefields])
+            pf_max.append([np.nanmax(placefield, axis=1) for placefield in c_placefields])
 
             # compute spatial kernel matrices
             train_idx, test_idx = helpers.named_transpose([helpers.cvFoldSplit(np.arange(spkmap.shape[1]), 2) for spkmap in c_spkmaps])
@@ -282,52 +347,31 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             c_pf_train_centered = [pf - np.nanmean(pf, axis=0) for pf in c_pf_train]
             c_pf_test_centered = [pf - np.nanmean(pf, axis=0) for pf in c_pf_test]
 
-            kernels.append([np.cov(pf.T) for pf in c_placefields_all])
+            kernels.append([np.cov(pf.T) for pf in c_placefields])
             cv_kernels.append([cpftrain.T @ cpftest / (cpftrain.shape[0] - 1) for cpftrain, cpftest in zip(c_pf_train_centered, c_pf_test_centered)])
 
             # get other place field statistics
-            c_all_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
-            c_all_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields_all]
-            c_all_pf_amplitude = [fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_all_unitpf, c_spkmaps)]
-            c_all_pf_tdot_mean = [np.nanmean(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
-            c_all_pf_tdot_std = [np.nanstd(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
-            c_all_pf_tdot_cv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_all_pf_amplitude]
+            c_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields]
+            c_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields]
+            c_pf_amplitude = [fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_unitpf, c_spkmaps)]
+            c_pf_tdot_mean = [np.nanmean(amplitude, axis=1) for amplitude in c_pf_amplitude]
+            c_pf_tdot_std = [np.nanstd(amplitude, axis=1) for amplitude in c_pf_amplitude]
+            c_pf_tdot_cv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_pf_amplitude]
 
-            all_pf_mean.append(c_all_pf_mean)
-            all_pf_cv.append(c_all_pf_cv)
-            all_pf_tdot_mean.append(c_all_pf_tdot_mean)
-            all_pf_tdot_std.append(c_all_pf_tdot_std)
-            all_pf_tdot_cv.append(c_all_pf_tdot_cv)
-
-            c_rel_pf_mean = [fs.nanmean(placefield, axis=1) for placefield in c_placefields_rel]
-            c_rel_pf_cv = [fs.nanstd(placefield, axis=1) / fs.nanmean(placefield, axis=1) for placefield in c_placefields_rel]
-            c_rel_pf_amplitude = [
-                fs.nansum(np.expand_dims(placefield, 1) * spkmap, axis=2) for placefield, spkmap in zip(c_rel_unitpf, c_rel_spkmaps)
-            ]
-            c_rel_pf_tdot_mean = [np.nanmean(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
-            c_rel_pf_tdot_std = [np.nanstd(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
-            c_rel_pf_tdot_cv = [fs.nanstd(amplitude, axis=1) / fs.nanmean(amplitude, axis=1) for amplitude in c_rel_pf_amplitude]
-
-            rel_pf_mean.append(c_rel_pf_mean)
-            rel_pf_cv.append(c_rel_pf_cv)
-            rel_pf_tdot_mean.append(c_rel_pf_tdot_mean)
-            rel_pf_tdot_std.append(c_rel_pf_tdot_std)
-            rel_pf_tdot_cv.append(c_rel_pf_tdot_cv)
+            pf_mean.append(c_pf_mean)
+            pf_cv.append(c_pf_cv)
+            pf_tdot_mean.append(c_pf_tdot_mean)
+            pf_tdot_std.append(c_pf_tdot_std)
+            pf_tdot_cv.append(c_pf_tdot_cv)
 
             # get trial by trial correlation with the mean place field and the trial by trial place field
-            c_all_pf_tcorr = [
+            c_pf_tcorr = [
                 helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2, ignore_nan=True)
-                for spkmap, placefield in zip(c_spkmaps, c_placefields_all)
-            ]
-            c_rel_pf_tcorr = [
-                helpers.vectorCorrelation(spkmap, np.repeat(np.expand_dims(placefield, 1), spkmap.shape[1], 1), axis=2, ignore_nan=True)
-                for spkmap, placefield in zip(c_rel_spkmaps, c_placefields_rel)
+                for spkmap, placefield in zip(c_spkmaps, c_placefields)
             ]
 
-            all_pf_tcorr_mean.append([np.nanmean(tcorr, axis=1) for tcorr in c_all_pf_tcorr])
-            all_pf_tcorr_std.append([np.nanstd(tcorr, axis=1) for tcorr in c_all_pf_tcorr])
-            rel_pf_tcorr_mean.append([np.nanmean(tcorr, axis=1) for tcorr in c_rel_pf_tcorr])
-            rel_pf_tcorr_std.append([np.nanstd(tcorr, axis=1) for tcorr in c_rel_pf_tcorr])
+            pf_tcorr_mean.append([np.nanmean(tcorr, axis=1) for tcorr in c_pf_tcorr])
+            pf_tcorr_std.append([np.nanstd(tcorr, axis=1) for tcorr in c_pf_tcorr])
 
         # make analyses consistent by using same (randomly subsampled) numbers of trials & neurons for each analysis
         all_max_trials = min([int(v._get_min_trials(allmap) // 2) for v, allmap in zip(vss, allcell_maps)])
@@ -401,26 +445,24 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "cvf_by_env_cov_rel": cvf_by_env_cov_rel,
             "kernels": kernels,
             "cv_kernels": cv_kernels,
+            "map_corr": map_corr,
+            "map_frob_norm": map_frob_norm,
+            "map_var": map_var,
             "rel_mse": rel_mse,
             "rel_cor": rel_cor,
-            "all_pf_mean": all_pf_mean,
-            "all_pf_var": all_pf_var,
-            "all_pf_cv": all_pf_cv,
-            "all_pf_max": all_pf_max,
-            "all_pf_tdot_mean": all_pf_tdot_mean,
-            "all_pf_tdot_std": all_pf_tdot_std,
-            "all_pf_tdot_cv": all_pf_tdot_cv,
-            "all_pf_tcorr_mean": all_pf_tcorr_mean,
-            "all_pf_tcorr_std": all_pf_tcorr_std,
-            "rel_pf_mean": rel_pf_mean,
-            "rel_pf_var": rel_pf_var,
-            "rel_pf_cv": rel_pf_cv,
-            "rel_pf_max": rel_pf_max,
-            "rel_pf_tdot_mean": rel_pf_tdot_mean,
-            "rel_pf_tdot_std": rel_pf_tdot_std,
-            "rel_pf_tdot_cv": rel_pf_tdot_cv,
-            "rel_pf_tcorr_mean": rel_pf_tcorr_mean,
-            "rel_pf_tcorr_std": rel_pf_tcorr_std,
+            "idx_rel": idx_rel,
+            "pf_gauss_width": pf_gauss_width,
+            "pf_gauss_amp": pf_gauss_amp,
+            "pf_gauss_r2": pf_gauss_r2,
+            "pf_mean": pf_mean,
+            "pf_var": pf_var,
+            "pf_cv": pf_cv,
+            "pf_max": pf_max,
+            "pf_tdot_mean": pf_tdot_mean,
+            "pf_tdot_std": pf_tdot_std,
+            "pf_tdot_cv": pf_tdot_cv,
+            "pf_tcorr_mean": pf_tcorr_mean,
+            "pf_tcorr_std": pf_tcorr_std,
             "svca_shared": svca_shared,
             "svca_total": svca_total,
         }
@@ -533,16 +575,16 @@ def generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_
     envidx = pcm.pcss[ises].envnum_to_idx(envnum)[0]
     pfvars = [
         "rel_cor",
-        "all_pf_mean",
-        "all_pf_var",
-        "all_pf_norm",
-        "all_pf_cv",
-        "all_pf_max",
-        "all_pf_tdot_mean",
-        "all_pf_tdot_std",
-        "all_pf_tdot_cv",
-        "all_pf_tcorr_mean",
-        "all_pf_tcorr_std",
+        "pf_mean",
+        "pf_var",
+        "pf_norm",
+        "pf_cv",
+        "pf_max",
+        "pf_tdot_mean",
+        "pf_tdot_std",
+        "pf_tdot_cv",
+        "pf_tcorr_mean",
+        "pf_tcorr_std",
     ]
     num_vars = len(pfvars)
     get_vpos = lambda ii: np.linspace(0, 1, num_vars + 4)[num_vars - ii]  # extra position for "legend"
@@ -558,7 +600,7 @@ def generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_
     vmin = 0
     vmax = np.nanmax(np.nanmean(spkmap, axis=1))
     icells = np.random.choice(spkmap.shape[0], num_cells // 2, replace=False)  # get some random cells
-    idx_pf_var_high = np.argsort(spectra_data["all_pf_var"][ises][envidx])[-num_cells * 4 :]
+    idx_pf_var_high = np.argsort(spectra_data["pf_var"][ises][envidx])[-num_cells * 4 :]
     icells = np.concatenate([icells, np.random.choice(idx_pf_var_high, num_cells - (num_cells // 2), replace=False)])  # get some more random cells
     for ic in icells:
         # A figure with a heatmap in the top left, a small line plot below it, and text to the right
@@ -874,6 +916,23 @@ def plot_fourier_data(
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_fourier_" + special_name)
 
 
+def get_total_variance(spectra_data):
+    """Helper method for getting the total stimulus-related variance from spectra data in the standard format"""
+    single_stim_variance = []
+    across_stim_variance = []
+    for c_by_env, c_across in zip(spectra_data["cv_by_env_all"], spectra_data["cv_across_all"]):
+        c_single_stim_variance = np.sum(np.stack(c_by_env), axis=1)
+        c_across_stim_variance = np.sum(c_across)
+        single_stim_variance.append(c_single_stim_variance)
+        across_stim_variance.append(c_across_stim_variance)
+
+    data = dict(
+        single_stim_variance=single_stim_variance,
+        across_stim_variance=across_stim_variance,
+    )
+    return data
+
+
 def get_exp_fits(spectra_data):
     """Helper method for getting the exponential fits from spectra data in the standard format"""
     num_sessions = len(spectra_data["names"])
@@ -916,19 +975,17 @@ def get_pf_summary(pcm, spectra_data, mean=True, reliable=False):
     relvars = ["rel_mse", "rel_cor"]  # these are always used
     # these need either "all" or "rel" appended to the front
     pfvars = [
-        "_pf_mean",
-        "_pf_var",
-        "_pf_norm",
-        "_pf_cv",
-        "_pf_max",
-        "_pf_tdot_mean",
-        "_pf_tdot_std",
-        "_pf_tdot_cv",
-        "_pf_tcorr_mean",
-        "_pf_tcorr_std",
+        "pf_mean",
+        "pf_var",
+        "pf_norm",
+        "pf_cv",
+        "pf_max",
+        "pf_tdot_mean",
+        "pf_tdot_std",
+        "pf_tdot_cv",
+        "pf_tcorr_mean",
+        "pf_tcorr_std",
     ]
-    append_str = "rel" if reliable else "all"
-    pfvars = [append_str + pfv for pfv in pfvars]
 
     num_sessions = len(spectra_data["names"])
     num_envs = len(spectra_data["envstats"])
@@ -974,16 +1031,16 @@ def compare_exp_fits(pcm, spectra_data, amplitude=True, mean=True, color_by_sess
     # names of place-field related variables to compare with exponential fit data
     use_vars = [
         "rel_cor",
-        "all_pf_mean",
-        "all_pf_var",
-        "all_pf_norm",
-        "all_pf_cv",
-        "all_pf_max",
-        "all_pf_tdot_mean",
-        "all_pf_tdot_std",
-        "all_pf_tdot_cv",
-        "all_pf_tcorr_mean",
-        "all_pf_tcorr_std",
+        "pf_mean",
+        "pf_var",
+        "pf_norm",
+        "pf_cv",
+        "pf_max",
+        "pf_tdot_mean",
+        "pf_tdot_std",
+        "pf_tdot_cv",
+        "pf_tcorr_mean",
+        "pf_tcorr_std",
     ]
     num_vars = len(use_vars)
 
@@ -1131,6 +1188,225 @@ def compare_spectral_averages(summary_dicts):
     return single_env, across_env
 
 
+def compare_svca_to_cvpca(summary_dicts):
+    """
+    get average across environment cvpca and svca for each mouse
+
+    summary dicts is a list of dictionaries containing full spectra data for each mouse to be compared
+    returns a list of lists, where the outer list corresponds to each mouse (e.g. each summary_dict)
+    and the inner list contains the eigenspectra for each session / environment
+    """
+    # get average eigenspectra for each mouse
+    cvpca = []
+    svca = []
+    for summary_dict in summary_dicts:
+        c_cvpca = []
+        c_svca = []
+        # go through each session's across environment eigenspectra
+        for c in summary_dict["cv_across_all"]:
+            c_cvpca.append(c)
+
+        # go through each session's svca results
+        for c in summary_dict["svca_shared"]:
+            c_svca.append(c)
+
+        # add them all to master list
+        cvpca.append(c_cvpca)
+        svca.append(c_svca)
+
+    return cvpca, svca
+
+
+def compare_value_by_environment(pcms, summary_dicts, value_name, reduction="sum", relative_session=False, first_offset=0):
+    if type(reduction) != str:
+        if len(reduction) == 2 and type(reduction[0]) == str and callable(reduction[1]):
+            reduce_func = reduction[1]
+            reduction = reduction[0]
+            assert reduce_func(np.arange(3)).shape == (), "reduction function must return a scalar!"
+    elif type(reduction) == str:
+        reduce_funcs = {
+            "sum": np.sum,
+            "mean": np.mean,
+            "std": np.std,
+            "nansum": np.nansum,
+            "nanmean": np.nanmean,
+            "nanstd": np.nanstd,
+        }
+        if reduction not in reduce_funcs:
+            raise ValueError(f"reduction method {reduction} not recognized")
+        reduce_func = reduce_funcs[reduction]
+    else:
+        raise ValueError("reduction must be a string or a tuple with a string and a callable")
+
+    value = []
+    session_offset = []
+    for pcm, spectra_data in zip(pcms, summary_dicts):
+        mouse_name = pcm.track.mouse_name
+        env_order = [env for env in helpers.get_env_order(mousedb, mouse_name) if env != -1]  # ignore environment=-1 for this analysis
+
+        if len(env_order) == 0:
+            print("No valid environments for mouse", mouse_name)
+            continue
+
+        c_vals = []
+        c_offsets = []
+        for env in env_order:
+            c_val = np.zeros(len(spectra_data["envstats"][env]))
+            for ii, ises in enumerate(spectra_data["envstats"][env]):
+                cenvidx = pcm.pcss[ises].envnum_to_idx(env)[0]
+                c_val[ii] = reduce_func(spectra_data[value_name][ises][cenvidx])
+            c_vals.append(c_val)
+            c_offsets.append(spectra_data["envstats"][env])
+
+        value.append(c_vals)
+        session_offset.append(c_offsets)
+
+    max_envs = max([len(c) for c in value])
+    max_sessions = max([len(cc) for c in value for cc in c])
+
+    if relative_session:
+        data = np.full((len(value), max_envs, max_sessions), np.nan)
+        for ii, tv in enumerate(value):
+            for jj, ev in enumerate(tv):
+                data[ii, jj, : len(ev)] = ev
+    else:
+        data = np.full((len(value), max_envs, max_sessions + first_offset), np.nan)
+        for ii, (tv, so) in enumerate(zip(value, session_offset)):
+            for jj, (ev, eo) in enumerate(zip(tv, so)):
+                c_eo = np.array(eo) + (first_offset if jj > 0 else 0)
+                data[ii, jj, c_eo] = ev
+
+    return data
+
+
+def plot_value_comparison(
+    pcms, summary_dicts, value_name, reduction="sum", relative_value=False, relative_session=False, first_offset=0, with_show=True, with_save=False
+):
+    value = compare_value_by_environment(
+        pcms, summary_dicts, value_name, reduction=reduction, relative_session=relative_session, first_offset=first_offset
+    )
+
+    if type(reduction) != str and len(reduction) == 2 and type(reduction[0]) == str and callable(reduction[1]):
+        reduction = reduction[0]
+
+    if value.shape[1] < 6:
+        cols = "kbgcmy"
+    else:
+        cmap = mpl.colormaps["tab10"].resampled(value.shape[1])
+        cols = [cmap(i) for i in range(value.shape[1])]
+
+    if relative_value:
+        first_notnan = np.argmax(~np.isnan(value[:, 0]), axis=1)
+        value = value / value[np.arange(value.shape[0]), np.zeros(value.shape[0], dtype=int), first_notnan].reshape(-1, 1, 1)
+
+    average_value = np.nanmean(value, axis=0)
+    se_value = np.nanstd(value, axis=0)  # / np.sqrt(np.sum(~np.isnan(value), axis=0))
+
+    figdim = 4.5
+    fig, ax = plt.subplots(1, 1, figsize=(figdim, figdim), layout="constrained")
+    for ii, (av, sv) in enumerate(zip(average_value, se_value)):
+        ax.plot(range(len(av)), av, color=cols[ii], label=f"Environment {ii}")
+        ax.fill_between(range(len(av)), av - sv, av + sv, color=cols[ii], alpha=0.3, edgecolor=None)
+        # ax.plot(range(len(av)), variance[:, ii, :].T, color=cols[ii], alpha=0.3)
+    ax.set_xlabel(("Relative " if relative_session else "") + "Session Number")
+    ax.set_ylabel(reduction + " " + value_name)
+    ax.legend(loc="best")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = f"{value_name}_{reduction}"
+        special_name += "_rv" if relative_value else ""
+        special_name += "_relative" if relative_session else ""
+        pcms[0].saveFigure(fig.number, "comparisons", "value_comparison_" + special_name)
+
+
+def plot_value_to_value_comparison(
+    pcms,
+    summary_dicts,
+    first_name,
+    second_name,
+    first_reduction="mean",
+    second_reduction="mean",
+    relative_value=False,
+    relative_session=False,
+    first_offset=0,
+    with_show=True,
+    with_save=False,
+):
+    first_value = compare_value_by_environment(
+        pcms, summary_dicts, first_name, reduction=first_reduction, relative_session=relative_session, first_offset=first_offset
+    )
+    second_value = compare_value_by_environment(
+        pcms, summary_dicts, second_name, reduction=second_reduction, relative_session=relative_session, first_offset=first_offset
+    )
+
+    def _process_reduction_name(reduction):
+        if type(reduction) != str and len(reduction) == 2 and type(reduction[0]) == str and callable(reduction[1]):
+            return reduction[0]
+        return reduction
+
+    fr_name = _process_reduction_name(first_reduction)
+    sr_name = _process_reduction_name(second_reduction)
+
+    msg = f"shape of first value ({first_value.shape}) must match shape of second value ({second_value.shape})"
+    assert first_value.shape == second_value.shape, msg
+
+    if relative_value:
+
+        def _normalize(value):
+            first_notnan = np.argmax(~np.isnan(value[:, 0]), axis=1)
+            return value / value[np.arange(value.shape[0]), np.zeros(value.shape[0], dtype=int), first_notnan].reshape(-1, 1, 1)
+
+        first_value = _normalize(first_value)
+        second_value = _normalize(second_value)
+
+    color_by = ["Mouse", "Environment", ("Relative " if relative_session else "") + "Session"]
+    cmaps = ["Dark2", "tab10", "cool"]
+
+    figdim = 3
+    fig, ax = plt.subplots(1, 3, figsize=(3 * figdim, figdim), layout="constrained", sharex=True, sharey=True)
+    for ii, cb in enumerate(color_by):
+        cmap = mpl.colormaps[cmaps[ii]].resampled(first_value.shape[ii])
+        c_fv = np.swapaxes(np.copy(first_value), 0, ii)
+        c_sv = np.swapaxes(np.copy(second_value), 0, ii)
+        for jj, (fv, sv) in enumerate(zip(c_fv, c_sv)):
+            ax[ii].scatter(fv, sv, s=20, color=(cmap(jj), 0.5), edgecolor="k", linewidth=0.1, label=f"{cb} {jj}")
+        ax[ii].set_xlabel(fr_name + " " + first_name + ("_rv" if relative_value else ""))
+        if ii == 0:
+            ax[ii].set_ylabel(sr_name + " " + second_name)
+        iax = ax[ii].inset_axes([0.05, 0.85, 0.35, 0.08])
+        iax.xaxis.set_ticks_position("bottom")
+        norm = mpl.colors.Normalize(vmin=-0.5, vmax=first_value.shape[ii] - 0.5)
+        m = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+        fig.colorbar(m, cax=iax, orientation="horizontal")
+        ax[ii].set_title(f"Color: {cb}")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = f"{first_name}_{fr_name}_" + f"{second_name}_{sr_name}"
+        special_name += "_rv" if relative_value else ""
+        special_name += "_relative" if relative_session else ""
+        pcms[0].saveFigure(fig.number, "comparisons", "value_value_cmp_" + special_name)
+
+
+def plot_total_variance_comparison(pcms, summary_dicts, relative_session=False, first_offset=0, with_show=True, with_save=False):
+    plot_value_comparison(
+        pcms,
+        summary_dicts,
+        "cv_by_env_all",
+        reduction="sum",
+        relative_value=True,
+        relative_session=relative_session,
+        first_offset=first_offset,
+        with_show=with_show,
+        with_save=with_save,
+    )
+
+
 def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=False, do_ylog=False, ylog_min=1e-3, with_show=True, with_save=False):
 
     # if not using a y-log axis, then set the minimum to -inf to not change any data
@@ -1190,6 +1466,62 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         special_name = "logx_" if do_xlog else "linx_"
         special_name = special_name + ("logy" if do_ylog else "liny")
         pcms[0].saveFigure(fig.number, "comparisons", "cv_spectral_average_comparison_" + special_name)
+
+
+def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, do_ylog=True, ylog_min=1e-6, with_show=True, with_save=False):
+    cvpca, svca = compare_svca_to_cvpca(summary_dicts)
+
+    # if not using a y-log axis, then set the minimum to -inf to not change any data
+    if not do_ylog:
+        ylog_min = -np.inf
+
+    # create processing method
+    def _process(data):
+        """internal function for processing a set of eigenspectra"""
+        # pad data with nans
+        max_dims = max([len(d) for d in data])
+        data = [np.append(d, np.full(max_dims - len(d), np.nan)) for d in data]
+        # stack data
+        data = np.stack(data)
+        if normalize:
+            # normalize each row so they sum to 1
+            data = data / np.nansum(data, axis=1, keepdims=True)
+        # take the average across rows (across sessions / environments)
+        data = np.nanmean(data, axis=0)
+        # remove any values below the minimum for log scaling
+        data[data < ylog_min] = np.nan
+        # return processed data
+        return data
+
+    num_mice = len(pcms)
+    mouse_names = [pcm.track.mouse_name for pcm in pcms]
+    cmap = mpl.colormaps["turbo"].resampled(num_mice)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4), layout="constrained")
+    for imouse, (mouse_name, c_svca, c_cvpca) in enumerate(zip(mouse_names, svca, cvpca)):
+        c_svca_data = _process(c_svca)
+        c_label = mouse_name + (" (svca)" if include_cvpca and imouse == 0 else "")
+        ax.plot(range(1, len(c_svca_data) + 1), c_svca_data, color=cmap(imouse), label=c_label)
+        if include_cvpca:
+            c_cvpca_data = _process(c_cvpca)
+            c_label = "cvpca" if imouse == (num_mice - 1) else None
+            ax.plot(range(1, len(c_cvpca_data) + 1), c_cvpca_data, color=cmap(imouse), linestyle="--", label=c_label)
+
+    ax.set_xlabel("Dimension")
+    ax.set_ylabel("Variance")
+    ax.legend(loc="upper right", fontsize=10)
+    ax.set_xscale("log")
+    if do_ylog:
+        ax.set_yscale("log")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        special_name = "_vs_cvpca" if include_cvpca else ""
+        special_name += "_norm" if normalize else ""
+        special_name += "_logy" if do_ylog else "_liny"
+        pcms[0].saveFigure(fig.number, "comparisons", "svca" + special_name)
 
 
 def plot_all_exponential_fits(pcms, spectra_data, relative_session=True, with_show=True, with_save=False):
@@ -1398,3 +1730,72 @@ def predict_exp_fits_across_mice(pcms, spectra_data, amplitude=True, with_show=T
 
     if with_save:
         pcms[0].saveFigure(fig.number, "comparisons", "exponential_fit_predictions")
+
+
+def predict_total_variance_across_mice(pcms, spectra_data, with_show=True, with_save=False):
+    """
+    predict total variance in eigenspectra from pfvars across mice
+    """
+    total_variance = [get_total_variance(sd) for sd in spectra_data]
+    pfv_data_means = [get_pf_summary(pcm, sd, mean=True, reliable=False) for pcm, sd in zip(pcms, spectra_data)]
+    pfv_data_stds = [get_pf_summary(pcm, sd, mean=False, reliable=False) for pcm, sd in zip(pcms, spectra_data)]
+
+    ignore_vars = ["rel_mse"]
+    pfv_names = [k for k in pfv_data_means[0].keys() if k not in ignore_vars]
+    fit_target = "single_stim_variance"
+
+    # get all the data in a format that can be used for comparison (within each mouse)
+    fit_data, fit_session, fit_env = _catdata(total_variance, fit_target)
+
+    # concatenated target data for all mice
+    all_fit_data = np.concatenate(fit_data)
+    all_fit_mouse = np.concatenate([i * np.ones(len(f)) for i, f in enumerate(fit_data)])
+    all_fit_session = np.concatenate(fit_session)
+    all_fit_env = np.concatenate(fit_env)
+
+    target_norm = np.mean(all_fit_data), np.std(all_fit_data)
+
+    # dictionary of all the concatenated data
+    pfv_all = {}
+    for k in pfv_names:
+        pfv_all[k + "_mean"] = _catdata(pfv_data_means, k)[0]
+        pfv_all[k + "_std"] = _catdata(pfv_data_stds, k)[0]
+
+    pfv_data_norms = {k: (np.mean(np.concatenate(v)), np.std(np.concatenate(v))) for k, v in pfv_all.items()}
+
+    # measure fit coefficient and r2 for each pfvar
+    def _get_fit(data, target, data_norm=(0, 1), target_norm=(0, 1)):
+        """internal function for getting the fit coefficient and r2 for a given target"""
+        norm_data = [(d - data_norm[0]) / data_norm[1] for d in data]
+        norm_targets = [(t - target_norm[0]) / target_norm[1] for t in target]
+        fits = [LinearRegression().fit(d.reshape(-1, 1), t) for d, t in zip(norm_data, norm_targets)]
+        preds = [f.predict(d.reshape(-1, 1)) for f, d in zip(fits, norm_data)]
+        coefs = [f.coef_[0] for f in fits]
+        r2s = [r2_score(t, p) for t, p in zip(norm_targets, preds)]
+        return np.array(coefs), np.array(r2s)
+
+    coefs, r2s = helpers.named_transpose(
+        [
+            _get_fit(value, fit_data, data_norm=data_norm, target_norm=target_norm)
+            for value, data_norm in zip(pfv_all.values(), pfv_data_norms.values())
+        ]
+    )
+
+    cmap = mpl.colormaps["turbo"].resampled(len(pfv_names))
+    cmap_idx = {k: i for i, k in enumerate(pfv_names)}
+    figdim = 3
+    fig, ax = plt.subplots(2, 1, figsize=(4 * figdim, 2 * figdim), layout="constrained", sharex=True)
+    for i, (k, c, r) in enumerate(zip(pfv_all.keys(), coefs, r2s)):
+        name = "_".join(k.split("_")[:-1])
+        ax[0].scatter(i + 0.1 * helpers.beeswarm(c), c, label=k, color=cmap(cmap_idx[name]), s=15, alpha=0.7)
+        ax[1].scatter(i + 0.1 * helpers.beeswarm(r), r, label=k, color=cmap(cmap_idx[name]), s=15, alpha=0.7)
+    ax[1].set_xticks(range(len(pfv_all.keys())))
+    ax[1].set_xticklabels(pfv_all.keys(), rotation=45, ha="right")
+    ax[0].set_ylabel("Fit Coefficient")
+    ax[1].set_ylabel("R**2")
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        pcms[0].saveFigure(fig.number, "comparisons", "total_variance_predictions")
