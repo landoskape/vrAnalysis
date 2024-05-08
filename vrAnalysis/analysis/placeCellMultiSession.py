@@ -532,25 +532,25 @@ class placeCellMultiSession(multipleAnalysis):
         self.load_pcss_data(idx_ses=self.idx_ses)
         self.idx_tracked = self.track.get_tracked_idx(idx_ses=self.idx_ses, keep_planes=self.keep_planes)
 
+        envnum = helpers.check_iterable(envnum)
+        if len(envnum) > 1:
+            raise ValueError("only one environment number can be requested at a time")
+
         envidx = [self.pcss[i].envnum_to_idx(envnum)[0] for i in self.idx_ses]
         in_session = [~np.isnan(ei) for ei in envidx]
         assert all(in_session), f"requested environment only in following sessions: {[idx for idx, inses in zip(self.idx_ses, in_session) if inses]}"
 
-        spkmaps = self.get_from_pcss("spkmap", self.idx_ses)
+        spkmaps = [self.pcss[i].get_spkmap(envnum, average=False, smooth=self.smoothFilter, trials="full")[0] for i in self.idx_ses]
         idx_reliable = [self.pcss[i].get_reliable(cutoffs=cutoffs, maxcutoffs=maxcutoffs)[ei] for i, ei in zip(self.idx_ses, envidx)]
         idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in self.idx_ses]
-        idx_train = [self.pcss[i].train_idx[ei] for i, ei in zip(self.idx_ses, envidx)]
-        idx_test = [self.pcss[i].test_idx[ei] for i, ei in zip(self.idx_ses, envidx)]
-        idx_full = [self.pcss[i].idxFullTrialEachEnv[ei] for i, ei in zip(self.idx_ses, envidx)]
+        idx_train, idx_test = helpers.named_transpose([helpers.cvFoldSplit(sm.shape[1], 2) for sm in spkmaps])
 
         track_spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, self.idx_tracked)]
         track_idx_reliable = [idx_rel[idx_track] for idx_rel, idx_track in zip(idx_reliable, self.idx_tracked)]
         track_idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, self.idx_tracked)]
 
         track_pfidx = self.pcss[sortby].get_place_field(
-            roi_idx=self.idx_tracked[idx_sortby][track_idx_reliable[idx_sortby]],
-            trial_idx=idx_train[idx_sortby],
-            method=method,
+            track_spkmaps[idx_sortby][track_idx_reliable[idx_sortby]][:, idx_train[idx_sortby]], method=method
         )[1]
 
         snake_data = []
@@ -558,14 +558,14 @@ class placeCellMultiSession(multipleAnalysis):
         for ii, idx_ses in enumerate(self.idx_ses):
             if idx_ses == sortby:
                 # use test trials
-                c_data = np.mean(
+                c_data = np.nanmean(
                     track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:, idx_test[ii]],
                     axis=1,
                 )
                 snake_data.append(c_data)
             else:
-                c_data = np.mean(
-                    track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx][:, idx_full[ii]],
+                c_data = np.nanmean(
+                    track_spkmaps[ii][track_idx_reliable[idx_sortby]][track_pfidx],
                     axis=1,
                 )
                 snake_data.append(c_data)
@@ -870,10 +870,10 @@ class placeCellMultiSession(multipleAnalysis):
         if normalize > 0:
             vmin, vmax = -np.abs(normalize), np.abs(normalize)
         elif normalize < 0:
-            maxrois = np.concatenate([np.max(np.abs(sd), axis=1) for sd in snake_data])
-            vmin, vmax = -np.percentile(maxrois, -normalize), np.percentile(maxrois, -normalize)
+            maxrois = np.concatenate([np.nanmax(np.abs(sd), axis=1) for sd in snake_data])
+            vmin, vmax = -np.nanpercentile(maxrois, -normalize), np.nanpercentile(maxrois, -normalize)
         else:
-            magnitude = np.max(np.abs(np.concatenate(snake_data, axis=1)))
+            magnitude = np.nanmax(np.abs(np.concatenate(snake_data, axis=1)))
             vmin, vmax = -magnitude, magnitude
 
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
@@ -936,13 +936,15 @@ class placeCellMultiSession(multipleAnalysis):
             )
             if sort_by_red:
                 ax[idx].plot([distedges[1], distedges[1]], [0, np.sum(idx_red[idx_sortby]) - 1], c="r", lw=5)
-            ax[idx].set_xlabel("Virtual Position (cm)", fontsize=labelSize)
+            ax[idx].set_xlabel("VrPos (cm)", fontsize=labelSize)
             if idx == 0:
                 ax[idx].set_ylabel("ROIs", fontsize=labelSize)
+            else:
+                ax[idx].set_yticks([])
 
-            title = f"{self.track.sessions[ses].sessionPrint()}"
+            title = f"Session: {ses}"  # {self.track.sessions[ses].sessionPrint()}
             if ses == sortby:
-                title = title + " - sorted here!"
+                title = "sorted here\n" + title
             ax[idx].set_title(title, fontsize=labelSize)
 
             if rewzone:
