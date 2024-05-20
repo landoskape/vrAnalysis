@@ -8,6 +8,14 @@ import scipy as sp
 from sklearn.decomposition import PCA
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+
+# add path that contains the vrAnalysis package
+import sys
+import os
+
+mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
+sys.path.append(mainPath)
+
 import faststats as fs
 
 from vrAnalysis import helpers
@@ -71,7 +79,7 @@ def get_variance_estimates(samples):
     return estimate_stim_noise, estimate_noise
 
 
-def stringer2019():
+def stringer2019(save_path=None):
     fpath = Path(r"C:\Users\Andrew\Documents\literatureData\stringerPachitariu2021")
     files = [
         Path("gratings_drifting_GT1_2019_04_12_1.npy"),
@@ -79,6 +87,7 @@ def stringer2019():
     ]
     dataset = [np.load(fpath / f, allow_pickle=True).item() for f in files]
 
+    idata = 0
     istim = dataset[idata]["istim"]
     isin = np.sin(istim)
     icos = np.cos(istim)
@@ -89,7 +98,7 @@ def stringer2019():
     multiplier = 2 if orientation else 1
     modulo = 2 * np.pi
 
-    num_bins = 5
+    num_bins = 3
     bins = np.linspace(0, modulo, num_bins + 1)
     centers = helpers.edge2center(bins)
 
@@ -102,7 +111,14 @@ def stringer2019():
     ndata_ds_mean = np.mean(np.reshape(ndata_sorted, (ndata.shape[0], 20, 214)), axis=2)
     ndata_ds_argmax = np.argmax(ndata_ds_mean, axis=1)
 
+    plt.figure(figsize=(6, 6))
     plt.imshow(ndata_sorted[np.argsort(ndata_ds_argmax)], aspect="auto", vmin=-1, vmax=1, cmap="bwr")
+    plt.xlabel("Orientation")
+    plt.ylabel("ROI")
+    plt.title("Rough Sorting by stimulus preference")
+    if save_path is not None:
+        plt.savefig(save_path / "stringer_tuning.png")
+
     plt.show()
 
     # created randomly subsampled data for measuring noise covariance
@@ -116,15 +132,25 @@ def stringer2019():
 
     # show results of noise covariance estimation
     isort = np.argsort(ndata_ds_argmax[nidx])
-    figdim = 2
+    figdim = 3
     fig, ax = plt.subplots(1, num_bins + 1, figsize=((num_bins + 1) * figdim, figdim), layout="constrained")
     for b in range(num_bins):
         ax[b].imshow(estimate_stim_noise[b][isort][:, isort], aspect="auto", vmin=-0.1, vmax=0.1, cmap="bwr")
+        ax[b].set_xlabel("ROI")
+        ax[b].set_ylabel("ROI")
+        ax[b].set_title(f"Stim {b} Cov")
     ax[-1].imshow(estimate_noise[isort][:, isort], aspect="auto", vmin=-0.1, vmax=0.1, cmap="bwr")
+    ax[-1].set_xlabel("ROI")
+    ax[-1].set_ylabel("ROI")
+    ax[-1].set_title(f"Noise Cov")
+
+    if save_path is not None:
+        plt.savefig(save_path / "stringer_covariance_estimation.png")
+
     plt.show()
 
 
-def simulated():
+def simulated(save_path=None):
     # good code for simulating and estimating covariance matrices here:
     def create_cov(N, lam=1.05):
         # Create a random covariance matrix
@@ -158,21 +184,37 @@ def simulated():
     cov_noise = np.cov(np.concatenate(samples, axis=1))
     cov_stim = [np.cov(sample) - cov_noise for sample in samples]
 
-    
     # Print results (for a random stimulus)
     s = 0
     fig, ax = plt.subplots(1, 3, figsize=(9, 3), layout="constrained")
     ax[0].scatter(estimate_noise.flatten(), sigma_noise.flatten(), c="k", alpha=0.1)
     ax[0].axline((0, 0), slope=1)
+    ax[0].set_xlabel("Estimated Noise Covariance")
+    ax[0].set_ylabel("True Noise Covariance")
+    ax[0].set_title("Stim-Independent Noise")
 
     ax[1].scatter(estimate_stim_noise[s].flatten(), sigma_stim[s].flatten(), c="k", alpha=0.1)
     ax[1].axline((0, 0), slope=1)
+    ax[1].set_xlabel(f"Estimated Stim Covariance (Stim {s})")
+    ax[1].set_ylabel(f"True Stim Covariance (Stim {s})")
+    ax[1].set_title("Stim-Dependent Noise")
 
     error_noise = estimate_noise - sigma_noise
     estimate_sim = estimate_stim_noise[s] - sigma_stim[s]
-    ax[2].scatter(sigma_noise.flatten(), error_noise.flatten(), c="k", alpha=0.1)
-    ax[2].scatter(sigma_stim[s].flatten(), estimate_sim.flatten(), c="r", alpha=0.1)
+    ax[2].scatter(sigma_noise.flatten(), error_noise.flatten(), c="k", s=5, alpha=0.1, label="Stim-Independent Noise")
+    ax[2].scatter(sigma_stim[s].flatten(), estimate_sim.flatten(), c="r", s=5, alpha=0.1, label=f"Stim {s} Noise")
+    ax[2].set_xlabel("True Value")
+    ax[2].set_ylabel("Error")
+    ax[2].set_title("Error in Estimates")
+    ax[2].legend(loc="upper left", fontsize=8)
+
+    if save_path is not None:
+        plt.savefig(save_path / "simulated_covariance_estimation.png")
+
     plt.show()
 
+
 if __name__ == "__main__":
-    print("just storing code, nothing in main function yet")
+    save_path = Path(r"C:\Users\Andrew\Dropbox\Postdoc\SmallGroups\plots_neural_coding_240522")
+    simulated(save_path=save_path)
+    stringer2019(save_path=save_path)
