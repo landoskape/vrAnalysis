@@ -12,6 +12,9 @@ from matplotlib import pyplot as plt
 from .. import helpers
 from ..analysis import placeCellSingleSession
 
+import scipy as sp
+import seaborn as sns
+
 from .. import database
 
 mousedb = database.vrDatabase("vrMice")
@@ -573,6 +576,7 @@ def generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_
 
     envidx = pcm.pcss[ises].envnum_to_idx(envnum)[0]
     pfvars = [
+        "rel_mse",
         "rel_cor",
         "pf_mean",
         "pf_var",
@@ -628,7 +632,7 @@ def generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_
         for ii, var in enumerate(pfvars):
             c_value = spectra_data[var][ises][envidx][ic]
             c_norm_value = (c_value - pfvars_mean[var]) / pfvars_std[var]
-            ax_text.text(0.5, get_vpos(ii), f"{var}: {c_norm_value:.3f}", ha="center", va="center")
+            ax_text.text(0.5, get_vpos(ii), f"{var}: {c_value:.3f}/{c_norm_value:.3f}", ha="center", va="center")
         ax_text.text(0.5, get_vpos(-2), f"variable: z-scored value", ha="center", va="center", fontstyle="italic")
 
         if with_show:
@@ -638,6 +642,37 @@ def generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_
             folder = Path(f"example_ROIs_pfvars_env{envnum}")
             special_name = f"ses{ises}_env{envnum}_cell{ic}"
             pcm.saveFigure(fig.number, pcm.track.mouse_name, folder / special_name)
+
+
+def compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=True, with_save=False):
+    if ises < 0:
+        ises = len(pcm.pcss) + ises
+    ymin = -6
+    envidx = pcm.pcss[ises].envnum_to_idx(envnum)[0]
+    c_relmse = spectra_data["rel_mse"][ises][envidx]
+    c_relcor = spectra_data["rel_cor"][ises][envidx]
+    values = np.stack((c_relcor, c_relmse))
+    idx_keep = ~np.isnan(values).any(axis=0) & (c_relmse > ymin)
+    values = values[:, idx_keep]
+
+    kernel = sp.stats.gaussian_kde(values)(values)
+    fig = plt.figure(layout="constrained")
+    sns.scatterplot(x=values[0], y=values[1], s=10, c=kernel, alpha=0.3, cmap="viridis", ax=fig.gca())
+
+    # plt.scatter(c_relcor, c_relmse, c=("k", 0.1), s=5)
+    plt.xlabel("Reliability (COR)")
+    plt.ylabel("Reliability (MSE)")
+    plt.title("Reliability Comparison")
+    plt.xlim(-0.5, 1)
+    plt.ylim(ymin, 1)
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        folder = Path(f"reliability_comparison_env{envnum}")
+        special_name = f"ses{ises}_env{envnum}_relcomparison"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, folder / special_name)
 
 
 def plot_spectral_data(
