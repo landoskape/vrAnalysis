@@ -17,6 +17,7 @@ def get_env_order(mousedb, mouse_name):
     env_order = mousedb.getTable(mouseName=mouse_name)["environmentOrder"].item()
     return [int(env) for env in env_order.split(".")]
 
+
 # ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
 def environmentRewardZone(vrexp):
     """get a list of reward locations for each environment"""
@@ -215,7 +216,7 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
             testProfile = fs.mean(spkmap[cTestTrial], axis=0)
             meanTrain = fs.mean(trainProfile, axis=0, keepdims=True)  # mean across positions for each ROI
             numerator = fs.sum((testProfile - trainProfile) ** 2, axis=0)  # bigger when test and train are more different
-            denominator = fs.sum((trainProfile - meanTrain) ** 2, axis=0)  # bigger when train has variability
+            denominator = fs.sum((testProfile - meanTrain) ** 2, axis=0)  # bigger when test isn't well fit by the estimate of the average firing rate
 
             # only measure reliability if it has activity (if denominator is 0, it doesn't have enough activity :) )
             idxHasActivity = np.any(spkmap != 0, axis=(0, 1)) & (denominator != 0)
@@ -374,5 +375,3 @@ def _numba_correctMap(smap, amap):
 
 
 # ============================================================================================================================================
-
-
