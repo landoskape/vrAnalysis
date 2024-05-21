@@ -29,18 +29,13 @@ def add_to_spectra_data(pcm, args):
         v.load_data()
 
     # get spkmaps of all cells / just reliable cells
-    map_var = []
+    rel_mse = []
     for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
-        # get spkmaps for each environment
-        c_spkmaps = v.prepare_spkmaps(envnum=None, smooth=args.smooth, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs, reliable=False)
-
-        # get place field for each cell
-        c_placefields = [np.nanmean(spkmap, axis=1) for spkmap in c_spkmaps]
-
-        map_var.append([np.nanvar(cpf.reshape(-1)) for cpf in c_placefields])
+        c_mse = v.get_reliability_values(envnum=None, with_test=False)[0]
+        rel_mse.append(c_mse)
 
     update_dict = {
-        "map_var": map_var,
+        "rel_mse": rel_mse,
     }
 
     temp_files.update(update_dict)
@@ -70,4 +65,4 @@ if __name__ == "__main__":
 
         add_to_spectra_data(pcm, args)
 
-    #     os.system(f"python scripts/mouse_summary.py --mouse-name {mouse_name} --do-spectra")
+        # os.system(f"python scripts/mouse_summary.py --mouse-name {mouse_name} --do-spectra")
