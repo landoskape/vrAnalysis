@@ -27,6 +27,7 @@ from vrAnalysis.analysis.variance_structure import (
     compare_exp_fits,
     plot_spatial_kernels,
     generate_example_pfvars,
+    compare_reliability_measures,
 )
 
 CUTOFFS = (0.4, 0.7)
@@ -82,6 +83,7 @@ def analyze_spectra(pcm, args):
     for ises in ses_to_plot:
         for envnum in pcm.pcss[ises].environments:
             generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=False, with_save=True)
+            compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":
