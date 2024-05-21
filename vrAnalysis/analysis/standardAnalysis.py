@@ -1,3 +1,4 @@
+from pathlib import Path
 import pickle
 import matplotlib.pyplot as plt
 
@@ -109,8 +110,8 @@ class multipleAnalysis(standardAnalysis):
         attempts to save matplotlib figure(figNumber) in the save directory with a particular name
         """
         print(f"{self.name} is saving a {multiname} figure for {name}")
-        plt.figure(figNumber)
-        figpath = self.saveDirectory(multiname) / (name + ".png")
+        figpath = (self.saveDirectory(multiname) / name).with_suffix(".png")
         if not figpath.parent.is_dir():
             figpath.parent.mkdir(parents=True)
+        plt.figure(figNumber)
         plt.savefig(figpath)
