@@ -651,20 +651,14 @@ def compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=True
     envidx = pcm.pcss[ises].envnum_to_idx(envnum)[0]
     c_relmse = spectra_data["rel_mse"][ises][envidx]
     c_relcor = spectra_data["rel_cor"][ises][envidx]
-    values = np.stack((c_relcor, c_relmse))
-    idx_keep = ~np.isnan(values).any(axis=0) & (c_relmse > ymin)
-    values = values[:, idx_keep]
-
-    kernel = sp.stats.gaussian_kde(values)(values)
-    fig = plt.figure(layout="constrained")
-    sns.scatterplot(x=values[0], y=values[1], s=10, c=kernel, alpha=0.3, cmap="viridis", ax=fig.gca())
-
-    # plt.scatter(c_relcor, c_relmse, c=("k", 0.1), s=5)
-    plt.xlabel("Reliability (COR)")
-    plt.ylabel("Reliability (MSE)")
-    plt.title("Reliability Comparison")
-    plt.xlim(-0.5, 1)
-    plt.ylim(ymin, 1)
+    idx_keep = c_relmse > ymin
+    fraction_keep = np.sum(idx_keep) / len(c_relmse)
+    c_relmse = c_relmse[idx_keep]
+    c_relcor = c_relcor[idx_keep]
+    grid = sns.jointplot(x=c_relcor, y=c_relmse, color=("k", 0.1), size=8, edgecolor=None)
+    grid.set_axis_labels("Rel-Corr", f"Rel-MSE ({100*fraction_keep:.2f}%>{ymin})", fontsize=12)
+    grid.figure.tight_layout()
+    plt.legend([], [], frameon=False)
 
     if with_show:
         plt.show()
@@ -672,7 +666,7 @@ def compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=True
     if with_save:
         folder = Path(f"reliability_comparison_env{envnum}")
         special_name = f"ses{ises}_env{envnum}_relcomparison"
-        pcm.saveFigure(fig.number, pcm.track.mouse_name, folder / special_name)
+        pcm.saveFigure(plt.gcf().number, pcm.track.mouse_name, folder / special_name)
 
 
 def plot_spectral_data(
