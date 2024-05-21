@@ -82,7 +82,7 @@ def analyze_spectra(pcm, args):
     ses_to_plot = np.random.choice(sesidx, num_sessions, replace=False)
     for ises in ses_to_plot:
         for envnum in pcm.pcss[ises].environments:
-            generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=False, with_save=True)
+            # generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=False, with_save=True)
             compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=False, with_save=True)
 
 
