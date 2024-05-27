@@ -87,6 +87,9 @@ class RoicatStats(placeCellMultiSession):
             **kwargs,
         )
 
+        # get positions that aren't nan (use same set of positions across all spkmaps)
+        idx_pos_not_nan = np.all(np.stack([~np.any(np.isnan(s), axis=0) for spkmap in spkmaps for s in spkmap]), axis=0)
+
         # define reliability metric
         idx_reliable = [[(mse > cutoffs[0]) & (cor > cutoffs[1]) for mse, cor in zip(rmse, rcor)] for rmse, rcor in zip(relmse, relcor)]
 
@@ -116,8 +119,11 @@ class RoicatStats(placeCellMultiSession):
                 keep_planes=self.keep_planes,
             )
 
-            # compute correlation between source and target
-            corrs = [helpers.crossCorrelation(spksource.T, spktarget.T) for spksource, spktarget in zip(spkmaps[isource], spkmaps[itarget])]
+            # compute correlation between source and target (ignore nan positions, which are only at the beginning and end of the environment)
+            corrs = [
+                helpers.crossCorrelation(spksource.T[idx_pos_not_nan], spktarget.T[idx_pos_not_nan])
+                for spksource, spktarget in zip(spkmaps[isource], spkmaps[itarget])
+            ]
 
             # retrieve source/target labels for each ROI by plane
             # 1 if pair is tracked (by label) and 0 if pair isn't tracked

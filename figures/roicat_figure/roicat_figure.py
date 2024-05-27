@@ -14,7 +14,6 @@ from vrAnalysis import database
 from vrAnalysis import tracking
 from vrAnalysis import analysis
 from vrAnalysis import fileManagement as fm
-from . import example
 
 mousedb = database.vrDatabase("vrMice")
 

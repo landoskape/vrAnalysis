@@ -90,12 +90,12 @@ def _get_masks(roistat, isespair, idxroipair, prms, pp_roi_match, pp_roi_nomatch
     ROIs = [sp.sparse.vstack(rois, format="csr") for rois in ROIs]  # concatenate across planes
 
     roi_match = [
-        ROIs[0][pp_roi_match[isespair][0, idxroipair]],
-        ROIs[1][pp_roi_match[isespair][1, idxroipair]],
+        ROIs[0][[pp_roi_match[isespair][0, idxroipair]]],
+        ROIs[1][[pp_roi_match[isespair][1, idxroipair]]],
     ]
     roi_nomatch = [
-        ROIs[0][pp_roi_nomatch[isespair][0, idxroipair]],
-        ROIs[1][pp_roi_nomatch[isespair][1, idxroipair]],
+        ROIs[0][[pp_roi_nomatch[isespair][0, idxroipair]]],
+        ROIs[1][[pp_roi_nomatch[isespair][1, idxroipair]]],
     ]
 
     num_pixels = roi_match[0].shape[1]
@@ -387,6 +387,7 @@ def plot_pair_example_figure(
 
     # show GUI and return window for programmatic interaction
     window.show()
+    return window
 
     # # Create a slider label for indicating which ROI is being presented
     # sliderNameProxy = QGraphicsProxyWidget()
@@ -656,6 +657,12 @@ def plot_pair_example_figure(
     # return window
 
 
+if __name__ == "__main__":
+    args = handle_inputs()
+    example_data = prepare_pair_example_data(args.mouse_name)
+    window = plot_pair_example_figure(*example_data)
+
+
 # converting uiPlottingFunctions.scrollMatchedImages into a redSelection GUI made to be similar to the same named function in Matlab
 def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=True, preserveScale=True):
     # supporting class for storing and updating the ROI displayed in redCellViewer()
@@ -882,9 +889,3 @@ def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=Tr
     # show GUI and return window for programmatic interaction
     window.show()
     return window
-
-
-if __name__ == "__main__":
-    args = handle_inputs()
-    example_data = prepare_pair_example_data(args.mouse_name)
-    plot_pair_example_figure(*example_data)
