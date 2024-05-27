@@ -28,6 +28,12 @@ def get_variance_estimates(samples):
     b represents variance of each variable (indexed by "n")
     for the across stim samples, then for each stim independently
     x represents the noise variance then the stim variance
+
+    args:
+        samples is a list of arrays for each stimulus with shape (num_neurons, num_repeats)
+    returns:
+        estimate_stim_noise: list of estimates of stimulus-dependent noise covariance (for each element in samples)
+        estimate_noise: estimate of noise covariance (across all samples)
     """
 
     def _make_full_design(S):
