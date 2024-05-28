@@ -5,6 +5,7 @@ from argparse import ArgumentParser
 import numpy as np
 import scipy as sp
 import matplotlib as mpl
+from matplotlib import pyplot as plt
 
 # GUI-related modules
 import napari
@@ -25,7 +26,7 @@ mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
 sys.path.append(mainPath)
 
 from vrAnalysis import tracking
-from vrAnalysis import helpers
+from vrAnalysis.helpers import named_transpose, edge2center, CurrentSelection, SliderSelector
 from vrAnalysis import analysis
 
 
@@ -123,8 +124,8 @@ def _get_spkmaps(roistat, envnum, isespair, idxroipair, prms, pp_roi_match, pp_r
         spkmaps[0][pp_roi_nomatch[isespair][0, idxroipair]],
         spkmaps[1][pp_roi_nomatch[isespair][1, idxroipair]],
     ]
-    spkmap_match = [sp.stats.zscore(sm, axis=None) for sm in spkmap_match]
-    spkmap_nomatch = [sp.stats.zscore(sm, axis=None) for sm in spkmap_nomatch]
+    spkmap_match = [sp.stats.zscore(sm, axis=None, nan_policy="omit") for sm in spkmap_match]
+    spkmap_nomatch = [sp.stats.zscore(sm, axis=None, nan_policy="omit") for sm in spkmap_nomatch]
     distedges = roistat.pcss[prms["idx_ses_pairs"][isespair][0]].distedges
     return spkmap_match, spkmap_nomatch, distedges
 
@@ -210,7 +211,7 @@ def prepare_pair_example_data(mouse_name):
     same_plane = [ppm.reshape(-1, 1) == ppn.reshape(1, -1) for ppm, ppn in zip(plane_pair_match, plane_pair_nomatch)]
 
     # possible pair of pairs boolean array
-    ipair_match, ipair_nomatch = helpers.named_transpose([np.where(gd & nd & smp) for gd, nd, smp in zip(good_distance, no_duplicates, same_plane)])
+    ipair_match, ipair_nomatch = named_transpose([np.where(gd & nd & smp) for gd, nd, smp in zip(good_distance, no_duplicates, same_plane)])
 
     # indices to ROI pairs for good pairs of pairs
     pp_roi_match = [rim[:, ipm] for rim, ipm in zip(roi_idx_match, ipair_match)]
@@ -236,23 +237,6 @@ def print_selection(pp_roi_match, pp_roi_nomatch, prms, isespair, idxroipair):
         "NoMatch Idx:",
         pp_roi_nomatch[isespair][:, idxroipair],
     )
-
-
-# supporting class for storing and updating the indices for the example viewer
-class CurrentSelection:
-    def __init__(self, value=None, minval=0, maxval=None):
-        self.minval = minval
-        self.maxval = maxval if maxval is not None else np.inf
-        assert self.minval < self.maxval, "minimum value must be less than maximum value"
-        self.value = value if value is not None else minval
-
-    def update(self, value):
-        """update with bounds"""
-        self.value = np.minimum(np.maximum(value, self.minval), self.maxval)
-
-    def __call__(self):
-        """make getting the value simple"""
-        return self.value
 
 
 # supporting methods
@@ -296,14 +280,84 @@ def _make_data(
     fov_plot = normalize(fov_plot)
 
     # convert spkmaps into images with proper scaling
-    norm = mpl.colors.Normalize(vmin=-zscore_lim, vmax=zscore_lim)
-    red_colormap = mpl.colormaps["Reds_r"]
-    blue_colormap = mpl.colormaps["Blues_r"]
-    green_colormap = mpl.colormaps["Greens_r"]
+    norm = mpl.colors.Normalize(vmin=0, vmax=zscore_lim)
+    red_colormap = mpl.colormaps["Reds"]
+    blue_colormap = mpl.colormaps["Blues"]
+    green_colormap = mpl.colormaps["Greens"]
     spkmaps_match = [red_colormap(norm(sm.T)) for sm in spkmaps_match]
     spkmaps_nomatch = [cmap(norm(snm.T)) for cmap, snm in zip([green_colormap, blue_colormap], spkmaps_nomatch)]
 
     return fov_plot, average_centroid, spkmaps_match, spkmaps_nomatch, extents
+
+
+def plot_pair_example_figure(
+    roistat,
+    envnum,
+    plane_pair,
+    pp_roi_match,
+    pp_roi_nomatch,
+    pp_centroid_match,
+    pp_centroid_nomatch,
+    prms,
+):
+    """this is the script to use to make a nice figure once you've chosen a pair of cells (it's not nice right now, but will be)"""
+    # pick random session pair and random index
+    isespair = 5
+    idxroipair = np.random.choice(pp_roi_match[isespair].shape[1])
+    roi_scale = 2.5
+    lim = 3  # zscore limit of colormap
+    print("Session Pair:", prms["idx_ses_pairs"][isespair], "ROI Pair:", idxroipair)
+    print(
+        "Match Idx:",
+        pp_roi_match[isespair][:, idxroipair],
+        "NoMatch Idx:",
+        pp_roi_nomatch[isespair][:, idxroipair],
+    )
+
+    ccpair = np.mean(
+        np.stack((pp_centroid_match[isespair][idxroipair], pp_centroid_nomatch[isespair][idxroipair])),
+        axis=0,
+    )
+
+    spkmaps_match, spkmaps_nomatch, distedges = _get_spkmaps(roistat, envnum, isespair, idxroipair, prms, pp_roi_match, pp_roi_nomatch)
+    extents = [[0, sm.shape[0], distedges[0], distedges[-1]] for sm in spkmaps_match]
+
+    # make heatmaps of FOV
+    FOVs = [roistat.track.rundata[plane_pair[isespair][idxroipair]]["aligner"]["ims_registered_nonrigid"][i] for i in prms["idx_ses_pairs"][isespair]]
+    roi_match, roi_nomatch = _get_masks(roistat, isespair, idxroipair, prms, pp_roi_match, pp_roi_nomatch)
+    normalize = lambda data: [((d - d.min()) / (d.max() - d.min())).astype(np.float32) for d in data]
+    FOVs = normalize(FOVs)
+    roi_match = normalize(roi_match)
+    roi_nomatch = normalize(roi_nomatch)
+
+    fov_plot = [np.tile(fov.reshape(fov.shape[0], fov.shape[1], 1), (1, 1, 3)) for fov in FOVs]
+    fov_plot[0][:, :, 0] += roi_match[0] * roi_scale
+    fov_plot[1][:, :, 0] += roi_match[1] * roi_scale
+    fov_plot[0][:, :, 1] += roi_nomatch[0] * roi_scale
+    fov_plot[1][:, :, 2] += roi_nomatch[1] * roi_scale
+    fov_plot = normalize(fov_plot)
+
+    fig, ax = plt.subplots(1, 2, figsize=(6, 3), layout="constrained", sharex=True, sharey=True)
+    ax[0].imshow(fov_plot[0])
+    ax[1].imshow(fov_plot[1])
+    ax[0].set_xlim(ccpair[0] + [-20, 20])
+    ax[0].set_ylim(ccpair[1] + [-20, 20])
+    ax[0].set_title("Session 1")
+    ax[1].set_title("Session 2")
+    plt.show()
+
+    fig, ax = plt.subplots(2, 2, figsize=(6, 6), layout="constrained", sharey=True)
+    ax[0, 0].imshow(spkmaps_match[0].T, cmap="Reds", aspect="auto", extent=extents[0], vmin=0, vmax=lim)
+    ax[0, 1].imshow(spkmaps_match[1].T, cmap="Reds", aspect="auto", extent=extents[1], vmin=0, vmax=lim)
+    ax[1, 0].imshow(spkmaps_nomatch[0].T, cmap="Greens", aspect="auto", extent=extents[0], vmin=0, vmax=lim)
+    ax[1, 1].imshow(spkmaps_nomatch[1].T, cmap="Blues", aspect="auto", extent=extents[1], vmin=0, vmax=lim)
+    ax[0, 0].set_ylabel("Virtual Position (cm)")
+    ax[1, 0].set_ylabel("Virtual Position (cm)")
+    ax[1, 0].set_xlabel("Trials")
+    ax[1, 1].set_xlabel("Trials")
+    ax[0, 0].set_title("Session 1")
+    ax[0, 1].set_title("Session 2")
+    plt.show()
 
 
 def plot_pair_example_figure(
@@ -367,7 +421,7 @@ def plot_pair_example_figure(
     spkmap_match_layout = pg.GraphicsLayout()
     window.addItem(spkmap_match_layout, row=2, col=0)
     spkmap_match_views = [
-        spkmap_match_layout.addViewBox(row=0, col=ii, enableMouse=False, lockAspect=True, invertY=True, name=f"Session {ises}")
+        spkmap_match_layout.addViewBox(row=0, col=ii, enableMouse=False, lockAspect=False, invertY=True, name=f"Session {ises}")
         for ii, ises in enumerate(prms["idx_ses_pairs"][isespair()])
     ]
     for image, view in zip(spkmap_match_images, spkmap_match_views):
@@ -378,109 +432,42 @@ def plot_pair_example_figure(
     spkmap_nomatch_layout = pg.GraphicsLayout()
     window.addItem(spkmap_nomatch_layout, row=3, col=0)
     spkmap_nomatch_views = [
-        spkmap_nomatch_layout.addViewBox(row=0, col=ii, enableMouse=False, lockAspect=True, invertY=True, name=f"Session {ises}")
+        spkmap_nomatch_layout.addViewBox(row=0, col=ii, enableMouse=False, lockAspect=False, invertY=True, name=f"Session {ises}")
         for ii, ises in enumerate(prms["idx_ses_pairs"][isespair()])
     ]
     for image, view in zip(spkmap_nomatch_images, spkmap_nomatch_views):
         view.addItem(image)
     spkmap_nomatch_views[1].linkView(spkmap_nomatch_views[1].YAxis, spkmap_nomatch_views[0])
 
+    def _callback(roipair_value):
+        # Make Data
+        fov_plot, average_centroid, spkmaps_match, spkmaps_nomatch, extents = _make_data(
+            roistat,
+            envnum,
+            plane_pair,
+            pp_roi_match,
+            pp_roi_nomatch,
+            pp_centroid_match,
+            pp_centroid_nomatch,
+            prms,
+            isespair(),
+            roipair_value,
+            roi_scale(),
+            zscore_lim(),
+        )
+        # create image items for each FOV
+        for fi, fplot in zip(fov_images, fov_plot):
+            fi.setImage(fplot)
+        for si, sm_match in zip(spkmap_match_images, spkmaps_match):
+            si.setImage(sm_match)
+        for si, sm_nomatch in zip(spkmap_nomatch_images, spkmaps_nomatch):
+            si.setImage(sm_nomatch)
+
+    slider = SliderSelector(window, idxroipair, "ROI Pair", callback=_callback, row=4, col=0)  # , shortcut_key="G")
+
     # show GUI and return window for programmatic interaction
     window.show()
     return window
-
-    # # Create a slider label for indicating which ROI is being presented
-    # sliderNameProxy = QGraphicsProxyWidget()
-    # label = QLabel(f"ROI {1}/{numImages}")
-    # label.setAlignment(QtCore.Qt.AlignCenter)
-    # sliderNameProxy.setWidget(label)
-    # window.addItem(sliderNameProxy, row=3, col=0)
-
-    # # Create a slider with prev/next buttons and an edit field to change which ROI is being presented
-    # def updateSlider(value):
-    #     roi.update(value)  # first try updating roi value
-    #     slider.setValue(roi.value)  # if it clipped, reset slider appropriately
-    #     editField.setText(str(roi.value))  # update textfield
-    #     updateStackIndex()  # update which ROI is presented
-
-    # def prevROI():
-    #     roi.update(roi.value - 1)  # try updating roi value
-    #     slider.setValue(roi.value)  # update slider
-    #     editField.setText(str(roi.value))  # update textfield
-    #     updateStackIndex()  # update which ROI is presented
-
-    # def nextROI():
-    #     roi.update(roi.value + 1)  # try updating roi value
-    #     slider.setValue(roi.value)  # update slider
-    #     editField.setText(str(roi.value))  # update textfield
-    #     updateStackIndex()  # update which ROI is presented
-
-    # def gotoROI():
-    #     if not editField.text().isdigit():
-    #         editField.setText("invalid ROI")
-    #         return
-    #     textValue = int(editField.text())
-    #     if (textValue < roi.minroi) or (textValue > roi.maxroi):
-    #         editField.setText("invalid ROI")
-    #         return
-    #     # otherwise text is valid ROI
-    #     roi.update(textValue)
-    #     editField.setText(str(roi.value))
-    #     slider.setValue(roi.value)  # update slider
-    #     updateStackIndex()
-
-    # slider = QSlider(QtCore.Qt.Orientation.Horizontal)
-    # slider.setMinimum(0)
-    # slider.setMaximum(numImages - 1)
-    # slider.setSingleStep(1)
-    # slider.setPageStep(int(numImages / 10))
-    # slider.setValue(roi.value)
-    # slider.valueChanged.connect(updateSlider)
-    # sliderProxy = QGraphicsProxyWidget()
-    # sliderProxy.setWidget(slider)
-
-    # prevButtonProxy = QGraphicsProxyWidget()
-    # prevButton = QPushButton("button", text="Prev ROI")
-    # prevButton.clicked.connect(prevROI)
-    # prevButtonProxy.setWidget(prevButton)
-
-    # nextButtonProxy = QGraphicsProxyWidget()
-    # nextButton = QPushButton("button", text="Next ROI")
-    # nextButton.clicked.connect(nextROI)
-    # nextButtonProxy.setWidget(nextButton)
-
-    # editFieldProxy = QGraphicsProxyWidget()
-    # editField = QLineEdit()
-    # editField.setText("0")
-    # editFieldProxy.setWidget(editField)
-
-    # gotoEditProxy = QGraphicsProxyWidget()
-    # gotoButton = QPushButton("button", text="go to ROI")
-    # gotoButton.clicked.connect(gotoROI)
-    # gotoEditProxy.setWidget(gotoButton)
-
-    # # add shortcut for going to ROI without pressing the button...
-    # shortcut = QShortcut(QKeySequence("G"), window)
-    # shortcut.activated.connect(gotoROI)
-
-    # roiSelectionLayout = pg.GraphicsLayout()
-    # roiSelectionLayout.addItem(prevButtonProxy, row=0, col=0)
-    # roiSelectionLayout.addItem(sliderProxy, row=0, col=1)
-    # roiSelectionLayout.addItem(nextButtonProxy, row=0, col=2)
-    # roiSelectionLayout.addItem(editFieldProxy, row=0, col=3)
-    # roiSelectionLayout.addItem(gotoEditProxy, row=0, col=4)
-    # window.addItem(roiSelectionLayout, row=4, col=0)
-
-    # def updateStackIndex():
-    #     # whenever the ROI is changed, update the images and the labels (and keep scale the same if necessary)
-    #     for stack, image, imLevel, view in zip(stacks, imageItems, imLevels, views):
-    #         image.setImage(stack[roi.value])
-    #         label.setText(f"ROI {roi.value+1}/{numImages}")
-    #         if preserveScale:
-    #             image.setLevels(imLevel)
-    #     # whenever the ROI is changed, update the infiniteLine position indicating the value of that particular ROI
-    #     for feature, cvalROI in zip(features, currentValueROI):
-    #         cvalROI.setValue(feature[roi.value])
 
     # # create image items for each stack
     # imageItems = [pg.ImageItem(image=stacks[stack][0], axisOrder="row-major") for stack in range(numStacks)]
@@ -778,7 +765,7 @@ def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=Tr
         # make histogram of each feature
         cHist, cEdges = np.histogram(feature, bins=50)
         histRange.append((cEdges[0], cEdges[-1]))  # min/max of histogram for each feature
-        histCenters.append(helpers.edge2center(cEdges))  # center of histogram bin for each feature
+        histCenters.append(edge2center(cEdges))  # center of histogram bin for each feature
         histValues.append(cHist)  # histogram value for each bin for each feature
     featureHistograms = [
         pg.BarGraphItem(x=histCenter, height=histValue, width=histCenter[1] - histCenter[0]) for histCenter, histValue in zip(histCenters, histValues)
