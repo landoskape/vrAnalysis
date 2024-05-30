@@ -74,9 +74,9 @@ The GUI has many features and mechanisms for viewing various combinations of
 cells with different kinds of relevant information overlaid. These videos 
 illustrate how the GUI can be used:
 
-![view_cells](docs/media/viewing_cells.mp4)
-![cutoffs](docs/media/cutoff_values.mp4)
-![colors](docs/media/feature_as_colormap.mp4)
+![view_cells](media/viewing_cells.mp4)
+![cutoffs](media/cutoff_values.mp4)
+![colors](media/feature_as_colormap.mp4)
    
 
 
