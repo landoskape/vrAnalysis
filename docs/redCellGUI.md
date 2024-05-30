@@ -72,12 +72,20 @@ GUI needs to open and operate.
 ## Using the GUI
 The GUI has many features and mechanisms for viewing various combinations of
 cells with different kinds of relevant information overlaid. These videos 
-illustrate how the GUI can be used:
+illustrate how the GUI can be used (they're too large for GitHub):
 
-![view_cells](media/viewing_cells.mp4)
-![cutoffs](media/cutoff_values.mp4)
-![colors](media/feature_as_colormap.mp4)
+[Simple GUI navigation demonstration](media/viewing_cells.mp4)
+
+[Change feature cutoff values](media/cutoff_values.mp4)
+
+[Use colormaps to observe cell properties](media/feature_as_colormap.mp4)
    
+Viewing cells looks something like this:
+![basic cell view](media/close_up.png)
+
+And using the colormaps to visualize how the signal processing features map on 
+to cells looks like this:
+![feature maps](media/feature_values.png)
 
 
 
