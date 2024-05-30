@@ -1,6 +1,7 @@
 # add path that contains the vrAnalysis package
 import sys
 import os
+from time import time
 from argparse import ArgumentParser
 import numpy as np
 import scipy as sp
@@ -360,7 +361,7 @@ def plot_pair_example_figure(
     plt.show()
 
 
-def plot_pair_example_figure(
+def plot_pair_example_interactive(
     roistat,
     envnum,
     plane_pair,
@@ -382,6 +383,7 @@ def plot_pair_example_figure(
     print_selection(pp_roi_match, pp_roi_nomatch, prms, isespair(), idxroipair())
 
     # Make Data
+    t = time()
     fov_plot, average_centroid, spkmaps_match, spkmaps_nomatch, extents = _make_data(
         roistat,
         envnum,
@@ -396,6 +398,7 @@ def plot_pair_example_figure(
         roi_scale(),
         zscore_lim(),
     )
+    print(time() - t)
 
     # create image items for each FOV
     fov_images = [pg.ImageItem(image=fplot, axisOrder="row-major") for fplot in fov_plot]

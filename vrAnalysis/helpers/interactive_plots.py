@@ -1,10 +1,10 @@
 import numpy as np
 
 # GUI-related modules
-import pyqtgraph as pg
 from PyQt5 import QtGui, QtCore, QtWidgets
 from PyQt5.QtWidgets import (
     QGraphicsProxyWidget,
+    QGridLayout,
     QSlider,
     QPushButton,
     QVBoxLayout,
@@ -37,27 +37,30 @@ class CurrentSelection:
 
 
 class SliderSelector:
-    def __init__(self, window, selection, name, callback=None, row=None, col=None, shortcut_key=None):
+    def __init__(self, window, selection, name, callback=None, callback_requires_input=True, row=None, col=None, shortcut_key=None):
         self.window = window
         self.selection = selection
         self.name = name
+        self.row = row
+        self.col = col
         self.callback = callback
+        self.callback_requires_input = callback_requires_input
         self.shortcut_key = shortcut_key
         self._build_widgets()
         self._add_shortcut()
 
     def _build_widgets(self):
         # build slider label
-        self.slider_name_proxy = QGraphicsProxyWidget()
-        self.label = QLabel(f"{self.name} {1}/{self.selection.maxval}")
-        self.label.setAlignment(QtCore.Qt.AlignCenter)
-        self.slider_name_proxy.setWidget(self.label)
+        # self.slider_name_proxy = QGraphicsProxyWidget()
+        self.slider_name = QLabel(f"{self.name} {1}/{self.selection.maxval}")
+        self.slider_name.setAlignment(QtCore.Qt.AlignCenter)
+        # self.slider_name_proxy.setWidget(self.label)
 
         # build edit field
-        self.edit_field_proxy = QGraphicsProxyWidget()
+        # self.edit_field_proxy = QGraphicsProxyWidget()
         self.edit_field = QLineEdit()
         self.edit_field.setText("0")
-        self.edit_field_proxy.setWidget(self.edit_field)
+        # self.edit_field_proxy.setWidget(self.edit_field)
 
         # build slider
         self.slider = QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -67,35 +70,48 @@ class SliderSelector:
         self.slider.setPageStep(int(self.selection.maxval / 10))
         self.slider.setValue(self.selection.value)
         self.slider.valueChanged.connect(self.update_slider)
-        self.slider_proxy = QGraphicsProxyWidget()
-        self.slider_proxy.setWidget(self.slider)
+        # self.slider_proxy = QGraphicsProxyWidget()
+        # self.slider_proxy.setWidget(self.slider)
 
         # build previous button
-        self.prev_button_proxy = QGraphicsProxyWidget()
+        # self.prev_button_proxy = QGraphicsProxyWidget()
         self.prev_button = QPushButton("button", text="Prev")
         self.prev_button.clicked.connect(self.prev_value)
-        self.prev_button_proxy.setWidget(self.prev_button)
+        # self.prev_button_proxy.setWidget(self.prev_button)
 
         # build previous button
-        self.next_button_proxy = QGraphicsProxyWidget()
+        # self.next_button_proxy = QGraphicsProxyWidget()
         self.next_button = QPushButton("button", text="Next")
         self.next_button.clicked.connect(self.next_value)
-        self.next_button_proxy.setWidget(self.next_button)
+        # self.next_button_proxy.setWidget(self.next_button)
 
         # go to edit proxy
-        self.go_to_value_proxy = QGraphicsProxyWidget()
+        # self.go_to_value_proxy = QGraphicsProxyWidget()
         self.go_to_value_button = QPushButton("button", text="go to value")
         self.go_to_value_button.clicked.connect(self.go_to_value)
-        self.go_to_value_proxy.setWidget(self.go_to_value_button)
+        # self.go_to_value_proxy.setWidget(self.go_to_value_button)
 
         # layout
-        selection_layout = pg.GraphicsLayout()
-        selection_layout.addItem(self.prev_button_proxy, row=0, col=0)
-        selection_layout.addItem(self.slider_proxy, row=0, col=1)
-        selection_layout.addItem(self.next_button_proxy, row=0, col=2)
-        selection_layout.addItem(self.edit_field_proxy, row=0, col=3)
-        selection_layout.addItem(self.go_to_value_proxy, row=0, col=4)
-        self.window.addItem(selection_layout, row=4, col=0)
+        selection_layout = QGridLayout()
+        selection_layout.addWidget(self.slider_name, 0, 0)
+        selection_layout.addWidget(self.prev_button, 0, 1)
+        selection_layout.addWidget(self.slider, 0, 2)
+        selection_layout.addWidget(self.next_button, 0, 3)
+        selection_layout.addWidget(self.edit_field, 0, 4)
+        selection_layout.addWidget(self.go_to_value_button, 0, 5)
+
+        selection_layout.setColumnStretch(0, 1)
+        selection_layout.setColumnStretch(1, 0)
+        selection_layout.setColumnStretch(2, 3)
+        selection_layout.setColumnStretch(3, 0)
+        selection_layout.setColumnStretch(4, 0)
+        selection_layout.setColumnStretch(5, 0)
+
+        # add slider to main window
+
+        selection_layout_proxy = QGraphicsProxyWidget()
+        selection_layout_proxy.setWidget(selection_layout)
+        self.window.addItem(selection_layout_proxy, row=self.row, col=self.col)
 
     def _add_shortcut(self):
         # add shortcut for going to ROI without pressing the button...
@@ -108,10 +124,13 @@ class SliderSelector:
 
     def _do_callback(self):
         if self.callback is not None:
-            self.callback(self._get_value())
+            if self.callback_requires_input:
+                self.callback(self._get_value())
+            else:
+                self.callback()
 
     def _set_text(self):
-        self.label.setText(f"{self.name} {self._get_value()}/{self.selection.maxval}")
+        self.slider_name.setText(f"{self.name} {self._get_value()}/{self.selection.maxval}")
         self.edit_field.setText(str(self._get_value()))
         self._do_callback()
 
