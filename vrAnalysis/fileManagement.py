@@ -22,6 +22,10 @@ def analysisPath():
     return localDataPath() / "analysis"
 
 
+def figurePath():
+    return localDataPath() / "_figure_library"
+
+
 def serverPath():
     return Path("//zaru.cortexlab.net/Subjects")
 

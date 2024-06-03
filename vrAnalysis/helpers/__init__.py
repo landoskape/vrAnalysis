@@ -1,3 +1,4 @@
+from .figures import *
 from .indexing import *
 from .interactive_plots import *
 from .linear_algebra import *
