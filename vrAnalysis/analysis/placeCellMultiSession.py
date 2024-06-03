@@ -845,7 +845,9 @@ class placeCellMultiSession(multipleAnalysis):
         method="max",
         normalize=0,
         rewzone=True,
+        sortby_blue=True,
         interpolation="none",
+        height_multiplier=None,
         withShow=True,
         withSave=False,
     ):
@@ -904,13 +906,14 @@ class placeCellMultiSession(multipleAnalysis):
         plt.close("all")
         cmap = mpl.colormaps["bwr"]
 
+        height_multiplier = height_multiplier or 1
         fig_dim = 4
         width_ratios = [*[fig_dim for _ in range(self.num_ses)], fig_dim / 10]
         fig, ax = plt.subplots(
             1,
             self.num_ses + 1,
             width_ratios=width_ratios,
-            figsize=(sum(width_ratios), fig_dim),
+            figsize=(sum(width_ratios), fig_dim * height_multiplier),
             layout="constrained",
         )
 
@@ -923,7 +926,7 @@ class placeCellMultiSession(multipleAnalysis):
                 )
 
         for idx, ses in enumerate(self.idx_ses):
-            multby = -1 if ses == sortby else 1
+            multby = 1 if not sortby_blue else -1 if ses == sortby else 1
             cim = ax[idx].imshow(
                 multby * snake_data[idx],
                 cmap=cmap,
