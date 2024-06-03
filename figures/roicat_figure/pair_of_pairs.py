@@ -12,12 +12,15 @@ from matplotlib import pyplot as plt
 import napari
 import pyqtgraph as pg
 from PyQt5 import QtGui, QtCore, QtWidgets
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
+    QGridLayout,
     QGraphicsProxyWidget,
     QSlider,
     QPushButton,
+    QHBoxLayout,
     QVBoxLayout,
     QLabel,
     QLineEdit,
@@ -29,14 +32,23 @@ mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
 sys.path.append(mainPath)
 
 from vrAnalysis import tracking
-from vrAnalysis.helpers import named_transpose, edge2center, CurrentSelection, SliderSelector
+from vrAnalysis.helpers import named_transpose, edge2center, CurrentSelection, SliderSelector, Slider, Figure_Saver
 from vrAnalysis import analysis
+from vrAnalysis.fileManagement import figurePath
 
 
 def handle_inputs():
     parser = ArgumentParser(description="do pcm analyses")
     parser.add_argument("--mouse-name", type=str, help="which mouse to run the example for")
     return parser.parse_args()
+
+
+def figure_path(mouse_name, name):
+    folder_name = figurePath() / "roicat_figure" / mouse_name
+    file_name = folder_name / "pair_pair_example" / name
+    if not file_name.parent.exists():
+        file_name.parent.mkdir(parents=True)
+    return file_name
 
 
 # Saving some good possibilities for the figure (no plane 0):
@@ -52,6 +64,7 @@ def handle_inputs():
 # ATL027, sessions 9/10, Match Idx: [4984 5500] NoMatch Idx: [5098 7138]
 # ATL027, sessions 9/11, Match Idx: [265 524] NoMatch Idx: [132 891]
 
+# ATL027: Sessions: [ 8 10], Matched ROIs: [4267 1992], Non-matched ROIs: [5458 2224], Plane Pair: 2
 
 # GLOBAL PARAMETER DICTIONARIES
 ROICAT_COMPARISON_PARAMETERS = dict(
@@ -172,7 +185,9 @@ class PairPairDatahandler:
             self.prms = {}
             self.prms["idx_ses"] = [0, 1, 2, 3]
             self.prms["idx_ses_pairs"] = [(0, 1), (2, 3)]
-            self.plane_pair = [np.ones(15), np.ones(25)]
+            self.pp_roi_match = [np.array([[0, 1], [2, 3]]), np.array([[4, 5], [6, 7]])]
+            self.pp_roi_nomatch = [np.array([[8, 9], [10, 11]]), np.array([[12, 13], [14, 15]])]
+            self.plane_pair = [np.ones(2), np.ones(3)]
             return
 
         # get parameters
@@ -340,7 +355,7 @@ class PairPairDatahandler:
 
 class PairPairInteractivePlot(QDialog):
     def __init__(self, handler, parent=None):
-        super(PairPairDatahandler, self).__init__(parent)
+        super(PairPairInteractivePlot, self).__init__(parent)
         self.originalPalette = QApplication.palette()
 
         self.handler = handler
@@ -349,14 +364,18 @@ class PairPairInteractivePlot(QDialog):
         self._build_gui()
 
     def _construct_selectors(self):
-        self.isespair = CurrentSelection(minval=0, maxval=len(self.handler.plane_pair))
-        self.idxroipair = CurrentSelection(minval=0, maxval=len(self.handler.plane_pair[self.isespair()]))
+        self.isespair = CurrentSelection(minval=0, maxval=len(self.handler.plane_pair) - 1)
+        self.idxroipair = CurrentSelection(minval=0, maxval=len(self.handler.plane_pair[self.isespair()]) - 1)
         self.roi_scale = CurrentSelection(value=2.5, minval=0.0, maxval=100.0)
         self.zscore_lim = CurrentSelection(value=3, minval=0.1, maxval=100.0)
 
     def _rebuild_roipair_selector(self):
-        self.idxroipair = CurrentSelection(minval=0, maxval=len(self.handler.plane_pair[self.isespair()]))
-        self.roipair_slider = SliderSelector(self.window, self.idxroipair, "ROI Pair", callback=self._update_image_data, row=5, col=0)
+        self.idxroipair = CurrentSelection(minval=0, maxval=len(self.handler.plane_pair[self.isespair()]) - 1)
+        self.roipair_slider.selection = self.idxroipair
+        max_val = max([self.idxroipair(), self.roipair_slider.slider.value()])
+        self.roipair_slider.slider.setMaximum(max_val)  # safety for updating the value
+        self.roipair_slider.update_slider(self.idxroipair())
+        self.roipair_slider.slider.setMaximum(self.idxroipair.maxval)
 
     def print_selection(pp_roi_match, pp_roi_nomatch, prms, isespair, idxroipair):
         """simple method for printing output to terminal"""
@@ -383,23 +402,29 @@ class PairPairInteractivePlot(QDialog):
         self.spkmap_match_images = [pg.ImageItem(image=sm_match, axisOrder="row-major") for sm_match in spkmaps_match]
         self.spkmap_nomatch_images = [pg.ImageItem(image=sm_match, axisOrder="row-major") for sm_match in spkmaps_nomatch]
 
-        self.window = pg.GraphicsLayoutWidget(size=(600, 800))
-
         # Create graphics layout with viewboxes for the FOV images
         self.fov_layout = pg.GraphicsLayout()
-        self.window.addItem(self.fov_layout, row=1, col=0, rowspan=1, colspan=1)
         self.fov_views = [
             self.fov_layout.addViewBox(row=0, col=ii, enableMouse=True, lockAspect=True, invertY=True, name=f"Session {ises}")
             for ii, ises in enumerate(self.handler.prms["idx_ses_pairs"][self.isespair()])
         ]
-        for image, view in zip(self.fov_images, self.fov_views):
+        for imdata, image, view in zip(fov_plot, self.fov_images, self.fov_views):
             view.addItem(image)
+            view.setAspectLocked()
+            view.setLimits(
+                xMin=-imdata.shape[0],
+                xMax=2 * imdata.shape[1],
+                yMin=0,
+                yMax=imdata.shape[0],
+                maxXRange=imdata.shape[1],
+                maxYRange=imdata.shape[0],
+            )
+
         self.fov_views[1].linkView(self.fov_views[1].XAxis, self.fov_views[0])
         self.fov_views[1].linkView(self.fov_views[1].YAxis, self.fov_views[0])
 
         # Create graphics layout with viewboxes for the activity data (match)
         self.spkmap_match_layout = pg.GraphicsLayout()
-        self.window.addItem(self.spkmap_match_layout, row=2, col=0)
         self.spkmap_match_views = [
             self.spkmap_match_layout.addViewBox(row=0, col=ii, enableMouse=False, lockAspect=False, invertY=True, name=f"Session {ises}")
             for ii, ises in enumerate(self.handler.prms["idx_ses_pairs"][self.isespair()])
@@ -410,7 +435,6 @@ class PairPairInteractivePlot(QDialog):
 
         # Create graphics layout with viewboxes for the activity data (no-match)
         self.spkmap_nomatch_layout = pg.GraphicsLayout()
-        self.window.addItem(self.spkmap_nomatch_layout, row=3, col=0)
         self.spkmap_nomatch_views = [
             self.spkmap_nomatch_layout.addViewBox(row=0, col=ii, enableMouse=False, lockAspect=False, invertY=True, name=f"Session {ises}")
             for ii, ises in enumerate(self.handler.prms["idx_ses_pairs"][self.isespair()])
@@ -419,34 +443,95 @@ class PairPairInteractivePlot(QDialog):
             view.addItem(image)
         self.spkmap_nomatch_views[1].linkView(self.spkmap_nomatch_views[1].YAxis, self.spkmap_nomatch_views[0])
 
-        self.sespair_slider = SliderSelector(
-            self.window,
-            self.isespair,
-            "Session Pair",
-            callback=self._update_session_pair,
-            callback_requires_input=False,
-            row=4,
-            col=0,
-        )
-        self.roipair_slider = SliderSelector(
-            self.window,
-            self.idxroipair,
-            "ROI Pair",
-            callback=self._update_image_data,
-            callback_requires_input=False,
-            row=5,
-            col=0,
-        )
+        self.sespair_slider = SliderSelector(self.isespair, "Session Pair", callback=self._update_session_pair, callback_requires_input=False)
+        self.roipair_slider = SliderSelector(self.idxroipair, "ROI Pair", callback=self._update_image_data, callback_requires_input=False)
+        self.roiscale_slider = Slider(self.roi_scale, "ROI Scale", callback=self._update_image_data, callback_requires_input=False)
+        self.zscorelim_slider = Slider(self.zscore_lim, "Z-Score Lim", callback=self._update_image_data, callback_requires_input=False)
 
-        # show GUI and return window for programmatic interaction
-        self.window.show()
+        self.window = pg.GraphicsLayoutWidget(size=(800, 1000))
+        self.window.addItem(self.fov_layout, row=1, col=0, rowspan=1, colspan=1)
+        self.window.addItem(self.spkmap_match_layout, row=2, col=0)
+        self.window.addItem(self.spkmap_nomatch_layout, row=3, col=0)
+
+        # Add a row to display selection information and buttons
+        self.selection_info_layout = QHBoxLayout()
+        self.selection_info_label = QLabel()
+        self.update_selection_info_label()  # Call this function to update the label text
+
+        print_button = QPushButton("Print Selection")
+        print_button.clicked.connect(self.print_selection)
+
+        print_figure_button = QPushButton("Print Figure")
+        print_figure_button.clicked.connect(self.print_figure)
+
+        save_figure_button = QPushButton("Save Figure")
+        save_figure_button.clicked.connect(self.save_figure)
+
+        # Add a title row
+        title_label = QLabel(f"<b>{self.handler.mouse_name} -- Sessions: {self.handler.prms['idx_ses']}</b>")
+        title_label.setAlignment(Qt.AlignCenter)
+
+        self.selection_info_layout.addWidget(self.selection_info_label, stretch=5)
+        self.selection_info_layout.addWidget(print_button)
+        self.selection_info_layout.addWidget(print_figure_button)
+        self.selection_info_layout.addWidget(save_figure_button)
+
+        main_layout = QGridLayout()
+        main_layout.addWidget(title_label, 0, 0)
+        main_layout.addWidget(self.window, 1, 0)
+        main_layout.addLayout(self.sespair_slider.selection_layout, 2, 0)
+        main_layout.addLayout(self.roipair_slider.selection_layout, 3, 0)
+        main_layout.addLayout(self.roiscale_slider.selection_layout, 4, 0)
+        main_layout.addLayout(self.zscorelim_slider.selection_layout, 5, 0)
+        main_layout.addLayout(self.selection_info_layout, 6, 0)
+
+        self.setLayout(main_layout)
 
     def _update_session_pair(self):
         self._rebuild_roipair_selector()
         self._update_image_data()
 
+    def _get_selection_info(self):
+        idx_ses_pair = self.handler.prms["idx_ses_pairs"][self.isespair()]
+        idx_rois_match = self.handler.pp_roi_match[self.isespair()][:, self.idxroipair()]
+        idx_rois_nomatch = self.handler.pp_roi_nomatch[self.isespair()][:, self.idxroipair()]
+        plane_pair = self.handler.plane_pair[self.isespair()][self.idxroipair()]
+        message = (
+            f"Mouse:{self.handler.mouse_name}",
+            f"Sessions: {idx_ses_pair[0]}/{idx_ses_pair[1]}",
+            f"Matched ROIs: {idx_rois_match[0]}/{idx_rois_match[1]}",
+            f"Non-matched ROIs: {idx_rois_nomatch[0]}/{idx_rois_nomatch[1]}",
+            f"Plane Pair: {plane_pair}",
+        )
+        message = ", ".join(message)
+        return idx_ses_pair, idx_rois_match, idx_rois_nomatch, plane_pair, message
+
+    def update_selection_info_label(self):
+        message = self._get_selection_info()[4]
+        self.selection_info_label.setText(message)
+
+    def print_selection(self):
+        """print info about current selection"""
+        print(self._get_selection_info()[4])
+
+    def save_figure(self):
+        self.print_figure(save=True)
+
+    def print_figure(self, save=False):
+        print(f"would print figure here (save={save})")
+        y_range = self.fov_views[0].viewRange()[1]  # get y range because it's smaller
+        plot_pair_example_figure(
+            self.handler,
+            self.isespair(),
+            self.idxroipair(),
+            self.roi_scale(),
+            self.zscore_lim(),
+            y_range,
+            save=save,
+        )
+
     def _update_image_data(self):
-        fov_plot, _, spkmaps_match, spkmaps_nomatch, _ = self.handler.make_plot_data(
+        fov_plot, average_centroid, spkmaps_match, spkmaps_nomatch, _ = self.handler.make_plot_data(
             self.isespair(),
             self.idxroipair(),
             self.roi_scale(),
@@ -461,81 +546,85 @@ class PairPairInteractivePlot(QDialog):
         for si, sm_nomatch in zip(self.spkmap_nomatch_images, spkmaps_nomatch):
             si.setImage(sm_nomatch)
 
+        # zoom to pairs
+        irange = fov_plot[0].shape[0] * 0.1
+        imin = [average_centroid[1] - irange, average_centroid[0] - irange]
+        imax = [average_centroid[1] + irange, average_centroid[0] + irange]
+        self.fov_views[0].setYRange(imin[0], imax[0])
+        self.fov_views[0].setXRange(imin[1], imax[1])
+        self.fov_views[1].setYRange(imin[0], imax[0])
+        self.fov_views[1].setXRange(imin[1], imax[1])
 
-# def plot_pair_example_figure(
-#     roistat,
-#     envnum,
-#     plane_pair,
-#     pp_roi_match,
-#     pp_roi_nomatch,
-#     pp_centroid_match,
-#     pp_centroid_nomatch,
-#     prms,
-# ):
-#     """this is the script to use to make a nice figure once you've chosen a pair of cells (it's not nice right now, but will be)"""
-#     # pick random session pair and random index
-#     isespair = 5
-#     idxroipair = np.random.choice(pp_roi_match[isespair].shape[1])
-#     roi_scale = 2.5
-#     lim = 3  # zscore limit of colormap
-#     print("Session Pair:", prms["idx_ses_pairs"][isespair], "ROI Pair:", idxroipair)
-#     print(
-#         "Match Idx:",
-#         pp_roi_match[isespair][:, idxroipair],
-#         "NoMatch Idx:",
-#         pp_roi_nomatch[isespair][:, idxroipair],
-#     )
+        self.update_selection_info_label()
 
-#     ccpair = np.mean(
-#         np.stack((pp_centroid_match[isespair][idxroipair], pp_centroid_nomatch[isespair][idxroipair])),
-#         axis=0,
-#     )
 
-#     spkmaps_match, spkmaps_nomatch, distedges = _get_spkmaps(roistat, envnum, isespair, idxroipair, prms, pp_roi_match, pp_roi_nomatch)
-#     extents = [[0, sm.shape[0], distedges[0], distedges[-1]] for sm in spkmaps_match]
+def plot_pair_example_figure(data, isespair, idxroipair, roi_scale, zscore_lim, range, save=False):
+    """this is the script to use to make a nice figure once you've chosen a pair of cells (it's not nice right now, but will be)"""
 
-#     # make heatmaps of FOV
-#     FOVs = [roistat.track.rundata[plane_pair[isespair][idxroipair]]["aligner"]["ims_registered_nonrigid"][i] for i in prms["idx_ses_pairs"][isespair]]
-#     roi_match, roi_nomatch = _get_masks(roistat, isespair, idxroipair, prms, pp_roi_match, pp_roi_nomatch)
-#     normalize = lambda data: [((d - d.min()) / (d.max() - d.min())).astype(np.float32) for d in data]
-#     FOVs = normalize(FOVs)
-#     roi_match = normalize(roi_match)
-#     roi_nomatch = normalize(roi_nomatch)
+    # pick random session pair and random index
+    idx_ses_pair = data.prms["idx_ses_pairs"][isespair]
+    print("Session Pair:", idx_ses_pair, "ROI Pair:", idxroipair)
+    print(
+        "Match Idx:",
+        data.pp_roi_match[isespair][:, idxroipair],
+        "NoMatch Idx:",
+        data.pp_roi_nomatch[isespair][:, idxroipair],
+    )
 
-#     fov_plot = [np.tile(fov.reshape(fov.shape[0], fov.shape[1], 1), (1, 1, 3)) for fov in FOVs]
-#     fov_plot[0][:, :, 0] += roi_match[0] * roi_scale
-#     fov_plot[1][:, :, 0] += roi_match[1] * roi_scale
-#     fov_plot[0][:, :, 1] += roi_nomatch[0] * roi_scale
-#     fov_plot[1][:, :, 2] += roi_nomatch[1] * roi_scale
-#     fov_plot = normalize(fov_plot)
+    if save:
+        figure_saver = Figure_Saver()
+        plt.rcParams["svg.fonttype"] = "none"
+        str_idx_ses_pair = "_".join([str(i) for i in idx_ses_pair])
+        str_pp_roi_match = "_".join([str(i) for i in data.pp_roi_match[isespair][:, idxroipair]])
+        str_pp_roi_nomatch = "_".join([str(i) for i in data.pp_roi_nomatch[isespair][:, idxroipair]])
+        name = f"mouse_{data.mouse_name}_sespair_{str_idx_ses_pair}_matchroi_{str_pp_roi_match}_nomatchroi_{str_pp_roi_nomatch}"
 
-#     fig, ax = plt.subplots(1, 2, figsize=(6, 3), layout="constrained", sharex=True, sharey=True)
-#     ax[0].imshow(fov_plot[0])
-#     ax[1].imshow(fov_plot[1])
-#     ax[0].set_xlim(ccpair[0] + [-20, 20])
-#     ax[0].set_ylim(ccpair[1] + [-20, 20])
-#     ax[0].set_title("Session 1")
-#     ax[1].set_title("Session 2")
-#     plt.show()
+    fov_plot, average_centroid, spkmaps_match, spkmaps_nomatch, extents = data.make_plot_data(
+        isespair,
+        idxroipair,
+        roi_scale,
+        zscore_lim,
+    )
 
-#     fig, ax = plt.subplots(2, 2, figsize=(6, 6), layout="constrained", sharey=True)
-#     ax[0, 0].imshow(spkmaps_match[0].T, cmap="Reds", aspect="auto", extent=extents[0], vmin=0, vmax=lim)
-#     ax[0, 1].imshow(spkmaps_match[1].T, cmap="Reds", aspect="auto", extent=extents[1], vmin=0, vmax=lim)
-#     ax[1, 0].imshow(spkmaps_nomatch[0].T, cmap="Greens", aspect="auto", extent=extents[0], vmin=0, vmax=lim)
-#     ax[1, 1].imshow(spkmaps_nomatch[1].T, cmap="Blues", aspect="auto", extent=extents[1], vmin=0, vmax=lim)
-#     ax[0, 0].set_ylabel("Virtual Position (cm)")
-#     ax[1, 0].set_ylabel("Virtual Position (cm)")
-#     ax[1, 0].set_xlabel("Trials")
-#     ax[1, 1].set_xlabel("Trials")
-#     ax[0, 0].set_title("Session 1")
-#     ax[0, 1].set_title("Session 2")
-#     plt.show()
+    half_range = abs(range[1] - range[0]) / 2
+    imin = [average_centroid[1] - half_range, average_centroid[0] - half_range]
+    imax = [average_centroid[1] + half_range, average_centroid[0] + half_range]
+
+    fig, ax = plt.subplots(1, 2, figsize=(6, 3), layout="constrained", sharex=True, sharey=True)
+    ax[0].imshow(fov_plot[0])
+    ax[1].imshow(fov_plot[1])
+    ax[0].set_ylim(imin[0], imax[0])
+    ax[0].set_xlim(imin[1], imax[1])
+    ax[0].set_title(f"Session {idx_ses_pair[0]}")
+    ax[1].set_title(f"Session {idx_ses_pair[1]}")
+    plt.show()
+
+    if save:
+        c_fig_name = "pairpair_rois_" + name
+        figure_saver(fig, c_fig_name, path_save=figure_path(data.mouse_name, c_fig_name), overwrite=True)
+
+    fig, ax = plt.subplots(2, 2, figsize=(6, 6), layout="constrained", sharey=True)
+    ax[0, 0].imshow(spkmaps_match[0], aspect="auto", extent=extents[0])
+    ax[0, 1].imshow(spkmaps_match[1], aspect="auto", extent=extents[1])
+    ax[1, 0].imshow(spkmaps_nomatch[0], aspect="auto", extent=extents[0])
+    ax[1, 1].imshow(spkmaps_nomatch[1], aspect="auto", extent=extents[1])
+    ax[0, 0].set_ylabel("Virtual Position (cm)")
+    ax[1, 0].set_ylabel("Virtual Position (cm)")
+    ax[1, 0].set_xlabel("Trials")
+    ax[1, 1].set_xlabel("Trials")
+    ax[0, 0].set_title(f"Session {idx_ses_pair[0]}")
+    ax[0, 1].set_title(f"Session {idx_ses_pair[1]}")
+    plt.show()
+
+    if save:
+        c_fig_name = "pairpair_spkmaps" + name
+        figure_saver(fig, c_fig_name, path_save=figure_path(data.mouse_name, c_fig_name), overwrite=True)
 
 
 if __name__ == "__main__":
     args = handle_inputs()
     # example_data = prepare_pair_example_data(args.mouse_name)
-    pp_handler = PairPairDatahandler(args.mouse_name, fake_data=True)
+    pp_handler = PairPairDatahandler(args.mouse_name, fake_data=False)
 
     app = QApplication([])
     pp_window = PairPairInteractivePlot(pp_handler)
