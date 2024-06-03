@@ -14,6 +14,7 @@ from vrAnalysis import database
 from vrAnalysis import tracking
 from vrAnalysis import analysis
 from vrAnalysis import fileManagement as fm
+from vrAnalysis.helpers import Figure_Saver
 
 mousedb = database.vrDatabase("vrMice")
 
@@ -209,7 +210,7 @@ def plot_loop_each_mouse(args):
     return all_mice, all_prms, all_means, all_serrors
 
 
-def mouse_summary_plot(mouse_data):
+def mouse_summary_plot(mouse_data, args):
     """
     make plots and do statistics on each mouse in the dataset
     """
@@ -263,6 +264,11 @@ def mouse_summary_plot(mouse_data):
     plt.legend(loc="upper right")
     plt.show()
 
+    if args.save_plots:
+        figure_saver = Figure_Saver()
+        fig_path = save_path("across_mouse_plot")
+        figure_saver(fig, path_save=fig_path)
+
 
 if __name__ == "__main__":
     args = handle_inputs()
@@ -291,4 +297,4 @@ if __name__ == "__main__":
         print("loaded mouse data!")
 
     # make summary plots
-    mouse_summary_plot(mouse_data)
+    mouse_summary_plot(mouse_data, args)
