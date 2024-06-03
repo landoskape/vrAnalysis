@@ -1,68 +1,70 @@
-import os
-from copy import copy
-
-from vrAnalysis import analysis
-from vrAnalysis import tracking
-from vrAnalysis import helpers
-from vrAnalysis import database
-from tqdm import tqdm
-import numpy as np
-import faststats as fs
-import pickle
-
-mousedb = database.vrDatabase("vrMice")
-df = mousedb.getTable(trackerExists=True)
-mouse_names = df["mouseName"].unique()
+import sys
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QSlider, QPushButton
+from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtCore import Qt
+from PyQt5 import QtCore
 
 
-def add_to_spectra_data(pcm, args):
-    """skeleton for adding something without reloading everything"""
-    with open(pcm.saveDirectory("temp") / f"{args.mouse_name}_spectra_data.pkl", "rb") as f:
-        temp_files = pickle.load(f)
+class MyApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
 
-    vss = []
-    for p in pcm.pcss:
-        vss.append(analysis.VarianceStructure(p.vrexp, distStep=args.dist_step, autoload=False))
+    def initUI(self):
+        # Set up the dark mode color scheme
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.WindowText, Qt.white)
+        dark_palette.setColor(QPalette.Base, QColor(25, 25, 25))
+        dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ToolTipBase, Qt.white)
+        dark_palette.setColor(QPalette.ToolTipText, Qt.white)
+        dark_palette.setColor(QPalette.Text, Qt.white)
+        dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ButtonText, Qt.white)
+        dark_palette.setColor(QPalette.BrightText, Qt.red)
+        dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.HighlightedText, Qt.black)
+        self.setPalette(dark_palette)
 
-    # first load session data (this can take a while)
-    for v in tqdm(vss, leave=True, desc="loading session data"):
-        v.load_data()
+        # Set up the window frame style
+        self.setStyleSheet(
+            "QWidget { background-color: #353535; }"
+            "QMenuBar { background-color: #4285f4; color: white; }"
+            "QMenuBar::item { background-color: transparent; }"
+            "QMenuBar::item:selected { background-color: #3073d6; }"
+        )
 
-    # get spkmaps of all cells / just reliable cells
-    rel_mse = []
-    for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
-        c_mse = v.get_reliability_values(envnum=None, with_test=False)[0]
-        rel_mse.append(c_mse)
+        layout = QVBoxLayout()
 
-    update_dict = {
-        "rel_mse": rel_mse,
-    }
+        # Create a blue-accented slider
+        self.slider = QSlider(QtCore.Qt.Horizontal)
+        self.slider.setMinimum(0)
+        self.slider.setMaximum(100)
+        self.slider.setValue(50)
+        self.slider.setStyleSheet(
+            "QSlider::groove:horizontal { background-color: #1e1e1e; height: 8px; border-radius: 4px; }"
+            "QSlider::handle:horizontal { background-color: #4285f4; width: 18px; height: 18px; border-radius: 9px; margin: -5px 0; }"
+        )
+        layout.addWidget(self.slider)
 
-    temp_files.update(update_dict)
+        # Create a blue-accented button
+        self.button = QPushButton("Print Slider Value")
+        self.button.setStyleSheet("QPushButton { background-color: #4285f4; color: white; padding: 10px 20px; border-radius: 5px; }")
+        self.button.clicked.connect(self.print_slider_value)
+        layout.addWidget(self.button)
 
-    pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
+        self.setLayout(layout)
+        self.setWindowTitle("Slider Example")
+
+    def print_slider_value(self):
+        slider_value = self.slider.value()
+        print(f"Slider value: {slider_value}")
 
 
 if __name__ == "__main__":
-    for mouse_name in mouse_names:
-        print(f"Analyzing {mouse_name}")
-
-        # # load spectra data for target mouse
-        # track = tracking.tracker(mouse_name)  # get tracker object for mouse
-        # pcm = analysis.placeCellMultiSession(track, autoload=False)  # open up place cell multi session analysis object (don't autoload!!!)
-
-        # # load spectra data (use temp if it matches)
-        # args = helpers.AttributeDict(
-        #     dict(
-        #         mouse_name=mouse_name,
-        #         dist_step=1,
-        #         smooth=0.1,
-        #         cutoffs=(0.4, 0.7),
-        #         maxcutoffs=None,
-        #         reload_spectra_data=False,
-        #     )
-        # )
-
-        # add_to_spectra_data(pcm, args)
-
-        os.system(f"python scripts/mouse_summary.py --mouse-name {mouse_name} --do-spectra")
+    app = QApplication(sys.argv)
+    window = MyApp()
+    window.show()
+    sys.exit(app.exec_())
