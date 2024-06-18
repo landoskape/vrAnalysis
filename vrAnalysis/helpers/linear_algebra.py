@@ -517,7 +517,7 @@ def svca(a0, a1, b0, b1, n_comp=None, verbose=True):
 
     # total variance in neural space of the test timepoints
     a1var = (a1**2).sum(axis=1)
-    b1var = (b1**2).sum(axis=1)
+    b1var = (b1**2).sum(axis=1) 
     full_vars = (a1var, b1var)
 
     if verbose:
@@ -535,7 +535,7 @@ def svca(a0, a1, b0, b1, n_comp=None, verbose=True):
     return shared_var, tot_cov_space_var, proj_vars, full_vars, svd
 
 
-def split_and_svca(spks, cell_split=None, t_split=None, n_comp=None, verbose=True):
+def split_and_svca(spks, cell_split=None, t_split=None, n_comp=None, return_split=False, verbose=True):
     nc, nt = spks.shape
     if cell_split is None:
         crand = np.random.permutation(np.arange(nc))
@@ -556,6 +556,9 @@ def split_and_svca(spks, cell_split=None, t_split=None, n_comp=None, verbose=Tru
     b0 = spks[cell_split[1]][:, t_split[0]]
     b1 = spks[cell_split[1]][:, t_split[1]]
 
+    if return_split:
+        return svca(a0, a1, b0, b1, n_comp=n_comp, verbose=verbose), cell_split, t_split
+    
     return svca(a0, a1, b0, b1, n_comp=n_comp, verbose=verbose)
 
 
