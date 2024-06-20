@@ -1,5 +1,6 @@
 from typing import Optional
 import torch
+from .pca import PCA
 
 
 class SVCA:
@@ -65,12 +66,12 @@ class SVCA:
 
         # perform svd on the map from source to target neurons
         gram_matrix = source @ target.T
-        self.u, self.s, self.v = torch.svd(gram_matrix, some=True, compute_uv=True)
+        self.U, self.S, self.V = torch.svd(gram_matrix, some=True, compute_uv=True)
 
         # keep only the top num_components
-        self.u = self.u[:, : self.num_components]
-        self.s = self.s[: self.num_components]
-        self.v = self.v[:, : self.num_components]
+        self.U = self.U[:, : self.num_components]
+        self.S = self.S[: self.num_components]
+        self.V = self.V[:, : self.num_components]
 
         self.fitted = True
         return self
@@ -103,8 +104,8 @@ class SVCA:
             target = target - target.mean(dim=1, keepdim=True)
 
         num_timepoints = source.shape[1]
-        source_proj = self.u.T @ source
-        target_proj = self.v.T @ target
+        source_proj = self.U.T @ source
+        target_proj = self.V.T @ target
 
         # measure shared variance across source and target neurons on fitted model
         norm_value = num_timepoints if normalize else 1
@@ -121,8 +122,8 @@ class SVCA:
     def _validate_data(self, source: torch.Tensor, target: torch.Tensor):
         """Check if source and target data are valid"""
         if self.fitted:
-            assert source.shape[0] == self.u.shape[0], "Source data must have the same number of neurons as the training data."
-            assert target.shape[0] == self.v.shape[0], "Target data must have the same number of neurons as the training data."
+            assert source.shape[0] == self.U.shape[0], "Source data must have the same number of neurons as the training data."
+            assert target.shape[0] == self.V.shape[0], "Target data must have the same number of neurons as the training data."
         assert source.shape[1] == target.shape[1], "Number of timepoints must be the same for source and target data."
 
     @torch.no_grad()
