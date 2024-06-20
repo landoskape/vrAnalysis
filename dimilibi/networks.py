@@ -11,7 +11,15 @@ class SVCANet(nn.Module):
     The encoder and decoder are both fully connected neural networks with a variable number of hidden layers.
     """
 
-    def __init__(self, num_neurons: int, width_hidden: List[int], num_latent: int, num_target_neurons: int = None, activation: nn.Module = nn.ReLU()):
+    def __init__(
+        self,
+        num_neurons: int,
+        width_hidden: List[int],
+        num_latent: int,
+        num_target_neurons: int = None,
+        include_nn_latent: bool = False,
+        activation: nn.Module = nn.ReLU(),
+    ):
         """
         Initialize the SVCA Network
 
@@ -31,58 +39,51 @@ class SVCANet(nn.Module):
         self.width_hidden = width_hidden
         self.num_latent = num_latent
         self.num_target_neurons = num_target_neurons or num_neurons
-        self.encoder = self._build_encoder(activation)
-        self.decoder = self._build_decoder(activation)
+        self.include_nn_latent = include_nn_latent
+        self.activation = activation
+        self._build_encoder()
+        self._build_decoder()
 
-    def _build_encoder(self, activation: nn.Module) -> nn.Sequential:
+    def _build_encoder(self):
         """
-        Build the encoder network
+        Build the encoder network. Composed of a series of hidden layers and a latent layer.
 
-        Parameters
-        ----------
-        activation : nn.Module
-            Activation function to use in the hidden layers
+        The hidden layers are defined by the width_hidden parameter. They are all linear and
+        are followed by the activation function defined in the constructor.
 
-        Returns
-        -------
-        nn.Sequential
-            nn.Sequential object representing the encoder network
+        The latent layer is a linear layer that generates a constrained latent representation
+        of the input data. It can include an additional nonnegative latent layer with the same
+        width if requested.
         """
-        layers = []
+        self.encoder_hidden = nn.ModuleList()
+
         prev_width = self.num_neurons
-        if self.width_hidden is not None:
-            for width in self.width_hidden:
-                layers.append(nn.Linear(prev_width, width))
-                layers.append(activation)
-                prev_width = width
-        layers.append(nn.Linear(prev_width, self.num_latent))
-        return nn.Sequential(*layers)
+        for width in self.width_hidden:
+            self.encoder_hidden.append(nn.Linear(prev_width, width))
+            prev_width = width
 
-    def _build_decoder(self, activation: nn.Module) -> nn.Sequential:
+        self.latent = nn.Linear(prev_width, self.num_latent)
+        if self.include_nn_latent:
+            self.nn_latent = nn.Sequential(nn.Linear(prev_width, self.num_latent), nn.ReLU())
+
+    def _build_decoder(self):
         """
-        Build the decoder network
+        Build the decoder network. Composed of a series of hidden layers and an output layer.
 
-        Parameters
-        ----------
-        activation : nn.Module
-            Activation function to use in the hidden layers
-
-        Returns
-        -------
-        nn.Sequential
-            nn.Sequential object representing the decoder network
+        The hidden layers are defined by the width_hidden parameter. They are all linear and
+        are symmetric with the encoder. They are followed by the activation function defined
+        in the constructor. The output layer is a linear layer that generates the output data.
         """
-        layers = []
-        prev_width = self.num_latent
-        if self.width_hidden is not None:
-            for width in reversed(self.width_hidden):
-                layers.append(nn.Linear(prev_width, width))
-                layers.append(activation)
-                prev_width = width
-        layers.append(nn.Linear(prev_width, self.num_target_neurons))
-        return nn.Sequential(*layers)
+        self.decoder_hidden = nn.ModuleList()
 
-    def forward(self, x: torch.Tensor, store_hidden=False) -> torch.Tensor:
+        prev_width = self.num_latent + self.num_latent * self.include_nn_latent
+        for width in self.width_hidden:
+            self.decoder_hidden.append(nn.Linear(prev_width, width))
+            prev_width = width
+
+        self.output = nn.Linear(prev_width, self.num_target_neurons)
+
+    def forward(self, x: torch.Tensor, store_hidden: bool = False) -> torch.Tensor:
         """
         Forward pass through the SVCA Network
 
@@ -99,10 +100,21 @@ class SVCANet(nn.Module):
         torch.Tensor
             Output tensor of shape (batch_size, num_neurons, num_timepoints) or (num_neurons, num_timepoints)
         """
-        latent = self.encoder(x)
+        for layer in self.encoder_hidden:
+            x = self.activation(layer(x))
+        latent = self.latent(x)
         if store_hidden:
             self.latent = latent
-        return self.decoder(latent)
+        if self.include_nn_latent:
+            nn_latent = self.nn_latent(x)
+            if store_hidden:
+                self.nn_latent = nn_latent
+            x = torch.cat([latent, nn_latent], dim=-1)
+        else:
+            x = latent
+        for layer in self.decoder_hidden:
+            x = self.activation(layer(x))
+        return self.output(x)
 
     def score(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
