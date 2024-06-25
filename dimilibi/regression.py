@@ -55,8 +55,8 @@ class ReducedRankRegression:
 
         # store all of these matrices for easy testing of prediction with different ranks
         self._beta_ols = self._solve_ols_ridge(X, y, self.alpha)
-        self._beta_V = torch.svd(self._beta_ols, some=True, compute_uv=True).V
-        self._rank_restraint = self._beta_V[:, : self.rank] @ self._beta_V[:, : self.rank].T
+        self._Xbeta_V = torch.svd(X @ self._beta_ols, some=True, compute_uv=True).V
+        self._rank_restraint = self._Xbeta_V[:, : self.rank] @ self._Xbeta_V[:, : self.rank].T
         self._beta_rrr = self._make_coefficients(self.rank)
 
         return self
@@ -121,8 +121,8 @@ class ReducedRankRegression:
         """
         # update rank restraint matrix if required
         if rank != self.rank:
-            assert rank <= self._beta_V.size(1), "Rank must be less than or equal to the number of features and targets."
-            _rank_restraint = self._beta_V[:, :rank] @ self._beta_V[:, :rank].T
+            assert rank <= self._Xbeta_V.size(1), "Rank must be less than or equal to the number of features and targets."
+            _rank_restraint = self._Xbeta_V[:, :rank] @ self._Xbeta_V[:, :rank].T
         else:
             _rank_restraint = self._rank_restraint
 
