@@ -33,6 +33,10 @@ class SVCANet(nn.Module):
             Number of neurons in the latent layer
         num_target_neurons : int
             Number of neurons in the output layer (default is to use num_neurons)
+        include_nn_latent : bool
+            If True, include an additional nonnegative latent layer (default is False)
+        activation : nn.Module
+            Activation function to use in the hidden layers (default is nn.ReLU())
         """
         super().__init__()
         self.num_neurons = num_neurons
