@@ -39,7 +39,7 @@ class PCA:
         Parameters
         ----------
         data : torch.Tensor
-            The data to be used for training a PCA model (num_neurons_source, num_timepoints).
+            The data to be used for training a PCA model (num_neurons, num_timepoints).
 
         Returns
         -------
@@ -50,7 +50,6 @@ class PCA:
         self._validate_data(data)
         self._validate_components(data)
 
-        # perform svd on the map from source to target neurons
         if not isinstance(data, torch.Tensor):
             data = torch.tensor(data)
 
@@ -60,6 +59,42 @@ class PCA:
 
         self.fitted = True
         return self
+
+    @torch.no_grad()
+    def transform(self, data: torch.Tensor, whiten: Optional[bool] = False, k: Optional[int] = None):
+        """
+        Transform the input data using the PCA model.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The data to be transformed (num_neurons, num_timepoints).
+        whiten : Optional[bool]
+            If True, the data will be whitened using the ZCA matrix.
+            (default is False)
+        k : Optional[int]
+            The number of components to use in the ZCA whitening matrix.
+            (default is None which corresponds to using all components)
+
+        Returns
+        -------
+        torch.Tensor
+            The transformed data.
+        """
+        if not self.fitted:
+            raise ValueError("PCA model must be fitted before transforming data.")
+
+        self._validate_data(data)
+
+        if whiten:
+            zca = self.get_zca(k, k=k)
+            return zca @ data
+
+        else:
+            U = self.get_components()
+            if k is not None:
+                U = U[:, :k]
+            return U.T @ data
 
     @torch.no_grad()
     def get_components(self):
@@ -96,6 +131,32 @@ class PCA:
             The eigenvalues of the PCA model.
         """
         return self.get_singular_values() ** 2 / self.num_samples
+
+    @torch.no_grad()
+    def get_zca(self, k=None, eps=1e-4):
+        """
+        Get the ZCA whitening matrix of the PCA model.
+
+        Parameters
+        ----------
+        k : Optional[int]
+            The number of components to use in the ZCA whitening matrix.
+            (default is None which corresponds to using all components)
+        eps : float
+            A small value to add to the eigenvalues to prevent division by zero.
+            (default is 1e-4)
+
+        Returns
+        -------
+        zca : torch.Tensor
+            The ZCA whitening matrix of the PCA model.
+        """
+        U = self.get_components()
+        S = self.get_eigenvalues()
+        if k is not None:
+            U = U[:, :k]
+            S = S[:k]
+        return U @ torch.diag(1 / torch.sqrt(S + eps)) @ U.T
 
     @torch.no_grad()
     def _validate_data(self, data: torch.Tensor):
