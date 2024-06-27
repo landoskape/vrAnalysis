@@ -102,10 +102,10 @@ class ReducedRankRegression:
             The coefficient of determination (R^2) for the model.
         """
         y_pred = self.predict(X, rank=rank)
-        ss_res = ((y - y_pred) ** 2).sum()
-        ss_tot = ((y - y.mean(dim=0, keepdim=True)) ** 2).sum()
+        ss_res = ((y - y_pred) ** 2).sum(dim=1)
+        ss_tot = ((y - y.mean(dim=1, keepdim=True)) ** 2).sum(dim=1)
         r2 = 1 - ss_res / ss_tot
-        return r2
+        return r2.mean()
 
     def _make_coefficients(self, rank) -> torch.Tensor:
         """
