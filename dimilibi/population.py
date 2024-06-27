@@ -1,4 +1,4 @@
-from typing import Union, List, Optional
+from typing import Union, Optional, Dict
 
 import numpy as np
 import torch
@@ -43,7 +43,7 @@ class Population:
             self.split_cells(**cell_split_prms)
             self.split_times(**time_split_prms)
 
-    def get_split_data(self, time_idx: int = 0, center: bool = False):
+    def get_split_data(self, time_idx: int = 0, center: bool = False, scale: bool = False):
         """
         Get the source and target data for a specific set of timepoints.
 
@@ -54,6 +54,9 @@ class Population:
             (default is 0)
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
+            (default is False)
+        scale : bool
+            If True, will scale the data so each neuron has a standard deviation of 1 across timepoints
             (default is False)
 
         Returns
@@ -77,6 +80,10 @@ class Population:
         if center:
             source = source - source.mean(dim=1, keepdim=True)
             target = target - target.mean(dim=1, keepdim=True)
+
+        if scale:
+            source = source / source.std(dim=1, keepdim=True)
+            target = target / target.std(dim=1, keepdim=True)
 
         return source, target
 
@@ -235,3 +242,58 @@ class Population:
     def size(self, dim=None):
         """Get the size of the population activity (works like torch.size on self.data)"""
         return self.data.size(dim)
+
+    def get_indices_dict(self) -> Dict:
+        """
+        Get a dictionary containing the split indices and metadata.
+
+        Returns
+        -------
+        Dict
+            A dictionary containing cell_split_indices, time_split_indices, num_neurons, and num_timepoints.
+        """
+        return {
+            "cell_split_indices": [indices.tolist() for indices in self.cell_split_indices] if hasattr(self, "cell_split_indices") else None,
+            "time_split_indices": [indices.tolist() for indices in self.time_split_indices] if hasattr(self, "time_split_indices") else None,
+            "num_neurons": self.num_neurons,
+            "num_timepoints": self.num_timepoints,
+        }
+
+    @classmethod
+    def make_from_indices(cls, indices_dict: Dict, data: Union[np.ndarray, torch.Tensor]):
+        """
+        Make a new Population instance with the provided split indices and data.
+
+        Parameters
+        ----------
+        indices_dict : Dict
+            The dictionary containing the split indices and metadata.
+        data : Union[np.ndarray, torch.Tensor]
+            The data to use for the new Population instance.
+
+        Returns
+        -------
+        Population
+            A new Population instance with the loaded split indices.
+
+        Raises
+        ------
+        ValueError
+            If the shape of the provided data doesn't match the saved indices.
+        """
+        # Check if the shape of the provided data matches the saved indices
+        if data.shape != (indices_dict["num_neurons"], indices_dict["num_timepoints"]):
+            raise ValueError(
+                f"Shape of provided data {data.shape} doesn't match the shape in saved indices "
+                f"({indices_dict['num_neurons']}, {indices_dict['num_timepoints']})"
+            )
+
+        population = cls(data, generate_splits=False)
+
+        if indices_dict["cell_split_indices"]:
+            population.cell_split_indices = [torch.tensor(indices) for indices in indices_dict["cell_split_indices"]]
+
+        if indices_dict["time_split_indices"]:
+            population.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
+
+        return population
