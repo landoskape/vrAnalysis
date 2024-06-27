@@ -75,14 +75,13 @@ class vrSession:
         # function for returning mousename, datestring, and sessionid
         return self.mouseName, self.dateString, self.sessionid
 
-    def sessionPrint(self):
+    def sessionPrint(self, joinby="/"):
         # useful function for generating string of session name for useful feedback to user
-        mouseName, dateString, sessionid = self.sessionName()
-        return "/".join(self.sessionName())
+        return joinby.join(self.sessionName())
 
     def __str__(self):
         # use _ to avoid string complications with backslash used in 'sessionPrint()'
-        return "_".join(self.sessionName())
+        return self.sessionPrint(joinby="_")
 
 
 class vrExperiment(vrSession):
