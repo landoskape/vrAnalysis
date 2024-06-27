@@ -33,3 +33,5 @@ dependencies:
     - black
     - ratinabox
     - rastermap
+    - optuna
+    - cachecache
