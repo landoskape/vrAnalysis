@@ -404,3 +404,72 @@ class LocalSimilarity(nn.Module):
         """
         eps = 1e-7  # set to be as small as possible while preventing infinities
         return torch.atanh(torch.clamp(value, min=-1 + eps, max=1 - eps))
+
+
+class BetaVAE_KLDiv(nn.Module):
+    """
+    KL Divergence regularizer for the Beta-Variational Autoencoder (β-VAE)
+
+    This regularizer measures the KL divergence term of the parameterized
+    latent variables, weighted by the beta parameter.
+
+    Parameters
+    ----------
+    beta : float, optional
+        Weight for the KL divergence term (default is 1.0)
+
+    Attributes
+    ----------
+    beta : float
+        Weight for the KL divergence term
+    """
+
+    def __init__(self, beta: float = 1.0):
+        super().__init__()
+        self.beta = beta
+
+    def forward(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the β-VAE loss
+
+        Parameters
+        ----------
+        mu : torch.Tensor
+            Mean of the latent distribution
+        logvar : torch.Tensor
+            Log variance of the latent distribution
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar tensor representing the β-VAE loss
+        """
+        kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        return self.beta * kl_div
+
+
+class EmptyRegularizer(nn.Module):
+    """
+    The empty regularizer acts like a regularizer but returns 0 for the loss
+    regardless of the input. It is useful as a standin for a regularizer when
+    no regularization is desired.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        """
+        Return 0 for the loss regardless of the input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor, only used to determine the device.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar tensor representing the loss, always 0.
+        """
+        return torch.tensor(0.0, device=x.device)
