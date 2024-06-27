@@ -3,6 +3,7 @@
 
 # Saved files
 *.pkl
+cachedir/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
