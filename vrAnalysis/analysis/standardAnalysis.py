@@ -32,6 +32,16 @@ class standardAnalysis:
         with open(self.saveDirectory("temp") / name, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+    def load_temp_file(self, name):
+        """
+        load a temporary file
+
+        load a temporary file from the analysis directory with the name provided
+        """
+        with open(self.saveDirectory("temp") / name, "rb") as f:
+            data = pickle.load(f)
+        return data
+
     def clear_temp_files(self):
         """
         clear temporary files
