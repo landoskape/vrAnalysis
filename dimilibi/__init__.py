@@ -6,3 +6,4 @@ from .population import Population
 from .regression import ReducedRankRegression
 from .regularizer import LocalSmoothness, LocalSimilarity, FlexibleFilter, BetaVAE_KLDiv, EmptyRegularizer
 from .svca import SVCA
+from .train import train
