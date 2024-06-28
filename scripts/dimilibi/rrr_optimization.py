@@ -168,6 +168,7 @@ def do_rrr_optimization(all_sessions):
     all_sessions : dict
         Dictionary containing session identifiers for each mouse.
     """
+    ranks = get_ranks()
     for mouse_name, sessions in all_sessions.items():
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
@@ -176,6 +177,9 @@ def do_rrr_optimization(all_sessions):
             optimize_results = optimize_rrr(mouse_name, datestr, sessionid)
             print(f"Time: {time.time() - t : .2f}, Best alpha: {optimize_results['best_alpha']}")
             print(f"Testing ridge regression for: {mouse_name}, {datestr}, {sessionid}:")
-            test_results = test_rrr(mouse_name, datestr, sessionid, optimize_results["best_alpha"], get_ranks())
+            alpha = optimize_results["best_alpha"].item()
+            t = time.time()
+            test_results = test_rrr(mouse_name, datestr, sessionid, alpha, ranks)
+            print(f"Time: {time.time() - t : .2f}")
             rrr_results = {**optimize_results, **test_results}
             pcss.save_temp_file(rrr_results, rrr_tempfile_name(pcss.vrexp))
