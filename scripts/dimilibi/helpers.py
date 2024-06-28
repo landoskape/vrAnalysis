@@ -82,4 +82,4 @@ def make_and_save_populations(all_sessions):
 
 def get_ranks():
     """A subset of ranks to use for optimization and testing."""
-    return [1, 2, 3, 5, 8, 15, 50, 100, 200]
+    return (1, 2, 3, 5, 8, 15, 50, 100, 200)
