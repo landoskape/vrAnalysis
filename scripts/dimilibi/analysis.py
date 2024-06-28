@@ -17,10 +17,17 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     all_sessions = get_sessions()
+
+    # this set of analyses requires consistent train/val/test splits.
+    # make_and_save_populations will generate these splits and save them to a temp file in placeCellSingleSession
     if args.redo_pop_splits:
         make_and_save_populations(all_sessions)
+
+    # this set performs optimization and testing of reduced rank regression. It will cache results and save a
+    # temporary file in placeCellSingleSession containing the scores and best alpha for each session.
     if args.rrr:
         do_rrr_optimization(all_sessions)
+
     if args.network:
         pass
         # do_network_optimization(all_sessions)
