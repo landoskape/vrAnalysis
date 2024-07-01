@@ -148,7 +148,7 @@ class LocalSmoothness(nn.Module):
     loss = sum_{i, j} adjusted_difference_{ij}^2
     """
 
-    def __init__(self, data: torch.Tensor, quantile_threshold: float = 0.1, threshold_value: float = 0.1, quantile_scaling: float = 0.9):
+    def __init__(self, data: torch.Tensor, quantile_threshold: float = 0.1, threshold_value: float = 0.1, quantile_scaling: float = 0.9, reduction: Optional[str] = None):
         """
         Initialize the LocalSmoothness regularizer.
 
@@ -162,14 +162,20 @@ class LocalSmoothness(nn.Module):
             The threshold quantile for the local smoothness regularizer (default is 0.1).
         threshold_value : float
             The value of the smoothing filter at the threshold (default is 0.1).
+        quantile_scaling : float
+            The quantile for determining how much to scale distance differences (default is 0.9).
+        reduction : Optional[str]
+            The reduction to apply to the loss. If "mean", the mean of the loss is returned.
+            If "sum", the sum of the loss is returned. Default is None.
         """
         super().__init__()
         self.quantile_threshold = quantile_threshold
         self.threshold_value = threshold_value
         self.quantile_scaling = quantile_scaling
         self.threshold, self.scaling = self._compute_threshold(data, quantile_threshold, threshold_value, quantile_scaling)
+        self.reduction = reduction
 
-    def forward(self, source: torch.Tensor, target: torch.Tensor) -> float:
+    def forward(self, source: torch.Tensor, target: torch.Tensor, reduction: Optional[str] = None) -> float:
         """
         Compute the local smoothness loss between the source and target data.
 
@@ -179,6 +185,10 @@ class LocalSmoothness(nn.Module):
             The source data (num_samples, num_features).
         target : torch.Tensor
             The target data (num_samples, num_features).
+        reduction : Optional[str]
+            The reduction to apply to the loss. If "mean", the mean of the loss is returned.
+            If "sum", the sum of the loss is returned. Default is None (which will fallback to 
+            whatever was set by the constructor method).
 
         Returns
         -------
@@ -191,8 +201,17 @@ class LocalSmoothness(nn.Module):
         distance_difference = source_distance - target_distance
         adjusted_difference = self._smoothing_filter(source_distance) * distance_difference / self.scaling
 
-        return torch.sum(adjusted_difference**2)
-
+        reduction = reduction or self.reduction
+        if reduction == 'mean':
+            return torch.mean(adjusted_difference**2)
+        elif reduction == 'sum':
+            return torch.sum(adjusted_difference**2)
+        elif reduction is None:
+            return adjusted_difference
+        else:
+            raise ValueError(f"Invalid reduction: {reduction}, must be 'mean', 'sum', or None.")
+        
+        
     def _distance(self, data: torch.Tensor) -> torch.Tensor:
         """
         Compute the pairwise distance between data points.
@@ -286,6 +305,7 @@ class LocalSimilarity(nn.Module):
         dim_target: int,
         filter: Optional[FlexibleFilter] = None,
         mean_learning_rate: float = 0.1,
+        reduction: Optional[str] = 'mean',
     ):
         """
         Initialize the LocalSimilarity regularizer.
@@ -306,12 +326,16 @@ class LocalSimilarity(nn.Module):
             The filter to apply to the similarity values (default is None).
         mean_learning_rate : float
             The learning rate for the source and target means (default is 0.1).
+        reduction : Optional[str]
+            The reduction to apply to the loss. If "mean", the mean of the loss is returned.
+            If "sum", the sum of the loss is returned. Default is 'mean'.
         """
         super().__init__()
         self.source_mean = torch.zeros(dim_source, requires_grad=False)
         self.target_mean = torch.zeros(dim_target, requires_grad=False)
         self.filter = filter
         self.mean_learning_rate = mean_learning_rate
+        self.reduction = reduction
 
     def to(self, device):
         """
@@ -329,7 +353,7 @@ class LocalSimilarity(nn.Module):
             self.filter = self.filter.to(device)
         return self
 
-    def forward(self, source: torch.Tensor, target: torch.Tensor, update_mean_estimate: bool = True) -> float:
+    def forward(self, source: torch.Tensor, target: torch.Tensor, update_mean_estimate: bool = True, reduction: Optional[str] = None) -> float:
         """
         Compute the local similarity loss between the source and target data.
 
@@ -341,6 +365,10 @@ class LocalSimilarity(nn.Module):
             The target data (num_samples, num_features).
         update_mean_estimate : bool
             Whether to update the mean estimate for the source and target data. (default=True)
+        reduction: optional str
+            The reduction to apply to the loss. If "mean", the mean of the loss is returned.
+            If "sum", the sum of the loss is returned. Default is None (which will fallback to 
+            whatever was set by the constructor method).
 
         Returns
         -------
@@ -361,7 +389,16 @@ class LocalSimilarity(nn.Module):
         filtered_similarity = 1.0 if self.filter is None else self.filter(source_similarity)
         adjusted_difference = filtered_similarity * similarity_difference
 
-        return torch.mean(adjusted_difference**2)
+        reduction = reduction or self.reduction
+        if reduction == 'mean':
+            return torch.mean(adjusted_difference**2)
+        elif reduction == 'sum':
+            return torch.sum(adjusted_difference**2)
+        elif reduction is None:
+            return adjusted_difference
+        else:
+            raise ValueError(f"Invalid reduction: {reduction}, must be 'mean', 'sum', or None.")
+
 
     def _similarity(self, data: torch.Tensor, center: torch.Tensor) -> torch.Tensor:
         """
@@ -424,11 +461,12 @@ class BetaVAE_KLDiv(nn.Module):
         Weight for the KL divergence term
     """
 
-    def __init__(self, beta: float = 1.0):
+    def __init__(self, beta: float = 1.0, reduction: str = "mean"):
         super().__init__()
         self.beta = beta
+        self.reduction = reduction
 
-    def forward(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    def forward(self, mu: torch.Tensor, logvar: torch.Tensor, reduction: Optional[str] = None) -> torch.Tensor:
         """
         Compute the β-VAE loss
 
@@ -445,6 +483,9 @@ class BetaVAE_KLDiv(nn.Module):
             Scalar tensor representing the β-VAE loss
         """
         kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        reduction = reduction or self.reduction
+        if reduction == "mean":
+            kl_div /= mu.shape[0]
         return self.beta * kl_div
 
 
