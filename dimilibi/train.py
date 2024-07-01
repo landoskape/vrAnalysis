@@ -17,6 +17,7 @@ def train(
     regularizers,
     beta_regularizer,
     alpha_reg,
+    beta_reg,
     train_source,
     train_target,
     val_source,
@@ -75,7 +76,7 @@ def train(
         standard_regs = [reg(source_batch, pred) for reg, pred in zip(regularizers, predictions)]
         beta_regs = [beta_regularizer(*mlv) for mlv in mulogvar]
 
-        full_loss = [loss + alpha_reg * sreg + breg for loss, sreg, breg in zip(losses, standard_regs, beta_regs)]
+        full_loss = [loss + alpha_reg * sreg + beta_reg * breg for loss, sreg, breg in zip(losses, standard_regs, beta_regs)]
         for loss in full_loss:
             loss.backward()
 
