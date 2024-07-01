@@ -17,8 +17,7 @@ from dimilibi import BetaVAE, SVCANet, LocalSimilarity, EmptyRegularizer, BetaVA
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-def optimize_networks(mouse_name, datestr, sessionid, ranks, betavae=False, regularize=False):
+def optimize_networks(mouse_name, datestr, sessionid, ranks, betavae=False):
 
     npop = load_population(mouse_name, datestr, sessionid)
 
@@ -48,31 +47,27 @@ def optimize_networks(mouse_name, datestr, sessionid, ranks, betavae=False, regu
         for dim_latent in num_latent
     ]
 
-    loss_function = torch.nn.MSELoss()
+    loss_function = torch.nn.MSELoss(reduction='sum')
     if betavae:
-        standard_reg_weight = 0.0
-        standard_regularizers = [EmptyRegularizer() for _ in range(len(nets))]
-        beta_regularizer = BetaVAE_KLDiv(beta=1)
+        beta_regularizer = BetaVAE_KLDiv(beta=1, reduction='sum')
     else:
-        if regularize:
-            standard_reg_weight = 1e4
-            flex_filter = FlexibleFilter(baseline=0.1, negative_scale=0.0)
-            standard_regularizers = [LocalSimilarity(num_neurons, num_timepoints, filter=flex_filter).to(device) for _ in range(len(nets))]
-        else:
-            standard_reg_weight = 0.0
-            standard_regularizers = [EmptyRegularizer() for _ in range(len(nets))]
         beta_regularizer = EmptyRegularizer()
 
+    standard_reg_weight = 0
+    beta_reg_weight = 10
+    standard_regularizers = [EmptyRegularizer() for _ in nets]
+    
     weight_decay = 1e1
     opts = [torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=weight_decay) for net in nets]
 
-    results = train(
+    _results = train(
         nets,
         opts,
         loss_function,
         standard_regularizers,
         beta_regularizer,
         standard_reg_weight,
+        beta_reg_weight,
         train_source,
         train_target,
         val_source,
@@ -83,6 +78,28 @@ def optimize_networks(mouse_name, datestr, sessionid, ranks, betavae=False, regu
         betavae=betavae,
         device=device,
         num_epochs=2000,
+    )
+
+    # validation just picks the best epoch (e.g. early stopping)
+    best_val_epoch = torch.argmax(_results["val_score"], dim=1)
+
+    # then we save the results for the best epoch from the test set over training
+    test_loss = torch.gather(_results["test_loss"], 1, best_val_epoch.unsqueeze(0)).squeeze(0)
+    test_score = torch.gather(_results["test_score"], 1, best_val_epoch.unsqueeze(0)).squeeze(0)
+    test_scaled_mse = torch.gather(_results["test_scaled_mse"], 1, best_val_epoch.unsqueeze(0)).squeeze(0)
+
+    results = dict(
+        mouse_name=mouse_name,
+        datestr=datestr,
+        sessionid=sessionid,
+        ranks=ranks,
+        best_epoch=best_val_epoch,
+        test_loss=test_loss,
+        test_score=test_score,
+        test_scaled_mse=test_scaled_mse,
+        val_loss_trajectory=_results["val_loss"],
+        val_score_trajectory=_results["val_score"],
+        val_scaled_mse_trajectory=_results["val_scaled_mse"],
     )
 
     return results
@@ -109,17 +126,14 @@ def do_network_optimization(all_sessions):
     """
     ranks = get_ranks()
     network_parameters = dict(
-        betavae=dict(betavae=True, regularize=False),
-        standard=dict(betavae=False, regularize=False),
-        regularized=dict(betavae=False, regularize=True),
+        betavae=dict(betavae=True),
+        standard=dict(betavae=False),
     )
     for mouse_name, sessions in all_sessions.items():
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
             print(f"Optimizing network models for: {mouse_name}, {datestr}, {sessionid}:")
             for net_name, net_prms in network_parameters.items():
-                t = time.time()
                 optimize_results = optimize_networks(mouse_name, datestr, sessionid, ranks, **net_prms)
-                print(f"Time: {time.time() - t : .2f}, Best epoch: {optimize_results['best_epoch']}, Best Score: {optimize_results['val_score']}")
                 pcss.save_temp_file(optimize_results, network_tempfile_name(pcss.vrexp, net_name))
 
