@@ -43,7 +43,7 @@ class Population:
             self.split_cells(**cell_split_prms)
             self.split_times(**time_split_prms)
 
-    def get_split_data(self, time_idx: int = 0, center: bool = False, scale: bool = False):
+    def get_split_data(self, time_idx: int = 0, center: bool = False, scale: bool = False, pre_split: bool = False):
         """
         Get the source and target data for a specific set of timepoints.
 
@@ -58,6 +58,8 @@ class Population:
         scale : bool
             If True, will scale the data so each neuron has a standard deviation of 1 across timepoints
             (default is False)
+        pre_split : bool
+            If True, will center and scale the data before splitting into source and target data
 
         Returns
         -------
@@ -74,16 +76,38 @@ class Population:
 
         assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
 
+        if pre_split:
+            if center: 
+                source_mean = self.data[self.cell_split_indices[0]].mean(dim=1, keepdim=True)
+                target_mean = self.data[self.cell_split_indices[1]].mean(dim=1, keepdim=True)
+            if scale:
+                source_std = self.data[self.cell_split_indices[0]].std(dim=1, keepdim=True)
+                target_std = self.data[self.cell_split_indices[1]].std(dim=1, keepdim=True)
+                source_std[source_std == 0] = 1
+                target_std[target_std == 0] = 1
+
         source = self.data[self.cell_split_indices[0]][:, self.time_split_indices[time_idx]]
         target = self.data[self.cell_split_indices[1]][:, self.time_split_indices[time_idx]]
 
         if center:
-            source = source - source.mean(dim=1, keepdim=True)
-            target = target - target.mean(dim=1, keepdim=True)
+            if pre_split:
+                source = source - source_mean
+                target = target - target_mean
+            else:
+                source = source - source.mean(dim=1, keepdim=True)
+                target = target - target.mean(dim=1, keepdim=True)
 
         if scale:
-            source = source / source.std(dim=1, keepdim=True)
-            target = target / target.std(dim=1, keepdim=True)
+            if pre_split: 
+                source = source / source_std
+                target = target / target_std
+            else:
+                source_std = source.std(dim=1, keepdim=True)
+                target_std = target.std(dim=1, keepdim=True)
+                source_std[source_std == 0] = 1
+                target_std[target_std == 0] = 1
+                source = source / source_std
+                target = target / target_std
 
         return source, target
 
