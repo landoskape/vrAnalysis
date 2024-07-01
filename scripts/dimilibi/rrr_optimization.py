@@ -141,6 +141,7 @@ def test_rrr(mouse_name, datestr, sessionid, alpha, ranks):
     test_scaled_mse_by_rank = [scaled_mse(rrr.predict(test_source.T, rank=r).T, test_target, reduce="mean") for r in tqdm(ranks)]
 
     results = dict(
+        ranks=ranks,
         test_score=test_score,
         test_scaled_mse=test_scaled_mse,
         test_score_by_rank=test_score_by_rank,
