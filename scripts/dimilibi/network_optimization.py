@@ -110,7 +110,7 @@ def network_tempfile_name(vrexp, net_name):
     return f"network_optimization_results_{net_name}_{str(vrexp)}"
 
 
-def do_network_optimization(all_sessions):
+def do_network_optimization(all_sessions, skip_completed=True):
     """
     Perform optimization and testing of network models on peer prediction.
 
@@ -132,8 +132,11 @@ def do_network_optimization(all_sessions):
     for mouse_name, sessions in all_sessions.items():
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
-            print(f"Optimizing network models for: {mouse_name}, {datestr}, {sessionid}:")
             for net_name, net_prms in network_parameters.items():
+                if skip_completed and pcss.check_temp_file(network_tempfile_name(pcss.vrexp, net_name)):
+                        print(f"Found completed optimization for: {mouse_name}, {datestr}, {sessionid}, {net_name}")
+                        continue
+                print(f"Optimizing network models for: {mouse_name}, {datestr}, {sessionid}, {net_name}:")
                 optimize_results = optimize_networks(mouse_name, datestr, sessionid, ranks, **net_prms)
                 pcss.save_temp_file(optimize_results, network_tempfile_name(pcss.vrexp, net_name))
 

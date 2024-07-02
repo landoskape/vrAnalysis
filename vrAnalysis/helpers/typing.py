@@ -1,3 +1,6 @@
+from argparse import ArgumentTypeError
+
+
 def cutoff_type(cutoff):
     if cutoff is None:
         return cutoff
@@ -26,9 +29,7 @@ def positive_unit_float(value):
 
 
 def positive_float(value):
-    """
-    Check if a value is a float that is greater than 0
-    """
+    """Check if a value is a float that is greater than 0"""
     # First try to convert the value to a float
     try:
         value = float(value)
@@ -40,3 +41,15 @@ def positive_float(value):
         raise ValueError("value is not greater than 0")
 
     return value
+
+
+def argbool(value):
+    """Convert a string to a boolean (for use with ArgumentParser)"""
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif value.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise ArgumentTypeError("Boolean value expected.")
