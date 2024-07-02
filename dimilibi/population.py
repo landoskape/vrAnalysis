@@ -12,7 +12,7 @@ class Population:
     are splitting cells into groups and splitting the timepoints into groups (often with special considerations for intelligent cross-validation).
     """
 
-    def __init__(self, data: Union[np.ndarray, torch.Tensor], generate_splits: bool = True, cell_split_prms={}, time_split_prms={}):
+    def __init__(self, data: Union[np.ndarray, torch.Tensor], generate_splits: bool = True, cell_split_prms={}, time_split_prms={}, dtype: Optional[torch.dtype] = None):
         """
         Initialize the Population object
 
@@ -23,6 +23,15 @@ class Population:
         generate_splits : bool
             If True, will generate splits for cells and timepoints using any parameters in cell_split_prms and time_split_prms, respectively.
             (default is True)
+        cell_split_prms : dict
+            Parameters for splitting the cells into groups.
+            (default is {})
+        time_split_prms : dict
+            Parameters for splitting the timepoints into groups.
+            (default is {})
+        dtype : Optional[torch.dtype]
+            The data type to cast the data to if it isn't already a torch tensor.
+            (default is None)
         """
         if isinstance(data, np.ndarray):
             data = torch.from_numpy(data)
@@ -35,6 +44,7 @@ class Population:
 
         self.data = data
         self.num_neurons, self.num_timepoints = data.shape
+        self.dtype = dtype
 
         if generate_splits:
             # remove return_indices from the parameters to avoid returning the indices (force storing as attributes when called in constructor method)
@@ -108,6 +118,10 @@ class Population:
                 target_std[target_std == 0] = 1
                 source = source / source_std
                 target = target / target_std
+
+        if self.dtype is not None:
+            source = source.to(self.dtype)
+            target = target.to(self.dtype)
 
         return source, target
 
@@ -281,6 +295,7 @@ class Population:
             "time_split_indices": [indices.tolist() for indices in self.time_split_indices] if hasattr(self, "time_split_indices") else None,
             "num_neurons": self.num_neurons,
             "num_timepoints": self.num_timepoints,
+            "dtype": self.dtype,
         }
 
     @classmethod
@@ -312,7 +327,7 @@ class Population:
                 f"({indices_dict['num_neurons']}, {indices_dict['num_timepoints']})"
             )
 
-        population = cls(data, generate_splits=False)
+        population = cls(data, generate_splits=False, dtype=indices_dict.get("dtype", None))
 
         if indices_dict["cell_split_indices"]:
             population.cell_split_indices = [torch.tensor(indices) for indices in indices_dict["cell_split_indices"]]
