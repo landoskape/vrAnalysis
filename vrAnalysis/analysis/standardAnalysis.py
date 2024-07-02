@@ -32,12 +32,22 @@ class standardAnalysis:
         with open(self.saveDirectory("temp") / name, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+    def check_temp_file(self, name):
+        """
+        check if a temporary file exists
+
+        checks if a temporary file exists in the analysis directory with the name provided
+        """
+        return (self.saveDirectory("temp") / name).is_file()
+    
     def load_temp_file(self, name):
         """
         load a temporary file
 
         load a temporary file from the analysis directory with the name provided
         """
+        if not self.check_temp_file(name):
+            return None
         with open(self.saveDirectory("temp") / name, "rb") as f:
             data = pickle.load(f)
         return data
