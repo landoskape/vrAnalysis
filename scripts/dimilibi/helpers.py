@@ -1,5 +1,6 @@
 import os, sys
 from joblib import Memory
+from torch import float32 as torch_float32
 
 # create a memory object from joblib to store the results of function calls throughout dimilibi scripts
 memory = Memory("./cachedir", verbose=0)
@@ -63,7 +64,9 @@ def load_population(mouse_name, datestr, sessionid):
     pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
     indices_dict = pcss.load_temp_file(f"population_{str(pcss.vrexp)}")
     ospks = load_session_data(mouse_name, datestr, sessionid)
-    return Population.make_from_indices(indices_dict, ospks.T)
+    npop = Population.make_from_indices(indices_dict, ospks.T)
+    npop.dtype = torch_float32
+    return npop
 
 
 def make_and_save_populations(all_sessions):
