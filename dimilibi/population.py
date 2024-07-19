@@ -53,7 +53,7 @@ class Population:
             self.split_cells(**cell_split_prms)
             self.split_times(**time_split_prms)
 
-    def get_split_data(self, time_idx: int = 0, center: bool = False, scale: bool = False, pre_split: bool = False):
+    def get_split_data(self, time_idx: int = 0, center: bool = False, scale: bool = False, pre_split: bool = False, scale_type: Optional[str] = None):
         """
         Get the source and target data for a specific set of timepoints.
 
@@ -70,6 +70,12 @@ class Population:
             (default is False)
         pre_split : bool
             If True, will center and scale the data before splitting into source and target data
+        scale_type : Optional[str]
+            How to scale the data. 
+            =[None, 'std'] -> will scale the data by the standard deviation of the source data.
+            ='sqrt' -> will scale the data by the square root of the standard deviation of the source data.
+            ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1, 
+            and the other neurons will be scaled accordingly (preserving the relative standard deviation).
 
         Returns
         -------
@@ -108,16 +114,25 @@ class Population:
                 target = target - target.mean(dim=1, keepdim=True)
 
         if scale:
-            if pre_split: 
-                source = source / source_std
-                target = target / target_std
-            else:
+            # prepare source / target standard deviation if not pre-computed
+            if not pre_split:
                 source_std = source.std(dim=1, keepdim=True)
                 target_std = target.std(dim=1, keepdim=True)
                 source_std[source_std == 0] = 1
                 target_std[target_std == 0] = 1
+            
+            # normalize source and target appropriately
+            if scale_type is None or scale_type == "std":
                 source = source / source_std
                 target = target / target_std
+            elif scale_type == "sqrt":
+                source = source / torch.sqrt(source_std)
+                target = target / torch.sqrt(target_std)
+            elif scale_type == "preserve":
+                source = source / source_std.median()
+                target = target / target_std.median()
+            else:
+                raise ValueError(f"scale_type must be one of [None, 'std', 'sqrt', 'preserve'], got {scale_type}")
 
         if self.dtype is not None:
             source = source.to(self.dtype)
@@ -190,6 +205,9 @@ class Population:
             (default is None)
         chunks_per_group : int
             Number of chunks for each group (subject to scaling by relative size)
+            > if positive, will make chunks as big as possible given the other parameters such that the
+            total number of chunks match the request. 
+            > if negative, will instead make chunks have the number of samples corresponding to the number provided.
             (default is 5)
         num_buffer : int
             Number of buffer timepoints between each chunk.
@@ -214,6 +232,12 @@ class Population:
         # randomize order of chunks
         time_chunks = [time_chunks[i] for i in torch.randperm(len(time_chunks))]
 
+        if chunks_per_group < 0:
+            # if chunks_per_group is negative, then the number of chunks is fixed and the chunks are the size of the number provided
+            # this can cause uneven group sizes -- so we just clip whatever chunks are leftover
+            num_chunks = len(time_chunks)
+            chunks_per_group = num_chunks // sum(relative_size)
+
         # consolidate chunks into groups
         start_stop_index = torch.cumsum(torch.tensor([0] + [rs * chunks_per_group for rs in relative_size]), dim=0)
         time_split_indices = []
@@ -235,6 +259,9 @@ class Population:
             A tensor of indices to split into chunks.
         num_chunks : int
             Number of chunks to split the indices into.
+            > If positive, will make chunks as big as possible given the other parameters such that the
+            total number of chunks match the request.
+            > If negative, will instead make chunks have the number of samples corresponding to the number provided.
         num_buffer : int
             Number of buffer indices between each chunk.
         force_even : bool
@@ -248,21 +275,31 @@ class Population:
             A list of tensors representing the chunked indices.
         """
         assert num_buffer >= 0, "num_buffer must be greater than or equal to 0"
+        assert num_chunks != 0 and isinstance(num_chunks, int), "num_chunks must be a non-zero integer"
 
-        num_buffered_indices = num_buffer * (num_chunks - 1)
+        if num_chunks > 0:
+            num_buffered_samples = num_buffer * (num_chunks - 1)
 
-        # Clip indices to be divisible by num_chunks if requested by user (clip the later indices)
-        # drop_buffer is the number of additional indices that have to be dropped when even chunks are requested
-        if force_even:
-            each_chunk_size = (len(indices) - num_buffered_indices) // num_chunks
-            chunk_sizes = [each_chunk_size] * num_chunks
-            drop_buffer = len(indices) - (sum(chunk_sizes) + num_buffered_indices)
+            # Clip indices to be divisible by num_chunks if requested by user (clip the later indices)
+            # drop_buffer is the number of additional indices that have to be dropped when even chunks are requested
+            if force_even:
+                each_chunk_size = (len(indices) - num_buffered_samples) // num_chunks
+                chunk_sizes = [each_chunk_size] * num_chunks
+                drop_buffer = len(indices) - (sum(chunk_sizes) + num_buffered_samples)
+            else:
+                num_chunked_indices = len(indices) - num_buffered_samples
+                minimum_chunk_size = num_chunked_indices // num_chunks
+                num_remainder = num_chunked_indices - minimum_chunk_size * num_chunks
+                chunk_sizes = [minimum_chunk_size + 1 * (i < num_remainder) for i in range(num_chunks)]
+                drop_buffer = 0
+
         else:
-            num_chunked_indices = len(indices) - num_buffered_indices
-            minimum_chunk_size = num_chunked_indices // num_chunks
-            num_remainder = num_chunked_indices - minimum_chunk_size * num_chunks
-            chunk_sizes = [minimum_chunk_size + 1 * (i < num_remainder) for i in range(num_chunks)]
-            drop_buffer = 0
+            # All chunks are the same size
+            number_of_chunks = len(indices) // (-num_chunks + num_buffer)
+            chunk_sizes = [-num_chunks] * number_of_chunks
+            samples_in_chunks = len(chunk_sizes) * -num_chunks
+            drop_buffer = len(indices) - samples_in_chunks - (len(chunk_sizes) - 1) * num_buffer
+            num_chunks = len(chunk_sizes)
 
         # Assign the size to each group (chunk / buffer / chunk / buffer / ... / chunk / drop_buffer)
         bin_size = []
