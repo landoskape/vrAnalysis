@@ -485,7 +485,7 @@ class BetaVAE_KLDiv(nn.Module):
         kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         reduction = reduction or self.reduction
         if reduction == "mean":
-            kl_div /= mu.shape[0]
+            kl_div /= mu.numel()
         return self.beta * kl_div
 
 
