@@ -184,3 +184,42 @@ def do_rrr_optimization(all_sessions):
             print(f"Time: {time.time() - t : .2f}")
             rrr_results = {**optimize_results, **test_results}
             pcss.save_temp_file(rrr_results, rrr_tempfile_name(pcss.vrexp))
+
+def load_rrr_results(all_sessions, results='all'):
+    rrr_results = []
+    for mouse_name, sessions in all_sessions.items():
+        for datestr, sessionid in sessions:
+            pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
+            rrr_filename = rrr_tempfile_name(pcss.vrexp)
+            if not pcss.check_temp_file(rrr_filename):
+                print(f"Skipping rrr_results from {mouse_name}, {datestr}, {sessionid} (not found)")
+                continue
+            print(f"Loading rrr_results from {mouse_name}, {datestr}, {sessionid}")
+            rrr_results.append(pcss.load_temp_file(rrr_filename))
+    if results=='all':
+        return rrr_results
+    if results=='test_by_mouse':
+        ranks = rrr_results[0]["ranks"]
+        for rrr_res in rrr_results:
+            assert rrr_res["ranks"] == ranks, "ranks are not all equal"
+        num_ranks = len(ranks)
+        mouse_names = list(set([res["mouse_name"] for res in rrr_results]))
+        num_mice = len(mouse_names)
+        test_scores = torch.zeros((num_mice, num_ranks))
+        test_scaled_mses = torch.zeros((num_mice, num_ranks))
+        num_samples = torch.zeros(num_mice)
+        for rrr_res in rrr_results:
+            mouse_idx = mouse_names.index(rrr_res["mouse_name"])
+            test_scores[mouse_idx] += torch.tensor(rrr_res["test_score_by_rank"])
+            test_scaled_mses[mouse_idx] += torch.tensor(rrr_res["test_scaled_mse_by_rank"])
+            num_samples[mouse_idx] += 1
+        # get average for each mouse
+        test_scores /= num_samples.unsqueeze(1)
+        test_scaled_mses /= num_samples.unsqueeze(1)
+        return dict(
+            mouse_names=mouse_names,
+            ranks=ranks,
+            test_scores=test_scores,
+            test_scaled_mses=test_scaled_mses,
+        )
+    raise ValueError(f"results must be 'all' or 'test_by_mouse', got {results}")
