@@ -61,7 +61,7 @@ class ReducedRankRegression:
 
         return self
 
-    def predict(self, X: torch.Tensor, rank: Optional[int] = None) -> torch.Tensor:
+    def predict(self, X: torch.Tensor, rank: Optional[int] = None, nonnegative: Optional[bool] = False) -> torch.Tensor:
         """
         Predict the target data using the ReducedRankRegression model.
 
@@ -71,6 +71,8 @@ class ReducedRankRegression:
             The input data (num_samples, num_features).
         rank : Optional[int]
             The rank of the model (default is None).
+        nonnegative : Optional[bool]
+            If True, will apply a ReLU to the prediction (default is False).
 
         Returns
         -------
@@ -81,9 +83,15 @@ class ReducedRankRegression:
             X = self._add_intercept(X)
 
         beta_rrr = self._make_coefficients(rank or self.rank)
-        return X @ beta_rrr
+        prediction = X @ beta_rrr
 
-    def score(self, X: torch.Tensor, y: torch.Tensor, rank: Optional[int] = None) -> torch.Tensor:
+        if nonnegative:
+            prediction = torch.relu(prediction)
+        
+        return prediction
+    
+
+    def score(self, X: torch.Tensor, y: torch.Tensor, rank: Optional[int] = None, nonnegative: Optional[bool] = False) -> torch.Tensor:
         """
         Score the ReducedRankRegression model on the provided data.
 
@@ -95,16 +103,20 @@ class ReducedRankRegression:
             The target data (num_samples, num_targets).
         rank : Optional[int]
             The rank of the model (default is None, which will use the originally registered rank).
+        nonnegative : Optional[bool]
+            If True, will apply a ReLU to the prediction (default is False).
 
         Returns
         -------
         r2 : torch.Tensor
             The coefficient of determination (R^2) for the model.
         """
-        y_pred = self.predict(X, rank=rank)
+        y_pred = self.predict(X, rank=rank, nonnegative=nonnegative)
         ss_res = ((y - y_pred) ** 2).sum(dim=1)
         ss_tot = ((y - y.mean(dim=1, keepdim=True)) ** 2).sum(dim=1)
         r2 = 1 - ss_res / ss_tot
+        r2[ss_res == 0] = 1.0
+        r2[ss_tot == 0] = 0.0
         return r2.mean()
 
     def _make_coefficients(self, rank) -> torch.Tensor:
