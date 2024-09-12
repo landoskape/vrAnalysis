@@ -1,9 +1,12 @@
 import os, sys
 from joblib import Memory
 from torch import float32 as torch_float32
+import torch
 
 # create a memory object from joblib to store the results of function calls throughout dimilibi scripts
 memory = Memory("./cachedir", verbose=0)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # import from dimilibi package
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
