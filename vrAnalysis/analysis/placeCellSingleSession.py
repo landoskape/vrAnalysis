@@ -355,6 +355,7 @@ class placeCellSingleSession(standardAnalysis):
         numcv=2,
         standardizeSpks=True,
         smoothWidth=1,
+        use_all_rois=False,
     ):
         self.name = "placeCellSingleSession"
         self.onefile = onefile
@@ -365,6 +366,7 @@ class placeCellSingleSession(standardAnalysis):
         self.standardizeSpks = standardizeSpks
         self.smoothWidth = smoothWidth
         self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value["roiPerPlane"]))]
+        self.use_all_rois = use_all_rois
 
         # automatically load data
         self.dataloaded = False
@@ -509,7 +511,7 @@ class placeCellSingleSession(standardAnalysis):
             "onefile": self.onefile,
             "speedThreshold": self.speedThreshold,
             "standardizeSpks": self.standardizeSpks,
-            "idxROIs": self.idxUseROI,
+            "idxROIs": self.idxUseROI if not self.use_all_rois else None,
             "speedSmoothing": self.smoothWidth,
         }
         self.occmap, self.speedmap, _, self.rawspkmap, self.sample_counts, self.distedges = helpers.getBehaviorAndSpikeMaps(self.vrexp, **kwargs)
