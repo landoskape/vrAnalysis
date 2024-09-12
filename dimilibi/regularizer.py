@@ -52,6 +52,32 @@ class FlexibleFilter(nn.Module):
         self.positive_steepness = torch.tensor(positive_steepness, device=self.device)
         self.negative_steepness = torch.tensor(negative_steepness, device=self.device)
 
+        # Scale to the maximum absolute value (using a "gridsearch" but doesn't have to be super accurate)
+        x = torch.linspace(-1, 1, 101, device=self.device)
+        y = self._transfer_function(x)
+        self.norm_scale = torch.max(torch.abs(y))
+
+    def _transfer_function(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the filter to the input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor, should be in the range [-1, 1] but it doesn't have to be.
+
+        Returns
+        -------
+        torch.Tensor
+            x passed through transfer function of two sigmoids and a baseline offset
+        """
+        x = torch.as_tensor(x, dtype=torch.float32, device=self.device)
+
+        positive_activation = torch.sigmoid(self.positive_steepness * (x - self.positive_center))
+        negative_activation = 1 - torch.sigmoid(self.negative_steepness * (x - self.negative_center))
+
+        return self.baseline + self.positive_scale * positive_activation + self.negative_scale * negative_activation
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Apply the filter to the input.
@@ -64,14 +90,9 @@ class FlexibleFilter(nn.Module):
         Returns
         -------
         torch.Tensor
-            Filtered output in the range [0, 1].
+            Transfer function with scaling applied to the sigmoidal components
         """
-        x = torch.as_tensor(x, dtype=torch.float32, device=self.device)
-
-        positive_activation = torch.sigmoid(self.positive_steepness * (x - self.positive_center))
-        negative_activation = 1 - torch.sigmoid(self.negative_steepness * (x - self.negative_center))
-
-        return self.baseline + self.positive_scale * positive_activation + self.negative_scale * negative_activation
+        return self._transfer_function(x) / self.norm_scale
 
     def plot(self, num_points: int = 1000) -> None:
         """
@@ -514,3 +535,69 @@ class EmptyRegularizer(nn.Module):
             Scalar tensor representing the loss, always 0.
         """
         return torch.tensor(0.0, device=x.device)
+
+
+class EarlyStopping:
+    """
+    A simple class to implement early stopping for multiple networks.
+
+    Parameters
+    ----------
+    num_networks : int
+        The number of networks to track.
+    patience : int
+        The number of epochs to wait before stopping.
+    min_delta : float
+        The minimum change in score to be considered an improvement.
+    direction : str
+        The direction to optimize in, either 'minimize' or 'maximize'.
+    
+    The early stopping is implemented by tracking the best score for each network, 
+    and incrementing a counter when the score does not improve. When the counter 
+    exceeds the patience, the early stop flag is set to True.
+
+    The direction parameter determines whether the score should be minimized or
+    maximized. For example, if the direction is 'minimize', then the best score
+    is the lowest score seen so far, and the counter is incremented when a new
+    score is higher than the best score by at least min_delta.
+
+    The early stop flag is a boolean tensor of shape (num_networks,) where each
+    element is True if the network should stop early. The early stop flag is 
+    reset to False when the score improves. 
+
+    To use the early stopping, call the object with the scores for each network
+    and it will return the early stop flag for each network.
+
+    Usage
+    -----
+    early_stopping = EarlyStopping(num_networks, patience=5, min_delta=0, direction='minimize')
+    early_stop = early_stopping(scores)
+    if early_stop.any():
+        print("Early stopping for some networks")
+    if early_stop.all():
+        print("Early stopping for all networks")
+        break
+    """
+    def __init__(self, num_networks, patience=5, min_delta=0, direction='minimize'):
+        assert direction in ['minimize', 'maximize'], "Direction must be either 'minimize' or 'maximize'"
+        self.num_networks = num_networks
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = torch.zeros(num_networks, dtype=torch.long)
+        self.best_score = torch.full((num_networks,), float('inf') if direction == 'minimize' else float('-inf'))
+        self.early_stop = torch.zeros(num_networks, dtype=torch.bool)
+        self.direction = direction
+
+    def __call__(self, scores):
+        assert scores.shape[0] == self.num_networks, "Number of scores must match number of networks"
+        
+        if self.direction == 'minimize':
+            improved = self.best_score - scores > self.min_delta
+        else:  # otherwise maximize
+            improved = scores - self.best_score > self.min_delta
+
+        self.best_score = torch.where(improved, scores, self.best_score)
+        self.counter = torch.where(improved, torch.zeros_like(self.counter), self.counter + 1)
+        self.early_stop = self.counter >= self.patience
+        
+        return self.early_stop
