@@ -15,6 +15,29 @@ def kaiming_init(m):
         if m.bias is not None:
             m.bias.data.fill_(0)
 
+class _TransparentReLU(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        ctx.save_for_backward(input)
+        return input.clamp(min=0)
+    @staticmethod
+    def backward(_, grad_output): 
+        return grad_output
+    
+class TransparentReLU(nn.Module):
+    """
+    Transparent ReLU activation function
+
+    This is an implementation of the ReLU where the gradient is passed through as if 
+    there wasn't a ReLU. This is useful when the distance from 0 (for negative numbers)
+    is relevant to the model. 
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input):
+        return _TransparentReLU.apply(input)
 
 class SVCANet(nn.Module):
     """
@@ -32,6 +55,8 @@ class SVCANet(nn.Module):
         num_target_neurons: int = None,
         activation: nn.Module = nn.ReLU(),
         nonnegative: bool = True,
+        transparent_relu: bool = False,
+        dropout_rate: float = 0.0,
     ):
         """
         Initialize the SVCA Network
@@ -50,6 +75,10 @@ class SVCANet(nn.Module):
             Activation function to use in the hidden layers (default is nn.ReLU())
         nonnegative : bool
             If True, will apply a non-negative constraint to the output layer (default is True)
+        transparent_relu : bool
+            If True, will use a transparent ReLU activation function (default is False)
+        dropout_rate : float
+            Dropout rate to apply to the hidden layers (default is 0.0)
         """
         super().__init__()
         self.num_neurons = num_neurons
@@ -58,6 +87,9 @@ class SVCANet(nn.Module):
         self.num_target_neurons = num_target_neurons or num_neurons
         self.activation = activation
         self.nonnegative = nonnegative
+        self.transparent_relu = transparent_relu
+        self.dropout_rate = dropout_rate
+        self.dropout = nn.Dropout(dropout_rate)
         self._build_encoder()
         self._build_decoder()
         self._init_weights()
@@ -99,15 +131,34 @@ class SVCANet(nn.Module):
 
         self.output = nn.Linear(prev_width, self.num_target_neurons)
 
-        if self.nonnegative:
-            self.output = nn.Sequential(self.output, nn.SELU())
+        if not self.nonnegative:
+            self.final_nonlinearity = nn.Identity()
+        elif self.transparent_relu:
+            self.final_nonlinearity = TransparentReLU()
+        else:
+            self.final_nonlinearity = nn.ReLU()
 
+        if self.activation == nn.ReLU() and self.transparent_relu:
+            self.activation = TransparentReLU()
+        
     def _init_weights(self):
         """
         Initialize the weights of the network. Uses the Kaiming initialization method.
         """
         for m in self.modules():
             kaiming_init(m)
+
+    def update_dropout_rate(self, dropout_rate: float):
+        """
+        Update the dropout rate of the hidden layers.
+
+        Parameters
+        ----------
+        dropout_rate : float
+            New dropout rate to apply to the hidden layers
+        """
+        self.dropout_rate = dropout_rate
+        self.dropout.p = dropout_rate
 
     def forward(self, x: torch.Tensor, store_hidden: bool = False) -> torch.Tensor:
         """
@@ -127,15 +178,14 @@ class SVCANet(nn.Module):
             Output tensor of shape (batch_size, num_neurons, num_timepoints) or (num_neurons, num_timepoints)
         """
         for layer in self.encoder_hidden:
-            x = self.activation(layer(x))
+            x = self.dropout(self.activation(layer(x)))
         x = self.norm(x)
-        latent = self.latent(x)
+        x = self.latent(x) # latent activation
         if store_hidden:
-            self.latent = latent
-        x = latent
+            self.latent = x.clone()
         for layer in self.decoder_hidden:
-            x = self.activation(layer(x))
-        return self.output(x)
+            x = self.dropout(self.activation(layer(x)))
+        return self.final_nonlinearity(self.output(x))
 
     def score(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
@@ -205,6 +255,7 @@ class BetaVAE(nn.Module):
         num_target_neurons: int = None,
         activation: nn.Module = nn.ReLU(),
         nonnegative: bool = True,
+        transparent_relu: bool = False,
     ):
         super().__init__()
         self.num_neurons = num_neurons
@@ -213,6 +264,7 @@ class BetaVAE(nn.Module):
         self.num_target_neurons = num_target_neurons or num_neurons
         self.activation = activation
         self.nonnegative = nonnegative
+        self.transparent_relu = transparent_relu
         self._build_encoder()
         self._build_decoder()
         self._init_weights()
@@ -246,8 +298,13 @@ class BetaVAE(nn.Module):
             self.decoder_hidden.append(nn.Linear(prev_width, width))
             prev_width = width
         self.output = nn.Linear(prev_width, self.num_target_neurons)
-        if self.nonnegative:
-            self.output = nn.Sequential(self.output, nn.SELU())
+
+        if not self.nonnegative:
+            self.final_nonlinearity = nn.Identity()
+        elif self.transparent_relu:
+            self.final_nonlinearity = TransparentReLU()
+        else:
+            self.final_nonlinearity = nn.ReLU()
 
     def _init_weights(self):
         """
@@ -313,7 +370,7 @@ class BetaVAE(nn.Module):
         """
         for layer in self.decoder_hidden:
             z = self.activation(layer(z))
-        return self.output(z)
+        return self.final_nonlinearity(self.output(z))
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
