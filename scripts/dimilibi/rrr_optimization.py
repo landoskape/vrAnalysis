@@ -17,12 +17,12 @@ from dimilibi import ReducedRankRegression, scaled_mse
 
 def get_init_alphas():
     """initial alphas to test for ridge regression"""
-    return torch.logspace(6, 10, 5)
+    return torch.logspace(2, 8, 7)
 
 
 def get_next_alphas(init_alpha):
     """next alphas to test for ridge regression based on best initial alpha"""
-    return torch.logspace(torch.log10(init_alpha) - 0.2, torch.log10(init_alpha) + 0.2, 5)
+    return torch.logspace(torch.log10(init_alpha) - 0.4, torch.log10(init_alpha) + 0.4, 5)
 
 
 @memory.cache
@@ -63,8 +63,8 @@ def optimize_rrr(mouse_name, datestr, sessionid):
     npop = load_population(mouse_name, datestr, sessionid)
 
     # split the data into training and validation sets
-    train_source, train_target = npop.get_split_data(0, center=True, scale=False)
-    val_source, val_target = npop.get_split_data(1, center=True, scale=False)
+    train_source, train_target = npop.get_split_data(0, center=False, scale=True, scale_type="preserve")
+    val_source, val_target = npop.get_split_data(1, center=False, scale=True, scale_type="preserve")
 
     # get initial estimate for the best alpha
     init_alphas = get_init_alphas()
@@ -127,8 +127,8 @@ def test_rrr(mouse_name, datestr, sessionid, alpha, ranks):
 
     npop = load_population(mouse_name, datestr, sessionid)
 
-    train_source, train_target = npop.get_split_data(0, center=True, scale=False)
-    test_source, test_target = npop.get_split_data(2, center=True, scale=False)
+    train_source, train_target = npop.get_split_data(0, center=False, scale=True, scale_type="preserve")
+    test_source, test_target = npop.get_split_data(2, center=False, scale=True, scale_type="preserve")
 
     rrr = ReducedRankRegression(alpha=alpha, fit_intercept=False).fit(train_source.T, train_target.T)
 
@@ -156,7 +156,7 @@ def rrr_tempfile_name(vrexp):
     return f"rrr_optimization_results_{str(vrexp)}"
 
 
-def do_rrr_optimization(all_sessions):
+def do_rrr_optimization(all_sessions, skip_completed=True, save=True):
     """
     Perform ridge regression optimization and testing.
 
@@ -173,6 +173,9 @@ def do_rrr_optimization(all_sessions):
     for mouse_name, sessions in all_sessions.items():
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
+            if skip_completed and pcss.check_temp_file(rrr_tempfile_name(pcss.vrexp)):
+                print(f"Found completed RRR optimization for: {mouse_name}, {datestr}, {sessionid}")
+                continue
             print(f"Optimizing ridge regression for: {mouse_name}, {datestr}, {sessionid}:")
             t = time.time()
             optimize_results = optimize_rrr(mouse_name, datestr, sessionid)
@@ -183,7 +186,8 @@ def do_rrr_optimization(all_sessions):
             test_results = test_rrr(mouse_name, datestr, sessionid, alpha, ranks)
             print(f"Time: {time.time() - t : .2f}")
             rrr_results = {**optimize_results, **test_results}
-            pcss.save_temp_file(rrr_results, rrr_tempfile_name(pcss.vrexp))
+            if save:
+                pcss.save_temp_file(rrr_results, rrr_tempfile_name(pcss.vrexp))
 
 def load_rrr_results(all_sessions, results='all'):
     rrr_results = []
@@ -212,7 +216,7 @@ def load_rrr_results(all_sessions, results='all'):
             mouse_idx = mouse_names.index(rrr_res["mouse_name"])
             test_scores[mouse_idx] += torch.tensor(rrr_res["test_score_by_rank"])
             test_scaled_mses[mouse_idx] += torch.tensor(rrr_res["test_scaled_mse_by_rank"])
-            num_samples[mouse_idx] += 1
+            num_samples[mouse_idx] += 1            
         # get average for each mouse
         test_scores /= num_samples.unsqueeze(1)
         test_scaled_mses /= num_samples.unsqueeze(1)
