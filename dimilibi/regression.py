@@ -1,4 +1,5 @@
 from typing import Optional
+from copy import copy
 import torch
 
 
@@ -46,12 +47,13 @@ class ReducedRankRegression:
 
         num_features = X.size(1)
         num_targets = y.size(1)
-        max_rank = min(num_features, num_targets)
+        num_samples = X.size(0)
+        self.max_rank = min(num_features, num_targets, num_samples)
 
         if self.rank is None:
-            self.rank = max_rank
+            self.rank = copy(self.max_rank)
         else:
-            assert self.rank <= max_rank, "Rank must be less than or equal to the number of features and targets."
+            assert self.rank <= self.max_rank, "Rank must be less than or equal to the number of features, targets, and samples."
 
         # store all of these matrices for easy testing of prediction with different ranks
         self._beta_ols = self._solve_ols_ridge(X, y, self.alpha)
@@ -133,7 +135,7 @@ class ReducedRankRegression:
         """
         # update rank restraint matrix if required
         if rank != self.rank:
-            assert rank <= self._Xbeta_V.size(1), "Rank must be less than or equal to the number of features and targets."
+            assert rank <= self.max_rank, "Rank must be less than or equal to the number of features, targets, and samples."
             _rank_restraint = self._Xbeta_V[:, :rank] @ self._Xbeta_V[:, :rank].T
         else:
             _rank_restraint = self._rank_restraint
