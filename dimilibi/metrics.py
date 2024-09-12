@@ -6,7 +6,7 @@ def _mse(x, y, dim=None):
     return ((x - y) ** 2).mean(dim=dim)
 
 
-def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, None] = "mean"):
+def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, None] = "mean", eps=1e-8):
     """
     Calculate the scaled mean squared error scaled by the error of a constant model.
 
@@ -18,7 +18,7 @@ def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, No
         The true target values.
     reduce : str
         The reduction to apply to the scaled error. If None, the error is returned unscaled. If "mean", the mean of the
-        scaled error is returned. If "sum", the sum of the scaled error is returned. Default is sum.
+        scaled error is returned. If "sum", the sum of the scaled error is returned. Default is mean.
 
     Returns
     -------
@@ -27,7 +27,7 @@ def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, No
     """
     prediction_error = _mse(y_pred, y_true, dim=0)
     constant_error = _mse(y_true.mean(dim=0, keepdim=True), y_true, dim=0)
-    scaled_error = prediction_error / constant_error
+    scaled_error = prediction_error / (constant_error + eps)
 
     if reduce == "mean":
         return scaled_error.mean()
