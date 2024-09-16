@@ -26,7 +26,7 @@ def optimize_rrr(mouse_name, datestr, sessionid, rank, population_name=None):
     Optimize ridge regression for a given session.
 
     Performs a targeted grid search over the ridge regression alpha parameter.
-    
+
     Parameters
     ----------
     mouse_name : str
@@ -36,7 +36,7 @@ def optimize_rrr(mouse_name, datestr, sessionid, rank, population_name=None):
     sessionid : int
         Session identifier.
     rank : int
-        Rank of the reduced rank regression for validation. 
+        Rank of the reduced rank regression for validation.
     population_name : Optional[str]
         Name of the population object to load. If None, the default population object will be loaded.
 
@@ -84,12 +84,12 @@ def optimize_rrr(mouse_name, datestr, sessionid, rank, population_name=None):
         if go_lower:
             left_score, left_model = evaluate_alpha(best_alpha_index - 1)
         else:
-            left_score = -float('inf')
+            left_score = -float("inf")
         if go_higher:
             right_score, right_model = evaluate_alpha(best_alpha_index + 1)
         else:
-            right_score = -float('inf')
-        
+            right_score = -float("inf")
+
         if (left_score > best_score) and (right_score > best_score):
             print("Both left and right scores are better than the best score, I didn't think this would ever happen...")
             print(f"Left score: {left_score}, Right score: {right_score}, Best score: {best_score}")
@@ -107,7 +107,7 @@ def optimize_rrr(mouse_name, datestr, sessionid, rank, population_name=None):
                 best_alpha_index += 1
                 go_lower = False
                 go_higher = best_alpha_index < len(alphas) - 1
-        
+
         elif (left_score > best_score) or (right_score > best_score):
             # If one of the directions gives an improvement, go that way
             if left_score > best_score:
@@ -129,7 +129,7 @@ def optimize_rrr(mouse_name, datestr, sessionid, rank, population_name=None):
             # If neither direction gives an improvement, stop
             go_lower = False
             go_higher = False
-    
+
     return alphas[best_alpha_index], best_score, best_model
 
 
@@ -151,8 +151,8 @@ def test_rrr(mouse_name, datestr, sessionid, alphas, ranks, models=None, populat
     ranks : list
         List of ranks to test ridge regression.
     models : list[ReducedRankRegression]
-        List of ReducedRankRegression models for each rank. Will be used if provided, 
-        otherwise the models will be refit to the training data. 
+        List of ReducedRankRegression models for each rank. Will be used if provided,
+        otherwise the models will be refit to the training data.
     population_name : Optional[str]
         Name of the population object to load. If None, the default population object will be loaded.
 
@@ -181,7 +181,10 @@ def test_rrr(mouse_name, datestr, sessionid, alphas, ranks, models=None, populat
 
     # test reduced rank models
     test_scores = [rmodel.score(test_source.T, test_target.T, rank=rank, nonnegative=True) for rmodel, rank in tqdm(zip(models, ranks))]
-    test_scaled_mses = [scaled_mse(rmodel.predict(test_source.T, rank=rank, nonnegative=True).T, test_target, reduce="mean") for rmodel, rank in tqdm(zip(models, ranks))]
+    test_scaled_mses = [
+        scaled_mse(rmodel.predict(test_source.T, rank=rank, nonnegative=True).T, test_target, reduce="mean")
+        for rmodel, rank in tqdm(zip(models, ranks))
+    ]
 
     results = dict(
         mouse_name=mouse_name,
@@ -242,7 +245,8 @@ def do_rrr_optimization(all_sessions, skip_completed=True, save=True, population
             if save:
                 pcss.save_temp_file(test_results, rrr_tempfile_name(pcss.vrexp, population_name=population_name))
 
-def load_rrr_results(all_sessions, results='all', population_name=None):
+
+def load_rrr_results(all_sessions, results="all", population_name=None):
     rrr_results = []
     for mouse_name, sessions in all_sessions.items():
         for datestr, sessionid in sessions:
@@ -253,9 +257,9 @@ def load_rrr_results(all_sessions, results='all', population_name=None):
                 continue
             print(f"Loading rrr_results from {mouse_name}, {datestr}, {sessionid}")
             rrr_results.append(pcss.load_temp_file(rrr_filename))
-    if results=='all':
+    if results == "all":
         return rrr_results
-    if results=='test_by_mouse':
+    if results == "test_by_mouse":
         ranks = rrr_results[0]["ranks"]
         for rrr_res in rrr_results:
             assert rrr_res["ranks"] == ranks, "ranks are not all equal"

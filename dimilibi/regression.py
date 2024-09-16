@@ -89,9 +89,8 @@ class ReducedRankRegression:
 
         if nonnegative:
             prediction = torch.relu(prediction)
-        
+
         return prediction
-    
 
     def score(self, X: torch.Tensor, y: torch.Tensor, rank: Optional[int] = None, nonnegative: Optional[bool] = False) -> torch.Tensor:
         """
