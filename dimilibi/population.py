@@ -90,56 +90,85 @@ class Population:
         if not hasattr(self, "time_split_indices"):
             raise ValueError("time_split_indices must be set before calling get_source_target")
 
+        source = self.apply_split(self.data[self.cell_split_indices[0]], time_idx, center, scale, pre_split, scale_type)
+        target = self.apply_split(self.data[self.cell_split_indices[1]], time_idx, center, scale, pre_split, scale_type)
+        return source, target
+    
+    def apply_split(self, data: torch.Tensor, time_idx: int = 0, center: bool = False, scale: bool = False, pre_split: bool = False, scale_type: Optional[str] = None):
+        """
+        Apply the time splits to a new dataset. 
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The data to apply the time splits to. Must have shape (num_features, num_timepoints), where
+            num_features is unconstrained and num_timepoints must match the number of timepoints in the
+            Population instance.
+        time_idx : int
+            The time group to use as the target data.
+            (default is 0)
+        center : bool
+            If True, will center the data so each neuron has a mean of 0 across timepoints
+            (default is False)
+        scale : bool
+            If True, will scale the data so each neuron has a standard deviation of 1 across timepoints
+            (default is False)
+        pre_split : bool
+            If True, will center and scale the data before splitting into source and target data
+        scale_type : Optional[str]
+            How to scale the data. 
+            =[None, 'std'] -> will scale the data by the standard deviation of the source data.
+            ='sqrt' -> will scale the data by the square root of the standard deviation of the source data.
+            ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1, 
+            and the other neurons will be scaled accordingly (preserving the relative standard deviation).
+
+        Returns
+        -------
+        torch.Tensor
+            The data for the specified set of timepoints.
+        """
+        if not hasattr(self, "time_split_indices"):
+            raise ValueError("time_split_indices must be set before calling get_source_target")
+
+        assert data.size(1) == self.num_timepoints, "data must have the same number of timepoints as the Population instance"
         assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
 
         if pre_split:
-            if center: 
-                source_mean = self.data[self.cell_split_indices[0]].mean(dim=1, keepdim=True)
-                target_mean = self.data[self.cell_split_indices[1]].mean(dim=1, keepdim=True)
+            if center:
+                mean = data.mean(dim=1, keepdim=True)
             if scale:
-                source_std = self.data[self.cell_split_indices[0]].std(dim=1, keepdim=True)
-                target_std = self.data[self.cell_split_indices[1]].std(dim=1, keepdim=True)
-                source_std[source_std == 0] = 1
-                target_std[target_std == 0] = 1
+                std = data.std(dim=1, keepdim=True)
+                std[std == 0] = 1
 
-        source = self.data[self.cell_split_indices[0]][:, self.time_split_indices[time_idx]]
-        target = self.data[self.cell_split_indices[1]][:, self.time_split_indices[time_idx]]
+        data = data[:, self.time_split_indices[time_idx]]
 
         if center:
             if pre_split:
-                source = source - source_mean
-                target = target - target_mean
+                data = data - mean
             else:
-                source = source - source.mean(dim=1, keepdim=True)
-                target = target - target.mean(dim=1, keepdim=True)
+                data = data - data.mean(dim=1, keepdim=True)
 
         if scale:
             # prepare source / target standard deviation if not pre-computed
             if not pre_split:
-                source_std = source.std(dim=1, keepdim=True)
-                target_std = target.std(dim=1, keepdim=True)
-                source_std[source_std == 0] = 1
-                target_std[target_std == 0] = 1
+                std = data.std(dim=1, keepdim=True)
+                std[std == 0] = 1
             
             # normalize source and target appropriately
             if scale_type is None or scale_type == "std":
-                source = source / source_std
-                target = target / target_std
+                data = data / std
             elif scale_type == "sqrt":
-                source = source / torch.sqrt(source_std)
-                target = target / torch.sqrt(target_std)
+                data = data / torch.sqrt(std)
             elif scale_type == "preserve":
-                source = source / source_std.median()
-                target = target / target_std.median()
+                data = data / std.median()
             else:
                 raise ValueError(f"scale_type must be one of [None, 'std', 'sqrt', 'preserve'], got {scale_type}")
 
         if self.dtype is not None:
-            source = source.to(self.dtype)
-            target = target.to(self.dtype)
+            data = data.to(self.dtype)
 
-        return source, target
-
+        return data
+    
     def split_cells(self, force_even: bool = False, return_indices: bool = False):
         """
         Assign indices to each neurons to split into two groups.
@@ -373,3 +402,130 @@ class Population:
             population.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
 
         return population
+    
+
+class SourceTarget(Population):
+    """
+    SourceTarget is a class inheriting from the Population class where there is a natural division between source and target. 
+    The purpose is to reuse the Population class for generating time splits.
+    """
+
+    def __init__(self, source: Union[np.ndarray, torch.Tensor], target: Union[np.ndarray, torch.Tensor], generate_splits: bool = True, time_split_prms={}, dtype: Optional[torch.dtype] = None):
+        """
+        Initialize the SourceTarget object
+
+        Parameters
+        ----------
+        source : Union[np.ndarray, torch.Tensor]
+            A 2D array of shape (num_source_features, num_timepoints) representing variable used to make predictions.
+        target : Union[np.ndarray, torch.Tensor]
+            A 2D array of shape (num_target_features, num_timepoints) representing variable to predict.
+        generate_splits : bool
+            If True, will generate splits for timepoints using any parameters in time_split_prms.
+            (default is True)
+        time_split_prms : dict
+            Parameters for splitting the timepoints into groups.
+            (default is {})
+        dtype : Optional[torch.dtype]
+            The data type to cast the data to if it isn't already a torch tensor.
+            (default is None)
+        """
+        if isinstance(source, np.ndarray):
+            source = torch.from_numpy(source)
+        
+        if isinstance(target, np.ndarray):
+            target = torch.from_numpy(target)
+
+        if len(source.shape) != 2:
+            raise ValueError("source must be a 2D array/tensor with shape (num_source_features, num_timepoints)")
+
+        if len(target.shape) != 2:
+            raise ValueError("target must be a 2D array/tensor with shape (num_target_features, num_timepoints)")
+
+        data = torch.cat([source, target], dim=0)
+        self.num_source_features = source.shape[0]
+        self.num_target_features = target.shape[0]
+
+        if not isinstance(data, torch.Tensor):
+            raise TypeError("data must be a numpy array or torch tensor")
+
+        self.data = data
+        num_features, self.num_timepoints = data.shape
+        self.dtype = dtype
+
+        # Split the "cells" into source and target groups (this is hard-coded by this class)
+        feature_index = torch.arange(num_features)
+        self.cell_split_indices = [feature_index[:self.num_source_features], feature_index[self.num_source_features:]]
+
+        if generate_splits:
+            # remove return_indices from the parameters to avoid returning the indices (force storing as attributes when called in constructor method)
+            time_split_prms.pop("return_indices", None)
+            self.split_times(**time_split_prms)
+
+    def size(self):
+        """Get the size of the population activity (works like torch.size on self.data)"""
+        raise NotImplementedError("SourceTarget does not have a size method. Use num_source_features, num_target_features, or num_timepoints instead.")
+
+    def get_indices_dict(self) -> Dict:
+        """
+        Get a dictionary containing the split indices and metadata.
+
+        Returns
+        -------
+        Dict
+            A dictionary containing cell_split_indices, time_split_indices, num_neurons, and num_timepoints.
+        """
+        return {
+            "cell_split_indices": [indices.tolist() for indices in self.cell_split_indices],
+            "time_split_indices": [indices.tolist() for indices in self.time_split_indices] if hasattr(self, "time_split_indices") else None,
+            "num_source_features": self.num_source_features,
+            "num_target_features": self.num_target_features,
+            "num_timepoints": self.num_timepoints,
+            "dtype": self.dtype,
+        }
+
+    @classmethod
+    def make_from_indices(cls, indices_dict: Dict, source: Union[np.ndarray, torch.Tensor], target: Union[np.ndarray, torch.Tensor]):
+        """
+        Make a new SourceTarget instance with the provided split indices and data.
+
+        Parameters
+        ----------
+        indices_dict : Dict
+            The dictionary containing the split indices and metadata.
+        source : Union[np.ndarray, torch.Tensor]
+            The source data to use for the new SourceTarget instance.
+        target : Union[np.ndarray, torch.Tensor]
+            The target data to use for the new SourceTarget instance.
+
+        Returns
+        -------
+        SourceTarget
+            A new SourceTarget instance with the loaded split indices.
+
+        Raises
+        ------
+        ValueError
+            If the shape of the provided data doesn't match the saved indices.
+        """
+        # Check if the shape of the provided data matches the saved indices
+        if source.shape != (indices_dict["num_source_features"], indices_dict["num_timepoints"]):
+            raise ValueError(
+                f"Shape of provided source data {source.shape} doesn't match the shape in saved indices "
+                f"({indices_dict['num_source_features']}, {indices_dict['num_timepoints']})"
+            )
+        if target.shape != (indices_dict["num_target_features"], indices_dict["num_timepoints"]):
+            raise ValueError(
+                f"Shape of provided target data {target.shape} doesn't match the shape in saved indices "
+                f"({indices_dict['num_target_features']}, {indices_dict['num_timepoints']})"
+            )
+
+        source_target = cls(source, target, generate_splits=False, dtype=indices_dict.get("dtype", None))
+
+        if indices_dict["cell_split_indices"]:
+            source_target.cell_split_indices = [torch.tensor(indices) for indices in indices_dict["cell_split_indices"]]
+
+        if indices_dict["time_split_indices"]:
+            source_target.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
+
+        return source_target
