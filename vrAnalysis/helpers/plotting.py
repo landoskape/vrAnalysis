@@ -147,3 +147,12 @@ def clear_axis(ax):
     ax.spines["right"].set_visible(False)  # Hide right spine
     ax.spines["bottom"].set_visible(False)  # Hide top spine
     ax.spines["left"].set_visible(False)  # Hide right spine
+
+
+def refline(slope, intercept, ax=None, **kwargs):
+    """Plot a line from slope and intercept"""
+    if ax is None:
+        ax = plt.gca()
+    x_vals = np.array(ax.get_xlim())
+    y_vals = intercept + slope * x_vals
+    ax.plot(x_vals, y_vals, **kwargs)
