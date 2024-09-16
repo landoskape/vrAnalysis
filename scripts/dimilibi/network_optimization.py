@@ -167,7 +167,7 @@ def objective(trial, train_source, train_target, test_source, test_target, num_l
     num_hidden = trial.suggest_int("num_hidden", 50, 2000, log=True)
     noise_level = trial.suggest_float("noise_level", 1e-3, 1e2, log=True)
     dropout_rate = trial.suggest_float("dropout_rate", 0.0, 0.5)
-    transparent_relu = True
+    transparent_relu = True #trial.suggest_categorical("transparent_relu", [True, False])
 
     # Build the network
     nets, optimizers, loss_fn = build_networks(
@@ -223,7 +223,7 @@ def test_networks(train_source, train_target, val_source, val_target, test_sourc
 
     return test_loss, test_score, test_scaled_mse
 
-def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epochs=1000, num_networks=3, n_trials=50, retest_only=False, show_progress_bar=False):
+def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epochs=1000, num_networks=3, n_trials=50, retest_only=False, show_progress_bar=False, population_name=None):
     """
     Optimize hyperparameters for networks trained on peer prediction.
     
@@ -233,7 +233,7 @@ def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epo
 
     If retest_only is True, the function will only retest networks that have already been optimized.
     """
-    npop = load_population(mouse_name, datestr, sessionid)
+    npop = load_population(mouse_name, datestr, sessionid, population_name=population_name)
 
     train_source, train_target = npop.get_split_data(0, center=False, scale=True, scale_type="preserve")
     val_source, val_target = npop.get_split_data(1, center=False, scale=True, scale_type="preserve")
@@ -241,7 +241,7 @@ def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epo
 
     if retest_only:
         pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
-        hyp_filename = network_tempfile_name(pcss.vrexp, num_latent)
+        hyp_filename = network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)
         original_results = pcss.load_temp_file(hyp_filename)
         study = original_results["study"]
         best_params = original_results["best_params"]
@@ -267,15 +267,15 @@ def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epo
         test_scaled_mse=test_scaled_mse,
     )
 
-def retest_networks(mouse_name, datestr, sessionid, num_latent, num_epochs, num_networks):
-    npop = load_population(mouse_name, datestr, sessionid)
+def retest_networks(mouse_name, datestr, sessionid, num_latent, num_epochs, num_networks, population_name=None):
+    npop = load_population(mouse_name, datestr, sessionid, population_name=population_name)
 
     train_source, train_target = npop.get_split_data(0, center=False, scale=True, scale_type="preserve")
     val_source, val_target = npop.get_split_data(1, center=False, scale=True, scale_type="preserve")
     test_source, test_target = npop.get_split_data(2, center=False, scale=True, scale_type="preserve")
 
     pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
-    hyp_filename = network_tempfile_name(pcss.vrexp, num_latent)
+    hyp_filename = network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)
     original_results = pcss.load_temp_file(hyp_filename)
     best_params = original_results["best_params"]
     test_loss, test_score, test_scaled_mse = test_networks(train_source, train_target, val_source, val_target, test_source, test_target, num_latent, best_params, num_epochs=num_epochs, num_networks=num_networks)
@@ -286,11 +286,14 @@ def retest_networks(mouse_name, datestr, sessionid, num_latent, num_epochs, num_
 
     return original_results
 
-def network_tempfile_name(vrexp, rank):
+def network_tempfile_name(vrexp, rank, population_name=None):
     """generate temporary file name for network tuning results"""
-    return f"network_optimization_results_rank{rank}_{str(vrexp)}"
+    name = f"network_optimization_results_rank{rank}_{str(vrexp)}"
+    if population_name is not None:
+        name += f"_{population_name}"
+    return name
 
-def do_network_optimization(all_sessions, retest_only=False, skip_completed=True, save=True):
+def do_network_optimization(all_sessions, retest_only=False, population_name=None, skip_completed=True, save=True):
     """
     Perform network optimization and testing of network models on peer prediction.
 
@@ -316,20 +319,20 @@ def do_network_optimization(all_sessions, retest_only=False, skip_completed=True
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
             for num_latent in ranks:
-                if not retest_only and skip_completed and pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent)):
+                if not retest_only and skip_completed and pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)):
                     print(f"Found completed hyperparameter optimization for: {mouse_name}, {datestr}, {sessionid}, rank:{num_latent}")
                     continue
-                if retest_only and not pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent)):
+                if retest_only and not pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)):
                     print(f"Skipping retest for: {mouse_name}, {datestr}, {sessionid}, rank:{num_latent} (no hyperparameter optimization found)")
                     continue
                 print(f"Optimizing network hyperparameters for: {mouse_name}, {datestr}, {sessionid}, rank: {num_latent}:")
-                hyperparameter_results = optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, retest_only=retest_only, show_progress_bar=False)
+                hyperparameter_results = optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, retest_only=retest_only, show_progress_bar=False, population_name=population_name)
                 if save:
-                    pcss.save_temp_file(hyperparameter_results, network_tempfile_name(pcss.vrexp, num_latent))
+                    pcss.save_temp_file(hyperparameter_results, network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name))
 
 
 @torch.no_grad()
-def load_network_results(all_sessions, results='all'):
+def load_network_results(all_sessions, results='all', population_name=None):
     ranks = get_ranks()
     network_results = []
     session_ids = []
@@ -341,7 +344,7 @@ def load_network_results(all_sessions, results='all'):
             session_ids.append((mouse_name, datestr, sessionid))
             tested_ranks.append(torch.zeros(len(ranks), dtype=bool))
             for irank, num_latent in enumerate(ranks):
-                hyp_filename = network_tempfile_name(pcss.vrexp, num_latent)
+                hyp_filename = network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)
                 if not pcss.check_temp_file(hyp_filename):
                     print(f"Skipping hyperparameter_results from {mouse_name}, {datestr}, {sessionid}, rank:{num_latent} (not found)")
                     tested_ranks[-1][irank] = False

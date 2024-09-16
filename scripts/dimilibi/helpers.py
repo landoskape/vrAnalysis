@@ -55,24 +55,28 @@ def create_population(mouse_name, datestr, sessionid, keep_planes=[1, 2, 3, 4]):
     return Population(ospks.T, generate_splits=True, time_split_prms=time_split_prms)
 
 
-def save_population(population, mouse_name, datestr, sessionid):
+def get_population_name(vrexp, population_name=None):
+    """get the name of the population object"""
+    return f"population_{str(vrexp)}_{population_name}" if population_name is not None else f"population_{str(vrexp)}"
+
+def save_population(population, mouse_name, datestr, sessionid, population_name=None):
     """save population object to cache"""
     pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
     indices_dict = population.get_indices_dict()
-    pcss.save_temp_file(indices_dict, f"population_{str(pcss.vrexp)}")
+    pcss.save_temp_file(indices_dict, get_population_name(pcss.vrexp, population_name=population_name))
 
 
-def load_population(mouse_name, datestr, sessionid):
+def load_population(mouse_name, datestr, sessionid, population_name=None):
     """load population object from cache"""
     pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
-    indices_dict = pcss.load_temp_file(f"population_{str(pcss.vrexp)}")
+    indices_dict = pcss.load_temp_file(get_population_name(pcss.vrexp, population_name=population_name))
     ospks = load_session_data(mouse_name, datestr, sessionid)
     npop = Population.make_from_indices(indices_dict, ospks.T)
     npop.dtype = torch_float32
     return npop
 
 
-def make_and_save_populations(all_sessions):
+def make_and_save_populations(all_sessions, population_name=None):
     """
     Make and save population objects for all sessions in all_sessions.
 
@@ -83,7 +87,7 @@ def make_and_save_populations(all_sessions):
         for datestr, sessionid in sessions:
             print(f"Creating population for: {mouse_name}, {datestr}, {sessionid}")
             npop = create_population(mouse_name, datestr, sessionid)
-            save_population(npop, mouse_name, datestr, sessionid)
+            save_population(npop, mouse_name, datestr, sessionid, population_name=population_name)
 
 
 def get_ranks():
