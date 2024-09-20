@@ -540,7 +540,7 @@ class placeCellSingleSession(standardAnalysis):
         self.measure_reliability(new_split=new_split, with_test=with_test)
 
     @prepare_data
-    def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}):
+    def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}, rawspkmap=None):
         """
         method for getting a spkmap from a list of environments
 
@@ -559,6 +559,9 @@ class placeCellSingleSession(standardAnalysis):
 
         transposes output to have shape (num_ROIs, num_trials, num_spatial_bins)
         or (num_ROIs, num_spatial_bins) if average=True
+
+        if rawspkmap isn't provided, will use the "rawspkmap" attribute of self
+        if it is provided, will use that instead
         """
         # use all environments if none requested
         if envnum is None:
@@ -568,22 +571,31 @@ class placeCellSingleSession(standardAnalysis):
         envnum = helpers.check_iterable(envnum)  # make sure envnum is iterable
         envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
 
+        # pick the raw spkmap to use
+        if rawspkmap is not None:
+            # check if trials and positions match
+            # don't check if numROIs match because the rawspkmap might be for something different
+            assert rawspkmap.shape[0] == self.occmap.shape[0], "number of trials isn't equal"
+            assert rawspkmap.shape[1] == self.occmap.shape[1], "number of spatial bins isn't equal"
+        else:
+            rawspkmap = self.rawspkmap
+
         # get occupancy and rawspkmap from requested trials (or across environments)
         if trials == "full":
             env_occmap = [self.occmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
-            env_spkmap = [self.rawspkmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
+            env_spkmap = [rawspkmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
 
         elif trials == "train":
             if new_split:
                 self.define_train_test_split(**split_params)
             env_occmap = [self.occmap[self.train_idx[ei]] for ei in envidx]
-            env_spkmap = [self.rawspkmap[self.train_idx[ei]] for ei in envidx]
+            env_spkmap = [rawspkmap[self.train_idx[ei]] for ei in envidx]
 
         elif trials == "test":
             if new_split:
                 self.define_train_test_split(**split_params)
             env_occmap = [self.occmap[self.test_idx[ei]] for ei in envidx]
-            env_spkmap = [self.rawspkmap[self.test_idx[ei]] for ei in envidx]
+            env_spkmap = [rawspkmap[self.test_idx[ei]] for ei in envidx]
 
         else:
             raise ValueError(f"Didn't recognize trials option (received '{trials}', expected 'full', 'train', or 'test')")
@@ -665,7 +677,7 @@ class placeCellSingleSession(standardAnalysis):
         self.test_idx = [np.concatenate(fidx[train_folds:]) for fidx in foldIdx]
 
     @prepare_data
-    def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1, total_folds=3, train_folds=2):
+    def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1, total_folds=3, train_folds=2, rawspkmap=None, return_only=False):
         """method for measuring reliability in each environment"""
         if smoothWidth == -1:
             smoothWidth = self.smoothWidth
@@ -675,40 +687,67 @@ class placeCellSingleSession(standardAnalysis):
             self.define_train_test_split(total_folds=total_folds, train_folds=train_folds)
 
         # measure reliability of spiking (in two ways)
-        spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="train")
+        spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="train", rawspkmap=rawspkmap)
         relmse, relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
-        self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
+
+        # If not returning values only, save them to the object
+        if not return_only:
+            self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
 
         if with_test:
             # measure on test trials
-            spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="test")
-            relmse, relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
-            self.test_relmse, self.test_relcor = np.stack(relmse), np.stack(relcor)
+            spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="test", rawspkmap=rawspkmap)
+            test_relmse, test_relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
+            if not return_only:
+                self.test_relmse, self.test_relcor = np.stack(test_relmse), np.stack(test_relcor)
         else:
             # Alert the user that the training data was (re)calculated without testing
-            self.test_relmse, self.test_relcor = None, None
+            if not return_only:
+                self.test_relmse, self.test_relcor = None, None
+
+        if return_only:
+            if with_test:
+                return np.stack(relmse), np.stack(relcor), np.stack(test_relmse), np.stack(test_relcor)
+            else:
+                return np.stack(relmse), np.stack(relcor)
 
     @prepare_data
-    def get_reliability_values(self, envnum=None, with_test=False):
+    def get_reliability_values(self, envnum=None, with_test=False, rawspkmap=None):
         """support for getting reliability values from requested or all environments"""
         if envnum is None:
             envnum = copy(self.environments)  # default environment is all of them
         envnum = helpers.check_iterable(envnum)  # make sure it's an iterable
         envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
-        mse = [self.relmse[ii] for ii in envidx]
-        cor = [self.relcor[ii] for ii in envidx]
+
+        # If rawspkmap isn't provided, use the reliability values stored in the object
+        # (these are calculated with the standard self.onefile set at initialization)
+        if rawspkmap is None:
+            relmse = self.relmse
+            relcor = self.relcor
+            if with_test:
+                test_relmse = self.test_relmse
+                test_relcor = self.test_relcor
+        else:
+            # if rawspkmap is provided, calculate reliability values using this spkmap
+            if with_test:
+                relmse, relcor, test_relmse, test_relcor = self.measure_reliability(return_only=True, with_test=True, rawspkmap=rawspkmap)
+            else:
+                relmse, relcor = self.measure_reliability(return_only=True, with_test=False, rawspkmap=rawspkmap)
+
+        mse = [relmse[ii] for ii in envidx]
+        cor = [relcor[ii] for ii in envidx]
 
         # if not with_test trials, just return mse/cor on train trials
         if not with_test:
             return mse, cor
 
         # if with_test, get these too and return them all
-        msetest = [self.test_relmse[ii] for ii in envidx]
-        cortest = [self.test_relcor[ii] for ii in envidx]
+        msetest = [test_relmse[ii] for ii in envidx]
+        cortest = [test_relcor[ii] for ii in envidx]
         return mse, cor, msetest, cortest
 
     @prepare_data
-    def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None):
+    def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None, rawspkmap=None):
         """central method for getting reliable cells from list of environments (by environment index)"""
         if envnum is None:
             envnum = copy(self.environments)  # default environment is all of them
@@ -716,12 +755,10 @@ class placeCellSingleSession(standardAnalysis):
         envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
         cutoffs = (-np.inf, -np.inf) if cutoffs is None else cutoffs
         maxcutoffs = (np.inf, np.inf) if maxcutoffs is None else maxcutoffs
+
+        relmse, relcor = self.get_reliability_values(with_test=False, rawspkmap=rawspkmap)
         idx_reliable = [
-            (self.relmse[ei] >= cutoffs[0])
-            & (self.relcor[ei] >= cutoffs[1])
-            & (self.relmse[ei] <= maxcutoffs[0])
-            & (self.relcor[ei] <= maxcutoffs[1])
-            for ei in envidx
+            (relmse[ei] >= cutoffs[0]) & (relcor[ei] >= cutoffs[1]) & (relmse[ei] <= maxcutoffs[0]) & (relcor[ei] <= maxcutoffs[1]) for ei in envidx
         ]
         return idx_reliable
 
@@ -756,7 +793,7 @@ class placeCellSingleSession(standardAnalysis):
         return pfloc, pfidx
 
     @prepare_data
-    def make_snake(self, envnum=None, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max"):
+    def make_snake(self, envnum=None, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max", rawspkmap=None):
         """make snake data from train and test sessions, for particular environment if requested"""
         # default environment is all of them
         if envnum is None:
@@ -766,8 +803,8 @@ class placeCellSingleSession(standardAnalysis):
         envnum = helpers.check_iterable(envnum)
 
         # get spkmaps for requested environments
-        train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train")
-        test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test")
+        train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train", rawspkmap=rawspkmap)
+        test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test", rawspkmap=rawspkmap)
 
         # filter by reliable ROIs if requested
         if reliable:
@@ -787,16 +824,16 @@ class placeCellSingleSession(standardAnalysis):
         return train_snake, test_snake
 
     @prepare_data
-    def make_remap_data(self, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max"):
+    def make_remap_data(self, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max", rawspkmap=None):
         """make snake data across environments with remapping indices (for N environments, an NxN grid of snakes and indices)"""
         # get index to each environment for this session
         envnum = helpers.check_iterable(copy(self.environments))
         num_envs = len(envnum)
 
         # get train/test spkmap profile for each environment (average across trials)
-        train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train")
-        test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test")
-        full_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="full")
+        train_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="train", rawspkmap=rawspkmap)
+        test_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="test", rawspkmap=rawspkmap)
+        full_profile = self.get_spkmap(envnum, average=True, smooth=self.smoothWidth, trials="full", rawspkmap=rawspkmap)
 
         # filter by reliable ROIs if requested
         if reliable:
