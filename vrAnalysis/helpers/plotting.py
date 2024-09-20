@@ -31,12 +31,12 @@ def errorPlot(x, data, axis=-1, se=False, ax=None, **kwargs):
     if ax is None:
         ax = plt.gca()
     meanData = np.mean(data, axis=axis)
-    correction = data.shape[axis] if se else 1
+    correction = np.sqrt(data.shape[axis]) if se else 1
     errorData = np.std(data, axis=axis) / correction
     fillBetweenArgs = kwargs.copy()
-    fillBetweenArgs.pop("label")
+    fillBetweenArgs.pop("label", None)
     ax.fill_between(x, meanData + errorData, meanData - errorData, **fillBetweenArgs)
-    kwargs.pop("alpha")
+    kwargs.pop("alpha", None)
     ax.plot(x, meanData, **kwargs)
 
 
