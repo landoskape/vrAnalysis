@@ -20,7 +20,6 @@ def get_alphas():
     return torch.logspace(1, 9, 9)
 
 
-@memory.cache
 def optimize_rrr(mouse_name, datestr, sessionid, rank, population_name=None):
     """
     Optimize ridge regression for a given session.
