@@ -110,14 +110,14 @@ def save_population(population, mouse_name, datestr, sessionid, population_name=
     pcss.save_temp_file(indices_dict, get_population_name(pcss.vrexp, population_name=population_name, get_behavior=get_behavior))
 
 
-def load_population(mouse_name, datestr, sessionid, get_behavior=False, population_name=None):
+def load_population(mouse_name, datestr, sessionid, keep_planes=[1, 2, 3, 4], get_behavior=False, population_name=None):
     """load population object from cache"""
     pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
     indices_dict = pcss.load_temp_file(get_population_name(pcss.vrexp, population_name=population_name, get_behavior=get_behavior))
     if get_behavior:
-        ospks, behavior_data = load_session_data(mouse_name, datestr, sessionid, get_behavior=get_behavior)
+        ospks, behavior_data = load_session_data(mouse_name, datestr, sessionid, keep_planes=keep_planes, get_behavior=get_behavior)
     else:
-        ospks = load_session_data(mouse_name, datestr, sessionid)
+        ospks = load_session_data(mouse_name, datestr, sessionid, keep_planes=keep_planes)
     npop = Population.make_from_indices(indices_dict, ospks.T)
     npop.dtype = torch_float32
     if get_behavior:
@@ -125,7 +125,7 @@ def load_population(mouse_name, datestr, sessionid, get_behavior=False, populati
     return npop
 
 
-def make_and_save_populations(all_sessions, get_behavior=False, population_name=None):
+def make_and_save_populations(all_sessions, keep_planes, get_behavior=False, population_name=None):
     """
     Make and save population objects for all sessions in all_sessions.
 
@@ -137,9 +137,9 @@ def make_and_save_populations(all_sessions, get_behavior=False, population_name=
             print(f"Creating population for: {mouse_name}, {datestr}, {sessionid}")
             if get_behavior:
                 # we don't need to load the behavior data, but when it is required the npop will have a different structure (as long as speed is remembered)
-                npop = create_population(mouse_name, datestr, sessionid, get_behavior=get_behavior)[0]
+                npop = create_population(mouse_name, datestr, sessionid, keep_planes=keep_planes, get_behavior=get_behavior)[0]
             else:
-                npop = create_population(mouse_name, datestr, sessionid)
+                npop = create_population(mouse_name, datestr, sessionid, keep_planes=keep_planes)
             save_population(npop, mouse_name, datestr, sessionid, population_name=population_name, get_behavior=get_behavior)
 
 
