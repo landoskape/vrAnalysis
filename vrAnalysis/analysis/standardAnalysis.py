@@ -39,7 +39,7 @@ class standardAnalysis:
         checks if a temporary file exists in the analysis directory with the name provided
         """
         return (self.saveDirectory("temp") / name).is_file()
-    
+
     def load_temp_file(self, name):
         """
         load a temporary file
@@ -85,7 +85,7 @@ class standardAnalysis:
             dirName.mkdir(parents=True)
         return dirName
 
-    def saveFigure(self, figNumber, name, extra_name=""):
+    def saveFigure(self, figNumber, name, extra_name=None):
         """
         save a figure currently open in matplotlib
 
@@ -93,7 +93,10 @@ class standardAnalysis:
         """
         print(f"{self.name} is saving a {name} figure for session: {self.vrexp.sessionPrint()}")
         plt.figure(figNumber)
-        figpath = self.saveDirectory(name) / str(self.vrexp) / (extra_name + ".png")
+        if extra_name is not None:
+            figpath = self.saveDirectory(name) / str(self.vrexp) / (extra_name + ".png")
+        else:
+            figpath = self.saveDirectory(name) / (str(self.vrexp) + ".png")
         if not figpath.parent.is_dir():
             figpath.parent.mkdir(parents=True)
         plt.savefig(figpath)
