@@ -393,9 +393,8 @@ class placeCellMultiSession(multipleAnalysis):
 
         idx_sortby = {val: idx for idx, val in enumerate(idx_ses)}[sortby]  # get idx of sortby session from idx_ses
 
-        self.load_pcss_data(
-            idx_ses=idx_ses, with_test=True
-        )  # required for reliability values -- include test for comparison of reliability within sortby session
+        # required for reliability values -- include test for comparison of reliability within sortby session
+        self.load_pcss_data(idx_ses=idx_ses, with_test=True)  
         for i in idx_ses:
             if not hasattr(self.pcss[i], "test_relmse") or self.pcss[i].test_relmse is None:
                 self.pcss[i].measure_reliability(with_test=True)
