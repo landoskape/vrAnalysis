@@ -12,7 +12,14 @@ class Population:
     are splitting cells into groups and splitting the timepoints into groups (often with special considerations for intelligent cross-validation).
     """
 
-    def __init__(self, data: Union[np.ndarray, torch.Tensor], generate_splits: bool = True, cell_split_prms={}, time_split_prms={}, dtype: Optional[torch.dtype] = None):
+    def __init__(
+        self,
+        data: Union[np.ndarray, torch.Tensor],
+        generate_splits: bool = True,
+        cell_split_prms={},
+        time_split_prms={},
+        dtype: Optional[torch.dtype] = None,
+    ):
         """
         Initialize the Population object
 
@@ -33,11 +40,8 @@ class Population:
             The data type to cast the data to if it isn't already a torch tensor.
             (default is None)
         """
-        if isinstance(data, np.ndarray):
-            data = torch.from_numpy(data)
-
-        if not isinstance(data, torch.Tensor):
-            raise TypeError("data must be a numpy array or torch tensor")
+        # Converts to a torch tensor if necessary and throws an error if it can't
+        data = self._check_datatype(data)
 
         if len(data.shape) != 2:
             raise ValueError("data must be a 2D array/tensor with shape (num_neurons, num_timepoints)")
@@ -61,6 +65,7 @@ class Population:
         ----------
         time_idx : int
             The time group to use as the target data.
+            If None, will use all timepoints in the data.
             (default is 0)
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
@@ -71,10 +76,10 @@ class Population:
         pre_split : bool
             If True, will center and scale the data before splitting into source and target data
         scale_type : Optional[str]
-            How to scale the data. 
+            How to scale the data.
             =[None, 'std'] -> will scale the data by the standard deviation of the source data.
             ='sqrt' -> will scale the data by the square root of the standard deviation of the source data.
-            ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1, 
+            ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1,
             and the other neurons will be scaled accordingly (preserving the relative standard deviation).
 
         Returns
@@ -93,10 +98,18 @@ class Population:
         source = self.apply_split(self.data[self.cell_split_indices[0]], time_idx, center, scale, pre_split, scale_type)
         target = self.apply_split(self.data[self.cell_split_indices[1]], time_idx, center, scale, pre_split, scale_type)
         return source, target
-    
-    def apply_split(self, data: torch.Tensor, time_idx: int = 0, center: bool = False, scale: bool = False, pre_split: bool = False, scale_type: Optional[str] = None):
+
+    def apply_split(
+        self,
+        data: torch.Tensor,
+        time_idx: int = 0,
+        center: bool = False,
+        scale: bool = False,
+        pre_split: bool = False,
+        scale_type: Optional[str] = None,
+    ):
         """
-        Apply the time splits to a new dataset. 
+        Apply the time splits to a new dataset.
 
         Parameters
         ----------
@@ -106,6 +119,7 @@ class Population:
             Population instance.
         time_idx : int
             The time group to use as the target data.
+            If None, will use all timepoints in the data.
             (default is 0)
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
@@ -116,10 +130,10 @@ class Population:
         pre_split : bool
             If True, will center and scale the data before splitting into source and target data
         scale_type : Optional[str]
-            How to scale the data. 
+            How to scale the data.
             =[None, 'std'] -> will scale the data by the standard deviation of the source data.
             ='sqrt' -> will scale the data by the square root of the standard deviation of the source data.
-            ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1, 
+            ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1,
             and the other neurons will be scaled accordingly (preserving the relative standard deviation).
 
         Returns
@@ -130,8 +144,15 @@ class Population:
         if not hasattr(self, "time_split_indices"):
             raise ValueError("time_split_indices must be set before calling get_source_target")
 
+        if isinstance(time_idx, int):
+            assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
+        else:
+            if not time_idx is None:
+                raise ValueError("time_idx must be an integer or None")
+
+        # Convert data to torch tensor if necessary and throw an error if it can't
+        data = self._check_datatype(data)
         assert data.size(1) == self.num_timepoints, "data must have the same number of timepoints as the Population instance"
-        assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
 
         if pre_split:
             if center:
@@ -140,7 +161,9 @@ class Population:
                 std = data.std(dim=1, keepdim=True)
                 std[std == 0] = 1
 
-        data = data[:, self.time_split_indices[time_idx]]
+        # Select the timepoints for the specified group when time_idx is an integer
+        if time_idx is not None:
+            data = data[:, self.time_split_indices[time_idx]]
 
         if center:
             if pre_split:
@@ -153,7 +176,7 @@ class Population:
             if not pre_split:
                 std = data.std(dim=1, keepdim=True)
                 std[std == 0] = 1
-            
+
             # normalize source and target appropriately
             if scale_type is None or scale_type == "std":
                 data = data / std
@@ -168,7 +191,7 @@ class Population:
             data = data.to(self.dtype)
 
         return data
-    
+
     def split_cells(self, force_even: bool = False, return_indices: bool = False):
         """
         Assign indices to each neurons to split into two groups.
@@ -235,7 +258,7 @@ class Population:
         chunks_per_group : int
             Number of chunks for each group (subject to scaling by relative size)
             > if positive, will make chunks as big as possible given the other parameters such that the
-            total number of chunks match the request. 
+            total number of chunks match the request.
             > if negative, will instead make chunks have the number of samples corresponding to the number provided.
             (default is 5)
         num_buffer : int
@@ -343,6 +366,15 @@ class Population:
         chunk_indices = bin_indices[::2]
         return chunk_indices
 
+    def _check_datatype(self, data: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        if isinstance(data, np.ndarray):
+            data = torch.from_numpy(data)
+
+        if not isinstance(data, torch.Tensor):
+            raise TypeError("data must be a numpy array or torch tensor")
+
+        return data
+
     def size(self, dim=None):
         """Get the size of the population activity (works like torch.size on self.data)"""
         return self.data.size(dim)
@@ -402,15 +434,22 @@ class Population:
             population.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
 
         return population
-    
+
 
 class SourceTarget(Population):
     """
-    SourceTarget is a class inheriting from the Population class where there is a natural division between source and target. 
+    SourceTarget is a class inheriting from the Population class where there is a natural division between source and target.
     The purpose is to reuse the Population class for generating time splits.
     """
 
-    def __init__(self, source: Union[np.ndarray, torch.Tensor], target: Union[np.ndarray, torch.Tensor], generate_splits: bool = True, time_split_prms={}, dtype: Optional[torch.dtype] = None):
+    def __init__(
+        self,
+        source: Union[np.ndarray, torch.Tensor],
+        target: Union[np.ndarray, torch.Tensor],
+        generate_splits: bool = True,
+        time_split_prms={},
+        dtype: Optional[torch.dtype] = None,
+    ):
         """
         Initialize the SourceTarget object
 
@@ -432,7 +471,7 @@ class SourceTarget(Population):
         """
         if isinstance(source, np.ndarray):
             source = torch.from_numpy(source)
-        
+
         if isinstance(target, np.ndarray):
             target = torch.from_numpy(target)
 
@@ -455,7 +494,7 @@ class SourceTarget(Population):
 
         # Split the "cells" into source and target groups (this is hard-coded by this class)
         feature_index = torch.arange(num_features)
-        self.cell_split_indices = [feature_index[:self.num_source_features], feature_index[self.num_source_features:]]
+        self.cell_split_indices = [feature_index[: self.num_source_features], feature_index[self.num_source_features :]]
 
         if generate_splits:
             # remove return_indices from the parameters to avoid returning the indices (force storing as attributes when called in constructor method)
@@ -464,7 +503,9 @@ class SourceTarget(Population):
 
     def size(self):
         """Get the size of the population activity (works like torch.size on self.data)"""
-        raise NotImplementedError("SourceTarget does not have a size method. Use num_source_features, num_target_features, or num_timepoints instead.")
+        raise NotImplementedError(
+            "SourceTarget does not have a size method. Use num_source_features, num_target_features, or num_timepoints instead."
+        )
 
     def get_indices_dict(self) -> Dict:
         """
