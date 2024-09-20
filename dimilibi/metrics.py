@@ -36,3 +36,32 @@ def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, No
         return scaled_error.sum()
 
     return scaled_error
+
+
+def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor):
+    """
+    Measure r-squared between predicted and true target values.
+
+    Will measure the r-squared for each sample, then take the average across samples.
+
+    In the case where the target has no variance, the R^2 value will be set to 0.0.
+    In the case where the prediction is perfect, the R^2 value will be set to 1.0.
+
+    Parameters
+    ----------
+    y_pred : torch.Tensor
+        The predicted values (num_features, num_samples).
+    y_true : torch.Tensor
+        The true target values (num_features, num_samples).
+
+    Returns
+    -------
+    torch.Tensor
+        The r-squared value.
+    """
+    ss_res = ((y_true - y_pred) ** 2).sum(dim=0)
+    ss_tot = ((y_true - y_true.mean(dim=0, keepdim=True)) ** 2).sum(dim=0)
+    r2 = 1 - ss_res / ss_tot
+    r2[ss_res == 0] = 1.0
+    r2[ss_tot == 0] = 0.0
+    return r2.mean()
