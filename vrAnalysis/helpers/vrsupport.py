@@ -64,6 +64,13 @@ def getBehaviorAndSpikeMaps(
     idxROIs=None,
     get_spkmap=True,
 ):
+    """
+    This needs documentation badly...
+
+    If onefile is a string, it will be loaded by vrexp.loadone(onefile)
+    If onefile is an array, it will be assumed to be the data to make a spkmap with
+    - if this is the case, it has to have the same number of time samples of course
+    """
     # get edges and centers of position bin
     distedges, distcenter, _ = getBinEdges(vrexp, distStep)
     numPosition = len(distcenter)
@@ -93,11 +100,16 @@ def getBehaviorAndSpikeMaps(
 
     if get_spkmap:
         # load spiking data and timing of imaging frames
-        spks = vrexp.loadone(onefile)
-        if "deconvolved" in onefile:
-            # set negative values to 0 (because they shouldn't be there for deconvolved data)
-            spks = np.maximum(spks, 0)
+        if isinstance(onefile, str):
+            spks = vrexp.loadone(onefile)
+            if "deconvolved" in onefile:
+                # set negative values to 0 (because they shouldn't be there for deconvolved data)
+                spks = np.maximum(spks, 0)
+        else:
+            spks = np.array(onefile)
+            onefile = "provided"
         frameTimeStamps = vrexp.loadone("mpci.times")  # timestamps for each imaging frame
+        assert len(frameTimeStamps) == spks.shape[0], "number of imaging frames doesn't match number of samples in spks"
         idxBehaveToFrame = vrexp.loadone("positionTracking.mpci")  # mpci frame index associated with each behavioral frame
         sampling_period = np.median(np.diff(frameTimeStamps))
         distCutoff = sampling_period / 2  # (time) of cutoff for associating imaging frame with behavioral frame
