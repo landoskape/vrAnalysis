@@ -1,6 +1,5 @@
 from typing import Optional
 import torch
-from .pca import PCA
 
 
 class SVCA:
