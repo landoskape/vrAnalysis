@@ -6,41 +6,18 @@ import matplotlib as mpl
 from helpers import get_sessions, make_and_save_populations, load_population, get_ranks
 from rrr_optimization import do_rrr_optimization, load_rrr_results
 from network_optimization import do_network_optimization, load_network_results
-from rrr_state_optimization import do_rrr_state_optimization
+from rrr_state_optimization import do_rrr_state_optimization, load_rrr_state_results, make_rrr_state_example, add_rrr_state_results
 
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 from vrAnalysis.helpers import argbool, refline
 
-
+import numpy as np
 import torch
 
 # NOTE:
 # I ran a second round of optimizations with a different population split -- using the population_name="redo1" to distinguish them.
-
-
-def parse_args():
-    parser = ArgumentParser(description="Run analysis on all sessions.")
-    parser.add_argument("--redo_pop_splits", default=False, action="store_true", help="Remake population objects and train/val/test splits.")
-    parser.add_argument(
-        "--redo_pop_splits_behavior",
-        default=False,
-        action="store_true",
-        help="Remake population objects and train/val/test splits with behavior data.",
-    )
-    parser.add_argument(
-        "--population_name", default=None, type=str, help="Name of population object to save (default=None, just uses name of session)"
-    )
-    parser.add_argument("--rrr", default=False, action="store_true", help="Run reduced rank regression optimization.")
-    parser.add_argument("--networks", default=False, action="store_true", help="Run network optimization.")
-    parser.add_argument("--rrr_state", default=False, action="store_true", help="Run rrr (state) optimization.")
-    parser.add_argument("--skip_completed", type=argbool, default=True, help="Skip completed sessions (default=True)")
-    parser.add_argument("--retest_only", type=argbool, default=False, help="Only retest sessions that have already been optimized.")
-    parser.add_argument("--compare_rrr_to_networks", type=argbool, default=False, help="Do rrr to network comparison.")
-    parser.add_argument("--analyze_rrr_fits", type=argbool, default=False, help="Do analysis of rrr fits.")
-    parser.add_argument("--analyze_networks", type=argbool, default=False, help="Do analysis of networks.")
-    parser.add_argument("--save", type=argbool, default=True, help="Whether to save results (default=True).")
-    return parser.parse_args()
+# For "state" population splits, I added one with only planes 1/2 called "fast"...
 
 
 def plot_comparison_test(rrr_results, network_results, rrr_all, network_all, session_ids):
@@ -171,6 +148,133 @@ def analyze_hyperparameters(results, sessionids):
     plt.show()
 
 
+def analyze_rrr_state(results):
+    mouse_name = [res["mouse_name"] for res in results]
+    test_score = torch.tensor([res["test_score"] for res in results])
+    test_scaled_mse = torch.tensor([res["test_scaled_mse"] for res in results])
+    test_score_direct = torch.tensor([res["test_score_direct"] for res in results])
+    test_scaled_mse_direct = torch.tensor([res["test_scaled_mse_direct"] for res in results])
+    test_score_pfpred = torch.tensor([res["pf_pred_score"] for res in results])
+    pos_score_encoder = torch.tensor([res["encoder_position_score"] for res in results])
+    pos_score_latent = torch.tensor([res["latent_position_score"] for res in results])
+
+    # Use scipy to run ttest on the scores
+    from scipy.stats import ttest_rel
+
+    tres = ttest_rel(test_score, test_score_direct)
+    print("Test score compared to direct model pvalue: ", tres.pvalue, test_score.mean(), test_score_direct.mean())
+
+    idx_valid = (torch.abs(pos_score_encoder) < 10) & (torch.abs(pos_score_latent) < 10)
+    tres = ttest_rel(pos_score_encoder[idx_valid], pos_score_latent[idx_valid])
+    print("Position score encoder compared to latent pvalue: ", tres.pvalue, pos_score_encoder[idx_valid].mean(), pos_score_latent[idx_valid].mean())
+
+    mice = sorted(list(set(mouse_name)))
+    num_mice = len(mice)
+    cmap = mpl.colormaps["turbo"].resampled(num_mice)
+    cols = [cmap(mice.index(mn)) for mn in mouse_name]
+
+    # Average across mice
+    mouse_score = torch.zeros(num_mice)
+    mouse_scaled_mse = torch.zeros(num_mice)
+    mouse_score_direct = torch.zeros(num_mice)
+    mouse_scaled_mse_direct = torch.zeros(num_mice)
+    mouse_score_pfpred = torch.zeros(num_mice)
+    mouse_pos_score_encoder = torch.zeros(num_mice)
+    mouse_pos_score_latent = torch.zeros(num_mice)
+    for imouse, mouse in enumerate(mice):
+        idx = torch.tensor([mn == mouse for mn in mouse_name])
+        mouse_score[imouse] = test_score[idx].mean()
+        mouse_scaled_mse[imouse] = test_scaled_mse[idx].mean()
+        mouse_score_direct[imouse] = test_score_direct[idx].mean()
+        mouse_scaled_mse_direct[imouse] = test_scaled_mse_direct[idx].mean()
+        mouse_score_pfpred[imouse] = test_score_pfpred[idx].mean()
+        mouse_pos_score_encoder[imouse] = pos_score_encoder[idx].mean()
+        mouse_pos_score_latent[imouse] = pos_score_latent[idx].mean()
+
+    plt.rcParams.update({"font.size": 12})
+
+    xd = [0, 1, 2]
+    fig, ax = plt.subplots(1, figsize=(4, 4), layout="constrained")
+    # for ts, tsd, c in zip(test_score, test_score_direct, cols):
+    #     ax.plot(xd, [ts, tsd], color=c, linestyle="-", alpha=0.1, linewidth=0.1)
+    for imouse, mouse in enumerate(mice):
+        yd = [mouse_score_pfpred[imouse], mouse_score[imouse], mouse_score_direct[imouse]]
+        ax.plot(xd, yd, color=cmap(imouse), label=mouse, linewidth=1.5, linestyle="-", marker="o")
+    # ax.plot(xd, [mouse_score.mean(), mouse_score_direct.mean()], color="k", linestyle="-", marker="o", label="Mean")
+    ax.set_xticks(xd)
+    ax.set_xticklabels(["PF-Pred", "Pos-Model", "RRR"])
+    ax.set_ylabel("Test Score")
+    ax.set_xlim(-0.3, 2.3)
+    ax.set_ylim(-0.01, max(mouse_score.max(), mouse_score_direct.max()) + 0.01)
+    # ax.legend()
+    plt.show()
+
+
+def create_rrr_diagram(sizes=[5, 2, 5], ball_size=0.2, line_width=2, colors=["k", "k", "k"], figsize=(8, 8), dpi=100, xscale=2, fontsize=18):
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    ax.set_xlim(-0.5, 2 * xscale + 0.5)
+    ax.set_ylim(0, max(sizes) + 1)
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+
+    # Calculate vertical offsets to center the balls
+    offsets = [(max(sizes) - size) / 2 for size in sizes]
+
+    # Create balls
+    for x, size in enumerate(sizes):
+        for j in range(size):
+            y = j + 1 + offsets[x]
+            circle = plt.Circle((x * xscale, y), ball_size, facecolor=colors[x], edgecolor="black", linewidth=line_width)
+            ax.add_patch(circle)
+
+    # Create connections
+    for i in range(len(sizes) - 1):
+        for j in range(sizes[i]):
+            for k in range(sizes[i + 1]):
+                xpos = np.array([i, i + 1]) * xscale
+                ax.plot(xpos, [j + 1 + offsets[i], k + 1 + offsets[i + 1]], color="k", linewidth=line_width, alpha=1)
+
+    # Add labels
+    ax.text(0 * xscale, 0.3, "Input", ha="center", va="center", fontsize=fontsize)
+    ax.text(1 * xscale, 0.6, "Latent:", ha="center", va="center", fontsize=fontsize)
+    ax.text(1 * xscale, 0.3, "Encode Position", ha="center", va="center", fontsize=fontsize)
+    ax.text(1 * xscale, 0.0, "Unconstrained", ha="center", va="center", fontsize=fontsize)
+
+    ax.text(2 * xscale, 0.3, "Output", ha="center", va="center", fontsize=fontsize)
+
+    plt.tight_layout()
+    return fig, ax
+
+
+def parse_args():
+    parser = ArgumentParser(description="Run analysis on all sessions.")
+    parser.add_argument("--redo_pop_splits", default=False, action="store_true", help="Remake population objects and train/val/test splits.")
+    parser.add_argument(
+        "--redo_pop_splits_behavior",
+        default=False,
+        action="store_true",
+        help="Remake population objects and train/val/test splits with behavior data.",
+    )
+    parser.add_argument("--keep_planes", nargs="+", default=[1, 2, 3, 4], type=int, help="Which planes to keep (default=[1, 2, 3, 4])")
+    parser.add_argument(
+        "--population_name", default=None, type=str, help="Name of population object to save (default=None, just uses name of session)"
+    )
+    parser.add_argument("--rrr", default=False, action="store_true", help="Run reduced rank regression optimization.")
+    parser.add_argument("--networks", default=False, action="store_true", help="Run network optimization.")
+    parser.add_argument("--rrr_state", default=False, action="store_true", help="Run rrr (state) optimization.")
+    parser.add_argument("--rrr_state_add_results", default=False, action="store_true", help="Add rrr state results to the session.")
+    parser.add_argument("--skip_completed", type=argbool, default=True, help="Skip completed sessions (default=True)")
+    parser.add_argument("--retest_only", type=argbool, default=False, help="Only retest sessions that have already been optimized.")
+    parser.add_argument("--compare_rrr_to_networks", type=argbool, default=False, help="Do rrr to network comparison.")
+    parser.add_argument("--analyze_rrr_fits", type=argbool, default=False, help="Do analysis of rrr fits.")
+    parser.add_argument("--analyze_networks", type=argbool, default=False, help="Do analysis of networks.")
+    parser.add_argument("--analyze_rrr_state", type=argbool, default=False, help="Do analysis of rrr state.")
+    parser.add_argument("--make_rrr_state_example", type=argbool, default=False, help="Make an example of the RRR state model.")
+    parser.add_argument("--make_rrr_diagram", type=argbool, default=False, help="Make a diagram of the RRR model.")
+    parser.add_argument("--save", type=argbool, default=True, help="Whether to save results (default=True).")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
     args = parse_args()
     all_sessions = get_sessions()
@@ -178,10 +282,10 @@ if __name__ == "__main__":
     # this set of analyses requires consistent train/val/test splits.
     # make_and_save_populations will generate these splits and save them to a temp file in placeCellSingleSession
     if args.redo_pop_splits:
-        make_and_save_populations(all_sessions, args.population_name)
+        make_and_save_populations(all_sessions, args.keep_planes, args.population_name)
 
     if args.redo_pop_splits_behavior:
-        make_and_save_populations(all_sessions, get_behavior=True, population_name=args.population_name)
+        make_and_save_populations(all_sessions, args.keep_planes, get_behavior=True, population_name=args.population_name)
 
     # this set performs optimization and testing of reduced rank regression. It will cache results and save a
     # temporary file in placeCellSingleSession containing the scores and best alpha for each session.
@@ -194,7 +298,16 @@ if __name__ == "__main__":
         )
 
     if args.rrr_state:
-        do_rrr_state_optimization(all_sessions, skip_completed=args.skip_completed, save=args.save, population_name=args.population_name)
+        do_rrr_state_optimization(
+            all_sessions,
+            skip_completed=args.skip_completed,
+            save=args.save,
+            keep_planes=args.keep_planes,
+            population_name=args.population_name,
+        )
+
+    if args.rrr_state_add_results:
+        add_rrr_state_results(all_sessions, population_name=args.population_name, keep_planes=args.keep_planes)
 
     if args.compare_rrr_to_networks:
         rrr_results = load_rrr_results(all_sessions, results="test_by_mouse", population_name=args.population_name)
@@ -209,3 +322,13 @@ if __name__ == "__main__":
     if args.analyze_networks:
         network_results = load_network_results(all_sessions, results="test_by_mouse", population_name=args.population_name)[0]
         analyze_hyperparameters(network_results)
+
+    if args.analyze_rrr_state:
+        rrr_state_results = load_rrr_state_results(all_sessions, results="all", population_name=args.population_name)
+        analyze_rrr_state(rrr_state_results)
+
+    if args.make_rrr_state_example:
+        make_rrr_state_example(all_sessions, population_name=args.population_name, keep_planes=args.keep_planes)
+
+    if args.make_rrr_diagram:
+        fig, ax = create_rrr_diagram(ball_size=0.3, line_width=5, xscale=2, fontsize=24)
