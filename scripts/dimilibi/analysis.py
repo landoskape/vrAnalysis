@@ -1,23 +1,21 @@
 import os, sys
+from pathlib import Path
 from argparse import ArgumentParser
 from matplotlib import pyplot as plt
 import matplotlib as mpl
 
 from helpers import get_sessions, make_and_save_populations, load_population, get_ranks
+from helpers import figure_folder
 from rrr_optimization import do_rrr_optimization, load_rrr_results
 from network_optimization import do_network_optimization, load_network_results
 from rrr_state_optimization import do_rrr_state_optimization, load_rrr_state_results, make_rrr_state_example, add_rrr_state_results
 
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
-from vrAnalysis.helpers import argbool, refline
+from vrAnalysis.helpers import argbool, refline, save_figure
 
 import numpy as np
 import torch
-
-# NOTE:
-# I ran a second round of optimizations with a different population split -- using the population_name="redo1" to distinguish them.
-# For "state" population splits, I added one with only planes 1/2 called "fast"...
 
 
 def plot_comparison_test(rrr_results, network_results, rrr_all, network_all, session_ids):
@@ -155,8 +153,17 @@ def analyze_rrr_state(results):
     test_score_direct = torch.tensor([res["test_score_direct"] for res in results])
     test_scaled_mse_direct = torch.tensor([res["test_scaled_mse_direct"] for res in results])
     test_score_pfpred = torch.tensor([res["pf_pred_score"] for res in results])
+    test_score_pfpred_withcvgain = torch.tensor([res["pf_pred_score_withcvgain"] for res in results])
+    test_score_pfpred_withgain = torch.tensor([res["pf_pred_score_withgain"] for res in results])
     pos_score_encoder = torch.tensor([res["encoder_position_score"] for res in results])
     pos_score_latent = torch.tensor([res["latent_position_score"] for res in results])
+    opt_pos_est_source = torch.tensor([res["opt_pos_estimate_source"] for res in results])
+    opt_pos_est_target = torch.tensor([res["opt_pos_estimate_target"] for res in results])
+    opt_pos_est_target_withcvgain = torch.tensor([res["opt_pos_estimate_target_withcvgain"] for res in results])
+    opt_pos_est_target_withgain = torch.tensor([res["opt_pos_estimate_target_withgain"] for res in results])
+    opt_pos_est_position = torch.tensor([res["opt_pos_estimate_position"] for res in results])
+    test_score_doublecv = torch.tensor([res["test_score_doublecv"] for res in results])
+    rbfpos_to_target_score = torch.tensor([res["rbfpos_to_target_score"] for res in results])
 
     # Use scipy to run ttest on the scores
     from scipy.stats import ttest_rel
@@ -171,7 +178,6 @@ def analyze_rrr_state(results):
     mice = sorted(list(set(mouse_name)))
     num_mice = len(mice)
     cmap = mpl.colormaps["turbo"].resampled(num_mice)
-    cols = [cmap(mice.index(mn)) for mn in mouse_name]
 
     # Average across mice
     mouse_score = torch.zeros(num_mice)
@@ -179,8 +185,17 @@ def analyze_rrr_state(results):
     mouse_score_direct = torch.zeros(num_mice)
     mouse_scaled_mse_direct = torch.zeros(num_mice)
     mouse_score_pfpred = torch.zeros(num_mice)
+    mouse_score_pfpred_withcvgain = torch.zeros(num_mice)
+    mouse_score_pfpred_withgain = torch.zeros(num_mice)
     mouse_pos_score_encoder = torch.zeros(num_mice)
     mouse_pos_score_latent = torch.zeros(num_mice)
+    mouse_score_opt_pos_est_source = torch.zeros(num_mice)
+    mouse_score_opt_pos_est_target = torch.zeros(num_mice)
+    mouse_score_opt_pos_est_target_withcvgain = torch.zeros(num_mice)
+    mouse_score_opt_pos_est_target_withgain = torch.zeros(num_mice)
+    mouse_score_opt_pos_est_position = torch.zeros(num_mice)
+    mouse_score_doublecv = torch.zeros(num_mice)
+    mouse_rbfpos_to_target_score = torch.zeros(num_mice)
     for imouse, mouse in enumerate(mice):
         idx = torch.tensor([mn == mouse for mn in mouse_name])
         mouse_score[imouse] = test_score[idx].mean()
@@ -188,76 +203,131 @@ def analyze_rrr_state(results):
         mouse_score_direct[imouse] = test_score_direct[idx].mean()
         mouse_scaled_mse_direct[imouse] = test_scaled_mse_direct[idx].mean()
         mouse_score_pfpred[imouse] = test_score_pfpred[idx].mean()
+        mouse_score_pfpred_withcvgain[imouse] = test_score_pfpred_withcvgain[idx].mean()
+        mouse_score_pfpred_withgain[imouse] = test_score_pfpred_withgain[idx].mean()
         mouse_pos_score_encoder[imouse] = pos_score_encoder[idx].mean()
         mouse_pos_score_latent[imouse] = pos_score_latent[idx].mean()
+        mouse_score_opt_pos_est_source[imouse] = opt_pos_est_source[idx].mean()
+        mouse_score_opt_pos_est_target[imouse] = opt_pos_est_target[idx].mean()
+        mouse_score_opt_pos_est_target_withcvgain[imouse] = opt_pos_est_target_withcvgain[idx].mean()
+        mouse_score_opt_pos_est_target_withgain[imouse] = opt_pos_est_target_withgain[idx].mean()
+        mouse_score_opt_pos_est_position[imouse] = opt_pos_est_position[idx].mean()
+        mouse_score_doublecv[imouse] = test_score_doublecv[idx].mean()
+        mouse_rbfpos_to_target_score[imouse] = rbfpos_to_target_score[idx].mean()
 
-    plt.rcParams.update({"font.size": 12})
+    include_extras = True
+    if include_extras:
+        labels = ["PF", "Opt-PF", "PF", "Opt-PF", "RBF", "RBF-DCV" "RBF-Opt", "RRR"]
+        colors = ["black", "sienna", "black", "sienna", "fuchsia", "crimson", "darkmagenta", "orangered"]
+        with_gain = [False, False, True, True, False, False, False, False]
+        xd = [0, 1, 2, 3, 4, 5, 6, 7]
+        allyd = np.stack(
+            list(
+                map(
+                    lambda x: np.array(x),
+                    zip(
+                        mouse_score_pfpred,
+                        mouse_score_opt_pos_est_target,
+                        mouse_score_pfpred_withcvgain,
+                        mouse_score_opt_pos_est_target_withcvgain,
+                        mouse_rbfpos_to_target_score,
+                        mouse_score_doublecv,
+                        mouse_score,
+                        mouse_score_direct,
+                    ),
+                )
+            )
+        )
+    else:
+        labels = ["PF", "Opt-PF", "PF", "Opt-PF", "RBF(Pos)", "RRR"]
+        colors = ["black", "sienna", "black", "sienna", "darkmagenta", "orangered"]
+        with_gain = [False, False, True, True, False, False]
+        xd = [0, 1, 2, 3, 4, 5]
+        allyd = np.stack(
+            list(
+                map(
+                    lambda x: np.array(x),
+                    zip(
+                        mouse_score_pfpred,
+                        mouse_score_opt_pos_est_target,
+                        mouse_score_pfpred_withcvgain,
+                        mouse_score_opt_pos_est_target_withcvgain,
+                        mouse_score,
+                        mouse_score_direct,
+                    ),
+                )
+            )
+        )
 
-    xd = [0, 1, 2]
-    fig, ax = plt.subplots(1, figsize=(4, 4), layout="constrained")
-    # for ts, tsd, c in zip(test_score, test_score_direct, cols):
-    #     ax.plot(xd, [ts, tsd], color=c, linestyle="-", alpha=0.1, linewidth=0.1)
-    for imouse, mouse in enumerate(mice):
-        yd = [mouse_score_pfpred[imouse], mouse_score[imouse], mouse_score_direct[imouse]]
-        ax.plot(xd, yd, color=cmap(imouse), label=mouse, linewidth=1.5, linestyle="-", marker="o")
-    # ax.plot(xd, [mouse_score.mean(), mouse_score_direct.mean()], color="k", linestyle="-", marker="o", label="Mean")
-    ax.set_xticks(xd)
-    ax.set_xticklabels(["PF-Pred", "Pos-Model", "RRR"])
+    plt.rcParams.update({"font.size": 24})
+
+    fig, ax = plt.subplots(1, figsize=(8, 8.5), layout="constrained")
+    ax.plot(xd, allyd.T, color="k", linestyle="-", marker="o", markersize=12)
+    for x, eachdata, color in zip(xd, allyd.T, colors):
+        ax.plot(x * np.ones_like(eachdata), eachdata, color=color, linestyle="none", marker="o", markersize=13)
+    ymin, ymax = ax.get_ylim()
+    yrange = ymax - ymin
+    ylim = (ymin - 0.1 * yrange, ymax)
+    # Make a gray patch around the x value spanning the full ylim
+    for x, wg in zip(xd, with_gain):
+        if wg:
+            ax.fill_between([x - 0.5, x + 0.5], ylim[0], ylim[1], color="gray", edgecolor="none", alpha=0.2)
+    ax.text(2.5, ylim[1] * 0.95, "+Gain", ha="center", va="top")
+    ax.set_xticks(ticks=xd, labels=labels, rotation=45, ha="center")
     ax.set_ylabel("Test Score")
-    ax.set_xlim(-0.3, 2.3)
-    ax.set_ylim(-0.01, max(mouse_score.max(), mouse_score_direct.max()) + 0.01)
-    # ax.legend()
+    ax.set_xlim(-0.5, xd.max() + 0.5)
+    ax.set_ylim(ylim)
+    for ixtick, color in enumerate(colors):
+        plt.setp(ax.get_xticklabels()[ixtick], color=color)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # Make a rightward, black, thick arrow pointing right on the bottom of the plot
+    ax.annotate(
+        "",
+        xy=(xd.max(), ymin - 0.05 * yrange),
+        xytext=(0, ymin - 0.05 * yrange),
+        arrowprops=dict(arrowstyle="-|>", color="black", lw=2),
+    )
+    ax.text(np.mean(xd), ymin, "less constrained by position", ha="center", va="center")
+
     plt.show()
 
-
-def create_rrr_diagram(sizes=[5, 2, 5], ball_size=0.2, line_width=2, colors=["k", "k", "k"], figsize=(8, 8), dpi=100, xscale=2, fontsize=18):
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    ax.set_xlim(-0.5, 2 * xscale + 0.5)
-    ax.set_ylim(0, max(sizes) + 1)
-    ax.set_aspect("equal", adjustable="box")
-    ax.axis("off")
-
-    # Calculate vertical offsets to center the balls
-    offsets = [(max(sizes) - size) / 2 for size in sizes]
-
-    # Create balls
-    for x, size in enumerate(sizes):
-        for j in range(size):
-            y = j + 1 + offsets[x]
-            circle = plt.Circle((x * xscale, y), ball_size, facecolor=colors[x], edgecolor="black", linewidth=line_width)
-            ax.add_patch(circle)
-
-    # Create connections
-    for i in range(len(sizes) - 1):
-        for j in range(sizes[i]):
-            for k in range(sizes[i + 1]):
-                xpos = np.array([i, i + 1]) * xscale
-                ax.plot(xpos, [j + 1 + offsets[i], k + 1 + offsets[i + 1]], color="k", linewidth=line_width, alpha=1)
-
-    # Add labels
-    ax.text(0 * xscale, 0.3, "Input", ha="center", va="center", fontsize=fontsize)
-    ax.text(1 * xscale, 0.6, "Latent:", ha="center", va="center", fontsize=fontsize)
-    ax.text(1 * xscale, 0.3, "Encode Position", ha="center", va="center", fontsize=fontsize)
-    ax.text(1 * xscale, 0.0, "Unconstrained", ha="center", va="center", fontsize=fontsize)
-
-    ax.text(2 * xscale, 0.3, "Output", ha="center", va="center", fontsize=fontsize)
-
-    plt.tight_layout()
-    return fig, ax
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = figure_folder()
+        save_name = f"decoder_test_score_comparison"
+        save_name += "_with_extras" if include_extras else ""
+        save_path = save_directory / save_name
+        save_figure(fig, save_path)
 
 
 def parse_args():
     parser = ArgumentParser(description="Run analysis on all sessions.")
-    parser.add_argument("--redo_pop_splits", default=False, action="store_true", help="Remake population objects and train/val/test splits.")
+    parser.add_argument(
+        "--redo_pop_splits",
+        default=False,
+        action="store_true",
+        help="Remake population objects and train/val/test splits.",
+    )
     parser.add_argument(
         "--redo_pop_splits_behavior",
         default=False,
         action="store_true",
         help="Remake population objects and train/val/test splits with behavior data.",
     )
-    parser.add_argument("--keep_planes", nargs="+", default=[1, 2, 3, 4], type=int, help="Which planes to keep (default=[1, 2, 3, 4])")
     parser.add_argument(
-        "--population_name", default=None, type=str, help="Name of population object to save (default=None, just uses name of session)"
+        "--keep_planes",
+        nargs="+",
+        default=[1, 2, 3, 4],
+        type=int,
+        help="Which planes to keep (default=[1, 2, 3, 4])",
+    )
+    parser.add_argument(
+        "--population_name",
+        default=None,
+        type=str,
+        help="Name of population object to save (default=None, just uses name of session)",
     )
     parser.add_argument("--rrr", default=False, action="store_true", help="Run reduced rank regression optimization.")
     parser.add_argument("--networks", default=False, action="store_true", help="Run network optimization.")
@@ -270,7 +340,6 @@ def parse_args():
     parser.add_argument("--analyze_networks", type=argbool, default=False, help="Do analysis of networks.")
     parser.add_argument("--analyze_rrr_state", type=argbool, default=False, help="Do analysis of rrr state.")
     parser.add_argument("--make_rrr_state_example", type=argbool, default=False, help="Make an example of the RRR state model.")
-    parser.add_argument("--make_rrr_diagram", type=argbool, default=False, help="Make a diagram of the RRR model.")
     parser.add_argument("--save", type=argbool, default=True, help="Whether to save results (default=True).")
     return parser.parse_args()
 
@@ -329,6 +398,3 @@ if __name__ == "__main__":
 
     if args.make_rrr_state_example:
         make_rrr_state_example(all_sessions, population_name=args.population_name, keep_planes=args.keep_planes)
-
-    if args.make_rrr_diagram:
-        fig, ax = create_rrr_diagram(ball_size=0.3, line_width=5, xscale=2, fontsize=24)
