@@ -1575,11 +1575,13 @@ def compare_svca_to_cvpca(summary_dicts):
     cvpca = []
     svca = []
     svca_pred = []
+    svca_pred_cv = []
     rank_pf_pred = []
     for summary_dict in summary_dicts:
         c_cvpca = []
         c_svca = []
         c_svca_pred = []
+        c_svca_pred_cv = []
         c_rank_pf_pred = []
         # go through each session's across environment eigenspectra
         for c in summary_dict["cv_across_all"]:
@@ -1593,6 +1595,10 @@ def compare_svca_to_cvpca(summary_dicts):
         for c in summary_dict["svca_shared_prediction"]:
             c_svca_pred.append(c)
 
+        # go through each session's svca of place field predictions that are cross-validated
+        for c in summary_dict["svca_shared_prediction_cv"]:
+            c_svca_pred_cv.append(c)
+
         # go through each session's rank pf prediction
         for c in summary_dict["rank_pf_prediction"]:
             c_rank_pf_pred.append(c)
@@ -1601,9 +1607,10 @@ def compare_svca_to_cvpca(summary_dicts):
         cvpca.append(c_cvpca)
         svca.append(c_svca)
         svca_pred.append(c_svca_pred)
+        svca_pred_cv.append(c_svca_pred_cv)
         rank_pf_pred.append(c_rank_pf_pred)
 
-    return cvpca, svca, svca_pred, rank_pf_pred
+    return cvpca, svca, svca_pred, svca_pred_cv, rank_pf_pred
 
 
 def compare_value_by_environment(pcms, summary_dicts, value_name, reduction="sum", relative_session=False, first_offset=0):
@@ -2028,7 +2035,7 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
 
 
 def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, do_ylog=True, ylog_min=1e-6, with_show=True, with_save=False):
-    cvpca, svca, svca_pred, rank_pf_pred = compare_svca_to_cvpca(summary_dicts)
+    cvpca, svca, svca_pred, svca_pred_cv, rank_pf_pred = compare_svca_to_cvpca(summary_dicts)
 
     # if not using a y-log axis, then set the minimum to -inf to not change any data
     if not do_ylog:
@@ -2088,14 +2095,19 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
 
     figdim = 6.5
     fig, ax = plt.subplots(1, 2, figsize=(10.5, figdim), width_ratios=[1, 0.4], layout="constrained")
-    for imouse, (mouse_name, c_svca, c_cvpca, c_svca_pred, c_rank_pred, num_env) in enumerate(
-        zip(mouse_names, svca, cvpca, svca_pred, rank_pf_pred, num_envs)
+    for imouse, (mouse_name, c_svca, c_cvpca, c_svca_pred, c_svca_pred_cv, c_rank_pred, num_env) in enumerate(
+        zip(mouse_names, svca, cvpca, svca_pred, svca_pred_cv, rank_pf_pred, num_envs)
     ):
         c_svca_data = _process(c_svca)
         c_svca_pred_data = _process(c_svca_pred)
+        c_svca_pred_cv_data = _process(c_svca_pred_cv)
         c_label = mouse_name  # + (" (svca)" if include_cvpca and imouse == 0 else "")
-        ax[0].plot(range(1, len(c_svca_data) + 1), c_svca_data, color=colors[imouse], label=c_label)
-        # ax[0].plot(range(1, len(c_svca_pred_data) + 1), c_svca_pred_data, color="k", linestyle="-", label=None)
+        label = "Full" if imouse == 0 else None
+        label_pred = "PF-Pred" if imouse == 0 else None
+        label_pred_cv = "CV-PF-Pred" if imouse == 0 else None
+        ax[0].plot(range(1, len(c_svca_data) + 1), c_svca_data, color="k", label=label)
+        ax[0].plot(range(1, len(c_svca_pred_cv_data) + 1), c_svca_pred_cv_data, color="b", linestyle="-", label=label_pred_cv)
+        ax[0].plot(range(1, len(c_svca_pred_data) + 1), c_svca_pred_data, color="r", linestyle="-", label=label_pred)
         if include_cvpca:
             c_cvpca_data = _process(c_cvpca)
             c_label = None  # "cvpca" if imouse == (num_mice - 1) else None
@@ -2105,32 +2117,39 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
         c_dims = []
         s_dims = []
         spred_dims = []
-        pf_dims = []
+        spredcv_dims = []
+        pfcv_dims = []
         for c_num in c_num_envs:
             c_dims.append(_dimension([c_cvpca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
             s_dims.append(_dimension([c_svca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
             spred_dims.append(_dimension([c_svca_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            spredcv_dims.append(_dimension([c_svca_pred_cv[i] for i, n in enumerate(num_env) if n == c_num]).mean())
             # pf_dims.append(np.array([c_rank_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
 
         svca_label = "Time" if imouse == 0 else None
         cvpca_label = "Pos" if imouse == 0 else None
-        # pf_pred_label = "PF Pred" if imouse == 0 else None
-        ax[1].plot(c_num_envs, s_dims, color=colors[imouse], linestyle="-", marker=".", markersize=16, label=svca_label)
-        ax[1].plot(c_num_envs, c_dims, color=colors[imouse], linestyle=":", marker=".", markersize=16, label=cvpca_label)
-        # ax[1].plot(c_num_envs, spred_dims, color=colors[imouse], linestyle=":", marker=".", markersize=12, label=pf_pred_label)
+        pf_pred_label = "PF Pred" if imouse == 0 else None
+        pf_pred_cv_label = "PF Pred CV" if imouse == 0 else None
+        ax[1].plot(c_num_envs, s_dims, color="k", linestyle="-", marker=".", markersize=12, label=svca_label)
+        ax[1].plot(c_num_envs, c_dims, color="g", linestyle="-", marker=".", markersize=12, label=cvpca_label)
+        ax[1].plot(c_num_envs, spred_dims, color="r", linestyle="-", marker=".", markersize=12, label=pf_pred_label)
+        ax[1].plot(c_num_envs, spredcv_dims, color="b", linestyle="-", marker=".", markersize=12, label=pf_pred_label)
 
     ax[0].set_xlabel("SVC-Time Dimension (log)")
     ax[0].set_ylabel(f"Relative Variance ({'log' if do_ylog else 'linear'})")
     ax[1].set_xlabel("# Environments", loc="right")
     ax[1].set_ylabel("Dimensionality (log)")
-    # ax[0].legend(loc="lower left", fontsize=20)
-    ax[1].legend(loc="center", fontsize=20)
+    ax[0].legend(loc="upper right", fontsize=20)
+    # ax[1].legend(loc="center", fontsize=20)
     ax[0].set_xscale("log")
     ax[1].set_xlim(0.5, max([max(c_num_envs) for c_num_envs in num_envs]) + 0.5)
     if do_ylog:
         ax[0].set_yscale("log")
         ax[1].set_yscale("log")
-    ax[0].text(1, 4e-7, "100x higher dim. than\nspatial representations", ha="left", va="bottom")
+    
+    if poster2024:
+        pass
+        # ax[0].text(1, 4e-7, "100x higher dim. than\nspatial representations", ha="left", va="bottom")
 
     ax[0].spines["top"].set_visible(False)
     ax[0].spines["right"].set_visible(False)

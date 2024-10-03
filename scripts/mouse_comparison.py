@@ -81,15 +81,15 @@ def get_spectra(mouse_name, args):
 
 def make_comparison_plots(pcms, spectra_data):
     pass
-    ylog_min = None
-    single_env, across_env = compare_spectral_averages(spectra_data)
-    for do_xlog in [False]:
-        for do_ylog in [True]:
-            plot_spectral_averages_comparison(
-                pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=ylog_min, with_show=False, with_save=True
-            )
-    # for include_cvpca in [False]:
-    #     plot_svca_vs_cvpca(pcms, spectra_data, include_cvpca=include_cvpca, do_ylog=True, with_show=False, with_save=True)
+    # ylog_min = None
+    # single_env, across_env = compare_spectral_averages(spectra_data)
+    # for do_xlog in [False]:
+    #     for do_ylog in [True]:
+    #         plot_spectral_averages_comparison(
+    #             pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=ylog_min, with_show=False, with_save=True
+    #         )
+    for include_cvpca in [False]:
+        plot_svca_vs_cvpca(pcms, spectra_data, include_cvpca=include_cvpca, do_ylog=True, with_show=False, with_save=True)
     # for relative_session in [False]:  # [True, False]:
     #     # plot_all_exponential_fits(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
     #     plot_total_variance_comparison(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
