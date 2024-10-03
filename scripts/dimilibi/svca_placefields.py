@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
-from scripts.dimilibi.helpers import make_position_basis, filter_timepoints
+from scripts.dimilibi.helpers import make_position_basis, filter_timepoints, figure_folder
 
 from vrAnalysis import analysis
 from vrAnalysis import helpers
@@ -149,7 +149,7 @@ def process_session(ses):
     relmse, relcor = select_env(pcss.get_reliability_values(envnum=envnum), 0)
 
     # Percentile to show:
-    prctile_cutoff = 90
+    prctile_cutoff = 95
     urelcor_prctile = np.percentile(urelcor[~np.isnan(urelcor)], prctile_cutoff)
     vrelcor_prctile = np.percentile(vrelcor[~np.isnan(vrelcor)], prctile_cutoff)
     relcor_prctile = np.percentile(relcor[~np.isnan(relcor)], prctile_cutoff)
@@ -245,7 +245,7 @@ def process_session(ses):
         sv_scores_svcs=sv_scores_svcs,
         sv_scores_pcpfs=sv_scores_pcpfs,
     )
-    pcss.save_temp_file(results, svca_placefield_tempfile(ses))
+    # pcss.save_temp_file(results, svca_placefield_tempfile(ses))
 
     vmin = -1
     vmax = 1
@@ -253,6 +253,42 @@ def process_session(ses):
 
     # Plot of Place Fields
     plt.rcParams.update({"font.size": fontsize})
+
+    u_rand_idx = np.random.choice(np.sum(u_rel_idx), 5, replace=False)
+    r_rand_idx = np.random.choice(np.sum(rel_idx), 5, replace=False)
+
+    num_plot = 5
+    cmap = mpl.cm.get_cmap("viridis").resampled(num_plot)
+
+    fig, ax = plt.subplots(2, 2, figsize=(9, 6), layout="constrained")
+    for ii in range(num_plot):
+        ax[0, 0].plot(uspkmap_train[u_rel_idx][uidx][u_rand_idx[ii]], color=cmap(ii))
+        ax[0, 1].plot(train_spkmap[rel_idx][tspkmapidx][r_rand_idx[ii]], color=cmap(ii))
+        ax[1, 0].plot(uspkmap_test[u_rel_idx][uidx][u_rand_idx[ii]], color=cmap(ii))
+        ax[1, 1].plot(test_spkmap[rel_idx][tspkmapidx][r_rand_idx[ii]], color=cmap(ii))
+    ax[0, 0].set_title("SVCs")
+    ax[0, 1].set_title("ROIs")
+    ax[0, 0].set_ylabel("Train Trials")
+    ax[1, 0].set_ylabel("Test Trials")
+    ax[1, 0].set_xlabel("Position (cm)")
+    ax[1, 1].set_xlabel("Position (cm)")
+
+    # ax[0, 0].imshow(uspkmap_train[u_rel_idx][uidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
+    # ax[0, 1].imshow(vspkmap_train[v_rel_idx][vidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
+    # ax[0, 2].imshow(train_spkmap[rel_idx][tspkmapidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
+    # ax[1, 0].imshow(uspkmap_test[u_rel_idx][uidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
+    # ax[1, 1].imshow(vspkmap_test[v_rel_idx][vidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
+    # ax[1, 2].imshow(test_spkmap[rel_idx][tspkmapidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
+    # ax[1, 0].set_xlabel("Position (cm)")  # , fontsize=fontsize)
+    # ax[1, 1].set_xlabel("Position (cm)")  # , fontsize=fontsize)
+    # ax[1, 2].set_xlabel("Position (cm)")  # , fontsize=fontsize)
+    # ax[0, 0].set_ylabel("Train Trials")  # , fontsize=fontsize)
+    # ax[1, 0].set_ylabel("Test Trials")  # , fontsize=fontsize)
+    # ax[0, 0].set_title("U (SVCs - Source)")  # , fontsize=fontsize)
+    # ax[0, 1].set_title("V (SVCs - Target)")  # , fontsize=fontsize)
+    # ax[0, 2].set_title("ROIs")  # , fontsize=fontsize)
+    # pcss.saveFigure(fig.number, FIGURE_FOLDER + "PF_TrainTest")
+    # plt.show()
 
     fig, ax = plt.subplots(2, 3, figsize=(9, 6), layout="constrained")
     ax[0, 0].imshow(uspkmap_train[u_rel_idx][uidx], aspect="auto", cmap="bwr", vmin=vmin, vmax=vmax)  # , interpolation="none")
@@ -269,7 +305,7 @@ def process_session(ses):
     ax[0, 0].set_title("U (SVCs - Source)")  # , fontsize=fontsize)
     ax[0, 1].set_title("V (SVCs - Target)")  # , fontsize=fontsize)
     ax[0, 2].set_title("ROIs")  # , fontsize=fontsize)
-    pcss.saveFigure(fig.number, FIGURE_FOLDER + "PF_TrainTest")
+    # pcss.saveFigure(fig.number, FIGURE_FOLDER + "PF_TrainTest")
     # plt.show()
 
     # Plot of Reliability Metrics
@@ -319,7 +355,7 @@ def process_session(ses):
     ax2.set_ylabel("Train PC")
 
     ax1.set_xlim(-0.5, 25.5)
-    ax1.set_ylim(25.5, 0.5)
+    ax1.set_ylim(25.5, -0.5)
 
     # Add colorbar
     plt.colorbar(im0, cax=cax, label="Intensity")
@@ -362,6 +398,9 @@ def add_results_per_session(ses):
     source_spkmap = train_spkmap[npop.cell_split_indices[0]]
     target_spkmap = train_spkmap[npop.cell_split_indices[1]]
 
+    source_relcor = pcss.get_reliability_values(envnum=envnum)[1][0][npop.cell_split_indices[0]]
+    target_relcor = pcss.get_reliability_values(envnum=envnum)[1][0][npop.cell_split_indices[1]]
+
     # Get test place fields from ROIs for a comparison across timepoints...
     test_spkmap = pcss.get_spkmap(envnum=envnum, average=True, trials="test")[0]  # only one environment here, but it's output as a list
     source_spkmap_test = test_spkmap[npop.cell_split_indices[0]]
@@ -389,12 +428,34 @@ def add_results_per_session(ses):
     num_components = min(svpf_source.shape[0], svpf_target.shape[0], (~idx_nan).sum())
     svca_placefields = SVCA(centered=True, num_components=num_components).fit(svpf_source, svpf_target)
 
+    # Project out the place field components
+    u_pf_proj = svca_placefields.U @ svca_placefields.U.T @ test_source
+    v_pf_proj = svca_placefields.V @ svca_placefields.V.T @ test_target
+    test_source_nopf = test_source - u_pf_proj
+    test_target_nopf = test_target - v_pf_proj
+
     sv_scores_svcs = svca_standard.score(test_source, test_target)[0]
     sv_scores_pcpfs = svca_placefields.score(test_source, test_target)[0]
+    sv_scores_svcs_nopf = svca_standard.score(test_source_nopf, test_target_nopf)[0]
+
+    usvc_pf_proj = svca_standard.U.T @ svca_placefields.U
+    vsvc_pf_proj = svca_standard.V.T @ svca_placefields.V
+    mindim0 = min(usvc_pf_proj.shape[0], vsvc_pf_proj.shape[0])
+    mindim1 = min(usvc_pf_proj.shape[1], vsvc_pf_proj.shape[1])
+    avg_svc_pfpc_map = torch.mean(
+        torch.stack((torch.abs(usvc_pf_proj[:mindim0][:, :mindim1]), torch.abs(vsvc_pf_proj[:mindim0][:, :mindim1])), dim=0), dim=0
+    )
+
+    u_explained = torch.sum(usvc_pf_proj**2, dim=1)
+    v_explained = torch.sum(vsvc_pf_proj**2, dim=1)
+    svc_fraction_explained = (u_explained + v_explained) / 2
 
     results = pcss.load_temp_file(svca_placefield_tempfile(ses))
     results["sv_scores_svcs"] = sv_scores_svcs
+    results["sv_scores_svcs_nopf"] = sv_scores_svcs_nopf
     results["sv_scores_pcpfs"] = sv_scores_pcpfs
+    results["svc_fraction_explained"] = svc_fraction_explained
+    results["svc_pfpc_map"] = avg_svc_pfpc_map
     pcss.save_temp_file(results, svca_placefield_tempfile(ses))
 
 
@@ -434,13 +495,16 @@ def load_data():
         relcor=[res["relcor"] for res in session_data],
         sv_scores_svcs=[res["sv_scores_svcs"] for res in session_data],
         sv_scores_pcpfs=[res["sv_scores_pcpfs"] for res in session_data],
+        sv_scores_svcs_nopf=[res["sv_scores_svcs_nopf"] for res in session_data],
+        sv_fraction_explained=[res["svc_fraction_explained"] for res in session_data],
+        sv_pfpc_map=[res["svc_pfpc_map"] for res in session_data],
     )
     return results
 
 
 def compare_figures(results):
     # Plot the SVC and ROI model scores
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 24})
 
     mice = sorted(list(set(results["mouse_names"])))
     num_mice = len(mice)
@@ -516,32 +580,270 @@ def compare_figures(results):
     # Analyze SV from SVCs vs PC-PFs comparison
     total_sv_svcs = np.zeros(num_sessions)
     total_sv_pcpfs = np.zeros(num_sessions)
-    for ires, (sv_svcs, sv_pcpfs) in enumerate(zip(results["sv_scores_svcs"], results["sv_scores_pcpfs"])):
+    total_sv_svcs_nopf = np.zeros(num_sessions)
+    total10_svcs = np.zeros(num_sessions)
+    total10_pcpfs = np.zeros(num_sessions)
+    total10_svcs_nopf = np.zeros(num_sessions)
+    for ires, (sv_svcs, sv_pcpfs, sv_svcs_nopf) in enumerate(
+        zip(results["sv_scores_svcs"], results["sv_scores_pcpfs"], results["sv_scores_svcs_nopf"])
+    ):
         total_sv_svcs[ires] = sv_svcs[: len(sv_pcpfs)].sum()
         total_sv_pcpfs[ires] = sv_pcpfs.sum()
+        total_sv_svcs_nopf[ires] = sv_svcs_nopf[: len(sv_pcpfs)].sum()
+        total10_svcs[ires] = sv_svcs[:10].sum()
+        total10_pcpfs[ires] = sv_pcpfs[:10].sum()
+        total10_svcs_nopf[ires] = sv_svcs_nopf[:10].sum()
 
     min_dim = min(min([len(sv_svcs) for sv_svcs in results["sv_scores_svcs"]], [len(sv_pcpfs) for sv_pcpfs in results["sv_scores_pcpfs"]]))
     all_sv_svcs = np.stack([sv_svcs[:min_dim] for sv_svcs in results["sv_scores_svcs"]])
+    all_sv_svcs_nopf = np.stack([sv_svcs[:min_dim] for sv_svcs in results["sv_scores_svcs_nopf"]])
     all_sv_pcpfs = np.stack([sv_pcpfs[:min_dim] for sv_pcpfs in results["sv_scores_pcpfs"]])
 
-    fig, ax = plt.subplots(1, 2, figsize=(5, 3), width_ratios=[1, 0.5], layout="constrained")
-    # for ires, (sv_svcs, sv_pcpfs) in enumerate(zip(results["sv_scores_svcs"], results["sv_scores_pcpfs"])):
-    #     label = "SVCs" if ires == 0 else None
-    #     ax[0].plot(range(1, len(sv_svcs) + 1), sv_svcs / sv_svcs[0], c="k", label=label)
-    #     label = "PC-PFs" if ires == 0 else None
-    #     ax[0].plot(range(1, len(sv_pcpfs) + 1), sv_pcpfs / sv_svcs[0], c="b", label=label)
-    helpers.errorPlot(range(1, min_dim + 1), all_sv_svcs, axis=0, se=True, ax=ax[0], color="k", label="SVCs", alpha=0.3)
-    helpers.errorPlot(range(1, min_dim + 1), all_sv_pcpfs, axis=0, se=True, ax=ax[0], color="b", label="PC-PFs", alpha=0.3)
+    rel_sv_svcs = all_sv_svcs / total_sv_svcs[:, None]
+    rel_sv_svcs_nopf = all_sv_svcs_nopf / total_sv_svcs[:, None]
+    rel_sv_pcpfs = all_sv_pcpfs / total_sv_svcs[:, None]
+
+    plt.rcParams.update({"font.size": 20})
+
+    fig, ax = plt.subplots(1, 2, figsize=(8, 7), width_ratios=[1, 0.5], layout="constrained")
+    helpers.errorPlot(range(1, min_dim + 1), rel_sv_svcs, axis=0, se=True, ax=ax[0], color="k", label="SVCs", alpha=0.3)
+    helpers.errorPlot(range(1, min_dim + 1), rel_sv_svcs_nopf, axis=0, se=True, ax=ax[0], color="r", label="SVCs (-PFs)", alpha=0.3)
+    helpers.errorPlot(range(1, min_dim + 1), rel_sv_pcpfs, axis=0, se=True, ax=ax[0], color="b", label="PC-PFs", alpha=0.3)
     ax[0].set_xlabel("Dimension")
-    ax[0].set_ylabel("Shared Variance")
+    ax[0].set_ylabel("Normalized Variance")
     ax[0].set_xscale("log")
+    ax[0].set_ylim(0)
     ax[0].legend()
 
-    ax[1].plot([0, 1], np.stack((total_sv_svcs, total_sv_pcpfs)), linewidth=1, c="k")
-    ax[1].set_xticks([0, 1], labels=["SVCs", "PC-PFs"])
-    ax[1].set_ylabel("Total Shared Variance")
-    ax[1].set_xlim(-0.3, 1.3)
+    total_variance = np.stack((total_sv_svcs, total_sv_svcs_nopf, total_sv_pcpfs))
+    relative_variance = total_variance / total_variance[0]
+    ax[1].plot([0, 1, 2], relative_variance, linewidth=1, c="k", marker=".", markersize=12)
+    ax[1].scatter(0 * np.ones(relative_variance.shape[1]), relative_variance[0], c="k", s=10, label="SVCs", zorder=1000)
+    ax[1].scatter(1 * np.ones(relative_variance.shape[1]), relative_variance[1], c="r", s=10, label="SVCs (-PFs)", zorder=1000)
+    ax[1].scatter(2 * np.ones(relative_variance.shape[1]), relative_variance[2], c="b", s=10, label="PC-PFs", zorder=1000)
+    ax[1].set_xticks([0, 1, 2], labels=["SVCs", "SVCs (-PFs)", "PC-PFs"], rotation=45, ha="right")
+    ax[1].set_ylabel("Relative Total Variance")
+    ax[1].set_xlim(-0.3, 2.3)
+    ax[1].set_ylim(0)
     plt.show()
+
+    with_poster2024_save = False
+    if with_poster2024_save:
+        save_directory = figure_folder()
+        save_name = "SVC_StandardAndPFPCs"
+        save_path = save_directory / save_name
+        helpers.save_figure(fig, save_path)
+
+    # Also show fractional variance of each component
+    mice = sorted(np.unique(results["mouse_names"]))
+    mice_names = helpers.short_mouse_names(mice)
+    num_mice = len(mice)
+    cmap = mpl.cm.get_cmap("turbo").resampled(num_mice)
+    icolors = [mice.index(mouse) for mouse in results["mouse_names"]]
+    colors = [cmap(icolor) for icolor in icolors]
+
+    min_svc_dim = min([len(sv_svcs) for sv_svcs in results["sv_fraction_explained"]])
+    all_sv_fraction_explained = np.stack([sv_fe[:min_svc_dim] for sv_fe in results["sv_fraction_explained"]])
+
+    all_by_mouse = np.zeros((num_mice, min_svc_dim))
+    dev_by_mouse = np.zeros((num_mice, min_svc_dim))
+    for i, mouse in enumerate(mice):
+        idx_mouse = np.where(results["mouse_names"] == mouse)[0]
+        all_by_mouse[i] = np.nanmean(all_sv_fraction_explained[idx_mouse], axis=0)
+        dev_by_mouse[i] = np.nanstd(all_sv_fraction_explained[idx_mouse], axis=0) / np.sqrt(
+            np.sum(~np.isnan(all_sv_fraction_explained[idx_mouse]), axis=0)
+        )
+
+    plt.rcParams.update({"font.size": 24})
+
+    figdim = 5.3
+    fig, ax = plt.subplots(1, 1, figsize=(figdim, figdim), layout="constrained")
+    # helpers.errorPlot(range(1, min_svc_dim + 1), all_sv_fraction_explained, axis=0, se=True, ax=ax, color="k", alpha=0.3)
+    for i, mouse in enumerate(mice_names):
+        label = "Each Mouse" if i == 0 else None
+        ax.plot(range(1, min_svc_dim + 1), all_by_mouse[i], color="k", label=label)
+    ax.set_xlabel("SVC-Time Dimension")
+    ax.set_ylabel(f"fraction variance shared\nwith SVC-POS dimensions")
+    ax.set_xscale("log")
+    ax.legend(loc="upper right")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_ylim(0, 1)
+    # plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = figure_folder()
+        save_name = "SVC_FractionExplained_PFPCs"
+        save_path = save_directory / save_name
+        helpers.save_figure(fig, save_path)
+
+    # Show how the SVCs and PFPCs relate to each other
+    min_svc_dim = min([sv_svcs.shape[0] for sv_svcs in results["sv_pfpc_map"]])
+    min_pfpc_dim = min([sv_svcs.shape[1] for sv_svcs in results["sv_pfpc_map"]])
+    all_sv_pfpc_map = np.stack([sv_pm[:min_svc_dim][:, :min_pfpc_dim] for sv_pm in results["sv_pfpc_map"]])
+    show_dims = 50
+    show_map = np.mean(all_sv_pfpc_map, axis=0)[:show_dims][:, :show_dims]
+    iexample = 9  # most correlated with average
+    example_map = all_sv_pfpc_map[iexample][:show_dims][:, :show_dims]
+    vmax = np.ceil(10 * np.max(np.abs(example_map))) / 10
+    # vmax = 1.0
+
+    plt.rcParams.update({"font.size": 24})
+
+    extent = [0, show_dims, show_dims, 0]
+    # vmax = np.round(20 * np.max(np.abs(show_map)) * 1.5) / 20
+    figdim = 5.3
+    fig, ax = plt.subplots(1, 1, figsize=(figdim, figdim), layout="constrained")
+    im = ax.imshow(show_map.T, extent=extent, interpolation="none", cmap="gray_r", vmin=0, vmax=vmax, aspect="equal")
+    ax.set_xlim(0, show_dims)
+    ax.set_ylim(show_dims, 0)
+    ax.set_xlabel("SVC-Time  Dimension", labelpad=-15)
+    ax.set_ylabel("SVC-Pos  Dimension", labelpad=-15)
+    ax.set_xticks([0, show_dims])
+    ax.set_yticks([0, show_dims])
+    ticks = np.round(1000 * np.linspace(0, vmax, 3)) / 1000
+    inset_position = [0.88, 0.1, 0.075, 0.65]
+    inset_colorbar = ax.inset_axes(inset_position)
+    plt.colorbar(im, cax=inset_colorbar, ticks=[])
+    ax.text(inset_position[0] + inset_position[2] / 2, inset_position[1] - 0.01, ticks[0], ha="center", va="top", transform=ax.transAxes)
+    ax.text(
+        inset_position[0] + inset_position[2] / 2,
+        inset_position[1] + inset_position[3] + 0.01,
+        ticks[-1],
+        ha="center",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        inset_position[0] - 0.01,
+        inset_position[1] + inset_position[3] / 2,
+        "|dot(SVC-T, SVC-P)|",
+        rotation=90,
+        ha="right",
+        va="center",
+        color="k",
+        transform=ax.transAxes,
+        zorder=1000,
+    )
+    # plt.tight_layout()
+
+    inset = ax.inset_axes([0.05, 0.05, 0.3, 0.3])
+    inset.imshow(example_map.T, extent=extent, interpolation="none", cmap="gray_r", vmin=0, vmax=vmax, aspect="equal")
+    inset.set_xlim(-0.5, show_dims)
+    inset.set_ylim(show_dims, -0.5)
+    inset.set_xticks([])
+    inset.set_yticks([])
+    inset.text(show_dims / 2, -2, "Example\nSession", ha="center", va="bottom", color="k", fontsize=24)
+
+    # plt.show()
+
+    with_poster2024_save = False
+    if with_poster2024_save:
+        save_directory = figure_folder()
+        save_name = "SVC_PFPC_Map"
+        save_path = save_directory / save_name
+        helpers.save_figure(fig, save_path)
+
+    plt.rcParams.update({"font.size": 24})
+
+    # Make focused plot on relative total variance
+    total_variance = np.stack((total_sv_svcs, total_sv_pcpfs, total10_svcs, total10_pcpfs))
+    relative_variance = total_variance / total_variance[0]
+    xd = [0, 1, 2, 3]
+    labels = ["Time", "Pos"]
+    labels = labels + labels
+    cols = ["k", "#9F9FFF", "w", "#9F9FFF"]
+    patch = [False, False, True, True]
+    fig, ax = plt.subplots(1, 1, figsize=(4.4, 5.3), layout="constrained")
+    ax.plot(xd, relative_variance, linewidth=1, c="k", marker="o", markersize=10)
+    for ii, (xx, rv) in enumerate(zip(xd, relative_variance)):
+        ax.plot(
+            xx * np.ones(len(rv)),
+            rv,
+            color=(cols[ii], 0.6),
+            linewidth=2,
+            marker="o",
+            linestyle="none",
+            markersize=8,
+            zorder=1000,
+        )
+    ymax = ax.get_ylim()[1]
+    ax.set_ylim(0, ymax)
+    # Make a gray patch around the x value spanning the full ylim where "True" is set
+    for x, p in zip(xd, patch):
+        if p:
+            ax.fill_between([x - 0.5, x + 0.5], 0, ymax, color="gray", edgecolor="none", alpha=0.2)
+    ax.text(2.5, ymax * 0.95, "1st 10\nDims\nOnly", ha="center", va="top")
+    ax.set_xticks(xd, labels=labels, rotation=0, ha="center")
+    ax.set_xlabel("SVCs")
+    ax.set_ylabel("Relative Total Var.")
+    ax.set_xlim(-0.3, 3.3)
+    ax.set_ylim(0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    # ax.spines["bottom"].set_visible(False)
+    plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = figure_folder()
+        save_name = "RelativeTotalVariance"
+        save_path = save_directory / save_name
+        helpers.save_figure(fig, save_path)
+
+    # Make focused plot on relative total variance
+    total_variance = np.stack((total_sv_svcs, total_sv_pcpfs))
+    total_variance10 = np.stack((total10_svcs, total10_pcpfs))
+    relative_variance = total_variance / total_variance[0]
+    relative_variance10 = total_variance10 / total_variance10[0]
+    xd = [[0, 1], [2, 3]]
+    labels = ["SVC-Time", "SVC-Pos"]
+    cols = ["k", "#9F9FFF"]
+
+    fig, ax = plt.subplots(1, 1, figsize=(4.4, 5.3), layout="constrained")
+    ax.plot(xd[0], relative_variance, linewidth=1, c="k", marker="o", markersize=10)
+    ax.plot(xd[1], relative_variance10, linewidth=1, c="k", marker="o", markersize=10)
+    for ii, (xx, rv) in enumerate(zip(xd[0], relative_variance)):
+        ax.plot(
+            xx * np.ones(len(rv)),
+            rv,
+            color=(cols[ii], 0.6),
+            linewidth=2,
+            marker="o",
+            linestyle="none",
+            markersize=8,
+            zorder=1000,
+        )
+    for ii, (xx, rv) in enumerate(zip(xd[1], relative_variance10)):
+        ax.plot(
+            xx * np.ones(len(rv)),
+            rv,
+            color=(cols[ii], 0.6),
+            linewidth=2,
+            marker="o",
+            linestyle="none",
+            markersize=8,
+            zorder=1000,
+        )
+    ymax = ax.get_ylim()[1]
+    ax.set_ylim(0, ymax)
+    # Make a gray patch around the x value spanning the full ylim where "True" is set
+    for x in xd[1]:
+        ax.fill_between([x - 0.5, x + 0.5], 0, ymax, color="gray", edgecolor="none", alpha=0.2)
+    ax.text(1.75, ymax * 0.05, "Only\n1st 10\nDims", ha="left", va="bottom")
+    ax.set_xticks(xd[0] + xd[1], labels=labels + labels, rotation=45, ha="right")
+    ax.set_ylabel("Relative Total Variance")
+    ax.set_xlim(-0.3, 3.3)
+    ax.set_ylim(0)
+    plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = figure_folder()
+        save_name = "RelativeTotalVarianceSplit10"
+        save_path = save_directory / save_name
+        helpers.save_figure(fig, save_path)
 
 
 def parse_args():
