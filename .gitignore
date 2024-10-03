@@ -4,6 +4,8 @@
 # Saved files
 *.pkl
 cachedir/
+*.png
+*.svg
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
