@@ -134,9 +134,11 @@ def getBehaviorAndSpikeMaps(
     else:
         # use empty (and small) array for consistent code even when get_spkmap is False
         spks = np.zeros_like(behavePositionBin).reshape(-1, 1)
-        idxBehaveToFrame = np.zeros_like(behavePositionBin)
-        distBehaveToFrame = np.inf * np.ones_like(behavePositionBin)
-        distCutoff = 0
+        frameTimeStamps = vrexp.loadone("mpci.times")  # timestamps for each imaging frame
+        idxBehaveToFrame = vrexp.loadone("positionTracking.mpci")  # mpci frame index associated with each behavioral frame
+        sampling_period = np.median(np.diff(frameTimeStamps))
+        distCutoff = sampling_period / 2  # (time) of cutoff for associating imaging frame with behavioral frame
+        distBehaveToFrame = frameTimeStamps[idxBehaveToFrame] - behaveTimeStamps
 
     # Get high resolution occupancy and speed maps
     occmap = np.zeros((vrexp.value["numTrials"], numPosition))
@@ -318,6 +320,17 @@ def getAverageFramePosition(behavePosition, behaveSpeed, speedThreshold, idxBeha
     for sample in nb.prange(len(behavePosition)):
         if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
             frame_position[idxBehaveToFrame[sample]] += behavePosition[sample]
+            count[idxBehaveToFrame[sample]] += 1
+
+
+@nb.njit(parallel=True)
+def getAverageFrameSpeed(behaveSpeed, speedThreshold, idxBehaveToFrame, distBehaveToFrame, distCutoff, frame_speed, count):
+    """
+    get the speed of each frame by averaging across speeds within a sample
+    """
+    for sample in nb.prange(len(behaveSpeed)):
+        if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
+            frame_speed[idxBehaveToFrame[sample]] += behaveSpeed[sample]
             count[idxBehaveToFrame[sample]] += 1
 
 
