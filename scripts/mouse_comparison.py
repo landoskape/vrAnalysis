@@ -81,21 +81,23 @@ def get_spectra(mouse_name, args):
 
 def make_comparison_plots(pcms, spectra_data):
     pass
-    ylog_min = 1e-3
+    ylog_min = None
     single_env, across_env = compare_spectral_averages(spectra_data)
-    for do_xlog in [True, False]:
-        for do_ylog in [True, False]:
+    for do_xlog in [False]:
+        for do_ylog in [True]:
             plot_spectral_averages_comparison(
                 pcms, single_env, across_env, do_xlog=do_xlog, do_ylog=do_ylog, ylog_min=ylog_min, with_show=False, with_save=True
             )
-    # for include_cvpca in [True, False]:
+    # for include_cvpca in [False]:
     #     plot_svca_vs_cvpca(pcms, spectra_data, include_cvpca=include_cvpca, do_ylog=True, with_show=False, with_save=True)
-    # for relative_session in [True, False]:
-    #     plot_all_exponential_fits(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
+    # for relative_session in [False]:  # [True, False]:
+    #     # plot_all_exponential_fits(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
     #     plot_total_variance_comparison(pcms, spectra_data, relative_session=relative_session, with_show=False, with_save=True)
     # summary_val = ["map_var", "map_corr", "map_frob_norm"]
+    # summary_val = ["pf_norm", "pf_tcorr_mean"]
+    # fancy_names = ["PF Amplitude", "PF Consistency"]
     # for relative_value in [True, False]:
-    #     for sval_name in summary_val:
+    #     for sval_name, fancy_name in zip(summary_val, fancy_names):
     #         plot_value_comparison(
     #             pcms,
     #             spectra_data,
@@ -104,7 +106,9 @@ def make_comparison_plots(pcms, spectra_data):
     #             relative_value=relative_value,
     #             relative_session=True,
     #             with_show=False,
-    #             with_save=True,
+    #             with_save=True,  # True,
+    #             poster2024=True,
+    #             fancy_name=fancy_name,
     #         )
     #         plot_value_to_value_comparison(
     #             pcms,

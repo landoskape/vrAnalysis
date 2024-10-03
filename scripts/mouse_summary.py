@@ -54,16 +54,16 @@ def analyze_spectra(pcm, args):
 
     # make plots
     plt.close("all")
-    # for color_by_session in [True, False]:
-    #     for normalize in [True, False]:
-    #         plot_spectral_data(
-    #             pcm,
-    #             spectra_data,
-    #             color_by_session=color_by_session,
-    #             normalize=normalize,
-    #             with_show=False,
-    #             with_save=True,
-    #         )
+    for color_by_session in [True]:  # i mean absolute session instead of relative here
+        for normalize in [False]:
+            plot_spectral_data(
+                pcm,
+                spectra_data,
+                color_by_session=color_by_session,
+                normalize=normalize,
+                with_show=False,
+                with_save=True,
+            )
     #     for covariance in [False, True]:
     #         plot_fourier_data(pcm, spectra_data, color_by_session=color_by_session, covariance=covariance, with_show=False, with_save=True)
     # for do_xlog in [True, False]:
@@ -77,13 +77,13 @@ def analyze_spectra(pcm, args):
     #         compare_exp_fits(pcm, spectra_data, amplitude=True, mean=mean, color_by_session=color_by_session, with_show=False, with_save=True)
     # for cv in [True, False]:
     #     plot_spatial_kernels(pcm, spectra_data, cv=cv, with_show=False, with_save=True)
-    sesidx = np.arange(len(pcm.pcss))
-    num_sessions = min([5, len(sesidx)])
-    ses_to_plot = np.random.choice(sesidx, num_sessions, replace=False)
-    for ises in ses_to_plot:
-        for envnum in pcm.pcss[ises].environments:
-            # generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=False, with_save=True)
-            compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=False, with_save=True)
+    # sesidx = np.arange(len(pcm.pcss))
+    # num_sessions = min([5, len(sesidx)])
+    # ses_to_plot = np.random.choice(sesidx, num_sessions, replace=False)
+    # for ises in ses_to_plot:
+    #     for envnum in pcm.pcss[ises].environments:
+    #         # generate_example_pfvars(pcm, spectra_data, ises, envnum, num_cells=20, with_show=False, with_save=True)
+    #         compare_reliability_measures(pcm, spectra_data, ises, envnum, with_show=False, with_save=True)
 
 
 if __name__ == "__main__":
