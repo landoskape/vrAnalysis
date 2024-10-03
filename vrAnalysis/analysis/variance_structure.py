@@ -17,6 +17,13 @@ import seaborn as sns
 
 from .. import database
 
+import sys, os
+
+# add the path to the dimilibi package
+mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
+sys.path.append(mainPath)
+from dimilibi import Population, SVCA
+
 mousedb = database.vrDatabase("vrMice")
 
 """
@@ -66,27 +73,49 @@ class VarianceStructure(placeCellSingleSession):
 
         return spks
 
-    def get_frame_behavior(self, speedThreshold=-1, use_average=True, ignore_to_nan=True):
+    def get_frame_behavior(self, speedThreshold=-1, use_average=True, ignore_to_nan=True, return_speed=False):
         """get behavioral variables for session and convert to frame timing"""
-        frame_position, idx_valid, ses_envs = self.vrexp.get_position_by_env(speedThreshold=speedThreshold, use_average=use_average)
+        if return_speed:
+            frame_position, idx_valid, ses_envs, frame_speed = self.vrexp.get_position_by_env(
+                speedThreshold=speedThreshold, use_average=use_average, return_speed=return_speed
+            )
+        else:
+            frame_position, idx_valid, ses_envs = self.vrexp.get_position_by_env(
+                speedThreshold=speedThreshold, use_average=use_average, return_speed=return_speed
+            )
+
         if ignore_to_nan:
             frame_position = frame_position.astype(float)
             frame_position[frame_position == -100] = np.nan
+            if return_speed:
+                frame_speed = frame_speed.astype(float)
+                frame_speed[frame_speed == -100] = np.nan
 
         msg = f"pcss environments {self.environments} doesn't match session environments {ses_envs}"
         assert np.array_equal(self.environments, ses_envs), msg
+
+        if return_speed:
+            return frame_position, idx_valid, frame_speed
 
         return frame_position, idx_valid
 
     def generate_spks_prediction(self, spks, spkmaps, frame_position, idx_valid, background_value=0):
         """generate spks prediction from spkmaps and frame_position data"""
-        spks_prediction = np.full(spks.shape, background_value)
+        spks_prediction = np.full(spks.shape, background_value, dtype=float)
+        max_spkmap_bin = max([sm.shape[1] for sm in spkmaps])
+        if np.any(frame_position > max_spkmap_bin):
+            raise ValueError("frame_position is greater than the number of bins in the spikemap")
+        if np.any(frame_position < 0):
+            raise ValueError("frame_position is less than 0")
+        if np.any(frame_position == max_spkmap_bin):
+            # assume the binning was just a little off and bring it down by 1
+            frame_position[frame_position == max_spkmap_bin] = max_spkmap_bin - 1
         for spkmap, frame_pos, idx in zip(spkmaps, frame_position, idx_valid):
-            spks_prediction[idx] = spkmap[:, frame_pos[idx].astype(int)].T
-
+            idx_notnan = ~np.isnan(frame_pos)
+            spks_prediction[idx & idx_notnan] = spkmap[:, np.floor(frame_pos[idx & idx_notnan]).astype(int)].T
         return spks_prediction
 
-    def get_traversals(self, spks, spks_prediction, spkmaps, frame_position, envidx, cellidx, width=10):
+    def get_traversals(self, spks, spks_prediction, spkmaps, frame_position, envidx, cellidx, width=10, fill_nan=False):
         """for every time the mouse passes the peak of the place field, get the traversal of the spks timecourse and the prediction"""
         pos_peak = self.distcenters[np.nanargmax(spkmaps[envidx][cellidx])]
         idx_traversal = find_peaks(-np.abs(frame_position[envidx] - pos_peak), distance=width)[0]
@@ -100,6 +129,10 @@ class VarianceStructure(placeCellSingleSession):
             iendoffset = max(0, iend - spks.shape[0])
             traversals[ii, istartoffset : width * 2 + 1 - iendoffset] = spks[istart + istartoffset : iend - iendoffset, cellidx]
             pred_travs[ii, istartoffset : width * 2 + 1 - iendoffset] = spks_prediction[istart + istartoffset : iend - iendoffset, cellidx]
+
+        if fill_nan:
+            traversals[np.isnan(traversals)] = 0.0
+            pred_travs[np.isnan(pred_travs)] = 0.0
 
         return traversals, pred_travs
 
@@ -233,6 +266,9 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "pf_tcorr_std",
                 "svca_shared",
                 "svca_total",
+                "svca_shared_prediction",
+                "svca_total_prediction",
+                "rank_pf_prediction",
             ]
             for key in required_keys:
                 if key not in temp_files:
@@ -300,6 +336,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         pf_tcorr_std = []
         kernels = []
         cv_kernels = []
+        rank_pf_prediction = []
         for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
             # get reliable cells (for each environment) and spkmaps for each environment (with all cells)
             c_idx_reliable = v.get_reliable(envnum=None, cutoffs=args.cutoffs, maxcutoffs=args.maxcutoffs)
@@ -375,6 +412,22 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             pf_tcorr_mean.append([np.nanmean(tcorr, axis=1) for tcorr in c_pf_tcorr])
             pf_tcorr_std.append([np.nanstd(tcorr, axis=1) for tcorr in c_pf_tcorr])
 
+            # Measure rank of pf prediction (as a lookup table)
+            c_frame_position, _ = v.get_frame_behavior(use_average=True)
+            c_idx_nan = np.all(np.isnan(c_frame_position), axis=0)
+            c_frame_position = np.floor(c_frame_position[:, ~c_idx_nan])
+            max_pos_bin = max([sm.shape[1] for sm in c_spkmaps])
+            if np.any(c_frame_position > max_pos_bin):
+                raise ValueError("frame position is greater than spkmap size")
+            # fix off by one error (this is just a binning artifact, it's okay to do this)
+            # also the last spkmap bin is usually a nan anyway...
+            c_frame_position[c_frame_position == max_pos_bin] = max_pos_bin - 1
+            c_frame_pos_by_env = [np.unique(cfp[~np.isnan(cfp)]) for cfp in c_frame_position]
+            all_lookup_values = np.concatenate([spkmap[:, cfpbe.astype(int)] for spkmap, cfpbe in zip(c_spkmaps, c_frame_pos_by_env)], axis=1)
+            idx_nan = np.any(np.isnan(all_lookup_values), axis=0)
+            all_lookup_values = all_lookup_values[:, ~idx_nan]
+            rank_pf_prediction.append(np.linalg.matrix_rank(all_lookup_values))
+
         # make analyses consistent by using same (randomly subsampled) numbers of trials & neurons for each analysis
         all_max_trials = min([int(v._get_min_trials(allmap) // 2) for v, allmap in zip(vss, allcell_maps)])
         all_max_neurons = min([int(v._get_min_neurons(allmap)) for v, allmap in zip(vss, allcell_maps)])
@@ -430,6 +483,63 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             svca_shared.append(c_shared_var)
             svca_total.append(c_tot_cov_space_var)
 
+        # measure the "dimensionality" of the place field lookup by the dimensionality of the spkmaps...
+        svca_shared_prediction = []
+        svca_total_prediction = []
+        svca_shared_prediction_cv = []
+        svca_total_prediction_cv = []
+        for ii, v in enumerate(tqdm(vss, leave=True, desc="creating place field lookup")):
+            c_spks = v.prepare_spks()
+            c_spkmaps = v.get_spkmap(average=True, smooth=args.smooth)
+            c_frame_position, c_idx_valid = v.get_frame_behavior(use_average=True)
+            c_pf_prediction = v.generate_spks_prediction(c_spks, c_spkmaps, c_frame_position, c_idx_valid, background_value=0.0)
+            idx_nan = np.isnan(c_pf_prediction).any(axis=1)
+            c_pf_prediction[idx_nan] = 0.0
+
+            time_split_prms = dict(
+                num_groups=2,
+                chunks_per_group=-2,
+                num_buffer=2,
+            )
+            npop = Population(c_pf_prediction.T, time_split_prms=time_split_prms)
+            train_source_pred, train_target_pred = npop.get_split_data(0, center=True, scale=False)
+            test_source_pred, test_target_pred = npop.get_split_data(1, center=True, scale=False)
+
+            svca = SVCA(num_components=temp_files["rank_pf_prediction"][ii], truncated=True).fit(train_source_pred, train_target_pred)
+            pf_shared_var, pf_total_var = svca.score(test_source_pred, test_target_pred, normalize=True)
+            svca_shared_prediction.append(pf_shared_var)
+            svca_total_prediction.append(pf_total_var)
+
+            # Then also do a similar thing but with cross-validated data
+            # (This isn't perfect per se, but is perfectly well cross-validated)
+            # Ideally I'd probably pick train/test timepoints, then build a spkmap from those samples specifically
+            # Instead, I'm just building two spike maps from train/test trials, and then applying them to the
+            # train/test timepoints for the SVCA analysis. Not "perfect" but cross-validated in terms of the spikemaps.
+            c_spkmaps_train = v.get_spkmap(average=True, smooth=args.smooth, trials="train")
+            c_spkmaps_test = v.get_spkmap(average=True, smooth=args.smooth, trials="test")
+            c_frame_position, c_idx_valid = v.get_frame_behavior(use_average=True)
+            c_pf_pred_train = v.generate_spks_prediction(c_spks, c_spkmaps_train, c_frame_position, c_idx_valid, background_value=0.0)
+            c_pf_pred_test = v.generate_spks_prediction(c_spks, c_spkmaps_test, c_frame_position, c_idx_valid, background_value=0.0)
+            idx_nan = np.isnan(c_pf_pred_train).any(axis=1) | np.isnan(c_pf_pred_test).any(axis=1)
+            c_pf_pred_train[idx_nan] = 0.0
+            c_pf_pred_test[idx_nan] = 0.0
+
+            time_split_prms = dict(
+                num_groups=2,
+                chunks_per_group=-2,
+                num_buffer=2,
+            )
+            npop = Population(c_pf_pred_train.T, time_split_prms=time_split_prms)
+            train_source_pred = npop.apply_split(c_pf_pred_train.T, 0, center=True, scale=False)[npop.cell_split_indices[0]]
+            train_target_pred = npop.apply_split(c_pf_pred_train.T, 0, center=True, scale=False)[npop.cell_split_indices[1]]
+            test_source_pred = npop.apply_split(c_pf_pred_test.T, 1, center=True, scale=False)[npop.cell_split_indices[0]]
+            test_target_pred = npop.apply_split(c_pf_pred_test.T, 1, center=True, scale=False)[npop.cell_split_indices[1]]
+
+            svca_cv = SVCA(num_components=temp_files["rank_pf_prediction"][ii], truncated=True).fit(train_source_pred, train_target_pred)
+            pf_shared_var_cv, pf_total_var_cv = svca_cv.score(test_source_pred, test_target_pred, normalize=True)
+            svca_shared_prediction_cv.append(pf_shared_var_cv)
+            svca_total_prediction_cv.append(pf_total_var_cv)
+
         # save data as temporary files
         temp_save_args = args if type(args) == dict else args.asdict() if type(args) == helpers.AttributeDict else vars(args)
         temp_files = {
@@ -467,6 +577,11 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "pf_tcorr_std": pf_tcorr_std,
             "svca_shared": svca_shared,
             "svca_total": svca_total,
+            "svca_shared_prediction": svca_shared_prediction,
+            "svca_total_prediction": svca_total_prediction,
+            "svca_shared_prediction_cv": svca_shared_prediction_cv,
+            "svca_total_prediction_cv": svca_total_prediction_cv,
+            "rank_pf_prediction": rank_pf_prediction,
         }
         if save_as_temp:
             pcm.save_temp_file(temp_files, f"{args.mouse_name}_spectra_data.pkl")
@@ -744,6 +859,238 @@ def plot_spectral_data(
         special_name = "by_session" if color_by_session else "by_relative_session"
         special_name = special_name + "_normalized" if normalize else special_name
         pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name)
+
+
+def plot_spectral_data_posterversion(
+    pcm,
+    spectra_data,
+    with_show=True,
+    with_save=False,
+):
+    # make plots of spectra data
+    num_sessions = len(spectra_data["names"])
+    environments = list(spectra_data["envstats"].keys())
+    environments = [e for e in environments if e > 0]
+    num_envs = len(environments)
+    sessions_per_env = [len(spectra_data["envstats"][env]) for env in environments]
+
+    # sort environments by number of sessions (decreasing)
+    env_order = [x for _, x in sorted(zip(sessions_per_env, environments), reverse=True)]
+
+    cmap = mpl.colormaps["winter"].resampled(num_sessions)
+    plt.rcParams.update({"font.size": 24})
+    max_dim = 0
+    min_var = np.inf
+    max_var = 0
+    do_ylog = False
+
+    # total_variance = np.full((num_sessions, num_envs), np.nan)
+    total_variance = [np.full(num_sessions, np.nan) for _ in range(num_envs)]
+
+    width_ratios = [1] * num_envs + [0.1] + [1]
+    fig, ax = plt.subplots(1, num_envs + 2, figsize=(16, 5), width_ratios=width_ratios, layout="constrained")
+    for i in range(num_envs):
+        c_env = env_order[i]
+        for j in range(num_sessions):
+            if j in spectra_data["envstats"][c_env]:
+                eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+                cdata = copy(spectra_data["cv_by_env_all"][j][eidx])
+                cdata_dim = np.where(cdata < 0)[0][0]
+                cdata[cdata_dim:] = np.nan
+                max_dim = max(max_dim, cdata_dim)
+                min_var = min(min_var, np.nanmin(cdata))
+                max_var = max(max_var, np.nanmax(cdata))
+                ax[i].plot(range(1, len(cdata) + 1), cdata, color=cmap(j))
+                total_variance[i][j] = np.nansum(cdata)
+
+        ax[i].set_xlabel("Dimension")
+        ax[i].spines["top"].set_visible(False)
+        ax[i].spines["right"].set_visible(False)
+        if do_ylog:
+            ax[i].set_yscale("log")
+
+        if i == 0:
+            ax[i].set_ylabel("Variance (au)")
+
+        if i == num_envs - 1:
+            # make inset colorbar for session id
+            # iax = ax[i].inset_axes([-0.5, 0.65, 0.8, 0.07])
+            # iax = fig.add_axes([0.05, 0.25, 0.25, 0.05])
+            # iax.xaxis.set_ticks_position("bottom")
+            cmap_norm = mpl.colors.Normalize(vmin=0, vmax=num_sessions - 1)
+            m = mpl.cm.ScalarMappable(cmap=cmap, norm=cmap_norm)
+            cb = fig.colorbar(m, cax=ax[-2], ticks=[0, num_sessions - 1], orientation="vertical")
+            cb.ax.set_ylabel("Session ID", ha="center", labelpad=-90)
+
+    max_total_variance = np.nanmax(np.concatenate(total_variance))
+    # total_variance = total_variance / np.nanmax(np.concatenate(total_variance))
+    total_variance = [tv / max_total_variance for tv in total_variance]
+    env_cols = "krb"
+    for i in range(num_envs):
+        ax[-1].plot(range(num_sessions), total_variance[i], color=env_cols[i], marker=".", markersize=12)
+    # for j in range(num_sessions):
+    #     ax[-2].plot(range(num_envs), total_variance[j], color=cmap(j), marker=".", markersize=12)
+    ax[-1].set_xlabel("Session #")
+    ax[-1].set_ylabel("Relative Total Var.")
+    ax[-1].set_xlim(-0.5, num_sessions - 0.5)
+    ax[-1].set_ylim(0, 1.1)
+    ax[-1].set_xticks([0, num_sessions - 1])
+    ax[-1].set_yticks([0, 1])
+    ax[-1].spines["top"].set_visible(False)
+    ax[-1].spines["right"].set_visible(False)
+
+    yticks = ax[0].get_yticks()
+    ax[0].set_yticks(ticks=yticks, labels=[""] * len(yticks))
+
+    for i in range(num_envs):
+        ax[i].set_xlim(0, max_dim - 1)
+        if do_ylog:
+            ax[i].set_ylim(min_var * 0.95, max_var * 1.05)
+        else:
+            ax[i].set_ylim(0, max_var * 1.1)
+        ax[i].text((max_dim - 1) / 2, max_var, f"Env {i}", ha="center", va="top", fontsize=24)
+
+    for i in range(1, num_envs):
+        ax[i].spines["left"].set_visible(False)
+        ax[i].set_yticks([])
+        ax[i].minorticks_off()
+
+    if with_show:
+        plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = pcm.saveDirectory("example_plots")
+        save_path = save_directory / f"increase_familiarity_flip_{pcm.track.mouse_name}"
+        helpers.save_figure(fig, save_path)
+
+    if with_save:
+        special_name = "by_session"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name + "_posterversion")
+
+
+def plot_pfstat_data_posterversion(
+    pcm,
+    spectra_data,
+    metrics=["pf_norm", "pf_tcorr_mean"],
+    reductions=["mean", "mean"],
+    fancy_names=["PF Amplitude", "PF Consistency"],
+    with_show=True,
+    with_save=False,
+):
+    # make plots of spectra data
+    num_sessions = len(spectra_data["names"])
+    environments = list(spectra_data["envstats"].keys())
+    environments = [e for e in environments if e > 0]
+    num_envs = len(environments)
+    sessions_per_env = [len(spectra_data["envstats"][env]) for env in environments]
+
+    # sort environments by number of sessions (decreasing)
+    env_order = [x for _, x in sorted(zip(sessions_per_env, environments), reverse=True)]
+
+    cmap = mpl.colormaps["winter"].resampled(num_sessions)
+    plt.rcParams.update({"font.size": 24})
+    figdim = 5
+
+    reduced_variables = [np.full((num_sessions, num_envs), np.nan) for _ in metrics]
+
+    for imetric, metric in enumerate(metrics):
+        for i in range(num_envs):
+            c_env = env_order[i]
+            for j in range(num_sessions):
+                if j in spectra_data["envstats"][c_env]:
+                    eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+                    cdata = copy(spectra_data[metric][j][eidx])
+                    if reductions[imetric] == "mean":
+                        c_red_data = np.nanmean(cdata)
+                    elif reductions[imetric] == "std":
+                        c_red_data = np.nanstd(cdata)
+                    else:
+                        raise ValueError("reduction must be 'mean' or 'std'")
+                    reduced_variables[imetric][j, i] = c_red_data
+
+    fig, ax = plt.subplots(1, len(metrics), figsize=(0.765 * len(metrics) * figdim, figdim), layout="constrained")
+    reduced_variables = [reduced_variable / np.nanmax(reduced_variable) for reduced_variable in reduced_variables]
+    for imetric in range(len(metrics)):
+        for j in range(num_sessions):
+            ax[imetric].plot(range(num_envs), reduced_variables[imetric][j], color=cmap(j), marker=".", markersize=12)
+        ax[imetric].set_xlabel("Env #")
+        ax[imetric].set_ylabel(f"Relative {metrics[imetric] if fancy_names[imetric] is None else fancy_names[imetric]}")
+        ax[imetric].set_xlim(-0.5, num_envs - 0.5)
+        ax[imetric].set_ylim(0)
+        ax[imetric].set_xticks(range(num_envs))
+        ax[imetric].set_yticks([0, 1])
+        ax[imetric].spines["top"].set_visible(False)
+        ax[imetric].spines["right"].set_visible(False)
+
+    # make inset colorbar for session id
+    iax = ax[-1].inset_axes([0.1, 0.15, 0.8, 0.03])
+    iax.xaxis.set_ticks_position("bottom")
+    cmap_norm = mpl.colors.Normalize(vmin=0, vmax=num_sessions - 1)
+    m = mpl.cm.ScalarMappable(cmap=cmap, norm=cmap_norm)
+    cb = fig.colorbar(m, cax=iax, ticks=[0, num_sessions - 1], orientation="horizontal")
+    cb.ax.set_xlabel("Session ID", ha="center", labelpad=-20)
+
+    if with_show:
+        plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = pcm.saveDirectory("example_plots")
+        metric_names = "_".join(metrics)
+        save_path = save_directory / f"increase_familiarity_{pcm.track.mouse_name}_{metric_names}"
+        helpers.save_figure(fig, save_path)
+
+    if with_save:
+        special_name = "by_session"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name + "_posterversion")
+
+    # By session on x axis
+    reduced_variables = [[np.full(num_sessions, np.nan) for _ in range(num_envs)] for _ in metrics]
+
+    for imetric, metric in enumerate(metrics):
+        for i in range(num_envs):
+            c_env = env_order[i]
+            for j in range(num_sessions):
+                if j in spectra_data["envstats"][c_env]:
+                    eidx = pcm.pcss[j].envnum_to_idx(c_env)[0]
+                    cdata = copy(spectra_data[metric][j][eidx])
+                    if reductions[imetric] == "mean":
+                        c_red_data = np.nanmean(cdata)
+                    elif reductions[imetric] == "std":
+                        c_red_data = np.nanstd(cdata)
+                    else:
+                        raise ValueError("reduction must be 'mean' or 'std'")
+                    reduced_variables[imetric][i][j] = c_red_data
+
+    env_cols = "krb"
+    fig, ax = plt.subplots(1, len(metrics), figsize=(0.765 * len(metrics) * figdim, figdim), layout="constrained")
+    reduced_variables = [reduced_variable / np.nanmax(reduced_variable) for reduced_variable in reduced_variables]
+    for imetric in range(len(metrics)):
+        for i in range(num_envs):
+            ax[imetric].plot(range(num_sessions), reduced_variables[imetric][i], color=env_cols[i], marker=".", markersize=12)
+        ax[imetric].set_xlabel("Session #")
+        ax[imetric].set_ylabel(f"Relative {metrics[imetric] if fancy_names[imetric] is None else fancy_names[imetric]}")
+        ax[imetric].set_xlim(-0.5, num_sessions - 0.5)
+        ax[imetric].set_ylim(0)
+        ax[imetric].set_xticks([0, num_sessions - 1])
+        ax[imetric].set_yticks([0, 1])
+        ax[imetric].spines["top"].set_visible(False)
+        ax[imetric].spines["right"].set_visible(False)
+
+    if with_show:
+        plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = pcm.saveDirectory("example_plots")
+        metric_names = "_".join(metrics)
+        save_path = save_directory / f"increase_familiarity_flip_{pcm.track.mouse_name}_{metric_names}"
+        helpers.save_figure(fig, save_path)
+
+    if with_save:
+        special_name = "by_session"
+        pcm.saveFigure(fig.number, pcm.track.mouse_name, "cv_spectra_" + special_name + "_flip_posterversion")
 
 
 def plot_spectral_averages(
@@ -1227,9 +1574,13 @@ def compare_svca_to_cvpca(summary_dicts):
     # get average eigenspectra for each mouse
     cvpca = []
     svca = []
+    svca_pred = []
+    rank_pf_pred = []
     for summary_dict in summary_dicts:
         c_cvpca = []
         c_svca = []
+        c_svca_pred = []
+        c_rank_pf_pred = []
         # go through each session's across environment eigenspectra
         for c in summary_dict["cv_across_all"]:
             c_cvpca.append(c)
@@ -1238,11 +1589,21 @@ def compare_svca_to_cvpca(summary_dicts):
         for c in summary_dict["svca_shared"]:
             c_svca.append(c)
 
+        # go through each session's svca of place field predictions
+        for c in summary_dict["svca_shared_prediction"]:
+            c_svca_pred.append(c)
+
+        # go through each session's rank pf prediction
+        for c in summary_dict["rank_pf_prediction"]:
+            c_rank_pf_pred.append(c)
+
         # add them all to master list
         cvpca.append(c_cvpca)
         svca.append(c_svca)
+        svca_pred.append(c_svca_pred)
+        rank_pf_pred.append(c_rank_pf_pred)
 
-    return cvpca, svca
+    return cvpca, svca, svca_pred, rank_pf_pred
 
 
 def compare_value_by_environment(pcms, summary_dicts, value_name, reduction="sum", relative_session=False, first_offset=0):
@@ -1308,17 +1669,32 @@ def compare_value_by_environment(pcms, summary_dicts, value_name, reduction="sum
 
 
 def plot_value_comparison(
-    pcms, summary_dicts, value_name, reduction="sum", relative_value=False, relative_session=False, first_offset=0, with_show=True, with_save=False
+    pcms,
+    summary_dicts,
+    value_name,
+    reduction="sum",
+    relative_value=False,
+    relative_session=False,
+    first_offset=0,
+    poster2024=False,
+    with_show=True,
+    with_save=False,
+    fancy_name=None,
 ):
     value = compare_value_by_environment(
-        pcms, summary_dicts, value_name, reduction=reduction, relative_session=relative_session, first_offset=first_offset
+        pcms,
+        summary_dicts,
+        value_name,
+        reduction=reduction,
+        relative_session=relative_session,
+        first_offset=first_offset,
     )
 
     if type(reduction) != str and len(reduction) == 2 and type(reduction[0]) == str and callable(reduction[1]):
         reduction = reduction[0]
 
     if value.shape[1] < 6:
-        cols = "kbgcmy"
+        cols = "krbgcmy"
     else:
         cmap = mpl.colormaps["tab10"].resampled(value.shape[1])
         cols = [cmap(i) for i in range(value.shape[1])]
@@ -1330,20 +1706,38 @@ def plot_value_comparison(
     average_value = np.nanmean(value, axis=0)
     se_value = np.nanstd(value, axis=0)  # / np.sqrt(np.sum(~np.isnan(value), axis=0))
 
-    figdim = 4.5
+    if poster2024:
+        plt.rcParams.update({"font.size": 24})
+
+    figdim = 5
     fig, ax = plt.subplots(1, 1, figsize=(figdim, figdim), layout="constrained")
     for ii, (av, sv) in enumerate(zip(average_value, se_value)):
-        ax.plot(range(len(av)), av, color=cols[ii], label=f"Environment {ii}")
+        ax.plot(range(len(av)), av, color=cols[ii], label=f"Env {ii}")
         ax.fill_between(range(len(av)), av - sv, av + sv, color=cols[ii], alpha=0.3, edgecolor=None)
-        # ax.plot(range(len(av)), variance[:, ii, :].T, color=cols[ii], alpha=0.3)
-    ax.set_xlabel(("Relative " if relative_session else "") + "Session Number")
-    ax.set_ylabel(reduction + " " + value_name)
-    ax.legend(loc="best")
+    ax.set_xlabel(("Relative " if relative_session else "") + "Session #")
+    ax.set_ylabel(reduction.title() + " " + ("Relative " if relative_value else "") + (value_name if fancy_name is None else fancy_name))
+    ylims = ax.get_ylim()
+    max_ytick = np.ceil(ylims[1] * 10) / 10
+    max_ytick = 4 ** np.floor(np.log2(ylims[1]) / np.log2(4))
+    ylim_max = max_ytick + 1
+    ax.set_ylim(0, ylim_max)  # * 1.25)
+    ax.set_yticks(np.linspace(0, max_ytick, 5))
+    cols = "krb"
+    offset = ylim_max * 0.1
+    for i, c in enumerate(cols):
+        ax.text(0, max_ytick - i * offset, f"Env {i}", color=c)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     if with_show:
         plt.show()
 
-    if with_save:
+    if with_save and poster2024:
+        save_directory = pcms[0].saveDirectory("example_plots")
+        save_path = save_directory / f"{value_name}_comparison_across_mice"
+        helpers.save_figure(fig, save_path)
+
+    if with_save and not poster2024:
         special_name = f"{value_name}_{reduction}"
         special_name += "_rv" if relative_value else ""
         special_name += "_relative" if relative_session else ""
@@ -1432,14 +1826,23 @@ def plot_total_variance_comparison(pcms, summary_dicts, relative_session=False, 
         first_offset=first_offset,
         with_show=with_show,
         with_save=with_save,
+        fancy_name="Variance",
     )
 
 
 def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=False, do_ylog=False, ylog_min=1e-3, with_show=True, with_save=False):
-
+    """
+    if across_num set to a number, will only include sessions with that many environments included (None means use all)
+    """
     # if not using a y-log axis, then set the minimum to -inf to not change any data
     if not do_ylog:
         ylog_min = -np.inf
+
+    num_envs = []
+    for pcm in pcms:
+        num_envs.append([])
+        for pcss in pcm.pcss:
+            num_envs[-1].append(len(pcss.environments))
 
     # create processing method
     def _process(data):
@@ -1447,61 +1850,195 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         data = np.stack(data)
         # normalize each row so they sum to 1
         data = data / np.sum(data, axis=1, keepdims=True)
-        # take the average across rows (across sessions / environments)
-        data = np.mean(data, axis=0)
         # remove any values below the minimum for log scaling
-        data[data < ylog_min] = np.nan
+        if isinstance(ylog_min, float):
+            # take the average across rows (across sessions / environments)
+            data = np.mean(data, axis=0)
+            data[data < ylog_min] = np.nan
+        else:
+            # get dimension of each row
+            dims = _dimension(data)
+            # replace everything after the dimension with nans
+            for i, d in enumerate(dims):
+                data[i, d + 1 :] = np.nan
+            data = np.nanmean(data, axis=0)
         # return processed data
         return data
 
+    def _dimension(data):
+        """internal function for measuring the dimensionality of cross-validated eigenspectra"""
+        data = np.stack(data)
+        # find first point where the value in data is less than 0
+        return np.argmax(data <= 0, axis=1) - 1
+
+    poster2024 = True
     num_mice = len(pcms)
     mouse_names = [pcm.track.mouse_name for pcm in pcms]
-    cmap = mpl.colormaps["turbo"].resampled(num_mice)
+    mouse_names = helpers.short_mouse_names(mouse_names)
 
-    figdim = 3
-    fig, ax = plt.subplots(2, 2, figsize=(2 * figdim, 2 * figdim), layout="constrained", sharex="row", sharey="row")
-    for imouse, (mouse_name, c_single_env, c_across_env) in enumerate(zip(mouse_names, single_env, across_env)):
+    if poster2024:
+        colors = ["k" for _ in range(num_mice)]
+    else:
+        cmap = mpl.colormaps["turbo"].resampled(num_mice)
+        colors = [cmap(i) for i in range(num_mice)]
+
+    plt.rcParams.update({"font.size": 24})
+
+    figdim = 6.5
+    # note: easy to readd second row for cumulative variance
+    fig, ax = plt.subplots(1, 3, figsize=(2 * figdim, 1 * figdim), width_ratios=[1, 1, 0.5], layout="constrained")
+    ax = np.array(ax).reshape(1, 3)
+    for imouse, (mouse_name, c_single_env, c_across_env, num_env) in enumerate(zip(mouse_names, single_env, across_env, num_envs)):
+        c_double_env = [c_across_env[i] for i, n in enumerate(num_env) if n == 2]
         c_single_data = _process(c_single_env)
-        c_across_data = _process(c_across_env)
-        ax[0, 0].plot(range(1, len(c_single_data) + 1), c_single_data, color=cmap(imouse), label=mouse_name)
-        ax[0, 1].plot(range(1, len(c_across_data) + 1), c_across_data, color=cmap(imouse), label=mouse_name)
-        ax[1, 0].plot(range(1, len(c_single_data) + 1), np.nancumsum(c_single_data), color=cmap(imouse), label=mouse_name)
-        ax[1, 1].plot(range(1, len(c_across_data) + 1), np.nancumsum(c_across_data), color=cmap(imouse), label=mouse_name)
+        c_double_data = _process(c_double_env)
+        c_num_envs = np.unique(num_env)
+        c_dims = []
+        for c_num in c_num_envs:
+            c_dims.append(_dimension([c_across_env[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+        label = ("Each Mouse" if imouse == 0 else None) if poster2024 else mouse_name
+        ax[0, 0].plot(range(1, len(c_single_data) + 1), c_single_data, color=colors[imouse], label=label)
+        ax[0, 1].plot(range(1, len(c_double_data) + 1), c_double_data, color=colors[imouse], label=label)
+        ax[0, 2].plot(c_num_envs, c_dims, color=colors[imouse], marker=".", markersize=16, label=label)
 
-    ax[1, 0].set_xlabel("Dimension")
-    ax[1, 1].set_xlabel("Dimension")
-    ax[0, 0].set_ylabel("Variance")
-    ax[1, 0].set_ylabel("Cumulative Variance")
-    ax[0, 0].set_title("Single Environments")
-    ax[0, 1].set_title("Across Environments")
-    ax[0, 1].legend(fontsize=8)
-    ax[1, 1].legend(fontsize=8)
+    ax[0, 0].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
+    ax[0, 1].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
+    ax[0, 2].set_xlabel("# Environments", loc="right")
+    # ax[1, 0].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
+    # ax[1, 1].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
+    ax[0, 0].set_ylabel(f"Relative Variance ({'log' if do_ylog else 'linear'})")
+    ax[0, 2].set_ylabel("Dimensionality")
+    # ax[1, 0].set_ylabel("Cumulative Variance")
+    ax[0, 0].set_title("N=1 Environment")
+    ax[0, 1].set_title("N=2 Environments")
+    ax[0, 0].legend(loc="upper right")
 
     if do_xlog:
         for aa in ax:
             for a in aa:
                 a.set_xscale("log")
 
+    xlims = [ax[0, 0].get_xlim(), ax[0, 1].get_xlim()]
+    xlim = (min([x[0] for x in xlims]), max([x[1] for x in xlims]))
+    ax[0, 0].set_xlim(xlim)
+    ax[0, 1].set_xlim(xlim)
+
+    ax[0, 2].set_xlim(0.5, max([max(c_num_envs) for c_num_envs in num_envs]) + 0.5)
+    ax[0, 2].set_ylim(0)
+
     if do_ylog:
         for aa in ax:
             for a in aa:
                 a.set_yscale("log")
 
+        ax[0, 2].set_yscale("linear")
+
+    ax[0, 0].spines["top"].set_visible(False)
+    ax[0, 0].spines["right"].set_visible(False)
+    ax[0, 1].set_yticks([], labels=None)
+    ax[0, 1].minorticks_off()
+    ax[0, 1].spines["left"].set_visible(False)
+    ax[0, 1].spines["right"].set_visible(False)
+    ax[0, 1].spines["top"].set_visible(False)
+    ylims = [ax[0, 0].get_ylim(), ax[0, 1].get_ylim()]
+    ylim = (min([y[0] for y in ylims]), max([y[1] for y in ylims]))
+    ax[0, 0].set_ylim(ylim)
+    ax[0, 1].set_ylim(ylim)
+
+    ax[0, 2].spines["top"].set_visible(False)
+    ax[0, 2].spines["right"].set_visible(False)
+    ax[0, 2].spines["bottom"].set_visible(False)
+
+    ylims = ax[0, 0].get_ylim()
+    text_ypos = ylims[0] + (ylims[1] - ylims[0]) * 0.00005
+    ax[0, 0].text(1, text_ypos, "dim := \nlast before negatives")
+    ax[0, 1].text(np.mean(xlim), ylims[0] + (ylims[1] - ylims[0]) * 0.45, "exponential scaling", ha="center", va="center")
+
     if with_show:
+        pass
         plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = pcms[0].saveDirectory("comparisons")
+        special_name = "logx_" if do_xlog else "linx_"
+        special_name = special_name + ("logy" if do_ylog else "liny")
+        save_path = save_directory / ("cv_spectral_average_comparison_poster2024_" + special_name)
+        helpers.save_figure(fig, save_path)
 
     if with_save:
         special_name = "logx_" if do_xlog else "linx_"
         special_name = special_name + ("logy" if do_ylog else "liny")
         pcms[0].saveFigure(fig.number, "comparisons", "cv_spectral_average_comparison_" + special_name)
 
+    # Overlapping plot method:
+    cols = ["mediumorchid", "black"]
+
+    figdim = 6.5
+    # note: easy to readd second row for cumulative variance
+    fig, ax = plt.subplots(1, 2, figsize=(2 * figdim, 1 * figdim), width_ratios=[2, 1], layout="constrained")
+    ax = np.array(ax).reshape(1, 2)
+    for imouse, (mouse_name, c_single_env, c_across_env, num_env) in enumerate(zip(mouse_names, single_env, across_env, num_envs)):
+        c_double_env = [c_across_env[i] for i, n in enumerate(num_env) if n == 2]
+        c_single_data = _process(c_single_env)
+        c_double_data = _process(c_double_env)
+        c_num_envs = np.unique(num_env)
+        c_dims = []
+        for c_num in c_num_envs:
+            c_dims.append(_dimension([c_across_env[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+        label1 = ("N=1 Env" if imouse == 0 else None) if poster2024 else mouse_name
+        label2 = ("N=2 Env" if imouse == 0 else None) if poster2024 else mouse_name
+        label = ("Each Mouse" if imouse == 0 else None) if poster2024 else mouse_name
+        ax[0, 0].plot(range(1, len(c_single_data) + 1), c_single_data, color=cols[0], label=label1)
+        ax[0, 0].plot(range(1, len(c_double_data) + 1), c_double_data, color=cols[1], label=label2)
+        ax[0, 1].plot(c_num_envs, c_dims, color=colors[imouse], marker=".", markersize=16, label=label)
+
+    ax[0, 0].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
+    ax[0, 1].set_xlabel("# Environments", loc="right")
+    ax[0, 0].set_ylabel(f"Relative Variance ({'log' if do_ylog else 'linear'})")
+    ax[0, 1].set_ylabel("Dimensionality")
+    ax[0, 0].legend(loc="upper right")
+    xlim = ax[0, 0].get_xlim()
+
+    ax[0, 1].set_xlim(0.5, max([max(c_num_envs) for c_num_envs in num_envs]) + 0.5)
+    ax[0, 1].set_ylim(0)
+    ax[0, 0].set_yscale("log")
+
+    ax[0, 0].spines["top"].set_visible(False)
+    ax[0, 0].spines["right"].set_visible(False)
+    ax[0, 1].spines["top"].set_visible(False)
+    ax[0, 1].spines["right"].set_visible(False)
+    ax[0, 1].spines["bottom"].set_visible(False)
+
+    ylims = ax[0, 0].get_ylim()
+    text_ypos = ylims[0] + (ylims[1] - ylims[0]) * 0.00005
+    ax[0, 0].text(1, text_ypos, "dim := \nlast before negatives")
+
+    if with_show:
+        pass
+        plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = pcms[0].saveDirectory("comparisons")
+        special_name = "logx_" if do_xlog else "linx_"
+        special_name = special_name + ("logy" if do_ylog else "liny")
+        save_path = save_directory / ("cv_spectral_average_overlapping_poster2024_" + special_name)
+        helpers.save_figure(fig, save_path)
+
 
 def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, do_ylog=True, ylog_min=1e-6, with_show=True, with_save=False):
-    cvpca, svca = compare_svca_to_cvpca(summary_dicts)
+    cvpca, svca, svca_pred, rank_pf_pred = compare_svca_to_cvpca(summary_dicts)
 
     # if not using a y-log axis, then set the minimum to -inf to not change any data
     if not do_ylog:
         ylog_min = -np.inf
+
+    num_envs = []
+    for pcm in pcms:
+        num_envs.append([])
+        for pcss in pcm.pcss:
+            num_envs[-1].append(len(pcss.environments))
 
     # create processing method
     def _process(data):
@@ -1514,36 +2051,106 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
         if normalize:
             # normalize each row so they sum to 1
             data = data / np.nansum(data, axis=1, keepdims=True)
-        # take the average across rows (across sessions / environments)
-        data = np.nanmean(data, axis=0)
-        # remove any values below the minimum for log scaling
-        data[data < ylog_min] = np.nan
+        if isinstance(ylog_min, float):
+            # take the average across rows (across sessions / environments)
+            data = np.mean(data, axis=0)
+            data[data < ylog_min] = np.nan
+        else:
+            # get dimension of each row
+            dims = _dimension(data)
+            # replace everything after the dimension with nans
+            for i, d in enumerate(dims):
+                data[i, d + 1 :] = np.nan
+            data = np.nanmean(data, axis=0)
         # return processed data
         return data
 
+    def _dimension(data):
+        """internal function for measuring the dimensionality of cross-validated eigenspectra"""
+        max_dims = max([len(d) for d in data])
+        data = [np.append(d, np.full(max_dims - len(d), np.nan)) for d in data]
+        data = np.stack(data)
+        # find first point where the value in data is less than 0
+        return np.argmax(data <= 0, axis=1) - 1
+
+    poster2024 = True
     num_mice = len(pcms)
     mouse_names = [pcm.track.mouse_name for pcm in pcms]
-    cmap = mpl.colormaps["turbo"].resampled(num_mice)
+    mouse_names = helpers.short_mouse_names(mouse_names)
 
-    fig, ax = plt.subplots(1, 1, figsize=(8, 4), layout="constrained")
-    for imouse, (mouse_name, c_svca, c_cvpca) in enumerate(zip(mouse_names, svca, cvpca)):
+    if poster2024:
+        colors = ["k" for _ in range(num_mice)]
+    else:
+        cmap = mpl.colormaps["turbo"].resampled(num_mice)
+        colors = [cmap(i) for i in range(num_mice)]
+
+    plt.rcParams.update({"font.size": 24})
+
+    figdim = 6.5
+    fig, ax = plt.subplots(1, 2, figsize=(10.5, figdim), width_ratios=[1, 0.4], layout="constrained")
+    for imouse, (mouse_name, c_svca, c_cvpca, c_svca_pred, c_rank_pred, num_env) in enumerate(
+        zip(mouse_names, svca, cvpca, svca_pred, rank_pf_pred, num_envs)
+    ):
         c_svca_data = _process(c_svca)
-        c_label = mouse_name + (" (svca)" if include_cvpca and imouse == 0 else "")
-        ax.plot(range(1, len(c_svca_data) + 1), c_svca_data, color=cmap(imouse), label=c_label)
+        c_svca_pred_data = _process(c_svca_pred)
+        c_label = mouse_name  # + (" (svca)" if include_cvpca and imouse == 0 else "")
+        ax[0].plot(range(1, len(c_svca_data) + 1), c_svca_data, color=colors[imouse], label=c_label)
+        # ax[0].plot(range(1, len(c_svca_pred_data) + 1), c_svca_pred_data, color="k", linestyle="-", label=None)
         if include_cvpca:
             c_cvpca_data = _process(c_cvpca)
-            c_label = "cvpca" if imouse == (num_mice - 1) else None
-            ax.plot(range(1, len(c_cvpca_data) + 1), c_cvpca_data, color=cmap(imouse), linestyle="--", label=c_label)
+            c_label = None  # "cvpca" if imouse == (num_mice - 1) else None
+            ax[0].plot(range(1, len(c_cvpca_data) + 1), c_cvpca_data, color=colors[imouse], linestyle="--", label=c_label)
 
-    ax.set_xlabel("Dimension")
-    ax.set_ylabel("Variance")
-    ax.legend(loc="upper right", fontsize=10)
-    ax.set_xscale("log")
+        c_num_envs = np.unique(num_env)
+        c_dims = []
+        s_dims = []
+        spred_dims = []
+        pf_dims = []
+        for c_num in c_num_envs:
+            c_dims.append(_dimension([c_cvpca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            s_dims.append(_dimension([c_svca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            spred_dims.append(_dimension([c_svca_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            # pf_dims.append(np.array([c_rank_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+
+        svca_label = "Time" if imouse == 0 else None
+        cvpca_label = "Pos" if imouse == 0 else None
+        # pf_pred_label = "PF Pred" if imouse == 0 else None
+        ax[1].plot(c_num_envs, s_dims, color=colors[imouse], linestyle="-", marker=".", markersize=16, label=svca_label)
+        ax[1].plot(c_num_envs, c_dims, color=colors[imouse], linestyle=":", marker=".", markersize=16, label=cvpca_label)
+        # ax[1].plot(c_num_envs, spred_dims, color=colors[imouse], linestyle=":", marker=".", markersize=12, label=pf_pred_label)
+
+    ax[0].set_xlabel("SVC-Time Dimension (log)")
+    ax[0].set_ylabel(f"Relative Variance ({'log' if do_ylog else 'linear'})")
+    ax[1].set_xlabel("# Environments", loc="right")
+    ax[1].set_ylabel("Dimensionality (log)")
+    # ax[0].legend(loc="lower left", fontsize=20)
+    ax[1].legend(loc="center", fontsize=20)
+    ax[0].set_xscale("log")
+    ax[1].set_xlim(0.5, max([max(c_num_envs) for c_num_envs in num_envs]) + 0.5)
     if do_ylog:
-        ax.set_yscale("log")
+        ax[0].set_yscale("log")
+        ax[1].set_yscale("log")
+    ax[0].text(1, 4e-7, "100x higher dim. than\nspatial representations", ha="left", va="bottom")
+
+    ax[0].spines["top"].set_visible(False)
+    ax[0].spines["right"].set_visible(False)
+    ax[1].spines["top"].set_visible(False)
+    ax[1].spines["right"].set_visible(False)
+    ax[1].spines["bottom"].set_visible(False)
+
+    # xlims = ax[0].get_xlim()
+    # ax[0].set_xlim(xlims[0], xlims[1] * 3)
 
     if with_show:
         plt.show()
+
+    with_poster2024_save = True
+    if with_poster2024_save:
+        save_directory = pcms[0].saveDirectory("comparisons")
+        special_name = "_withcvpca" if include_cvpca else ""
+        special_name = special_name + ("logy" if do_ylog else "liny")
+        save_path = save_directory / ("svca_comparison" + special_name)
+        helpers.save_figure(fig, save_path)
 
     if with_save:
         special_name = "_vs_cvpca" if include_cvpca else ""
@@ -1740,21 +2347,74 @@ def predict_exp_fits_across_mice(pcms, spectra_data, amplitude=True, with_show=T
         ]
     )
 
-    cmap = mpl.colormaps["turbo"].resampled(len(pfv_names))
-    cmap_idx = {k: i for i, k in enumerate(pfv_names)}
-    figdim = 3
-    fig, ax = plt.subplots(2, 1, figsize=(4 * figdim, 2 * figdim), layout="constrained", sharex=True)
-    for i, (k, c, r) in enumerate(zip(pfv_all.keys(), coefs, r2s)):
+    poster2024 = True
+    if poster2024:
+        figdim = 5
+        xscale = 3 / 5
+        yscale = 1
+        keep = ["pf_norm_mean", "pf_tcorr_mean_mean"]
+        fancy_names = ["Amp", "Cons."]
+        idx_to_keep = [list(pfv_all.keys()).index(k) for k in keep]
+        coefs_keep = [coefs[itk] for itk in idx_to_keep]
+        r2s_keep = [r2s[itk] for itk in idx_to_keep]
+        zipped = zip(keep, coefs_keep, r2s_keep)
+        show_coefficient = False
+        colors = ["k" for _ in keep]
+        plt.rcParams.update({"font.size": 24})
+    else:
+        figdim = 3
+        xscale = 4
+        yscale = 2
+        keep = list(pfv_all.keys())
+        fancy_names = keep
+        zipped = zip(keep, coefs, r2s)
+        show_coefficient = True
+        cmap = mpl.colormaps["turbo"].resampled(len(pfv_names))
+        cmap_idx = {k: i for i, k in enumerate(pfv_names)}
+        colors = [cmap(cmap_idx[k]) for k in keep]
+
+    fig, ax = plt.subplots(2 if show_coefficient else 1, 1, figsize=(xscale * figdim, yscale * figdim), layout="constrained", sharex=True)
+    ax = np.reshape(ax, -1)
+    for i, (k, c, r) in enumerate(zipped):
         name = "_".join(k.split("_")[:-1])
-        ax[0].scatter(i + 0.1 * helpers.beeswarm(c), c, label=k, color=cmap(cmap_idx[name]), s=15, alpha=0.7)
-        ax[1].scatter(i + 0.1 * helpers.beeswarm(r), r, label=k, color=cmap(cmap_idx[name]), s=15, alpha=0.7)
-    ax[1].set_xticks(range(len(pfv_all.keys())))
-    ax[1].set_xticklabels(pfv_all.keys(), rotation=45, ha="right")
-    ax[0].set_ylabel("Fit Coefficient")
-    ax[1].set_ylabel("R**2")
+        if show_coefficient:
+            if poster2024:
+                xvals = i * np.ones_like(c)
+            else:
+                xvals = 0.1 * helpers.beeswarm(c) + i
+            ax[0].plot(xvals, c, label=k, color=colors[i], marker=".", markersize=16, linestyle="none")
+        if poster2024:
+            xvals = i * np.ones_like(r)
+        else:
+            xvals = 0.1 * helpers.beeswarm(r) + i
+        ax[-1].plot(xvals, r, label=k, color=colors[i], marker=".", markersize=16, linestyle="none")
+    if poster2024:
+        if show_coefficient:
+            stack_coefs = np.stack(coefs_keep)
+            ax[0].plot(range(len(keep)), stack_coefs, color="k", linestyle="-")
+        stack_r2s = np.stack(r2s_keep)
+        ax[-1].plot(range(len(keep)), stack_r2s, color="k", linestyle="-")
+    ax[-1].set_xlim(-0.3, len(keep) - 0.7)
+    ax[-1].set_ylim(0, 1)
+    ax[-1].set_xticks(range(len(keep)))
+    ax[-1].set_xticklabels(fancy_names, rotation=0, ha="center")
+    if show_coefficient:
+        ax[0].set_ylabel("Fit Coefficient")
+    ax[-1].set_ylabel(r"$R^2$", labelpad=-15)
+    ax[-1].set_yticks([0, 1])
+    ax[-1].set_xlabel("Place Field")
+
+    for a in ax:
+        a.spines["top"].set_visible(False)
+        a.spines["right"].set_visible(False)
 
     if with_show:
         plt.show()
+
+    if with_save and poster2024:
+        save_directory = pcms[0].saveDirectory("example_plots")
+        save_path = save_directory / f"r2_norm_tcorr_{'expamp' if amplitude else 'expdecay'}"
+        helpers.save_figure(fig, save_path)
 
     if with_save:
         pcms[0].saveFigure(fig.number, "comparisons", "exponential_fit_predictions")
