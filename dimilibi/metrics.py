@@ -25,6 +25,11 @@ def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, No
     float
         The scaled mean squared error.
     """
+    if not isinstance(y_pred, torch.Tensor):
+        y_pred = torch.tensor(y_pred.copy())
+    if not isinstance(y_true, torch.Tensor):
+        y_true = torch.tensor(y_true.copy())
+
     prediction_error = _mse(y_pred, y_true, dim=0)
     constant_error = _mse(y_true.mean(dim=0, keepdim=True), y_true, dim=0)
     scaled_error = prediction_error / (constant_error + eps)
@@ -38,7 +43,7 @@ def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, No
     return scaled_error
 
 
-def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor):
+def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor, reduce="mean"):
     """
     Measure r-squared between predicted and true target values.
 
@@ -59,9 +64,47 @@ def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor):
     torch.Tensor
         The r-squared value.
     """
+    if not isinstance(y_pred, torch.Tensor):
+        y_pred = torch.tensor(y_pred.copy())
+    if not isinstance(y_true, torch.Tensor):
+        y_true = torch.tensor(y_true.copy())
     ss_res = ((y_true - y_pred) ** 2).sum(dim=0)
     ss_tot = ((y_true - y_true.mean(dim=0, keepdim=True)) ** 2).sum(dim=0)
     r2 = 1 - ss_res / ss_tot
     r2[ss_res == 0] = 1.0
     r2[ss_tot == 0] = 0.0
-    return r2.mean()
+    if reduce == "mean":
+        return r2.mean()
+    else:
+        return r2
+
+
+def measure_rms(y_pred: torch.Tensor, y_true: torch.Tensor, reduce="mean"):
+    """
+    Measure root-mean-square error between predicted and true target values.
+
+    Will measure the RMS for each sample, then take the average across samples.
+
+    Parameters
+    ----------
+    y_pred : torch.Tensor
+        The predicted values (num_features, num_samples).
+    y_true : torch.Tensor
+        The true target values (num_features, num_samples).
+
+    Returns
+    -------
+    torch.Tensor
+        The RMS value.
+    """
+    if not isinstance(y_pred, torch.Tensor):
+        y_pred = torch.tensor(y_pred.copy())
+    if not isinstance(y_true, torch.Tensor):
+        y_true = torch.tensor(y_true.copy())
+    rms = torch.sqrt(((y_true - y_pred) ** 2).mean(dim=0))
+    if reduce == "mean":
+        return rms.mean()
+    elif reduce == "sum":
+        return rms.sum()
+    else:
+        return rms
