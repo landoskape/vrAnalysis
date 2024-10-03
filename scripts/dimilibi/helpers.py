@@ -1,4 +1,5 @@
 import os, sys
+from pathlib import Path
 from joblib import Memory
 from torch import float32 as torch_float32
 import numpy as np
@@ -160,3 +161,10 @@ def make_position_basis(position, environment, num_basis=10, basis_width=None, m
         idx = np.where(environment == env)[0]
         basis_by_env[idx, i] = basis[idx]
     return torch.tensor(basis_by_env.reshape(len(position), num_basis * len(environments)))
+
+
+def figure_folder():
+    folder = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "figures"))
+    if not folder.exists():
+        folder.mkdir(parents=True)
+    return folder
