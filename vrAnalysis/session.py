@@ -362,7 +362,7 @@ class vrExperiment(vrSession):
         return [data[trialIndex == tidx] for tidx in range(len(trialStartFrame))]
 
     # ------------------- convert between imaging and behavioral time -------------------
-    def get_frame_behavior(self, speedThreshold=5, use_average=True):
+    def get_frame_behavior(self, speedThreshold=5, use_average=True, return_speed=False):
         """
         get position and environment data for each frame in imaging data
         nan if no position data is available for that frame (e.g. if the closest
@@ -411,23 +411,48 @@ class vrExperiment(vrSession):
             )
             frame_position[count > 0] /= count[count > 0]
             frame_position[count == 0] = np.nan
+            if return_speed:
+                frame_speed = np.zeros_like(frameTimeStamps)
+                count_speed = np.zeros_like(frameTimeStamps)
+                helpers.getAverageFrameSpeed(
+                    behaveSpeed,
+                    speedThreshold,
+                    idxBehaveToFrame,
+                    distBehaveToFrame,
+                    distCutoff,
+                    frame_speed,
+                    count_speed,
+                )
+                frame_speed[count_speed > 0] /= count_speed[count_speed > 0]
+                frame_speed[count_speed == 0] = np.nan
         else:
             frame_position = np.full(len(frameTimeStamps), np.nan)
             frame_position[idx_get_position] = behavePosition[idxFrameToBehave[idx_get_position]]
+            if return_speed:
+                frame_speed = np.full(len(frameTimeStamps), np.nan)
+                frame_speed[idx_get_position] = behaveSpeed[idxFrameToBehave[idx_get_position]]
 
         frame_environment = np.full(len(frameTimeStamps), np.nan)
         frame_environment[idx_get_position] = behaveEnvironment[idxFrameToBehave[idx_get_position]]
 
+        if return_speed:
+            return frame_position, frame_environment, np.unique(environmentIndex), frame_speed
+
         return frame_position, frame_environment, np.unique(environmentIndex)
 
-    def get_position_by_env(self, speedThreshold=5, use_average=True, idx_ignore=-100):
+    def get_position_by_env(self, speedThreshold=5, use_average=True, idx_ignore=-100, return_speed=False):
         """
         get position index for each frame in imaging data, separated by each environment
 
         nan if no position data is available for that frame (e.g. if the closest
         behavioral sample is further away in time than the sampling period)
         """
-        frame_position, frame_environment, environments = self.get_frame_behavior(speedThreshold=speedThreshold, use_average=use_average)
+        if return_speed:
+            frame_position, frame_environment, environments, frame_speed = self.get_frame_behavior(
+                speedThreshold=speedThreshold, use_average=use_average, return_speed=True
+            )
+        else:
+            frame_position, frame_environment, environments = self.get_frame_behavior(speedThreshold=speedThreshold, use_average=use_average)
 
         idx_valid_pos = ~np.isnan(frame_position)
         frame_pos_index = np.full(len(frame_position), idx_ignore, dtype=int)
@@ -436,11 +461,18 @@ class vrExperiment(vrSession):
         frame_environment = frame_environment.astype(int)
 
         frame_pos_index_by_env = np.full((len(environments), len(frame_pos_index)), idx_ignore, dtype=int)
+        if return_speed:
+            frame_speed_by_env = np.full((len(environments), len(frame_pos_index)), np.nan)
         idx_valid_pos = np.zeros((len(environments), len(frame_pos_index)), dtype=bool)
         for ienv, env in enumerate(environments):
             idx_env = frame_environment == env
             frame_pos_index_by_env[ienv, idx_env] = frame_pos_index[idx_env]
             idx_valid_pos[ienv, idx_env] = True
+            if return_speed:
+                frame_speed_by_env[ienv, idx_env] = frame_speed[idx_env]
+
+        if return_speed:
+            return frame_pos_index_by_env, idx_valid_pos, environments, frame_speed_by_env
 
         return frame_pos_index_by_env, idx_valid_pos, environments
 
