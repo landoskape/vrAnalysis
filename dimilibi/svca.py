@@ -1,5 +1,6 @@
 from typing import Optional
 import torch
+from sklearn.decomposition import randomized_svd
 
 
 class SVCA:
@@ -16,6 +17,7 @@ class SVCA:
         num_components: Optional[int] = None,
         centered: Optional[bool] = True,
         verbose: Optional[bool] = False,
+        truncated: Optional[bool] = False,
     ):
         """
         Initialize an SVCA object with the option of specifying supporting parameters.
@@ -31,11 +33,18 @@ class SVCA:
         verbose : Optional[bool]
             If True, will print updates and results as they are computed.
             (default is True)
+        truncated : Optional[bool]
+            If True, will use a truncated SVD instead of a full SVD directly.
+            Will be faster but may not be as accurate.
+            If torch svd fails, will attempt to use truncated svd anyway.
+            Uses the sklearn implementation of randomized SVD.
+            (default is False)
         """
 
         self.num_components = num_components
         self.centered = centered
         self.verbose = verbose
+        self.truncated = truncated
         self.fitted = False
 
     @torch.no_grad()
@@ -65,7 +74,14 @@ class SVCA:
 
         # perform svd on the map from source to target neurons
         gram_matrix = source @ target.T
-        self.U, self.S, self.V = torch.svd(gram_matrix, some=True, compute_uv=True)
+        if self.truncated:
+            self.U, self.S, self.V = self._truncated_svd(gram_matrix)
+        else:
+            try:
+                self.U, self.S, self.V = torch.svd(gram_matrix, some=True, compute_uv=True)
+            except RuntimeError:
+                print("SVD did not converge. Trying randomized SVD instead.")
+                self.U, self.S, self.V = self._truncated_svd(gram_matrix)
 
         # keep only the top num_components
         self.U = self.U[:, : self.num_components]
@@ -135,3 +151,12 @@ class SVCA:
             assert self.num_components <= min_neurons, msg
         else:
             self.num_components = min_neurons
+
+    @torch.no_grad()
+    def _truncated_svd(self, gram_matrix: torch.Tensor):
+        """Perform a truncated SVD on the gram matrix using the randomized SVD implementation from sklearn"""
+        U, S, VT = randomized_svd(gram_matrix.numpy(), n_components=self.num_components, n_iter=2)
+        U = torch.tensor(U, dtype=gram_matrix.dtype)
+        S = torch.tensor(S, dtype=gram_matrix.dtype)
+        V = torch.tensor(VT.T, dtype=gram_matrix.dtype)
+        return U, S, V
