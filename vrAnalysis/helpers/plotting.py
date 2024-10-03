@@ -3,6 +3,26 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 
+def save_figure(fig, path, **kwargs):
+    """
+    Save a figure with high resolution in png and svg formats
+    """
+    fig.savefig(path.with_suffix(".png"), dpi=300, **kwargs)
+    fig.savefig(path.with_suffix(".svg"), **kwargs)
+
+
+def short_mouse_names(mouse_names):
+    short_names = []
+    for name in mouse_names:
+        if "_Hippocannula" in name:
+            short_names.append("".join(name.split("_Hippocannula")))
+        elif "ATL0" in name:
+            short_names.append("".join(["ATL", *name.split("ATL0")]))
+        else:
+            short_names.append(name)
+    return short_names
+
+
 def fractional_histogram(*args, **kwargs):
     """wrapper of np.histogram() with relative counts instead of total or density"""
     counts, bins = np.histogram(*args, **kwargs)
