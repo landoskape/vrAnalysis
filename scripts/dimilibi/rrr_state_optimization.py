@@ -1101,6 +1101,8 @@ def load_rrr_state_results(all_sessions, results="all", population_name=None):
         opt_pos_est_source_withgain_score = torch.zeros((num_mice,))
         opt_pos_est_target_withgain_score = torch.zeros((num_mice,))
         opt_pos_est_position_score = torch.zeros((num_mice,))
+        test_scores_doublecv = torch.zeros((num_mice,))
+        rbfpos_to_target_score = torch.zeros((num_mice,))
         num_samples = torch.zeros(num_mice)
         for rrr_res in rrr_results:
             mouse_idx = mouse_names.index(rrr_res["mouse_name"])
@@ -1117,6 +1119,8 @@ def load_rrr_state_results(all_sessions, results="all", population_name=None):
             opt_pos_est_source_withgain_score[mouse_idx] += torch.tensor(rrr_res["opt_pos_estimate_source_withgain"])
             opt_pos_est_target_withgain_score[mouse_idx] += torch.tensor(rrr_res["opt_pos_estimate_target_withgain"])
             opt_pos_est_position_score[mouse_idx] += torch.tensor(rrr_res["opt_pos_estimate_position"])
+            test_scores_doublecv[mouse_idx] += torch.tensor(rrr_res["test_score_doublecv"])
+            rbfpos_to_target_score[mouse_idx] += torch.tensor(rrr_res["rbfpos_to_target_score"])
             num_samples[mouse_idx] += 1
 
         # get average for each mouse
@@ -1133,6 +1137,8 @@ def load_rrr_state_results(all_sessions, results="all", population_name=None):
         opt_pos_est_source_withgain_score /= num_samples
         opt_pos_est_target_withgain_score /= num_samples
         opt_pos_est_position_score /= num_samples
+        test_scores_doublecv /= num_samples
+        rbfpos_to_target_score /= num_samples
         return dict(
             mouse_names=mouse_names,
             test_scores=test_scores,
@@ -1148,6 +1154,8 @@ def load_rrr_state_results(all_sessions, results="all", population_name=None):
             opt_pos_est_source_withgain_score=opt_pos_est_source_withgain_score,
             opt_pos_est_target_withgain_score=opt_pos_est_target_withgain_score,
             opt_pos_est_position_score=opt_pos_est_position_score,
+            test_scores_doublecv=test_scores_doublecv,
+            rbfpos_to_target_score=rbfpos_to_target_score,
         )
     raise ValueError(f"results must be 'all' or 'test_by_mouse', got {results}")
 

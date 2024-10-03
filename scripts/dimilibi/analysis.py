@@ -217,8 +217,8 @@ def analyze_rrr_state(results):
 
     include_extras = True
     if include_extras:
-        labels = ["PF", "Opt-PF", "PF", "Opt-PF", "RBF", "RBF-DCV" "RBF-Opt", "RRR"]
-        colors = ["black", "sienna", "black", "sienna", "fuchsia", "crimson", "darkmagenta", "orangered"]
+        labels = ["PF", "Opt-PF", "PF", "Opt-PF", "DCV-RBF", "RBF", "Opt-RBF", "RRR"]
+        colors = ["black", "sienna", "black", "sienna", "crimson", "mediumvioletred", "darkmagenta", "orangered"]
         with_gain = [False, False, True, True, False, False, False, False]
         xd = [0, 1, 2, 3, 4, 5, 6, 7]
         allyd = np.stack(
@@ -230,8 +230,8 @@ def analyze_rrr_state(results):
                         mouse_score_opt_pos_est_target,
                         mouse_score_pfpred_withcvgain,
                         mouse_score_opt_pos_est_target_withcvgain,
-                        mouse_rbfpos_to_target_score,
                         mouse_score_doublecv,
+                        mouse_rbfpos_to_target_score,
                         mouse_score,
                         mouse_score_direct,
                     ),
@@ -267,7 +267,7 @@ def analyze_rrr_state(results):
         ax.plot(x * np.ones_like(eachdata), eachdata, color=color, linestyle="none", marker="o", markersize=13)
     ymin, ymax = ax.get_ylim()
     yrange = ymax - ymin
-    ylim = (ymin - 0.1 * yrange, ymax)
+    ylim = (ymin - 0.1 * yrange, ymax + 0.1 * yrange)
     # Make a gray patch around the x value spanning the full ylim
     for x, wg in zip(xd, with_gain):
         if wg:
@@ -275,8 +275,7 @@ def analyze_rrr_state(results):
     ax.text(2.5, ylim[1] * 0.95, "+Gain", ha="center", va="top")
     ax.set_xticks(ticks=xd, labels=labels, rotation=45, ha="center")
     ax.set_ylabel("Test Score")
-    ax.set_xlim(-0.5, xd.max() + 0.5)
-    ax.set_ylim(ylim)
+    ax.set_xlim(-0.5, max(xd) + 0.5)
     for ixtick, color in enumerate(colors):
         plt.setp(ax.get_xticklabels()[ixtick], color=color)
     ax.spines["top"].set_visible(False)
@@ -285,11 +284,12 @@ def analyze_rrr_state(results):
     # Make a rightward, black, thick arrow pointing right on the bottom of the plot
     ax.annotate(
         "",
-        xy=(xd.max(), ymin - 0.05 * yrange),
+        xy=(max(xd), ymin - 0.05 * yrange),
         xytext=(0, ymin - 0.05 * yrange),
         arrowprops=dict(arrowstyle="-|>", color="black", lw=2),
     )
     ax.text(np.mean(xd), ymin, "less constrained by position", ha="center", va="center")
+    ax.set_ylim(ylim)
 
     plt.show()
 
