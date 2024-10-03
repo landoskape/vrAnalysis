@@ -451,11 +451,6 @@ class placeCellSingleSession(standardAnalysis):
         kwargs = {
             "distStep": self.distStep,
             "speedThreshold": self.speedThreshold,
-        }
-        # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
-        kwargs = {
-            "distStep": self.distStep,
-            "speedThreshold": self.speedThreshold,
             "speedSmoothing": self.smoothWidth,
             "get_spkmap": False,
         }
@@ -993,6 +988,7 @@ class placeCellSingleSession(standardAnalysis):
         rewzone=True,
         interpolation="none",
         force_single_env=False,
+        symmetric=True,
         withLabels=True,
         withShow=True,
         withSave=False,
@@ -1025,10 +1021,14 @@ class placeCellSingleSession(standardAnalysis):
             magnitude = np.nanmax(np.abs(np.vstack([np.concatenate(srp) for srp in snake_remap])))
             vmin, vmax = -magnitude, magnitude
 
+        if not symmetric:
+            vmin = 0
+
         cb_ticks = np.linspace(np.fix(vmin), np.fix(vmax), int(min(11, np.fix(vmax) - np.fix(vmin) + 1)))
         labelSize = 14
         cb_unit = r"$\sigma$" if self.standardizeSpks else "au"
         cb_label = f"Activity ({cb_unit})"
+        cols = "krb"
 
         # load reward zone information
         if rewzone:
@@ -1041,12 +1041,12 @@ class placeCellSingleSession(standardAnalysis):
                 rewHalfwidth[jj] * 2,
                 snake_remap[ii][jj].shape[0],
                 edgecolor="none",
-                facecolor="k",
+                facecolor="k" if symmetric else cols[jj],
                 alpha=0.2,
             )
 
         plt.close("all")
-        cmap = mpl.colormaps["bwr"]
+        cmap = mpl.colormaps["bwr"] if symmetric else mpl.colormaps["gray_r"]
 
         fig_dim = 3
         width_ratios = [*[fig_dim for _ in range(numEnv)], fig_dim / 10]
@@ -1099,9 +1099,9 @@ class placeCellSingleSession(standardAnalysis):
                     ax[ii, jj].set_yticks([])
                     ax[ii, jj].xaxis.set_tick_params(labelbottom=False)
                     ax[ii, jj].yaxis.set_tick_params(labelleft=False)
-                    ax[ii, jj].set_xlabel(None)
-                    ax[ii, jj].set_ylabel(None)
-                    ax[ii, jj].set_title(None)
+                    # ax[ii, jj].set_xlabel(None)
+                    # ax[ii, jj].set_ylabel(None)
+                    # ax[ii, jj].set_title(None)
 
         if withSave:
             name = f"remap_snake_plot"
