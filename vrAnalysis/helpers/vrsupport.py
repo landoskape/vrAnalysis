@@ -59,6 +59,7 @@ def getBehaviorAndSpikeMaps(
     distStep=1,
     onefile="mpci.roiActivityDeconvolved",
     speedThreshold=0,
+    speedMaxThreshold=np.inf,
     speedSmoothing=1,
     standardizeSpks=True,
     idxROIs=None,
@@ -160,6 +161,7 @@ def getBehaviorAndSpikeMaps(
         sampleDuration,
         behaveSpeed,
         speedThreshold,
+        speedMaxThreshold,
         spks,
         idxBehaveToFrame,
         distBehaveToFrame,
@@ -272,6 +274,7 @@ def getAllMaps(
     sampleDuration,
     behaveSpeed,
     speedThreshold,
+    speedMaxThreshold,
     spks,
     idxBehaveToFrame,
     distBehaveToFrame,
@@ -301,7 +304,7 @@ def getAllMaps(
     # For each behavioral sample
     for sample in nb.prange(len(behaveTrialIdx)):
         # If mouse is fast enough and time between behavioral sample and imaging frame is within cutoff,
-        if (behaveSpeed[sample] > speedThreshold) and (distBehaveToFrame[sample] < distCutoff):
+        if (behaveSpeed[sample] > speedThreshold) and (behaveSpeed[sample] < speedMaxThreshold) and (distBehaveToFrame[sample] < distCutoff):
             # add time spent in that trial/position to occupancy map
             occmap[behaveTrialIdx[sample]][behavePositionBin[sample]] += sampleDuration[sample]
             # and speed in that trial/position to speedmap
