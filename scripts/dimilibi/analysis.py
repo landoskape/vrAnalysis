@@ -215,7 +215,7 @@ def analyze_rrr_state(results):
         mouse_score_doublecv[imouse] = test_score_doublecv[idx].mean()
         mouse_rbfpos_to_target_score[imouse] = rbfpos_to_target_score[idx].mean()
 
-    include_extras = True
+    include_extras = False
     if include_extras:
         labels = ["PF", "Opt-PF", "PF", "Opt-PF", "DCV-RBF", "RBF", "Opt-RBF", "RRR"]
         colors = ["black", "sienna", "black", "sienna", "crimson", "mediumvioletred", "darkmagenta", "orangered"]
@@ -261,7 +261,15 @@ def analyze_rrr_state(results):
 
     plt.rcParams.update({"font.size": 24})
 
-    fig, ax = plt.subplots(1, figsize=(8, 8.5), layout="constrained")
+    cosyne = True
+    if cosyne:
+        fig_height = 6.5
+        fig_width = 8 / 8.5 * 6.5
+    else:
+        fig_height = 8.5
+        fig_width = 8
+
+    fig, ax = plt.subplots(1, figsize=(fig_width, fig_height), layout="constrained")
     ax.plot(xd, allyd.T, color="k", linestyle="-", marker="o", markersize=12)
     for x, eachdata, color in zip(xd, allyd.T, colors):
         ax.plot(x * np.ones_like(eachdata), eachdata, color=color, linestyle="none", marker="o", markersize=13)
@@ -288,7 +296,7 @@ def analyze_rrr_state(results):
         xytext=(0, ymin - 0.05 * yrange),
         arrowprops=dict(arrowstyle="-|>", color="black", lw=2),
     )
-    ax.text(np.mean(xd), ymin, "less constrained by position", ha="center", va="center")
+    ax.text(np.mean(xd), ymin - 0.02 * yrange, "less constrained\nby position", ha="center", va="bottom")
     ax.set_ylim(ylim)
 
     plt.show()
@@ -298,6 +306,7 @@ def analyze_rrr_state(results):
         save_directory = figure_folder()
         save_name = f"decoder_test_score_comparison"
         save_name += "_with_extras" if include_extras else ""
+        save_name += "_cosyne" if cosyne else ""
         save_path = save_directory / save_name
         save_figure(fig, save_path)
 
