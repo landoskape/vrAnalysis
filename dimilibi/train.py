@@ -1,12 +1,5 @@
 from tqdm import tqdm
 import torch
-
-import sys
-import os
-
-mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
-sys.path.append(mainPath)
-
 from .metrics import scaled_mse
 
 
