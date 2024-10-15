@@ -1,7 +1,6 @@
 from typing import List, Tuple
 import torch
 from torch import nn
-import torch.nn.functional as F
 import torch.nn.init as init
 
 
@@ -15,22 +14,25 @@ def kaiming_init(m):
         if m.bias is not None:
             m.bias.data.fill_(0)
 
+
 class _TransparentReLU(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input):
         ctx.save_for_backward(input)
         return input.clamp(min=0)
+
     @staticmethod
-    def backward(_, grad_output): 
+    def backward(_, grad_output):
         return grad_output
-    
+
+
 class TransparentReLU(nn.Module):
     """
     Transparent ReLU activation function
 
-    This is an implementation of the ReLU where the gradient is passed through as if 
+    This is an implementation of the ReLU where the gradient is passed through as if
     there wasn't a ReLU. This is useful when the distance from 0 (for negative numbers)
-    is relevant to the model. 
+    is relevant to the model.
     """
 
     def __init__(self):
@@ -38,6 +40,7 @@ class TransparentReLU(nn.Module):
 
     def forward(self, input):
         return _TransparentReLU.apply(input)
+
 
 class SVCANet(nn.Module):
     """
@@ -140,7 +143,7 @@ class SVCANet(nn.Module):
 
         if self.activation == nn.ReLU() and self.transparent_relu:
             self.activation = TransparentReLU()
-        
+
     def _init_weights(self):
         """
         Initialize the weights of the network. Uses the Kaiming initialization method.
@@ -180,7 +183,7 @@ class SVCANet(nn.Module):
         for layer in self.encoder_hidden:
             x = self.dropout(self.activation(layer(x)))
         x = self.norm(x)
-        x = self.latent(x) # latent activation
+        x = self.latent(x)  # latent activation
         if store_hidden:
             self.latent = x.clone()
         for layer in self.decoder_hidden:
@@ -208,6 +211,160 @@ class SVCANet(nn.Module):
         ss_tot = ((y - y.mean(dim=0, keepdim=True)) ** 2).sum()
         r2 = 1 - ss_res / ss_tot
         return r2
+
+
+class HurdleNet(SVCANet):
+    """
+    Network for peer prediction analysis with a hurdle model (allowing for prediction of zeros independent of non-zero prediction).
+
+    HurdleNet is an two path autoencoder-like network designed to perform peer-prediction analysis between neurons.
+    There are two paths with an encoder and decoder. All are both fully connected neural networks with a variable number of hidden layers
+    parameterized by the user.
+
+    The first "path" is the non-zero path, which predicts the non-zero values of target data. This path has a linear output (with optional ReLU).
+
+    The second "path" is the zero path, which predicts whether to use a zero value or not. This path has a probabilistic output in which the output
+    is 1 or 0 and simply scales the first path. This is the "hurdle" in the model.
+
+    TODO: make second path non-probailistic in evaluation mode
+    """
+
+    def __init__(
+        self,
+        num_neurons: int,
+        width_hidden: List[int],
+        num_latent: int,
+        num_target_neurons: int = None,
+        activation: nn.Module = nn.ReLU(),
+        nonnegative: bool = True,
+        transparent_relu: bool = False,
+        dropout_rate: float = 0.0,
+    ):
+        """
+        Initialize the SVCA Network
+
+        Parameters
+        ----------
+        num_neurons : int
+            Number of neurons in the input layer
+        width_hidden : List[int]
+            List of integers representing the width of each hidden layer
+        num_latent : int
+            Number of neurons in the latent layer
+        num_target_neurons : int
+            Number of neurons in the output layer (default is to use num_neurons)
+        activation : nn.Module
+            Activation function to use in the hidden layers (default is nn.ReLU())
+        nonnegative : bool
+            If True, will apply a non-negative constraint to the output layer (default is True)
+        transparent_relu : bool
+            If True, will use a transparent ReLU activation function (default is False)
+        dropout_rate : float
+            Dropout rate to apply to the hidden layers (default is 0.0)
+        """
+        nn.Module.__init__(self)
+        self.num_neurons = num_neurons
+        self.width_hidden = width_hidden
+        self.num_latent = num_latent
+        self.num_target_neurons = num_target_neurons or num_neurons
+        self.activation = activation
+        self.nonnegative = nonnegative
+        self.transparent_relu = transparent_relu
+        self.dropout_rate = dropout_rate
+        self.dropout = nn.Dropout(dropout_rate)
+        self.use_hurdle = True
+        self._build_encoder()
+        self._build_decoder()
+        self._build_hurdle_encoder()
+        self._build_hurdle_decoder()
+        self._init_weights()
+
+    def _build_hurdle_encoder(self):
+        """
+        Build the encoder network of the hurdle path. Composed of a series of hidden layers and a latent layer.
+
+        The hidden layers are defined by the width_hidden parameter. They are all linear and
+        are followed by the activation function defined in the constructor.
+
+        The latent layer is a linear layer that generates a constrained latent representation
+        of the input data.
+        """
+        self.hurdle_encoder_hidden = nn.ModuleList()
+
+        prev_width = self.num_neurons
+        for width in self.width_hidden:
+            self.hurdle_encoder_hidden.append(nn.Linear(prev_width, width))
+            prev_width = width
+
+        self.hurdle_norm = nn.BatchNorm1d(prev_width)
+        self.hurdle_latent = nn.Linear(prev_width, self.num_latent)
+
+    def _build_hurdle_decoder(self):
+        """
+        Build the hurdle decoder network. Composed of a series of hidden layers and an output layer.
+
+        The hidden layers are defined by the width_hidden parameter. They are all linear and
+        are symmetric with the encoder. They are followed by the activation function defined
+        in the constructor. The output layer is a linear layer that generates the output data.
+        """
+        self.hurdle_decoder_hidden = nn.ModuleList()
+
+        prev_width = self.num_latent
+        for width in reversed(self.width_hidden):
+            self.hurdle_decoder_hidden.append(nn.Linear(prev_width, width))
+            prev_width = width
+
+        self.hurdle_output = nn.Linear(prev_width, self.num_target_neurons)
+        self.hurdle_activation = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor, store_hidden: bool = False) -> torch.Tensor:
+        """
+        Forward pass through the SVCA Network
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, num_neurons, num_timepoints) or (num_neurons, num_timepoints)
+        store_hidden : bool
+            If True, will store the latent representation of the input tensor
+            (default is False)
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, num_neurons, num_timepoints) or (num_neurons, num_timepoints)
+        """
+        x_hurdle = x.clone()
+
+        # Do prediction path
+        for layer in self.encoder_hidden:
+            x = self.dropout(self.activation(layer(x)))
+        x = self.norm(x)
+        x = self.latent(x)  # latent activation
+        if store_hidden:
+            self.latent = x.clone()
+        for layer in self.decoder_hidden:
+            x = self.dropout(self.activation(layer(x)))
+        predict_output = self.final_nonlinearity(self.output(x))
+
+        # Do hurdle path
+        for layer in self.hurdle_encoder_hidden:
+            x_hurdle = self.dropout(layer(x_hurdle))
+        x_hurdle = self.hurdle_norm(x_hurdle)
+        x_hurdle = self.hurdle_latent(x_hurdle)
+        if store_hidden:
+            self.hurdle_latent = x_hurdle.clone()
+        for layer in self.hurdle_decoder_hidden:
+            x_hurdle = self.dropout(layer(x_hurdle))
+        hurdle_output = self.hurdle_activation(self.hurdle_output(x_hurdle))
+
+        # If in eval mode, do a deterministic hurdle, otherwise random
+        if not self.training:
+            hurdle_output = hurdle_output.round()
+        else:
+            hurdle_output = hurdle_output.bernoulli()
+
+        return predict_output * hurdle_output
 
 
 class BetaVAE(nn.Module):
