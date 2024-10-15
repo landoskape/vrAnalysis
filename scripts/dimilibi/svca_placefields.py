@@ -747,15 +747,33 @@ def compare_figures(results):
 
     plt.rcParams.update({"font.size": 24})
 
+    cosyne = True
+    if cosyne:
+        fig_height = 6.5
+        fig_width = 4.4
+        show_10 = False
+    else:
+        fig_height = 5.3
+        fig_width = 4.4
+        show_10 = True
+
     # Make focused plot on relative total variance
-    total_variance = np.stack((total_sv_svcs, total_sv_pcpfs, total10_svcs, total10_pcpfs))
+    if show_10:
+        total_variance = np.stack((total_sv_svcs, total_sv_pcpfs, total10_svcs, total10_pcpfs))
+    else:
+        total_variance = np.stack((total_sv_svcs, total_sv_pcpfs))
     relative_variance = total_variance / total_variance[0]
-    xd = [0, 1, 2, 3]
+    xd = [0, 1]
     labels = ["Time", "Pos"]
-    labels = labels + labels
-    cols = ["k", "#9F9FFF", "w", "#9F9FFF"]
-    patch = [False, False, True, True]
-    fig, ax = plt.subplots(1, 1, figsize=(4.4, 5.3), layout="constrained")
+    cols = ["k", "#9F9FFF"]
+    patch = [False, False]
+    if show_10:
+        xd = xd + [2, 3]
+        labels = labels + labels
+        cols = cols + cols
+        patch = patch + [True, True]
+
+    fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), layout="constrained")
     ax.plot(xd, relative_variance, linewidth=1, c="k", marker="o", markersize=10)
     for ii, (xx, rv) in enumerate(zip(xd, relative_variance)):
         ax.plot(
@@ -774,21 +792,23 @@ def compare_figures(results):
     for x, p in zip(xd, patch):
         if p:
             ax.fill_between([x - 0.5, x + 0.5], 0, ymax, color="gray", edgecolor="none", alpha=0.2)
-    ax.text(2.5, ymax * 0.95, "1st 10\nDims\nOnly", ha="center", va="top")
+    if show_10:
+        ax.text(2.5, ymax * 0.95, "1st 10\nDims\nOnly", ha="center", va="top")
     ax.set_xticks(xd, labels=labels, rotation=0, ha="center")
     ax.set_xlabel("SVCs")
     ax.set_ylabel("Relative Total Var.")
-    ax.set_xlim(-0.3, 3.3)
+    ax.set_xlim(-0.3, 1.3 + 2 * show_10)
     ax.set_ylim(0)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     # ax.spines["bottom"].set_visible(False)
     plt.show()
 
-    with_poster2024_save = True
+    with_poster2024_save = False
     if with_poster2024_save:
         save_directory = figure_folder()
         save_name = "RelativeTotalVariance"
+        save_name = save_name + ("_cosyne" if cosyne else "")
         save_path = save_directory / save_name
         helpers.save_figure(fig, save_path)
 
