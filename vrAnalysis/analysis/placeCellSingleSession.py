@@ -515,18 +515,9 @@ class placeCellSingleSession(standardAnalysis):
 
         self.numTrials = self.occmap.shape[0]
 
-        # find out which trials the mouse explored the whole environment
-        if full_trial_flexibility is None:
-            # if full trial flexiblity is None, then they need to have visited every bin
-            idx_to_required_bins = np.arange(self.occmap.shape[1])
-        else:
-            start_idx = np.where(self.distedges >= full_trial_flexibility)[0][0]
-            end_idx = np.where(self.distedges <= self.distedges[-1] - full_trial_flexibility)[0][-1]
-            idx_to_required_bins = np.arange(start_idx, end_idx)
-
-        self.boolFullTrials = np.all(~np.isnan(self.occmap[:, idx_to_required_bins]), axis=1)
-        self.idxFullTrials = np.where(self.boolFullTrials)[0]
-        self.idxFullTrialEachEnv = [np.where(self.boolFullTrials & (self.trial_envnum == env))[0] for env in self.environments]
+        self.boolFullTrials, self.idxFullTrials, self.idxFullTrialEachEnv = self._return_trial_indices(
+            self.occmap, self.distedges, full_trial_flexibility
+        )
 
         # report that data has been loaded
         self.dataloaded = True
@@ -534,8 +525,27 @@ class placeCellSingleSession(standardAnalysis):
         # measure reliability
         self.measure_reliability(new_split=new_split, with_test=with_test)
 
+    def _return_trial_indices(self, occmap, distedges, full_trial_flexibility=3):
+        """helper for determining with trials the mouse explored the whole environment"""
+
+        assert occmap.shape[0] == self.vrexp.value["numTrials"], "occmap doesn't have the same number of trials as the session object indicates!"
+
+        # find out which trials the mouse explored the whole environment
+        if full_trial_flexibility is None:
+            # if full trial flexiblity is None, then they need to have visited every bin
+            idx_to_required_bins = np.arange(self.occmap.shape[1])
+        else:
+            start_idx = np.where(distedges >= full_trial_flexibility)[0][0]
+            end_idx = np.where(distedges <= distedges[-1] - full_trial_flexibility)[0][-1]
+            idx_to_required_bins = np.arange(start_idx, end_idx)
+
+        boolFullTrials = np.all(~np.isnan(occmap[:, idx_to_required_bins]), axis=1)
+        idxFullTrials = np.where(boolFullTrials)[0]
+        idxFullTrialEachEnv = [np.where(boolFullTrials & (self.trial_envnum == env))[0] for env in self.environments]
+        return boolFullTrials, idxFullTrials, idxFullTrialEachEnv
+
     @prepare_data
-    def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}, rawspkmap=None):
+    def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}, rawspkmap=None, occmap=None):
         """
         method for getting a spkmap from a list of environments
 
@@ -557,6 +567,9 @@ class placeCellSingleSession(standardAnalysis):
 
         if rawspkmap isn't provided, will use the "rawspkmap" attribute of self
         if it is provided, will use that instead
+
+        if occmap isn't provided, will use the "occmap" attribute of self
+        if it is provided, will use that instead
         """
         # use all environments if none requested
         if envnum is None:
@@ -567,29 +580,38 @@ class placeCellSingleSession(standardAnalysis):
         envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
 
         # pick the raw spkmap to use
-        if rawspkmap is not None:
-            # check if trials and positions match
-            # don't check if numROIs match because the rawspkmap might be for something different
-            assert rawspkmap.shape[0] == self.occmap.shape[0], "number of trials isn't equal"
-            assert rawspkmap.shape[1] == self.occmap.shape[1], "number of spatial bins isn't equal"
+        if occmap is None:
+            occmap = self.occmap
+            if rawspkmap is not None:
+                # check if trials and positions match
+                # don't check if numROIs match because the rawspkmap might be for something different
+                assert rawspkmap.shape[0] == occmap.shape[0], "number of trials isn't equal"
+                assert rawspkmap.shape[1] == occmap.shape[1], "number of spatial bins isn't equal"
+            else:
+                rawspkmap = self.rawspkmap
         else:
-            rawspkmap = self.rawspkmap
+            assert occmap.shape[0] == self.occmap.shape[0], "provided occmap and self.occmap trial numbers don't match"
+            if rawspkmap is not None:
+                assert rawspkmap.shape[0] == occmap.shape[0], "rawspkmap and occmap trial numbers don't match"
+                assert rawspkmap.shape[1] == occmap.shape[1], "rawspkmap and occmap spatial bins don't match"
+            else:
+                rawspkmap = self.rawspkmap
 
         # get occupancy and rawspkmap from requested trials (or across environments)
         if trials == "full":
-            env_occmap = [self.occmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
+            env_occmap = [occmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
             env_spkmap = [rawspkmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
 
         elif trials == "train":
             if new_split:
                 self.define_train_test_split(**split_params)
-            env_occmap = [self.occmap[self.train_idx[ei]] for ei in envidx]
+            env_occmap = [occmap[self.train_idx[ei]] for ei in envidx]
             env_spkmap = [rawspkmap[self.train_idx[ei]] for ei in envidx]
 
         elif trials == "test":
             if new_split:
                 self.define_train_test_split(**split_params)
-            env_occmap = [self.occmap[self.test_idx[ei]] for ei in envidx]
+            env_occmap = [occmap[self.test_idx[ei]] for ei in envidx]
             env_spkmap = [rawspkmap[self.test_idx[ei]] for ei in envidx]
 
         else:
