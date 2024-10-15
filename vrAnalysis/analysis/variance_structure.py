@@ -269,6 +269,10 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
                 "svca_shared_prediction",
                 "svca_total_prediction",
                 "rank_pf_prediction",
+                "cv_by_env_trial",
+                "cv_by_env_trial_rdm",
+                "cv_by_env_trial_cvrdm",
+                "svc_shared_position",
             ]
             for key in required_keys:
                 if key not in temp_files:
@@ -428,6 +432,104 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             all_lookup_values = all_lookup_values[:, ~idx_nan]
             rank_pf_prediction.append(np.linalg.matrix_rank(all_lookup_values))
 
+        cv_by_env_trial = []
+        cv_by_env_trial_rdm = []
+        cv_by_env_trial_cvrdm = []
+        svc_shared_position = []
+        for v in tqdm(vss, leave=False, desc="doing special cvPCA and SVCA analyses on trial position data"):
+            c_spkmaps_full = v.get_spkmap(average=False, smooth=args.smooth, trials="full")
+            c_spkmaps_full_avg = [np.nanmean(c, axis=1) for c in c_spkmaps_full]
+
+            # Do cvPCA comparison between full spkmap with poisson noise across fake trials and on the actual trials
+            c_spkmaps_full = [c[:, np.random.permutation(c.shape[1])] for c in c_spkmaps_full]  # randomize trials for easy splitting
+            c_spkmaps_full_train = [c[:, : int(c.shape[1] / 2)] for c in c_spkmaps_full]
+            c_spkmaps_full_test = [c[:, int(c.shape[1] / 2) : int(c.shape[1] / 2) * 2] for c in c_spkmaps_full]
+
+            # Find positions with nans
+            idx_nans = [
+                np.isnan(ctr).any(axis=(0, 1)) | np.isnan(cte).any(axis=(0, 1)) for ctr, cte in zip(c_spkmaps_full_train, c_spkmaps_full_test)
+            ]
+
+            # Filter nans
+            c_spkmaps_full_train = [ctr[:, :, ~idx_nan] for ctr, idx_nan in zip(c_spkmaps_full_train, idx_nans)]
+            c_spkmaps_full_test = [cte[:, :, ~idx_nan] for cte, idx_nan in zip(c_spkmaps_full_test, idx_nans)]
+            c_spkmaps_full_avg = [c[:, ~idx_nan] for c, idx_nan in zip(c_spkmaps_full_avg, idx_nans)]
+            c_spkmaps_full = [c[:, :, ~idx_nan] for c, idx_nan in zip(c_spkmaps_full, idx_nans)]
+
+            # Generate random samples from poisson distribution with means set by average and number of trials equivalent to measured
+            c_spkmaps_full_train_rdm = [
+                np.moveaxis(np.random.poisson(np.max(c, 0), [ctr.shape[1], *c.shape]), 0, 1)
+                for c, ctr in zip(c_spkmaps_full_avg, c_spkmaps_full_train)
+            ]
+            c_spkmaps_full_test_rdm = [
+                np.moveaxis(np.random.poisson(np.max(c, 0), [cte.shape[1], *c.shape]), 0, 1)
+                for c, cte in zip(c_spkmaps_full_avg, c_spkmaps_full_test)
+            ]
+
+            # Get average of these particular train/test split
+            c_spkmaps_full_train_avg = [np.nanmean(c, axis=1) for c in c_spkmaps_full_train]
+            c_spkmaps_full_test_avg = [np.nanmean(c, axis=1) for c in c_spkmaps_full_test]
+
+            # Generate cross-validated samples from averages on train/test
+            c_spkmaps_full_train_avg_rdm = [
+                np.moveaxis(np.random.poisson(np.max(c, 0), [ctr.shape[1], *c.shape]), 0, 1)
+                for c, ctr in zip(c_spkmaps_full_train_avg, c_spkmaps_full_train)
+            ]
+            c_spkmaps_full_test_avg_rdm = [
+                np.moveaxis(np.random.poisson(np.max(c, 0), [cte.shape[1], *c.shape]), 0, 1)
+                for c, cte in zip(c_spkmaps_full_test_avg, c_spkmaps_full_test)
+            ]
+
+            # Flatten along positions and trials
+            c_spkmaps_full_train_rdm = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_train_rdm]
+            c_spkmaps_full_test_rdm = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_test_rdm]
+            c_spkmaps_full_train = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_train]
+            c_spkmaps_full_test = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_test]
+            c_spkmaps_full_train_avg_rdm = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_train_avg_rdm]
+            c_spkmaps_full_test_avg_rdm = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_test_avg_rdm]
+
+            # perform cvpca on full spkmap with poisson noise
+            s_rdm = [
+                np.nanmean(helpers.shuff_cvPCA(csftr.T, csfte.T, nshuff=5, cvmethod=helpers.cvPCA_paper_neurons), axis=0)
+                for csftr, csfte in zip(c_spkmaps_full_train_rdm, c_spkmaps_full_test_rdm)
+            ]
+            s_trial = [
+                np.nanmean(helpers.shuff_cvPCA(csftr.T, csfte.T, nshuff=5, cvmethod=helpers.cvPCA_paper_neurons), axis=0)
+                for csftr, csfte in zip(c_spkmaps_full_train, c_spkmaps_full_test)
+            ]
+            s_cvrdm = [
+                np.nanmean(helpers.shuff_cvPCA(csftr.T, csfte.T, nshuff=5, cvmethod=helpers.cvPCA_paper_neurons), axis=0)
+                for csftr, csfte in zip(c_spkmaps_full_train_avg_rdm, c_spkmaps_full_test_avg_rdm)
+            ]
+
+            # Also do SVCA on the full spkmap across trials
+            c_spkmaps_full_rs = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full]
+
+            # Create population
+            time_split_prms = dict(
+                num_groups=2,
+                chunks_per_group=-5,
+                num_buffer=1,
+            )
+            npops = [Population(c, time_split_prms=time_split_prms) for c in c_spkmaps_full_rs]
+
+            # Split population
+            train_source, train_target = helpers.named_transpose(
+                [npop.get_split_data(0, center=False, scale=True, scale_type="preserve") for npop in npops]
+            )
+            test_source, test_target = helpers.named_transpose(
+                [npop.get_split_data(1, center=False, scale=True, scale_type="preserve") for npop in npops]
+            )
+
+            # Fit SVCA on position averaged data across trials...
+            svca_position = [SVCA().fit(ts, tt) for ts, tt in zip(train_source, train_target)]
+            svc_shared_position = [sv.score(ts, tt)[0].numpy() for sv, ts, tt in zip(svca_position, test_source, test_target)]
+
+            cv_by_env_trial.append(s_trial)
+            cv_by_env_trial_rdm.append(s_rdm)
+            cv_by_env_trial_cvrdm.append(s_cvrdm)
+            svc_shared_position.append(svc_shared_position)
+
         # make analyses consistent by using same (randomly subsampled) numbers of trials & neurons for each analysis
         all_max_trials = min([int(v._get_min_trials(allmap) // 2) for v, allmap in zip(vss, allcell_maps)])
         all_max_neurons = min([int(v._get_min_neurons(allmap)) for v, allmap in zip(vss, allcell_maps)])
@@ -555,6 +657,9 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "cvf_by_env_rel": cvf_by_env_rel,
             "cvf_by_env_cov_all": cvf_by_env_cov_all,
             "cvf_by_env_cov_rel": cvf_by_env_cov_rel,
+            "cv_by_env_trial": cv_by_env_trial,
+            "cv_by_env_trial_rdm": cv_by_env_trial_rdm,
+            "cv_by_env_trial_cvrdm": cv_by_env_trial_cvrdm,
             "kernels": kernels,
             "cv_kernels": cv_kernels,
             "map_corr": map_corr,
@@ -581,6 +686,7 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
             "svca_total_prediction": svca_total_prediction,
             "svca_shared_prediction_cv": svca_shared_prediction_cv,
             "svca_total_prediction_cv": svca_total_prediction_cv,
+            "svca_shared_position": svc_shared_position,
             "rank_pf_prediction": rank_pf_prediction,
         }
         if save_as_temp:
@@ -1532,7 +1638,7 @@ def plot_spatial_kernels(pcm, spectra_data, cv=False, rewzone=True, with_show=Tr
 
 
 # =================================== code for comparing spectral data across mice =================================== #
-def compare_spectral_averages(summary_dicts):
+def compare_spectral_averages(summary_dicts, return_extras=False):
     """
     get average spectral data for each mouse (specifically the average eigenspectra for single / all environments)
 
@@ -1543,6 +1649,12 @@ def compare_spectral_averages(summary_dicts):
     # get average eigenspectra for each mouse
     single_env = []
     across_env = []
+
+    if return_extras:
+        single_env_trial = []
+        single_env_trial_rdm = []
+        single_env_trial_cvrdm = []
+
     for summary_dict in summary_dicts:
         all_single_env = []
         all_across_env = []
@@ -1559,6 +1671,27 @@ def compare_spectral_averages(summary_dicts):
         # add them all to master list
         single_env.append(all_single_env)
         across_env.append(all_across_env)
+
+        if return_extras:
+            all_single_env_trial = []
+            all_single_env_trial_rdm = []
+            all_single_env_trial_cvrdm = []
+            for cc in summary_dict["cv_by_env_trial"]:
+                for c in cc:
+                    all_single_env_trial.append(c)
+            for cc in summary_dict["cv_by_env_trial_rdm"]:
+                for c in cc:
+                    all_single_env_trial_rdm.append(c)
+            for cc in summary_dict["cv_by_env_trial_cvrdm"]:
+                for c in cc:
+                    all_single_env_trial_cvrdm.append(c)
+
+            single_env_trial.append(all_single_env_trial)
+            single_env_trial_rdm.append(all_single_env_trial_rdm)
+            single_env_trial_cvrdm.append(all_single_env_trial_cvrdm)
+
+    if return_extras:
+        return single_env, across_env, single_env_trial, single_env_trial_rdm, single_env_trial_cvrdm
 
     return single_env, across_env
 
@@ -1837,10 +1970,25 @@ def plot_total_variance_comparison(pcms, summary_dicts, relative_session=False, 
     )
 
 
-def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=False, do_ylog=False, ylog_min=1e-3, with_show=True, with_save=False):
+def plot_spectral_averages_comparison(
+    pcms,
+    single_env,
+    across_env,
+    single_env_trial,
+    single_env_trial_rdm,
+    single_env_trial_cvrdm,
+    do_xlog=False,
+    do_ylog=False,
+    ylog_min=1e-3,
+    with_show=True,
+    with_save=False,
+):
     """
     if across_num set to a number, will only include sessions with that many environments included (None means use all)
     """
+    # Show the trial based versions...
+    show_extras = False
+
     # if not using a y-log axis, then set the minimum to -inf to not change any data
     if not do_ylog:
         ylog_min = -np.inf
@@ -1889,6 +2037,12 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         cmap = mpl.colormaps["turbo"].resampled(num_mice)
         colors = [cmap(i) for i in range(num_mice)]
 
+    if show_extras:
+        colors = ["k" for _ in range(num_mice)]
+        colors_trial = ["b" for _ in range(num_mice)]
+        colors_trial_rdm = ["r" for _ in range(num_mice)]
+        colors_trial_cvrdm = ["g" for _ in range(num_mice)]
+
     plt.rcParams.update({"font.size": 24})
 
     figdim = 6.5
@@ -1907,6 +2061,20 @@ def plot_spectral_averages_comparison(pcms, single_env, across_env, do_xlog=Fals
         ax[0, 0].plot(range(1, len(c_single_data) + 1), c_single_data, color=colors[imouse], label=label)
         ax[0, 1].plot(range(1, len(c_double_data) + 1), c_double_data, color=colors[imouse], label=label)
         ax[0, 2].plot(c_num_envs, c_dims, color=colors[imouse], marker=".", markersize=16, label=label)
+
+    if show_extras:
+        for imouse, (mouse_name, c_trial, c_trial_rdm, c_trial_cvrdm) in enumerate(
+            zip(mouse_names, single_env_trial, single_env_trial_rdm, single_env_trial_cvrdm)
+        ):
+            c_trial_data = _process(c_trial)
+            c_trial_rdm_data = _process(c_trial_rdm)
+            c_trial_cvrdm_data = _process(c_trial_cvrdm)
+            label_trial = "Trials" if imouse == 0 else None
+            label_trial_rdm = "Trials-RDM" if imouse == 0 else None
+            label_trial_cvrdm = "Trials-CVRDM" if imouse == 0 else None
+            ax[0, 0].plot(range(1, len(c_trial_data) + 1), c_trial_data, color=colors_trial[imouse], label=label_trial)
+            ax[0, 0].plot(range(1, len(c_trial_rdm_data) + 1), c_trial_rdm_data, color=colors_trial_rdm[imouse], label=label_trial_rdm)
+            ax[0, 0].plot(range(1, len(c_trial_cvrdm_data) + 1), c_trial_cvrdm_data, color=colors_trial_cvrdm[imouse], label=label_trial_cvrdm)
 
     ax[0, 0].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
     ax[0, 1].set_xlabel(f"Dimension ({'log' if do_xlog else 'linear'})")
@@ -2146,7 +2314,7 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
     if do_ylog:
         ax[0].set_yscale("log")
         ax[1].set_yscale("log")
-    
+
     if poster2024:
         pass
         # ax[0].text(1, 4e-7, "100x higher dim. than\nspatial representations", ha="left", va="bottom")
