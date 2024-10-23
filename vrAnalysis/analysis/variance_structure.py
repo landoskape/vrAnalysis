@@ -9,19 +9,11 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 import matplotlib as mpl
 from matplotlib import pyplot as plt
+import seaborn as sns
 from .. import helpers
 from ..analysis import placeCellSingleSession
-
-import scipy as sp
-import seaborn as sns
-
 from .. import database
 
-import sys, os
-
-# add the path to the dimilibi package
-mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
-sys.path.append(mainPath)
 from dimilibi import Population, SVCA
 
 mousedb = database.vrDatabase("vrMice")
@@ -56,22 +48,6 @@ class VarianceStructure(placeCellSingleSession):
 
         # return data
         return spkmaps
-
-    def prepare_spks(self, onefile="mpci.roiActivityDeconvolvedOasis", standardize=True):
-        """get spks (imaging frames x neurons) for the session, only using neurons in standard planes"""
-        spks = self.vrexp.loadone(onefile)[:, self.idxUseROI]
-        if standardize:
-            if "deconvolved" in onefile:
-                # If using deconvolved traces, should have zero baseline
-                spks = spks / fs.std(spks, axis=0, keepdims=True)
-
-            else:
-                # If using fluorescence traces, should have non-zero baseline
-                idx_zeros = fs.std(spks, axis=0) == 0
-                spks = fs.median_zscore(spks, axis=0)
-                spks[:, idx_zeros] = 0
-
-        return spks
 
     def get_frame_behavior(self, speedThreshold=-1, use_average=True, ignore_to_nan=True, return_speed=False):
         """get behavioral variables for session and convert to frame timing"""

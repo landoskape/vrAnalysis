@@ -113,7 +113,7 @@ def red_reliability(
         env_match = [np.where(environments == e)[0] for e in en]
         assert all(
             [len(e) == 1 for e in env_match]
-        ), f"In session {sessionName[ii]}, environments have an error (environments:{en}), (all environments:{environments})"
+        ), f"In session {ses_name[ii]}, environments have an error (environments:{en}), (all environments:{environments})"
 
         # global environment index
         idx = [e[0] for e in env_match]
@@ -355,6 +355,7 @@ class placeCellSingleSession(standardAnalysis):
         numcv=2,
         standardizeSpks=True,
         smoothWidth=1,
+        full_trial_flexibility=3,
         use_all_rois=False,
     ):
         self.name = "placeCellSingleSession"
@@ -365,6 +366,7 @@ class placeCellSingleSession(standardAnalysis):
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
         self.smoothWidth = smoothWidth
+        self.full_trial_flexibility = full_trial_flexibility
         self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value["roiPerPlane"]))]
         self.use_all_rois = use_all_rois
 
@@ -446,6 +448,8 @@ class placeCellSingleSession(standardAnalysis):
             self.distStep = distStep
         if speedThreshold is not None:
             self.speedThreshold = speedThreshold
+        if full_trial_flexibility is not None:
+            self.full_trial_flexibility = full_trial_flexibility
 
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
         kwargs = {
@@ -460,12 +464,12 @@ class placeCellSingleSession(standardAnalysis):
         self.numTrials = self.occmap.shape[0]
 
         # find out which trials the mouse explored the whole environment
-        if full_trial_flexibility is None:
+        if self.full_trial_flexibility is None:
             # if full trial flexiblity is None, then they need to have visited every bin
             idx_to_required_bins = np.arange(self.occmap.shape[1])
         else:
-            start_idx = np.where(self.distedges >= full_trial_flexibility)[0][0]
-            end_idx = np.where(self.distedges <= self.distedges[-1] - full_trial_flexibility)[0][-1]
+            start_idx = np.where(self.distedges >= self.full_trial_flexibility)[0][0]
+            end_idx = np.where(self.distedges <= self.distedges[-1] - self.full_trial_flexibility)[0][-1]
             idx_to_required_bins = np.arange(start_idx, end_idx)
 
         self.boolFullTrials = np.all(~np.isnan(self.occmap[:, idx_to_required_bins]), axis=1)
@@ -480,7 +484,7 @@ class placeCellSingleSession(standardAnalysis):
         numcv=None,
         keep_planes=None,
         with_test=False,
-        full_trial_flexibility=3,
+        full_trial_flexibility=None,
         new_split=True,
     ):
         """load standard data for basic place cell analysis"""
@@ -497,6 +501,8 @@ class placeCellSingleSession(standardAnalysis):
             self.numcv = numcv
         if keep_planes is not None:
             self.keep_planes = keep_planes
+        if full_trial_flexibility is not None:
+            self.full_trial_flexibility = full_trial_flexibility
 
         self.get_plane_idx(keep_planes=self.keep_planes)
 
@@ -516,7 +522,7 @@ class placeCellSingleSession(standardAnalysis):
         self.numTrials = self.occmap.shape[0]
 
         self.boolFullTrials, self.idxFullTrials, self.idxFullTrialEachEnv = self._return_trial_indices(
-            self.occmap, self.distedges, full_trial_flexibility
+            self.occmap, self.distedges, self.full_trial_flexibility
         )
 
         # report that data has been loaded
@@ -525,24 +531,42 @@ class placeCellSingleSession(standardAnalysis):
         # measure reliability
         self.measure_reliability(new_split=new_split, with_test=with_test)
 
-    def _return_trial_indices(self, occmap, distedges, full_trial_flexibility=3):
+    def _return_trial_indices(self, occmap, distedges, full_trial_flexibility=None):
         """helper for determining with trials the mouse explored the whole environment"""
+        if full_trial_flexibility is not None:
+            self.full_trial_flexibility = full_trial_flexibility
 
         assert occmap.shape[0] == self.vrexp.value["numTrials"], "occmap doesn't have the same number of trials as the session object indicates!"
 
         # find out which trials the mouse explored the whole environment
-        if full_trial_flexibility is None:
+        if self.full_trial_flexibility is None:
             # if full trial flexiblity is None, then they need to have visited every bin
             idx_to_required_bins = np.arange(self.occmap.shape[1])
         else:
-            start_idx = np.where(distedges >= full_trial_flexibility)[0][0]
-            end_idx = np.where(distedges <= distedges[-1] - full_trial_flexibility)[0][-1]
+            start_idx = np.where(distedges >= self.full_trial_flexibility)[0][0]
+            end_idx = np.where(distedges <= distedges[-1] - self.full_trial_flexibility)[0][-1]
             idx_to_required_bins = np.arange(start_idx, end_idx)
 
         boolFullTrials = np.all(~np.isnan(occmap[:, idx_to_required_bins]), axis=1)
         idxFullTrials = np.where(boolFullTrials)[0]
         idxFullTrialEachEnv = [np.where(boolFullTrials & (self.trial_envnum == env))[0] for env in self.environments]
         return boolFullTrials, idxFullTrials, idxFullTrialEachEnv
+
+    def prepare_spks(self, onefile="mpci.roiActivityDeconvolvedOasis", standardize=True):
+        """get spks (imaging frames x neurons) for the session, only using neurons in standard planes"""
+        spks = self.vrexp.loadone(onefile)[:, self.idxUseROI]
+        if standardize:
+            if "deconvolved" in onefile:
+                # If using deconvolved traces, should have zero baseline
+                spks = spks / fs.std(spks, axis=0, keepdims=True)
+
+            else:
+                # If using fluorescence traces, should have non-zero baseline
+                idx_zeros = fs.std(spks, axis=0) == 0
+                spks = fs.median_zscore(spks, axis=0)
+                spks[:, idx_zeros] = 0
+
+        return spks
 
     @prepare_data
     def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}, rawspkmap=None, occmap=None):
@@ -785,6 +809,13 @@ class placeCellSingleSession(standardAnalysis):
 
         If spkmap has shape: (numROIs, numTrials, numPositions) will average across trials
         If spkmap has shape: (numROIs, numPositions) will use as is
+
+        Returns
+        -------
+        pfloc : np.ndarray
+            place field location for each ROI
+        pfidx : np.ndarray
+            sorting index for each ROI
         """
         assert method == "com" or method == "max", f"invalid method ({method}), must be either 'com' or 'max'"
 
