@@ -26,17 +26,22 @@ def add_to_spectra_data(pcm, args):
 
     vss = []
     for p in pcm.pcss:
-        vss.append(analysis.VarianceStructure(p.vrexp, distStep=args.dist_step, autoload=False))
+        vss.append(analysis.VarianceStructure(p.vrexp, distStep=args.dist_step, autoload=False, keep_planes=[1, 2]))
 
-    # first load session data (this can take a while)
-    for v in tqdm(vss, leave=True, desc="loading session data"):
-        v.load_data()
+    # # first load session data (this can take a while)
+    # for v in tqdm(vss, leave=True, desc="loading session data"):
+    #     v.load_data()
 
     cv_by_env_trial = []
     cv_by_env_trial_rdm = []
     cv_by_env_trial_cvrdm = []
     svc_shared_position = []
-    for v in tqdm(vss, leave=False, desc="doing special cvPCA and SVCA analyses on trial position data"):
+    progress_bar = tqdm(vss, leave=False, desc="doing special cvPCA and SVCA analyses on trial position data")
+    for v in progress_bar:
+        v.load_data()
+
+        sid = v.vrexp.sessionPrint()
+        progress_bar.set_description(f"Preparing spkmaps for {sid}")
         c_spkmaps_full = v.get_spkmap(average=False, smooth=args.smooth, trials="full")
         c_spkmaps_full_avg = [np.nanmean(c, axis=1) for c in c_spkmaps_full]
 
@@ -54,6 +59,7 @@ def add_to_spectra_data(pcm, args):
         c_spkmaps_full_avg = [c[:, ~idx_nan] for c, idx_nan in zip(c_spkmaps_full_avg, idx_nans)]
         c_spkmaps_full = [c[:, :, ~idx_nan] for c, idx_nan in zip(c_spkmaps_full, idx_nans)]
 
+        progress_bar.set_description(f"Making random maps for {sid}")
         # Generate random samples from poisson distribution with means set by average and number of trials equivalent to measured
         c_spkmaps_full_train_rdm = [
             np.moveaxis(np.random.poisson(np.max(c, 0), [ctr.shape[1], *c.shape]), 0, 1) for c, ctr in zip(c_spkmaps_full_avg, c_spkmaps_full_train)
@@ -84,20 +90,25 @@ def add_to_spectra_data(pcm, args):
         c_spkmaps_full_train_avg_rdm = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_train_avg_rdm]
         c_spkmaps_full_test_avg_rdm = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full_test_avg_rdm]
 
+        progress_bar.set_description(f"Performing cvPCA with avg -> random data for {sid}")
         # perform cvpca on full spkmap with poisson noise
         s_rdm = [
             np.nanmean(helpers.shuff_cvPCA(csftr.T, csfte.T, nshuff=5, cvmethod=helpers.cvPCA_paper_neurons), axis=0)
             for csftr, csfte in zip(c_spkmaps_full_train_rdm, c_spkmaps_full_test_rdm)
         ]
+
+        progress_bar.set_description(f"Performing cvPCA with trial data for {sid}")
         s_trial = [
             np.nanmean(helpers.shuff_cvPCA(csftr.T, csfte.T, nshuff=5, cvmethod=helpers.cvPCA_paper_neurons), axis=0)
             for csftr, csfte in zip(c_spkmaps_full_train, c_spkmaps_full_test)
         ]
+        progress_bar.set_description(f"Performing cvPCA with train/test avg -> random data for {sid}")
         s_cvrdm = [
             np.nanmean(helpers.shuff_cvPCA(csftr.T, csfte.T, nshuff=5, cvmethod=helpers.cvPCA_paper_neurons), axis=0)
             for csftr, csfte in zip(c_spkmaps_full_train_avg_rdm, c_spkmaps_full_test_avg_rdm)
         ]
 
+        progress_bar.set_description(f"Preparing data for SVCA for {sid}")
         # Also do SVCA on the full spkmap across trials
         c_spkmaps_full_rs = [c.reshape(c.shape[0], -1) for c in c_spkmaps_full]
 
@@ -117,6 +128,7 @@ def add_to_spectra_data(pcm, args):
             [npop.get_split_data(1, center=False, scale=True, scale_type="preserve") for npop in npops]
         )
 
+        progress_bar.set_description(f"Running SVCA for {sid}")
         # Fit SVCA on position averaged data across trials...
         svca_position = [SVCA().fit(ts, tt) for ts, tt in zip(train_source, train_target)]
         svc_shared_position = [sv.score(ts, tt)[0].numpy() for sv, ts, tt in zip(svca_position, test_source, test_target)]
@@ -125,6 +137,8 @@ def add_to_spectra_data(pcm, args):
         cv_by_env_trial_rdm.append(s_rdm)
         cv_by_env_trial_cvrdm.append(s_cvrdm)
         svc_shared_position.append(svc_shared_position)
+
+        v.clear_data()
 
     # # get spkmaps of all cells / just reliable cells
     # for v in tqdm(vss, leave=False, desc="preparing spkmaps"):
@@ -188,6 +202,13 @@ def add_to_spectra_data(pcm, args):
 
 if __name__ == "__main__":
     for mouse_name in mouse_names:
+        if "CR_H" in mouse_name:
+            print(f"Skipping {mouse_name} because it should have already finished...")
+            continue
+        if "ATL022" in mouse_name:
+            print(f"Skipping {mouse_name} because it should have already finished...")
+            continue
+
         print(f"Analyzing {mouse_name}")
 
         # load spectra data for target mouse
