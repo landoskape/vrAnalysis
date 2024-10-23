@@ -2,6 +2,7 @@ import numpy as np
 import scipy as sp
 from sklearn.decomposition import PCA
 from sklearn.decomposition import IncrementalPCA
+
 import torch
 import faststats as fs
 from .indexing import cvFoldSplit
@@ -9,6 +10,13 @@ from .wrangling import named_transpose
 from .signals import vectorCorrelation
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def abcov(A, B, correction=True):
+    """compute the covariance of A and B"""
+    A = A - A.mean(axis=1, keepdims=True)
+    B = B - B.mean(axis=1, keepdims=True)
+    return np.dot(A, B.T) / (A.shape[1] - 1.0 * correction)
 
 
 def batch_cov(input, centered=True, correction=True):
@@ -85,6 +93,9 @@ def smart_pca(input, centered=True, use_rank=True, correction=True):
         input = input.unsqueeze(0)  # create batch dimension for uniform code
     else:
         no_batch = False
+
+    if centered:
+        input = input - input.mean(dim=2, keepdim=True)
 
     _, D, S = input.size()
     if D > S:
@@ -224,50 +235,19 @@ def fast_rank(input):
     return int(torch.linalg.matrix_rank(input))
 
 
-def cvPCA_from_MouseLandGithub(X1, X2, nc=None):
+def cvPCA(X1, X2, nc=None):
     """X is stimuli x neurons"""
     S, N = X1.shape
     assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
     nc = get_num_components(nc, (S, N))
-    pca = PCA(n_components=nc).fit(X1.T)
-    u = pca.components_.T
-    sv = pca.singular_values_
-
-    xproj = X1.T @ (u / sv)
-    cproj0 = X1 @ xproj
-    cproj1 = X2 @ xproj
-    ss = (cproj0 * cproj1).sum(axis=0)
-    return ss
-
-
-def cvPCA_paper_stimuli(X1, X2, nc=None, center=False):
-    """X is stimuli x neurons"""
-    S, N = X1.shape
-    assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
-    nc = get_num_components(nc, (S, N))
-    X1 = X1 - X1.mean(axis=0) if center else X1
-    X2 = X2 - X2.mean(axis=0) if center else X2
-    pca = PCA(n_components=nc).fit(X1.T)
-    u = pca.components_.T
-
-    cproj0 = X1.T @ u
-    cproj1 = X2.T @ u
-    ss = (cproj0 * cproj1).mean(axis=0)
-    return ss
-
-
-def cvPCA_paper_neurons(X1, X2, nc=None, center=False):
-    """X is stimuli x neurons"""
-    S, N = X1.shape
-    assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
-    nc = get_num_components(nc, (S, N))
-    X1 = X1 - X1.mean(axis=1, keepdims=True) if center else X1
-    X2 = X2 - X2.mean(axis=1, keepdims=True) if center else X2
-    pca = PCA(n_components=nc).fit(X1)
-    u = pca.components_.T
+    X1 = X1 - X1.mean(axis=0, keepdims=True)
+    X2 = X2 - X2.mean(axis=0, keepdims=True)
+    u = smart_pca(X1.T, centered=False)[1][:, :nc]
 
     cproj0 = X1 @ u
     cproj1 = X2 @ u
+    cproj0 = cproj0 - cproj0.mean(axis=0)
+    cproj1 = cproj1 - cproj1.mean(axis=0)
     ss = (cproj0 * cproj1).mean(axis=0)
     return ss
 
@@ -276,7 +256,7 @@ def get_num_components(nc, shape, maxnc=80):
     return nc if nc is not None else min(maxnc, min(shape))
 
 
-def shuff_cvPCA(X1, X2, nshuff=5, cvmethod=cvPCA_from_MouseLandGithub):
+def shuff_cvPCA(X1, X2, nshuff=5):
     """X is stimuli x neurons"""
     S, N = X1.shape
     assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
@@ -288,7 +268,7 @@ def shuff_cvPCA(X1, X2, nshuff=5, cvmethod=cvPCA_from_MouseLandGithub):
         X2c = X2.copy()
         X1c[iflip] = X2[iflip]
         X2c[iflip] = X1[iflip]
-        ss[k] = cvmethod(X1c, X2c, nc)
+        ss[k] = cvPCA(X1c, X2c, nc)
     return ss
 
 
@@ -387,15 +367,12 @@ def _prepare_cv(spkmap, extra=None, by_trial=False, noise_corr=False, center=Tru
     return spk_train, spk_test
 
 
-def cvpca(
-    spkmap, by_trial=False, noise_corr=False, center=True, max_trials=None, max_neurons=None, nshuff=3, cvshuff=1, cvmethod=cvPCA_paper_neurons
-):
+def cvpca(spkmap, by_trial=False, noise_corr=False, center=True, max_trials=None, max_neurons=None, nshuff=3, cvshuff=1):
     """
     cvpca method -- run cvPCA on spkmap with various options and repeats of train/test set and cv-shuffling
 
     nshuff is how many times to repeat the train/test set generation
     cvshuff is how many times to do the specialized cvPCA shuffling method (see shuff_cvPCA method above)
-    cvmethod is which method to use to directly calculate the cv-eigenspectrum
 
     spkmap is a (num_rois, num_trials, num_bins) array
 
@@ -415,7 +392,7 @@ def cvpca(
         )
 
         # do cvPCA (with optional cv shuffling) for this train/test set
-        c_ss = shuff_cvPCA(spk_train.T, spk_test.T, nshuff=cvshuff, cvmethod=cvmethod)
+        c_ss = shuff_cvPCA(spk_train.T, spk_test.T, nshuff=cvshuff)
         c_ss = np.nanmean(c_ss, axis=0)
         ss.append(c_ss)
 
