@@ -588,7 +588,7 @@ class vrRegistration(vrExperiment):
 
             # Check that the shape is correct
             msg = f"In session {self.sessionPrint()}, oasis was run and did not produce the same shaped array as suite2p spks..."
-            assert ospks.shape == self.loadS2P("spks").shape, msg
+            assert ospks.shape == spks.shape, msg
 
         # save onedata (no assertions needed, loadS2P() handles shape checks and this function already handled any mismatch between frameSamples and suite2p output
         self.saveone(frame2time, "mpci.times")
