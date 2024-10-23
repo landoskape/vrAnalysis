@@ -1,12 +1,8 @@
 # inclusions
+from warnings import warn
 import json
 import time
-from tqdm import tqdm
-from pathlib import Path
 import numpy as np
-import scipy as sp
-import scipy.io as scio
-import numba as nb
 from numpyencoder import NumpyEncoder
 from . import helpers
 from . import fileManagement as fm
@@ -153,6 +149,27 @@ class vrExperiment(vrSession):
     def registerValue(self, name, value):
         # add a variable to vrExperiment object (these are saved in JSON objects and reloaded each time the vrExp method is generated, best practice is to only add small variables)
         self.value[name] = value
+
+    def __getattr__(self, name):
+        """
+        Get attribute from vrExperiment object using hierarchical attribute lookup.
+
+        If self.name exists, return self.name
+        If name is in self.value and self.name exists, return self.name and send warning
+        If name is in self.value and self.name doesn't exist, return self.value[name]
+        Otherwise raise AttributeError
+        """
+        if name in self.__dict__:
+            if name in self.value:
+                msg = (
+                    f"{name} is an attribute of self (vrExperiment object) and a key in self.value. Using self.{name} instead of self.value['{name}']"
+                )
+                warn(msg)
+            return super().__getattr__(self, name)
+        if name in self.value:
+            return self.value[name]
+
+        raise AttributeError(f"'{name}' is not an attribute of self (vrExperiment object) and is not a key in self.value.")
 
     # ----------------------------------------------------------------- one data handling --------------------------------------------------------------------
     def saveone(self, var, *names):
