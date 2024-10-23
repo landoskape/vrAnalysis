@@ -27,6 +27,7 @@ from ._numba import (
     numba_nanvar,
     numba_zscore,
     numba_median_zscore,
+    numba_nanmedian_zscore,
 )
 
 
@@ -50,13 +51,14 @@ _method_lookup = dict(
     nanvar=numba_nanvar,
     zscore=numba_zscore,
     median_zscore=numba_median_zscore,
+    nanmedian_zscore=numba_nanmedian_zscore,
 )
 
 # these methods require a "q" argument
 _requires_q = ["percentile", "nanpercentile", "quantile", "nanquantile"]
 
 # these methods don't have a final reduction (their output should be same size as input)
-_noreduction = ["zscore", "median_zscore"]
+_noreduction = ["zscore", "median_zscore", "nanmedian_zscore"]
 
 
 def faststat(data, method, axis=-1, keepdims=False, q=None):
@@ -178,3 +180,7 @@ def zscore(data, axis=None, keepdims=False):
 
 def median_zscore(data, axis=None, keepdims=False):
     return faststat(data, "median_zscore", axis=axis, keepdims=keepdims)
+
+
+def nanmedian_zscore(data, axis=None, keepdims=False):
+    return faststat(data, "nanmedian_zscore", axis=axis, keepdims=keepdims)

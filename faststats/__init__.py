@@ -17,4 +17,5 @@ from .faststats import (
     nanvar,
     zscore,
     median_zscore,
+    nanmedian_zscore,
 )

@@ -162,3 +162,12 @@ def numba_median_zscore(data):
     for n in nb.prange(data.shape[0]):
         output[n] = (data[n] - np.median(data[n])) / np.std(data[n])
     return output
+
+
+@nb.njit(parallel=True)
+def numba_nanmedian_zscore(data):
+    """numba speed up for nanmedian zscore"""
+    output = np.zeros_like(data)
+    for n in nb.prange(data.shape[0]):
+        output[n] = (data[n] - np.nanmedian(data[n])) / np.nanstd(data[n])
+    return output
