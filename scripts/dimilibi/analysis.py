@@ -1,5 +1,4 @@
 import os, sys
-from pathlib import Path
 from argparse import ArgumentParser
 from matplotlib import pyplot as plt
 import matplotlib as mpl
@@ -83,12 +82,75 @@ def plot_comparison_test(rrr_results, network_results, rrr_all, network_all, ses
 
     plt.show()
 
-    fig = plt.figure(figsize=(4, 4), layout="constrained")
+    plt.rcParams.update({"font.size": 18})
+    fig = plt.figure(figsize=(6, 6), layout="constrained")
     plt.scatter(session_number, model_improvement[sort_by_improvement], c=model_mouse_id[sort_by_improvement], s=5, cmap=colmouse)
     plt.axhline(0, color="k", linestyle="--")
     plt.xlabel("Session (Sorted by NL Improvement)")
     plt.ylabel("Network Test Score - RRR Test Score")
     plt.title("Model Improvement by Session")
+    plt.show()
+
+
+def compare_reshuffled_populations(rrr_all, network_all, rrr_all_cmp, network_all_cmp, session_ids, session_ids_cmp):
+    ranks = rrr_all[0]["ranks"]
+    for rrr, ntw, rrrcmp, ntwcmp in zip(rrr_all, network_all, rrr_all_cmp, network_all_cmp):
+        assert rrr["ranks"] == ranks, "ranks don't match between rrr and hyperparameters"
+        assert rrrcmp["ranks"] == ranks, "ranks don't match between rrr and hyperparameters (comparison population)"
+        c_ntw_ranks = tuple([nar["rank"] for nar in ntw])
+        c_ntw_ranks_cmp = tuple([nar["rank"] for nar in ntwcmp])
+        assert c_ntw_ranks == ranks, "ranks don't match between networks"
+        assert c_ntw_ranks_cmp == ranks, "ranks don't match between networks (comparison population)"
+
+    assert session_ids == session_ids_cmp, "session ids don't match between populations"
+
+    # Also compare each session individually (for each rank)
+    mouse_names = sorted(list(set(map(lambda x: x[0], session_ids))))
+    num_mice = len(mouse_names)
+    num_ranks = len(ranks)
+    num_sessions = len(rrr_all)
+    assert num_sessions == len(network_all), "number of sessions don't match between rrr and networks"
+    rrr_score_all = torch.zeros(num_sessions, num_ranks)
+    network_score_all = torch.zeros(num_sessions, num_ranks)
+    rrr_score_all_cmp = torch.zeros(num_sessions, num_ranks)
+    network_score_all_cmp = torch.zeros(num_sessions, num_ranks)
+    mouse_index = torch.zeros(num_sessions)
+    for ises in range(num_sessions):
+        rrr_score_all[ises] = torch.tensor(rrr_all[ises]["test_scores"])
+        network_score_all[ises] = torch.tensor([torch.mean(nar["test_score"]) for nar in network_all[ises]])
+        mouse_index[ises] = mouse_names.index(session_ids[ises][0])
+
+        rrr_score_all_cmp[ises] = torch.tensor(rrr_all_cmp[ises]["test_scores"])
+        network_score_all_cmp[ises] = torch.tensor([torch.mean(nar["test_score"]) for nar in network_all_cmp[ises]])
+
+    # Compare the two models across ranks
+    model_improvement = network_score_all - rrr_score_all
+    model_improvement_cmp = network_score_all_cmp - rrr_score_all_cmp
+    session_number = torch.arange(num_sessions).view(-1, 1).expand(-1, num_ranks)
+    sort_by_improvement = torch.argsort(torch.mean(model_improvement, dim=1))
+    model_mouse_id = mouse_index.clone().view(-1, 1).expand(-1, num_ranks)
+
+    colmouse = mpl.colormaps["tab20"].resampled(num_mice)
+
+    plt.rcParams.update({"font.size": 16})
+    fig, ax = plt.subplots(1, 3, figsize=(12, 5), layout="constrained")
+    ax[0].scatter(session_number, model_improvement[sort_by_improvement], c=model_mouse_id[sort_by_improvement], s=5, cmap=colmouse)
+    ax[0].axhline(0, color="k", linestyle="--")
+    ax[0].set_xlabel("Session (Sort by $\Delta$ Shuf0)")
+    ax[0].set_ylabel("DNN - RRR Test Score")
+    ax[0].set_title("Shuffle 0")
+
+    ax[1].scatter(session_number, model_improvement_cmp[sort_by_improvement], c=model_mouse_id[sort_by_improvement], s=5, cmap=colmouse)
+    ax[1].axhline(0, color="k", linestyle="--")
+    ax[1].set_xlabel("Session (Sort by $\Delta$ Shuf0)")
+    ax[1].set_title("Shuffle 1")
+
+    ax[2].scatter(model_improvement, model_improvement_cmp, c=model_mouse_id, s=5, cmap=colmouse)
+    refline(1, 0, color="k", linestyle="--", ax=ax[2])
+    ax[2].set_xlabel("Shuffle 0 Improvement")
+    ax[2].set_ylabel("Shuffle 1 Improvement")
+    ax[2].set_title("Shuffle Comp.")
+
     plt.show()
 
 
@@ -338,6 +400,12 @@ def parse_args():
         type=str,
         help="Name of population object to save (default=None, just uses name of session)",
     )
+    parser.add_argument(
+        "--population_name_compare",
+        default=None,
+        type=str,
+        help="Name of population object to compare with, require if running compare_reshuffled_populations",
+    )
     parser.add_argument("--rrr", default=False, action="store_true", help="Run reduced rank regression optimization.")
     parser.add_argument("--networks", default=False, action="store_true", help="Run network optimization.")
     parser.add_argument("--rrr_state", default=False, action="store_true", help="Run rrr (state) optimization.")
@@ -345,6 +413,7 @@ def parse_args():
     parser.add_argument("--skip_completed", type=argbool, default=True, help="Skip completed sessions (default=True)")
     parser.add_argument("--retest_only", type=argbool, default=False, help="Only retest sessions that have already been optimized.")
     parser.add_argument("--compare_rrr_to_networks", type=argbool, default=False, help="Do rrr to network comparison.")
+    parser.add_argument("--compare_reshuffled_populations", type=argbool, default=False, help="Compare reshuffled populations.")
     parser.add_argument("--analyze_rrr_fits", type=argbool, default=False, help="Do analysis of rrr fits.")
     parser.add_argument("--analyze_networks", type=argbool, default=False, help="Do analysis of networks.")
     parser.add_argument("--analyze_rrr_state", type=argbool, default=False, help="Do analysis of rrr state.")
@@ -393,6 +462,16 @@ if __name__ == "__main__":
         rrr_all = load_rrr_results(all_sessions, results="all", population_name=args.population_name)
         network_all, session_ids, tested_ranks = load_network_results(all_sessions, results="all", population_name=args.population_name)
         plot_comparison_test(rrr_results, network_results, rrr_all, network_all, session_ids)
+
+    if args.compare_reshuffled_populations:
+        assert args.population_name_compare is not None, "Must provide a population name to compare to."
+        rrr_all = load_rrr_results(all_sessions, results="all", population_name=args.population_name)
+        network_all, session_ids, tested_ranks = load_network_results(all_sessions, results="all", population_name=args.population_name)
+        rrr_all_cmp = load_rrr_results(all_sessions, results="all", population_name=args.population_name_compare)
+        network_all_cmp, session_ids_cmp, tested_ranks_cmp = load_network_results(
+            all_sessions, results="all", population_name=args.population_name_compare
+        )
+        compare_reshuffled_populations(rrr_all, network_all, rrr_all_cmp, network_all_cmp, session_ids, session_ids_cmp)
 
     if args.analyze_rrr_fits:
         rrr_results = load_rrr_results(all_sessions, results="all", population_name=args.population_name)
