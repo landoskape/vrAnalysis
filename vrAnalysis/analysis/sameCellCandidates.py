@@ -1,14 +1,12 @@
 import time
 from copy import copy
-from tqdm import tqdm
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from matplotlib.widgets import Button, Slider, TextBox
+from matplotlib.widgets import Slider, TextBox
 import networkx as nx
 
-from .. import session
 from .. import helpers
 from .standardAnalysis import standardAnalysis
 
@@ -636,6 +634,7 @@ class sameCellCandidates(standardAnalysis):
         self,
         thresholds=[40, 10, 5, 3, 1],
         ncorrbins=51,
+        withShow=True,
         withSave=False,
         npixCutoff=None,
         keep_planes=None,

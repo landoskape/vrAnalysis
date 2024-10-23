@@ -1,16 +1,8 @@
 import numpy as np
 import numba as nb
+import faststats as fs
 
 from . import edge2center, getGaussKernel, convolveToeplitz, cvFoldSplit, vectorCorrelation
-
-import os
-import sys
-
-# adding main path for faststats
-mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
-sys.path.append(mainPath)
-
-import faststats as fs
 
 
 def get_env_order(mousedb, mouse_name):
