@@ -26,8 +26,9 @@ def figurePath():
     return localDataPath() / "_figure_library"
 
 
-def serverPath():
-    return Path("//zaru.cortexlab.net/Subjects")
+def serverPath(zaru=True):
+    name = "zaru" if zaru else "zortex"
+    return Path(f"//{name}.cortexlab.net/Subjects")
 
 
 def getCopyString(mouseName, datestr="", session="", server=serverPath(), toClipboard=True):
@@ -52,7 +53,7 @@ def copyDataToStorage(mouseName, datestr="", session="", toClipboard=True):
     print(cmdPromptCommand)
 
 
-def s2pTargets(*inputs, server=serverPath()):
+def s2pTargets(*inputs, zaru=True):
     if len(inputs) == 3:
         mouseName, dateString, session = inputs
     else:
@@ -60,10 +61,10 @@ def s2pTargets(*inputs, server=serverPath()):
         dateString = inputs[0].dateString
         session = inputs[0].session
 
-    sourceString = Path(serverPath() / mouseName / dateString / session)
+    sourceString = Path(serverPath(zaru=zaru) / mouseName / dateString / session)
     targetString = Path(localDataPath() / mouseName / dateString / session)
-    print(sourceString)
-    print(targetString)
+    print(str(sourceString))
+    print(str(targetString))
 
 
 def checkSessionFiles(mouseName, fileIdentifier):
