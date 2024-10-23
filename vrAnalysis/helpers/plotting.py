@@ -41,18 +41,24 @@ def scale(data, vmin=0, vmax=1, prctile=(0, 100)):
     return sdata
 
 
-def errorPlot(x, data, axis=-1, se=False, ax=None, **kwargs):
+def errorPlot(x, data, axis=-1, se=False, ax=None, handle_nans=True, **kwargs):
     """
     convenience method for making a plot with errorbars
     kwargs go into fill_between and plot, so they have to work for both...
     to make that more flexible, we could add a list of kwargs that work for
     one but not the other and pop them out as I did with the 'label'...
     """
+    mean = np.nanmean if handle_nans else np.mean
+    std = np.nanstd if handle_nans else np.std
+    if handle_nans:
+        num_valid_points = np.sum(~np.isnan(data), axis=axis)
+    else:
+        num_valid_points = data.shape[axis]
     if ax is None:
         ax = plt.gca()
-    meanData = np.mean(data, axis=axis)
-    correction = np.sqrt(data.shape[axis]) if se else 1
-    errorData = np.std(data, axis=axis) / correction
+    meanData = mean(data, axis=axis)
+    correction = np.sqrt(num_valid_points) if se else 1
+    errorData = std(data, axis=axis) / correction
     fillBetweenArgs = kwargs.copy()
     fillBetweenArgs.pop("label", None)
     ax.fill_between(x, meanData + errorData, meanData - errorData, **fillBetweenArgs)
