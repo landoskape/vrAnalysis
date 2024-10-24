@@ -1,5 +1,6 @@
 # inclusions
 from warnings import warn
+from typing import Union
 import json
 import time
 import numpy as np
@@ -10,6 +11,53 @@ from . import fileManagement as fm
 # Variables that might need to be changed for different users
 # if anyone other than me uses this, let me know and I can make it smarter by using a user dictionary or storing a file somewhere else...
 dataPath = fm.localDataPath()
+
+
+class LoadingRecipe:
+    RECIPE_MARKER = "__LOADING_RECIPE__"
+
+    def __init__(self, loader_type: str, source_arg: str, transforms: list = None, **kwargs):
+        """
+        Represents instructions for loading data.
+
+        Use case:
+        Save a recipe to load data from an existing location instead of resaving the data with a new name.
+        Will save memory on the device and generally have a very small overhead.
+
+        Args:
+            loader_type: String identifying the loading method (e.g., 'numpy', 's2p')
+            source_arg: String identifying the source data (e.g. 'F', 'ops')
+            transforms: List of transformation operations to apply
+            **kwargs: Additional arguments for the loader
+        """
+        self.loader_type = loader_type
+        self.source_arg = source_arg
+        self.transforms = transforms or []
+        self.kwargs = kwargs
+
+    def to_dict(self) -> dict:
+        """Convert recipe to dictionary for serialization."""
+        return {
+            "marker": self.RECIPE_MARKER,
+            "loader_type": self.loader_type,
+            "source_arg": self.source_arg,
+            "transforms": self.transforms,
+            "kwargs": self.kwargs,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LoadingRecipe":
+        """Create recipe from dictionary."""
+        return cls(data["loader_type"], data["source_arg"], data["transforms"], **data["kwargs"])
+
+    @classmethod
+    def is_recipe(cls, data: np.ndarray) -> bool:
+        """Check if the loaded data is actually a recipe."""
+        try:
+            dict_data = data.item()
+            return isinstance(dict_data, dict) and dict_data.get("marker", None) == cls.RECIPE_MARKER
+        except (AttributeError, ValueError):
+            return False
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -93,6 +141,7 @@ class vrExperiment(vrSession):
         # use createObject to create vrExperiment
         # requires the vrRegistration to have already been run for this session!
         self.createObject(*inputs)
+        self._prepare_for_recipes()
 
     # ------------------------------------------------------- basic meta functions for vrExperiment -----------------------------------------------------------
     def createObject(self, *inputs):
@@ -172,27 +221,71 @@ class vrExperiment(vrSession):
         raise AttributeError(f"'{name}' is not an attribute of self (vrExperiment object) and is not a key in self.value.")
 
     # ----------------------------------------------------------------- one data handling --------------------------------------------------------------------
-    def saveone(self, var, *names):
-        # save variable as oneData (names can be an arbitrarily long list of strings, they'll be joined with '.' to make the filename
-        # automatically adds variable to the loadBuffer for efficient data handling
-        fileName = self.oneFilename(*names)
-        self.loadBuffer[fileName] = var
-        np.save(self.onePath() / fileName, var)
+    def saveone(self, data: Union[np.ndarray, LoadingRecipe], *names: str) -> None:
+        """
+        Save data directly or as a loading recipe.
 
-    def loadone(self, *names, force=False, allow_pickle=True):
-        # load one data from vrexp object. if available in loadBuffer, will grab it from there. force=True performs automatic reload, even if already in buffer
-        fileName = self.oneFilename(*names)
-        if not force and fileName in self.loadBuffer.keys():
-            return self.loadBuffer[fileName]
+        Args:
+            data: Either numpy array or LoadingRecipe
+            names: sequence of strings to join into filename (e.g., "mpci", "roiActivityF" -> "mpci.roiActivityF")
+        """
+        file_name = self.oneFilename(*names)
+        path = self.onePath() / file_name
+        if isinstance(data, LoadingRecipe):
+            # Save recipe as a numpy array containing a dictionary
+            recipe_dict = data.to_dict()
+            np.save(path, np.array(recipe_dict, dtype=object))
         else:
-            if not (self.onePath() / fileName).exists():
-                print(f"In session {self.sessionPrint()}, the one file {fileName} doesn't exist. Here is a list of saved oneData files:")
+            # Save data directly to one file
+            self.loadBuffer[file_name] = data  # (standard practice is to buffer the data for efficient data handling)
+            np.save(path, data)
+
+    def loadone(self, *names: str, force=False) -> np.ndarray:
+        """
+        Load data, either directly or by following a recipe.
+
+        Args:
+            names: Sequence of strings to join into filename (e.g., "mpci", "roiActivityF" -> "mpci.roiActivityF")
+            force: If True, reload data even if it is already in the buffer
+
+        Returns:
+            Loaded and potentially transformed data
+        """
+        file_name = self.oneFilename(*names)
+        if not force and file_name in self.loadBuffer.keys():
+            return self.loadBuffer[file_name]
+        else:
+            path = self.onePath() / file_name
+            if not (path.exists()):
+                print(f"In session {self.sessionPrint()}, the one file {file_name} doesn't exist. Here is a list of saved oneData files:")
                 for oneFile in self.printSavedOne():
                     print(oneFile)
                 raise ValueError("oneData requested is not available")
-            oneVar = np.load(self.onePath() / fileName, allow_pickle=allow_pickle)
-            self.loadBuffer[fileName] = oneVar
-            return oneVar
+
+            # Load saved numpy array at savepath
+            data = np.load(path, allow_pickle=True)
+
+            if LoadingRecipe.is_recipe(data):
+                # Get loading recipe
+                recipe = LoadingRecipe.from_dict(data.item())
+
+                # Load data using appropriate loader
+                if recipe.source_arg is not None:
+                    data = self.loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
+                else:
+                    data = self.loaders[recipe.loader_type](**recipe.kwargs)
+
+                # Apply transforms
+                for transform in recipe.transforms:
+                    data = self.transforms[transform](data)
+
+            self.loadBuffer[file_name] = data
+            return data
+
+    def _prepare_for_recipes(self):
+        """Create lookups for specialized loaders."""
+        self.loaders = {"S2P": self.loadS2P, "stackPosition": self.getRoiStackPosition}
+        self.transforms = {"transpose": lambda x: x.T, "idx_column1": lambda x: x[:, 1]}
 
     def oneFilename(self, *names):
         # create one filename given an arbitrary length list of names

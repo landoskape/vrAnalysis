@@ -7,7 +7,7 @@ import numpy as np
 import scipy as sp
 import scipy.io as scio
 from . import helpers
-from .session import vrExperiment, redCellProcessing
+from .session import vrExperiment, redCellProcessing, LoadingRecipe
 
 
 class defaultRigInfo:
@@ -592,15 +592,15 @@ class vrRegistration(vrExperiment):
 
         # save onedata (no assertions needed, loadS2P() handles shape checks and this function already handled any mismatch between frameSamples and suite2p output
         self.saveone(frame2time, "mpci.times")
-        self.saveone(self.loadS2P("F").T, "mpci.roiActivityF")
-        self.saveone(self.loadS2P("Fneu").T, "mpci.roiNeuropilActivityF")
-        self.saveone(spks.T, "mpci.roiActivityDeconvolved")
+        self.saveone(LoadingRecipe("S2P", "F", transforms=["transpose"]), "mpci.roiActivityF")
+        self.saveone(LoadingRecipe("S2P", "Fneu", transforms=["transpose"]), "mpci.roiNeuropilActivityF")
+        self.saveone(LoadingRecipe("S2P", "spks", transforms=["transpose"]), "mpci.roiActivityDeconvolved")
+        if "redcell" in self.value["available"]:
+            self.saveone(LoadingRecipe("S2P", "redcell", transforms=["idx_column1"]), "mpciROIs.redS2P")
+        self.saveone(LoadingRecipe("S2P", "iscell"), "mpciROIs.isCell")
+        self.saveone(LoadingRecipe("stackPosition", None), "mpciROIs.stackPosition")
         if self.opts["oasis"]:
             self.saveone(ospks.T, "mpci.roiActivityDeconvolvedOasis")
-        if "redcell" in self.value["available"]:
-            self.saveone(self.loadS2P("redcell")[:, 1], "mpciROIs.redS2P")
-        self.saveone(self.loadS2P("iscell"), "mpciROIs.isCell")
-        self.saveone(self.getRoiStackPosition(), "mpciROIs.stackPosition")
         self.preprocessing.append("imaging")
 
     def processFacecam(self):
