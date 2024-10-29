@@ -85,6 +85,9 @@ def smart_pca(input, centered=True, use_rank=True, correction=True):
     else:
         was_numpy = False
 
+    if torch.any(torch.isnan(input)):
+        raise ValueError("input has NaN values")
+
     assert (input.ndim == 2) or (input.ndim == 3), "input should be a matrix or batched matrices"
     assert isinstance(correction, bool), "correction should be a boolean"
 
