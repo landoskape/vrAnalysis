@@ -87,6 +87,7 @@ default_vals = {
     "redCellQC": False,
     "sessionQC": True,
     "vrRegistrationError": False,
+    "dontTrack": False,
 }
 
 # recognized datatypes
