@@ -416,13 +416,13 @@ class base_database:
             if isinstance(uv, date) or isinstance(uv, datetime):
                 # this is required for communicating with Access
                 unique_values[ii] = uv.strftime("%Y-%m-%d")
+        unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
         if self.getRecord(*unique_values, verbose=False) is not None:
-            unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
             print(f"Record already exists for {unique_combo}")
             return f"Record already exists for {unique_combo}"
         with self.openCursor(commitChanges=True) as cursor:
             cursor.execute(insert_statement, values)
-            print("Successfully added new record")
+            print(f"Successfully added new record for {unique_combo}")
         return "Successfully added new record"
 
     def getRecord(self, *unique_values, verbose=True):
@@ -708,7 +708,7 @@ class session_database(base_database):
         opts.update(userOpts)  # Update default opts with user requests
         return opts
 
-    def registerRecord(self, record, **opts):
+    def registerRecord(self, record, raise_exception=False, **opts):
         opts["imaging"] = bool(record["imaging"])
         opts["facecam"] = bool(record["faceCamera"])
         opts["vrBehaviorVersion"] = record["vrBehaviorVersion"]
@@ -725,6 +725,8 @@ class session_database(base_database):
                     self.createUpdateStatement("vrRegistrationException", record[self.uid]),
                     str(ex),
                 )
+            if raise_exception:
+                raise ex
             print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
             vrExpReg.clearOneData(certainty=True)
             errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
@@ -751,17 +753,17 @@ class session_database(base_database):
             del vrExpReg
         return out
 
-    def registerSingleSession(self, mouseName, sessionDate, sessionID, **userOpts):
+    def registerSingleSession(self, mouseName, sessionDate, sessionID, raise_exception=False, **userOpts):
         # get opts for registering session
         opts = self.defaultRegistrationOpts(**userOpts)
         record = self.getRecord(mouseName, sessionDate, sessionID)
         if record is None:
             print(f"Session {session.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
             return
-        out = self.registerRecord(record, **opts)
+        out = self.registerRecord(record, raise_exception=raise_exception, **opts)
         return out[0]
 
-    def registerSessions(self, maxData=30e9, skipErrors=True, **userOpts):
+    def registerSessions(self, maxData=30e9, skipErrors=True, raise_exception=False, **userOpts):
         # get opts for registering session
         opts = self.defaultRegistrationOpts(**userOpts)
 
@@ -774,11 +776,11 @@ class session_database(base_database):
                 print(f"\nMax data limit reached. Total processed: {readableBytes(totalOneData)}. Limit: {readableBytes(maxData)}")
                 return
             print("")
-            out = self.registerRecord(row, **opts)
+            out = self.registerRecord(row, raise_exception=raise_exception, **opts)
             if out[0]:
                 countSessions += 1  # count successful sessions
                 totalOneData += out[1]  # accumulated oneData registered
-                estimateRemaining = len(dfToRegister) - idx
+                estimateRemaining = len(dfToRegister) - idx - 1
                 print(
                     f"Accumulated oneData registered: {readableBytes(totalOneData)}. "
                     f"Averaging: {readableBytes(totalOneData/countSessions)} / session. "
