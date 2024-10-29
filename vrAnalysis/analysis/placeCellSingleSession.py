@@ -409,7 +409,7 @@ class placeCellSingleSession(standardAnalysis):
         # get behavioral data
         self.load_behavioral_data()
         # get index to ROIs
-        self.get_plane_idx()
+        # TODO: confirm that this can be removed from fast_data()!: self.get_plane_idx()
 
     def clear_data(self):
         """method for clearing data to free up memory and/or resetting variables"""
