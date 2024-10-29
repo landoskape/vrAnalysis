@@ -9,7 +9,6 @@ from . import helpers
 from . import fileManagement as fm
 
 # Variables that might need to be changed for different users
-# if anyone other than me uses this, let me know and I can make it smarter by using a user dictionary or storing a file somewhere else...
 dataPath = fm.localDataPath()
 
 
@@ -143,6 +142,10 @@ class vrExperiment(vrSession):
         self.createObject(*inputs)
         self._prepare_for_recipes()
 
+    @classmethod
+    def type_check(cls, obj):
+        return any(base.__name__ == "vrExperiment" for base in type(obj).__mro__)
+
     # ------------------------------------------------------- basic meta functions for vrExperiment -----------------------------------------------------------
     def createObject(self, *inputs):
         """This is used to create a vrExperiment object from an existing object
@@ -152,7 +155,12 @@ class vrExperiment(vrSession):
         - redCellProcessing: absolutely necessary because it is literally run during registration
         """
         if len(inputs) == 1:
-            assert isinstance(inputs[0], vrExperiment), f"input is a {type(inputs[0])} but it should be a vrExperiment object (or a child thereof)"
+            if not self.type_check(inputs[0]):
+                # Where you do the type checking
+                all_parent_classes = [cls.__name__ for cls in inputs[0].__class__.mro()]
+                raise TypeError(
+                    f"input is a {type(inputs[0])} with inheritance: {all_parent_classes}, but it should be a vrExperiment object (or a child thereof)"
+                )
             self.mouseName = inputs[0].mouseName
             self.dateString = inputs[0].dateString
             self.sessionid = inputs[0].sessionid
@@ -214,7 +222,7 @@ class vrExperiment(vrSession):
                     f"{name} is an attribute of self (vrExperiment object) and a key in self.value. Using self.{name} instead of self.value['{name}']"
                 )
                 warn(msg)
-            return super().__getattr__(self, name)
+            return vrSession.__getattr__(self, name)
         if name in self.value:
             return self.value[name]
 
@@ -231,7 +239,9 @@ class vrExperiment(vrSession):
         """
         file_name = self.oneFilename(*names)
         path = self.onePath() / file_name
-        if isinstance(data, LoadingRecipe):
+        if isinstance(data, LoadingRecipe) or (
+            hasattr(data, "to_dict") and (hasattr(data, "RECIPE_MARKER") and data.RECIPE_MARKER == LoadingRecipe.RECIPE_MARKER)
+        ):
             # Save recipe as a numpy array containing a dictionary
             recipe_dict = data.to_dict()
             np.save(path, np.array(recipe_dict, dtype=object))
@@ -606,6 +616,7 @@ class redCellProcessing(vrExperiment):
     def __init__(self, *inputs, umPerPixel=1.3, autoload=True):
         # Create object
         self.createObject(*inputs)
+        self._prepare_for_recipes()
 
         # Make sure redcell is available...
         assert (
