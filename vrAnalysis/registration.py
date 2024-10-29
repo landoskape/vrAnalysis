@@ -22,15 +22,56 @@ class defaultRigInfo:
 
 
 # ---------------------------------------------------------------------------------------------------
+# -------------------------------------- oasis processing methods -----------------------------------
+# ---------------------------------------------------------------------------------------------------
+class OasisProcessor:
+    def __init__(self):
+        self.deconvolve = None
+        self.num_processes = cpu_count() - 1
+        self.g = None  # required parameter for oasis deconvolution
+
+    # define function for performing oasis on each trace (using parallel pool)
+    def process_fc(self, fc):
+        # do oasis and cast as single to match with suite2p data
+        c_oasis = self.deconvolve(fc, g=(self.g,), penalty=1)[1].astype(np.single)
+        # oasis sometimes produces random highly negative values... just set them to 0
+        c_oasis = np.maximum(c_oasis, 0)
+        # return deconvolved trace
+        return c_oasis
+
+    def process_batch(self, fcorr, g):
+        self._import_oasis()
+        self.g = g
+        with Pool(self.num_processes) as pool:
+            results = tqdm(pool.imap(self.process_fc, fcorr), total=len(fcorr))
+            return list(results)
+
+    def _import_oasis(self):
+        """Only get oasis deconvolve method if required."""
+        if self.deconvolve is None:
+            try:
+                from oasis.functions import deconvolve
+            except ImportError as error:
+                print("Failed to import deconvolve from oasis")
+                raise error
+            self.deconvolve = deconvolve
+
+
+# Initialize oasis processor for use in vrRegistration
+oasis = OasisProcessor()
+
+
+# ---------------------------------------------------------------------------------------------------
 # ------------------------------------- behavior processing methods ---------------------------------
 # ---------------------------------------------------------------------------------------------------
 def standard_behavior(self):
     expInfo = self.vrFile["expInfo"]
     trialInfo = self.vrFile["trialInfo"]
-    self.registerValue("numTrials", np.sum(trialInfo.trialIdx > 0))
-    print(
-        "Self.value['numTrials'] set by trialInfo.trialIdx>0, but this might not be right. There might be smarter ways to determine which trials are 'good' trials..."
-    )
+    num_values_per_trial = trialInfo.time.tocsr().getnnz(axis=1)
+    valid_trials = np.where(num_values_per_trial > 0)[0]
+    numTrials = len(valid_trials)
+    assert np.array_equal(valid_trials, np.arange(numTrials)), "valid_trials is not a range from 0 to numTrials"
+    self.registerValue("numTrials", numTrials)
 
     # trialInfo contains sparse matrices of size (maxTrials, maxSamples), where numTrials<maxTrials and numSamples<maxSamples
     nzindex = self.createIndex(self.convertDense(trialInfo.time))
@@ -339,6 +380,8 @@ class vrRegistration(vrExperiment):
         else:
             raise TypeError("input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session")
 
+        self._prepare_for_recipes()
+
     def doPreprocessing(self):
         if self.opts["clearOne"]:
             self.clearOneData(certainty=True)
@@ -561,29 +604,10 @@ class vrRegistration(vrExperiment):
         # recompute deconvolution if requested
         spks = self.loadS2P("spks")
         if self.opts["oasis"]:
-            try:
-                from oasis.functions import deconvolve
-            except ImportError as error:
-                print("Failed to import deconvolve from oasis -- this probably means you only installed the core requirements")
-                raise error
-
-            # define function for performing oasis on each trace (using parallel pool)
-            def process_fc(fc):
-                # do oasis and cast as single to match with suite2p data
-                c_oasis = deconvolve(fc, g=(g,), penalty=1)[1].astype(np.single)
-                # oasis sometimes produces random highly negative values... just set them to 0
-                c_oasis = np.maximum(c_oasis, 0)
-                # return deconvolved trace
-                return c_oasis
-
             # set parameters for oasis and get corrected fluorescence traces
             g = np.exp(-1 / self.opts["tau"] / self.opts["fs"])
             fcorr = self.loadfcorr(loadFromOne=False)
-
-            # deconvolve all traces
-            num_processes = cpu_count() - 1  # Number of available CPU cores
-            with Pool(num_processes) as pool:
-                results = list(tqdm(pool.imap(process_fc, fcorr), total=len(fcorr)))
+            results = oasis.process_batch(fcorr, g)
             ospks = np.stack(results)
 
             # Check that the shape is correct
@@ -598,7 +622,7 @@ class vrRegistration(vrExperiment):
         if "redcell" in self.value["available"]:
             self.saveone(LoadingRecipe("S2P", "redcell", transforms=["idx_column1"]), "mpciROIs.redS2P")
         self.saveone(LoadingRecipe("S2P", "iscell"), "mpciROIs.isCell")
-        self.saveone(LoadingRecipe("stackPosition", None), "mpciROIs.stackPosition")
+        self.saveone(self.getRoiStackPosition(), "mpciROIs.stackPosition")
         if self.opts["oasis"]:
             self.saveone(ospks.T, "mpci.roiActivityDeconvolvedOasis")
         self.preprocessing.append("imaging")
