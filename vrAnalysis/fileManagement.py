@@ -10,6 +10,10 @@ def localDataPath():
     return Path("C:/Users/andrew/Documents/localData")
 
 
+def literatureDataPath():
+    return Path("C:/Users/andrew/Documents/literatureData")
+
+
 def storagePath():
     return Path("D:/localData")
 

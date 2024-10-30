@@ -8,6 +8,7 @@ modules = [
     "database",
     "tracking",
     "analysis",
+    "external",
 ]
 
 # for pkg in modules:
