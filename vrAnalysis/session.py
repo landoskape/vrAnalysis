@@ -83,7 +83,7 @@ class vrSession:
         return dataPath
 
     def sessionPath(self):
-        return self.dataPath() / self.mouseName / self.dateString / self.sessionid
+        return dataPath / self.mouseName / self.dateString / self.sessionid
 
     def onePath(self):
         return self.sessionPath() / "oneData"
