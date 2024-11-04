@@ -208,7 +208,7 @@ class PairPairDatahandler:
         # report which environment and sessions are being used
         print("env:", self.envnum, "idx_ses:", self.idx_ses)
 
-        _, corr, tracked, pwdist, _, pwind, self.prms = self.roistat.make_roicat_comparison(
+        _, corr, tracked, pwdist, _, _, pwind, self.prms = self.roistat.make_roicat_comparison(
             self.envnum, idx_ses=self.idx_ses, **self.roicat_comparison_parameters
         )
         centroids = self.roistat.track.get_centroids(

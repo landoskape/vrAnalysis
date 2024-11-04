@@ -160,7 +160,7 @@ def plot_loop_each_mouse(args):
         print("env:", envnum, "idx_ses:", idx_ses)
 
         # get data for all roicat plots
-        sim, corr, tracked, pwdist, nnpair, pwind, prms = roistat.make_roicat_comparison(envnum, idx_ses=idx_ses, **kwargs)
+        sim, corr, tracked, pwdist, nnpair, nnscpair, pwind, prms = roistat.make_roicat_comparison(envnum, idx_ses=idx_ses, **kwargs)
 
         # simple plot of place field correlation mean for each session pair grouped by tracked, not-tracked, and nearest-neighbor comparison
         # required to return means across sessions for an across mouse plot
@@ -168,6 +168,7 @@ def plot_loop_each_mouse(args):
             corr,
             tracked,
             nnpair,
+            nnscpair,
             pwdist,
             prms,
             dist_limit=args.dist_limit,
@@ -215,8 +216,8 @@ def mouse_summary_plot(mouse_data, args):
     make plots and do statistics on each mouse in the dataset
     """
     used_args = mouse_data["args"]
-    group_names = ["tracked", f"nearest neighbors", "random pairs"]
-    group_colors = ["b", "r", "k"]
+    group_names = ["tracked", "nearest neighbors", "2nd closest", "random pairs"]
+    group_colors = ["b", "r", "orange", "k"]
 
     num_groups = len(group_colors)
     num_mice = len(mouse_data["means"])

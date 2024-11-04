@@ -173,7 +173,7 @@ def prepare_pair_example_data(mouse_name):
         cutoffs=(0.6, 0.85),
         both_reliable=False,
     )
-    _, corr, tracked, pwdist, _, pwind, prms = roistat.make_roicat_comparison(envnum, idx_ses=idx_ses, **kwargs)
+    _, corr, tracked, pwdist, _, _, pwind, prms = roistat.make_roicat_comparison(envnum, idx_ses=idx_ses, **kwargs)
     centroids = roistat.track.get_centroids(idx_ses=prms["idx_ses"], cat_planes=True, combine=True, keep_planes=roistat.keep_planes)
 
     # set parameters for possible pairs

@@ -1,3 +1,4 @@
+from copy import copy
 import numpy as np
 from scipy.stats import gaussian_kde
 from scipy.spatial.distance import cdist
@@ -100,7 +101,7 @@ class RoicatStats(placeCellMultiSession):
         yxcentroids = self.track.get_centroids(combine=True, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # for each source/target pair in idx_ses, do:
-        sim, corr, tracked, pwdist, nnpair, pwind = [], [], [], [], [], []
+        sim, corr, tracked, pwdist, nnpair, nnscpair, pwind = [], [], [], [], [], [], []
 
         for source, target in idx_ses_pairs:
             isource, itarget = (
@@ -147,8 +148,15 @@ class RoicatStats(placeCellMultiSession):
             ]
 
             # get index of nearest neighbor by pair-wise distance post alignment
-            nn_dist = [np.nanmin(pwd, axis=1) for pwd in pwdists]
-            nn_pairs = [pwd == nn.reshape(-1, 1) for pwd, nn in zip(pwdists, nn_dist)]
+            nn_dist = [np.nanmin(pwd, axis=1, keepdims=True) for pwd in pwdists]
+            nn_pairs = [pwd == nn for pwd, nn in zip(pwdists, nn_dist)]
+
+            pwdists_second_closest = [copy(pwd) for pwd in pwdists]
+            for idx, nn in enumerate(nn_pairs):
+                pwdists_second_closest[idx][nn] = np.inf
+
+            nnsc_dist = [np.nanmin(pwd, axis=1, keepdims=True) for pwd in pwdists_second_closest]
+            nnsc_pairs = [pwd == nnsc for pwd, nnsc in zip(pwdists_second_closest, nnsc_dist)]
 
             # measure pairwise distance between pairs
             # filter by reliability
@@ -157,6 +165,7 @@ class RoicatStats(placeCellMultiSession):
             tracked_pair = [pair[idx_source] for pair, idx_source in zip(tracked_pair, idx_reliable[isource])]
             pwdists = [pwd[idx_source] for pwd, idx_source in zip(pwdists, idx_reliable[isource])]
             nn_pairs = [nnp[idx_source] for nnp, idx_source in zip(nn_pairs, idx_reliable[isource])]
+            nnsc_pairs = [nnscp[idx_source] for nnscp, idx_source in zip(nnsc_pairs, idx_reliable[isource])]
             pwindices = [pwidx[:, idx_source] for pwidx, idx_source in zip(pwindices, idx_reliable[isource])]
             if both_reliable:
                 sim_paired = [sim[:, idx_target] for sim, idx_target in zip(sim_paired, idx_reliable[itarget])]
@@ -164,6 +173,7 @@ class RoicatStats(placeCellMultiSession):
                 tracked_pair = [pair[:, idx_target] for pair, idx_target in zip(tracked_pair, idx_reliable[itarget])]
                 pwdists = [pwd[:, idx_target] for pwd, idx_target in zip(pwdists, idx_reliable[itarget])]
                 nn_pairs = [nnp[:, idx_target] for nnp, idx_target in zip(nn_pairs, idx_reliable[itarget])]
+                nnsc_pairs = [nnscp[:, idx_target] for nnscp, idx_target in zip(nnsc_pairs, idx_reliable[itarget])]
                 pwindices = [pwidx[:, :, idx_target] for pwidx, idx_target in zip(pwindices, idx_reliable[itarget])]
 
             # stack and flatten across planes
@@ -172,6 +182,7 @@ class RoicatStats(placeCellMultiSession):
             tracked.append(np.concatenate([p.flatten() for p in tracked_pair]))
             pwdist.append(np.concatenate([d.flatten() for d in pwdists]))
             nnpair.append(np.concatenate([n.flatten() for n in nn_pairs]))
+            nnscpair.append(np.concatenate([n.flatten() for n in nnsc_pairs]))
             pwind.append(np.concatenate([p.reshape(2, -1) for p in pwindices], axis=1))
 
         # result parameters
@@ -184,7 +195,7 @@ class RoicatStats(placeCellMultiSession):
             both_reliable=both_reliable,
         )
 
-        return sim, corr, tracked, pwdist, nnpair, pwind, prms
+        return sim, corr, tracked, pwdist, nnpair, nnscpair, pwind, prms
 
     def split_by_roicat_similarity(self, data, sim):
         """
@@ -354,7 +365,7 @@ class RoicatStats(placeCellMultiSession):
         # Show figure if requested
         plt.show() if with_show else plt.close()
 
-    def plot_pfcorr_by_samediff(self, corr, tracked, nnpair, prms, with_show=True, with_save=False):
+    def plot_pfcorr_by_samediff(self, corr, tracked, nnpair, nnscpair, prms, with_show=True, with_save=False):
         """
         helper for plotting pfcorr values for same and different populations
 
@@ -362,17 +373,19 @@ class RoicatStats(placeCellMultiSession):
         for pairs of ROIs based on whether their roicat similarity value is in the "same" group or
         the "diff" group.
 
-        inputs are corr, tracked, nnpair, and prms which come from make_roicat_comparison()
+        inputs are corr, tracked, nnpair, nnscpair, and prms which come from make_roicat_comparison()
         """
         corr_same, corr_diff = self.split_by_roicat_assignment(corr, tracked)
         corr_same_nn, _ = self.split_by_roicat_assignment(corr, nnpair)
+        corr_same_nnsc, _ = self.split_by_roicat_assignment(corr, nnscpair)
 
         dataframes = []
-        for name, csame, cdiff, csamenn in zip(self.session_pair_names(prms), corr_same, corr_diff, corr_same_nn):
+        for name, csame, cdiff, csamenn, csamennsc in zip(self.session_pair_names(prms), corr_same, corr_diff, corr_same_nn, corr_same_nnsc):
             same_df = pd.DataFrame({"PF Correlation": csame, "Session Pair": name, "ROICaT Assignment": "Same"})
             diff_df = pd.DataFrame({"PF Correlation": cdiff, "Session Pair": name, "ROICaT Assignment": "Diff"})
             nn_df = pd.DataFrame({"PF Correlation": csamenn, "Session Pair": name, "ROICaT Assignment": "NN"})
-            dataframes.extend([same_df, diff_df, nn_df])
+            nnsc_df = pd.DataFrame({"PF Correlation": csamennsc, "Session Pair": name, "ROICaT Assignment": "NN-2nd"})
+            dataframes.extend([same_df, diff_df, nn_df, nnsc_df])
 
         data = pd.concat(dataframes, ignore_index=True)
 
@@ -395,6 +408,7 @@ class RoicatStats(placeCellMultiSession):
         corr,
         tracked,
         nnpair,
+        nnscpair,
         pwdist,
         prms,
         dist_limit=10,
@@ -414,52 +428,61 @@ class RoicatStats(placeCellMultiSession):
 
         inputs come from make_roicat_comparison() and are named identically to the outputs of that function
         """
+        if not any([with_show, with_save, return_data]):
+            return None, None
+
         corr_same, corr_diff = self.split_by_roicat_assignment(corr, tracked)
         corr_same_nn, _ = self.split_by_roicat_assignment(corr, nnpair)
         pwdist_same_nn, _ = self.split_by_roicat_assignment(pwdist, nnpair)
+        corr_same_nnsc, _ = self.split_by_roicat_assignment(corr, nnscpair)
+        pwdist_same_nnsc, _ = self.split_by_roicat_assignment(pwdist, nnscpair)
 
         # filter nn by whether they are "close" (e.g. less than a threshold distance apart)
         corr_same_nn = [csn[psn < dist_limit] for csn, psn in zip(corr_same_nn, pwdist_same_nn)]
+        corr_same_nnsc = [csn[psn < dist_limit] for csn, psn in zip(corr_same_nnsc, pwdist_same_nnsc)]
 
         # we need three means per session pair (corrsame, corrsame_nearestNeighbor, and corrdiff)
         same_mean = [np.nanmean(cs) for cs in corr_same]
         samenn_mean = [np.nanmean(csn) for csn in corr_same_nn]
+        samennsc_mean = [np.nanmean(csn) for csn in corr_same_nnsc]
         diff_mean = [np.nanmean(cd) for cd in corr_diff]
 
         # also get standard error
         same_se = [np.nanstd(cs) / np.sqrt(np.sum(~np.isnan(cs))) for cs in corr_same]
         samenn_se = [np.nanstd(csn) / np.sqrt(np.sum(~np.isnan(csn))) for csn in corr_same_nn]
+        samennsc_se = [np.nanstd(csn) / np.sqrt(np.sum(~np.isnan(csn))) for csn in corr_same_nnsc]
         diff_se = [np.nanstd(cd) / np.sqrt(np.sum(~np.isnan(cd))) for cd in corr_diff]
 
         # stack means/standard errors for easy data handling
-        means = np.stack([np.array(d) for d in (same_mean, samenn_mean, diff_mean)])
-        serrors = np.stack([np.array(d) for d in (same_se, samenn_se, diff_se)])
+        means = np.stack([np.array(d) for d in (same_mean, samenn_mean, samennsc_mean, diff_mean)])
+        serrors = np.stack([np.array(d) for d in (same_se, samenn_se, samennsc_se, diff_se)])
 
         # define some label names and colors, etc
-        type_names = ["tracked", f"nearest-neighbors (<{dist_limit}pix^2)", "random-pairs"]
-        type_colors = ["b", "r", "k"]
+        type_names = ["tracked", f"nearest-neighbors (<{dist_limit}pix^2)", "second-closest", "random-pairs"]
+        type_colors = ["b", "r", "orange", "k"]
         session_pair_names = self.session_pair_names(prms)
         num_session_pairs = len(session_pair_names)
 
-        # make the plots
-        plt.close("all")
-        fig, ax = plt.subplots()
-        for tname, tcolor, tdata, sdata in zip(type_names, type_colors, means, serrors):
-            ax.plot(range(num_session_pairs), tdata, color=tcolor, linewidth=1, marker="o", label=tname)
-            ax.fill_between(range(num_session_pairs), tdata + sdata, tdata - sdata, color=(tcolor, 0.3))
+        if with_show or with_save:
+            # make the plots
+            plt.close("all")
+            fig, ax = plt.subplots()
+            for tname, tcolor, tdata, sdata in zip(type_names, type_colors, means, serrors):
+                ax.plot(range(num_session_pairs), tdata, color=tcolor, linewidth=1, marker="o", label=tname)
+                ax.fill_between(range(num_session_pairs), tdata + sdata, tdata - sdata, color=(tcolor, 0.3))
 
-        ax.set_xlabel("Session Pair")
-        ax.set_xticks(range(num_session_pairs), labels=session_pair_names)
-        ax.set_ylabel("PF Correlation (+/- se)")
-        ax.legend(loc="best")
+            ax.set_xlabel("Session Pair")
+            ax.set_xticks(range(num_session_pairs), labels=session_pair_names)
+            ax.set_ylabel("PF Correlation (+/- se)")
+            ax.legend(loc="best")
 
-        if with_save:
-            sesidx = "_".join([str(i) for i in prms["idx_ses"]])
-            save_name = f"pfcorrmean_by_samediff_envnum{prms['envnum']}_idxses{sesidx}"
-            self.saveFigure(fig.number, self.track.mouse_name, save_name)
+            if with_save:
+                sesidx = "_".join([str(i) for i in prms["idx_ses"]])
+                save_name = f"pfcorrmean_by_samediff_envnum{prms['envnum']}_idxses{sesidx}"
+                self.saveFigure(fig.number, self.track.mouse_name, save_name)
 
-        # Show figure if requested
-        plt.show() if with_show else plt.close()
+            # Show figure if requested
+            plt.show() if with_show else plt.close()
 
         # return data if requested
         if return_data:
