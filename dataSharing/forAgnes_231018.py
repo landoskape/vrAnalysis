@@ -1,8 +1,4 @@
-import time
-import random
-from copy import copy
 from tqdm import tqdm
-from pathlib import Path
 import numpy as np
 
 import os
@@ -11,9 +7,6 @@ import sys
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
-from vrAnalysis import session
-from vrAnalysis import functions
-from vrAnalysis import analysis
 from vrAnalysis import helpers
 from vrAnalysis import fileManagement as fm
 from vrAnalysis import database
