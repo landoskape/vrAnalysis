@@ -292,6 +292,7 @@ class placeCellMultiSession(multipleAnalysis):
         average=True,
         smooth=None,
         tracked=True,
+        pop_nan=True,
         pf_method="max",
         by_plane=False,
         idx_ses=None,
@@ -304,6 +305,8 @@ class placeCellMultiSession(multipleAnalysis):
 
         if tracked=True, will filter spkmaps by whether ROIs were tracked and sort
         each sessions spkmap to be aligned by track index across sessions
+
+        if pop_nan=True, will remove any positions with nan values in the spkmap
 
         if trials='train', 'test', or 'full', then will use the requested trials
         if average=True, will average across the requested trials, otherwise will
@@ -323,7 +326,7 @@ class placeCellMultiSession(multipleAnalysis):
             idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # get spkmaps (#ROI, #Trials, #SpatialBins)
-        spkmaps = [self.pcss[i].get_spkmap(envnum, average=False, smooth=smooth, trials=trials)[0] for i in idx_ses]
+        spkmaps = [self.pcss[i].get_spkmap(envnum, average=False, pop_nan=False, smooth=smooth, trials=trials)[0] for i in idx_ses]
 
         # make ROI index
         roi_idx = [np.arange(s.shape[0]) for s in spkmaps]
@@ -349,7 +352,7 @@ class placeCellMultiSession(multipleAnalysis):
             relmse = [mse[idx_track] for mse, idx_track in zip(relmse, idx_tracked)]
             relcor = [cor[idx_track] for cor, idx_track in zip(relcor, idx_tracked)]
             pfloc = [pfl[idx_track] for pfl, idx_track in zip(pfloc, idx_tracked)]
-            pfidx = [pfi[idx_track] for pfi, idx_track in zip(pfidx, idx_tracked)]
+            pfidx = [np.argsort(pfl) for pfl in pfloc]
             roi_idx = [ridx[idx_track] for ridx, idx_track in zip(roi_idx, idx_tracked)]
 
         # if trial average requested, average over trials
@@ -365,6 +368,12 @@ class placeCellMultiSession(multipleAnalysis):
             pfloc = self.track.split_by_plane(pfloc, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             pfidx = self.track.split_by_plane(pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             roi_idx = self.track.split_by_plane(roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+
+        # remove positions with nans in any spkmap if requested
+        if pop_nan:
+            marginal_axis = 0 if average else (0, 1)
+            nan_positions = np.any(np.stack([np.any(np.isnan(sm), axis=marginal_axis) for sm in spkmaps]), axis=0)
+            spkmaps = [sm[..., ~nan_positions] for sm in spkmaps]
 
         # return data
         return spkmaps, relmse, relcor, pfloc, pfidx, idx_red, roi_idx

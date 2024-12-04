@@ -569,7 +569,9 @@ class placeCellSingleSession(standardAnalysis):
         return spks
 
     @prepare_data
-    def get_spkmap(self, envnum=None, average=True, smooth=None, trials="full", new_split=False, split_params={}, rawspkmap=None, occmap=None):
+    def get_spkmap(
+        self, envnum=None, average=True, smooth=None, trials="full", pop_nan=True, new_split=False, split_params={}, rawspkmap=None, occmap=None
+    ):
         """
         method for getting a spkmap from a list of environments
 
@@ -588,6 +590,9 @@ class placeCellSingleSession(standardAnalysis):
 
         transposes output to have shape (num_ROIs, num_trials, num_spatial_bins)
         or (num_ROIs, num_spatial_bins) if average=True
+
+        if pop_nan is set to True, will figure out which positions have nans in any spkmap
+        and will remove those positions from all spkmaps
 
         if rawspkmap isn't provided, will use the "rawspkmap" attribute of self
         if it is provided, will use that instead
@@ -643,6 +648,12 @@ class placeCellSingleSession(standardAnalysis):
 
         # get spkmaps for each environment
         env_spkmap = [self._make_spkmap(maps=(eom, esm), average=average, smooth=smooth) for eom, esm in zip(env_occmap, env_spkmap)]
+
+        # remove positions with nans in any spkmap if requested
+        if pop_nan:
+            marginal_axis = 0 if average else (0, 1)
+            nan_positions = np.any(np.stack([np.any(np.isnan(esm), axis=marginal_axis) for esm in env_spkmap]), axis=0)
+            env_spkmap = [esm[..., ~nan_positions] for esm in env_spkmap]
 
         # return spkmap
         return env_spkmap
