@@ -1,28 +1,20 @@
 # Standard modules
 from copy import copy
-import time
 import functools
 import numpy as np
-import scipy as sp
-from scipy import ndimage as ndi
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 # GUI-related modules
 import napari
+from napari.utils.colormaps import label_colormap, direct_colormap
 import pyqtgraph as pg
-from PyQt5 import QtGui, QtCore, QtWidgets
+from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import (
     QGraphicsProxyWidget,
-    QSlider,
     QPushButton,
-    QVBoxLayout,
-    QLabel,
-    QLineEdit,
-    QShortcut,
 )
-from PyQt5.QtGui import QKeySequence
 
 # Special vrAnalysis modules
 from .. import session
@@ -562,26 +554,20 @@ class redSelectionGUI:
             self.histReds[feature].setOpts(height=self.hvalred[self.planeIdx][feature])
 
     def updateLabelColors(self):
+        """Update the colors of the labels in the napari viewer."""
         if self.colorState == 0:
-            # then use random colors -- what I encoded here is the default
-            colormap = dict(
-                zip(
-                    [0, None],
-                    [
-                        np.array([0.0, 0.0, 0.0, 0.0], dtype=np.single),
-                        np.array([0.0, 0.0, 0.0, 1.0], dtype=np.single),
-                    ],
-                )
-            )
+            # this is inherited from the default random colormap in napari
+            colormap = label_colormap(49, 0.5, background_value=0)
         else:
-            # good colormaps:
+            # assign colors based on the feature values for every ROI
             norm = mpl.colors.Normalize(
                 vmin=self.featureRange[self.colorState - 1][0],
                 vmax=self.featureRange[self.colorState - 1][1],
             )
             colors = plt.colormaps[self.listColormaps[self.idxColormap]](norm(np.concatenate([feat[self.colorState - 1] for feat in self.features])))
-            colormap = dict(zip(np.concatenate(self.idxRoi) + 1, colors))
-            colormap[0] = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.single)  # add transparent background
+            color_dict = dict(zip(np.concatenate(self.idxRoi) + 1, colors))
+            color_dict[None] = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.single)  # transparent background (or default)
+            colormap = direct_colormap(color_dict)
         # Update colors of the labels
         self.labels.color = colormap
 
