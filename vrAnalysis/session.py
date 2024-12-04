@@ -732,64 +732,64 @@ class redCellProcessing(vrExperiment):
     # ------------------------------
     # -- classification functions --
     # ------------------------------
-    def computeFeatures(
-        self,
-        planeIdx=None,
-        width=40,
-        eps=1e6,
-        winFunc=lambda x: np.hamming(x.shape[-1]),
-        lowcut=12,
-        highcut=250,
-        order=3,
-        fs=512,
-    ):
-        """
-        This function computes all features related to red cell detection in (hopefully) an optimized manner, such that loading the redSelectionGUI is fast and efficient.
-        There's some shortcuts that must be done, including:
-        - pre-filtering reference images before computing phase-correlation
-        """
-        if planeIdx is None:
-            planeIdx = np.arange(self.numPlanes)
-        if isinstance(planeIdx, (int, np.integer)):
-            planeIdx = (planeIdx,)  # make planeIdx iterable
-        if not (self.data_loaded):
-            self.loadReferenceAndMasks()
+    # def computeFeatures(
+    #     self,
+    #     planeIdx=None,
+    #     width=40,
+    #     eps=1e6,
+    #     winFunc=lambda x: np.hamming(x.shape[-1]),
+    #     lowcut=12,
+    #     highcut=250,
+    #     order=3,
+    #     fs=512,
+    # ):
+    #     """
+    #     This function computes all features related to red cell detection in (hopefully) an optimized manner, such that loading the redSelectionGUI is fast and efficient.
+    #     There's some shortcuts that must be done, including:
+    #     - pre-filtering reference images before computing phase-correlation
+    #     """
+    #     if planeIdx is None:
+    #         planeIdx = np.arange(self.numPlanes)
+    #     if isinstance(planeIdx, (int, np.integer)):
+    #         planeIdx = (planeIdx,)  # make planeIdx iterable
+    #     if not (self.data_loaded):
+    #         self.loadReferenceAndMasks()
 
-        # start with filtered reference stack (by inspection, the phase correlation is minimally dependent on pre-filtering, and we like these filtering parameters anyway!!!)
-        print("Creating centered reference images...")
-        refStackNans = self.centeredReferenceStack(
-            planeIdx=planeIdx, width=width, fill=np.nan, filtPrms=(lowcut, highcut, order, fs)
-        )  # stack of ref images centered on each ROI
-        refStack = np.copy(refStackNans)
-        refStack[np.isnan(refStack)] = 0
-        maskStack = self.centeredMaskStack(planeIdx=planeIdx, width=width)  # stack of mask value centered on each ROI
+    #     # start with filtered reference stack (by inspection, the phase correlation is minimally dependent on pre-filtering, and we like these filtering parameters anyway!!!)
+    #     print("Creating centered reference images...")
+    #     refStackNans = self.centeredReferenceStack(
+    #         planeIdx=planeIdx, width=width, fill=np.nan, filtPrms=(lowcut, highcut, order, fs)
+    #     )  # stack of ref images centered on each ROI
+    #     refStack = np.copy(refStackNans)
+    #     refStack[np.isnan(refStack)] = 0
+    #     maskStack = self.centeredMaskStack(planeIdx=planeIdx, width=width)  # stack of mask value centered on each ROI
 
-        print("Computing phase correlation for each ROI...")
-        window = winFunc(refStack)
-        pxcStack = np.stack(
-            [helpers.phaseCorrelation(ref, mask, eps=eps, window=window) for (ref, mask) in zip(refStack, maskStack)]
-        )  # measure phase correlation
-        pxcCenterPixel = int((pxcStack.shape[2] - 1) / 2)
-        pxcValues = pxcStack[:, pxcCenterPixel, pxcCenterPixel]
+    #     print("Computing phase correlation for each ROI...")
+    #     window = winFunc(refStack)
+    #     pxcStack = np.stack(
+    #         [helpers.phaseCorrelation(ref, mask, eps=eps, window=window) for (ref, mask) in zip(refStack, maskStack)]
+    #     )  # measure phase correlation
+    #     pxcCenterPixel = int((pxcStack.shape[2] - 1) / 2)
+    #     pxcValues = pxcStack[:, pxcCenterPixel, pxcCenterPixel]
 
-        # next, compute the dot product between the filtered reference and masks
-        refNorm = np.linalg.norm(refStack, axis=(1, 2))  # compute the norm of each centered reference image
-        maskNorm = np.linalg.norm(maskStack, axis=(1, 2))
-        dotProd = np.sum(refStack * maskStack, axis=(1, 2)) / refNorm / maskNorm  # compute the dot product for each ROI
+    #     # next, compute the dot product between the filtered reference and masks
+    #     refNorm = np.linalg.norm(refStack, axis=(1, 2))  # compute the norm of each centered reference image
+    #     maskNorm = np.linalg.norm(maskStack, axis=(1, 2))
+    #     dotProd = np.sum(refStack * maskStack, axis=(1, 2)) / refNorm / maskNorm  # compute the dot product for each ROI
 
-        # next, compute the correlation coefficients
-        refStackNans = np.reshape(refStackNans, (refStackNans.shape[0], -1))
-        maskStack = np.reshape(maskStack, (maskStack.shape[0], -1))
-        maskStack[np.isnan(refStackNans)] = np.nan  # remove the border areas from the masks stack (they are nan in the refStackNans array)
-        uRef = np.nanmean(refStackNans, axis=1, keepdims=True)
-        uMask = np.nanmean(maskStack, axis=1, keepdims=True)
-        sRef = np.nanstd(refStackNans, axis=1)
-        sMask = np.nanstd(maskStack, axis=1)
-        N = np.sum(~np.isnan(refStackNans), axis=1)
-        corrCoef = np.nansum((refStackNans - uRef) * (maskStack - uMask), axis=1) / N / sRef / sMask
+    #     # next, compute the correlation coefficients
+    #     refStackNans = np.reshape(refStackNans, (refStackNans.shape[0], -1))
+    #     maskStack = np.reshape(maskStack, (maskStack.shape[0], -1))
+    #     maskStack[np.isnan(refStackNans)] = np.nan  # remove the border areas from the masks stack (they are nan in the refStackNans array)
+    #     uRef = np.nanmean(refStackNans, axis=1, keepdims=True)
+    #     uMask = np.nanmean(maskStack, axis=1, keepdims=True)
+    #     sRef = np.nanstd(refStackNans, axis=1)
+    #     sMask = np.nanstd(maskStack, axis=1)
+    #     N = np.sum(~np.isnan(refStackNans), axis=1)
+    #     corrCoef = np.nansum((refStackNans - uRef) * (maskStack - uMask), axis=1) / N / sRef / sMask
 
-        # And return
-        return dotProd, corrCoef, pxcValues
+    #     # And return
+    #     return dotProd, corrCoef, pxcValues
 
     def croppedPhaseCorrelation(self, planeIdx=None, width=40, eps=1e6, winFunc=lambda x: np.hamming(x.shape[-1])):
         """
