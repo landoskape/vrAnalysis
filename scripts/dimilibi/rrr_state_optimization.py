@@ -17,7 +17,6 @@ from scripts.dimilibi.helpers import load_population, make_position_basis
 from scripts.dimilibi.helpers import SPEEDTHRESHOLD
 
 
-
 from vrAnalysis import analysis
 from vrAnalysis import session
 from vrAnalysis.helpers import save_figure
@@ -295,7 +294,9 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
     if add_place_field_score:
         for mouse_name, sessions in all_sessions.items():
             for datestr, sessionid in sessions:
-                pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False)
+                pcss = analysis.placeCellSingleSession(
+                    session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False
+                )
                 rrr_filename = rrr_state_tempfile_name(pcss.vrexp, population_name=population_name)
                 if not pcss.check_temp_file(rrr_filename):
                     print(f"Skipping rrr_results from {mouse_name}, {datestr}, {sessionid} -- (temp file not found)")
@@ -353,7 +354,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                         assert gain.shape[0] == y_hat.shape[1], "Gain must have the same number of samples as y_hat"
                         assert gain.ndim == 1, "Gain must be a vector"
                         return measure_r2(y_hat * gain, y_target)
-                    
+
                     # Fit gain on the source data
                     gain_source = torch.ones(y_hat_source.shape[1], dtype=torch.float32, requires_grad=True)
                     optimizer = torch.optim.Adam([gain_source], lr=1e-2, maximize=True)
@@ -371,7 +372,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                         loss = objective_gain(gain_target, y_hat, y_target)
                         loss.backward()
                         optimizer.step()
-                    
+
                     y_hat_source_gain = (y_hat * gain_source).detach()
                     y_hat_target_gain = (y_hat * gain_target).detach()
                     print("Place field prediction score:", measure_r2(y_hat, y_target))
@@ -386,11 +387,12 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                     # Save the results
                     pcss.save_temp_file(results, rrr_filename)
 
-
     if add_position_decoder_from_direct_model:
         for mouse_name, sessions in all_sessions.items():
             for datestr, sessionid in sessions:
-                pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False)
+                pcss = analysis.placeCellSingleSession(
+                    session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False
+                )
                 rrr_filename = rrr_state_tempfile_name(pcss.vrexp, population_name=population_name)
                 if not pcss.check_temp_file(rrr_filename):
                     print(f"Skipping rrr_results from {mouse_name}, {datestr}, {sessionid} -- (temp file not found)")
@@ -475,7 +477,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
     if add_simple_position_estimator:
         """
         This model is one where we predict a neurons activity from their place field, where we optimize
-        the position estimate from half the cells and test on the other half of cells. 
+        the position estimate from half the cells and test on the other half of cells.
 
         Let f_{nt} = p_n(x_t) + \epsilon_{nt} be the activity of neuron n at time t
         - where p_n(x_t) is the place field of neuron n at position x_t
@@ -486,12 +488,14 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
         L = \sum_{n,t} (f_{nt} - p_n(x_t))^2
 
-        Once x_t is determined, we can calculate the R^2 score of the prediction for an 
+        Once x_t is determined, we can calculate the R^2 score of the prediction for an
         independent set of cells. This is the score we will add to the results.
         """
         for mouse_name, sessions in all_sessions.items():
             for datestr, sessionid in sessions:
-                pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False)
+                pcss = analysis.placeCellSingleSession(
+                    session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False
+                )
                 rrr_filename = rrr_state_tempfile_name(pcss.vrexp, population_name=population_name)
                 if not pcss.check_temp_file(rrr_filename):
                     print(f"Skipping rrr_results from {mouse_name}, {datestr}, {sessionid} -- (temp file not found)")
@@ -525,11 +529,12 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                     spkmaps = pcss.get_spkmap(average=True, trials="full")
                     spkmaps_source = [torch.tensor(spkmap[npop.cell_split_indices[0]], dtype=torch.float32) for spkmap in spkmaps]
                     spkmaps_target = [torch.tensor(spkmap[npop.cell_split_indices[1]], dtype=torch.float32) for spkmap in spkmaps]
-                    
+
                     # Clear out nan positions
                     idx_nan = torch.any(
                         torch.stack([torch.any(torch.isnan(s), dim=0) for s in spkmaps_source], dim=0)
-                        | torch.stack([torch.any(torch.isnan(s), dim=0) for s in spkmaps_target], dim=0), dim=0
+                        | torch.stack([torch.any(torch.isnan(s), dim=0) for s in spkmaps_target], dim=0),
+                        dim=0,
                     )
                     idx_to_original_position = torch.where(~idx_nan)[0]
                     spkmaps_source = [s[:, ~idx_nan] for s in spkmaps_source]
@@ -557,7 +562,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                         assert gain.shape[0] == y_hat.shape[1], "Gain must have the same number of samples as y_hat"
                         assert gain.ndim == 1, "Gain must be a vector"
                         return measure_r2(y_hat * gain, y_target)
-                    
+
                     # Fit gain on the source data
                     gain_source = torch.ones(source_estimate.shape[1], dtype=torch.float32, requires_grad=True)
                     optimizer = torch.optim.Adam([gain_source], lr=1e-2, maximize=True)
@@ -599,7 +604,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
                     # Save the results
                     pcss.save_temp_file(results, rrr_filename)
-    
+
     if add_rbfpos_to_target:
         """
         To fill out the continuum of "progressively less constrained by spatial information", here we add a model that is exclusively
@@ -609,7 +614,9 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
         """
         for mouse_name, sessions in all_sessions.items():
             for datestr, sessionid in sessions:
-                pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False)
+                pcss = analysis.placeCellSingleSession(
+                    session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False
+                )
                 rrr_filename = rrr_state_tempfile_name(pcss.vrexp, population_name=population_name)
                 if not pcss.check_temp_file(rrr_filename):
                     print(f"Skipping rrr_results from {mouse_name}, {datestr}, {sessionid} -- (temp file not found)")
@@ -627,10 +634,14 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                         nonnegative = True  # trial.suggest_categorical("nonnegative_decoder", [True, False])
 
                         # Load population with behavior data
-                        npop, behavior_data = load_population(mouse_name, datestr, sessionid, keep_planes=keep_planes, population_name=population_name, get_behavior=True)
+                        npop, behavior_data = load_population(
+                            mouse_name, datestr, sessionid, keep_planes=keep_planes, population_name=population_name, get_behavior=True
+                        )
 
                         # Make the position basis with current hyperparameters
-                        position_basis = make_position_basis(behavior_data["position"], behavior_data["environment"], num_basis=num_basis, basis_width=basis_width)
+                        position_basis = make_position_basis(
+                            behavior_data["position"], behavior_data["environment"], num_basis=num_basis, basis_width=basis_width
+                        )
 
                         # split the data into training and validation sets for the target ROIs only
                         train_target = npop.get_split_data(0, center=False, scale=True, scale_type="preserve")[1]
@@ -651,7 +662,9 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
                     def test_decoder_only(mouse_name, datestr, sessionid, params, keep_planes, population_name):
                         # Load population with behavior data
-                        npop, behavior_data = load_population(mouse_name, datestr, sessionid, keep_planes=keep_planes, population_name=population_name, get_behavior=True)
+                        npop, behavior_data = load_population(
+                            mouse_name, datestr, sessionid, keep_planes=keep_planes, population_name=population_name, get_behavior=True
+                        )
 
                         # Make the position basis with optimal hyperparameters
                         position_basis = make_position_basis(
@@ -674,7 +687,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
                         # Return test score
                         return test_target_score
-                
+
                     # Optimize the model
                     study = optuna.create_study(direction="maximize")
                     study.optimize(
@@ -695,14 +708,16 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
     if add_doublecv_rbf_estimator:
         """
-        Perform a double cross-validation on the RBF position estimator to get a more accurate estimate of the performance 
+        Perform a double cross-validation on the RBF position estimator to get a more accurate estimate of the performance
         when limiting it to spatial information. Here, the encoder and decoder are trained on different time points, such that
-        any information about the neural state that is independent of position (but "yoked" to position since we don't have that 
-        many samples) is hopefully broken and the performance will be position-specific. 
+        any information about the neural state that is independent of position (but "yoked" to position since we don't have that
+        many samples) is hopefully broken and the performance will be position-specific.
         """
         for mouse_name, sessions in all_sessions.items():
             for datestr, sessionid in sessions:
-                pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False)
+                pcss = analysis.placeCellSingleSession(
+                    session.vrExperiment(mouse_name, datestr, sessionid), speedThreshold=SPEEDTHRESHOLD, keep_planes=keep_planes, autoload=False
+                )
                 rrr_filename = rrr_state_tempfile_name(pcss.vrexp, population_name=population_name)
                 if not pcss.check_temp_file(rrr_filename):
                     print(f"Skipping rrr_results from {mouse_name}, {datestr}, {sessionid} -- (temp file not found)")
@@ -712,7 +727,9 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                     results = pcss.load_temp_file(rrr_filename)
 
                 # Load population with behavior data
-                npop, behavior_data = load_population(mouse_name, datestr, sessionid, keep_planes=keep_planes, population_name=population_name, get_behavior=True)
+                npop, behavior_data = load_population(
+                    mouse_name, datestr, sessionid, keep_planes=keep_planes, population_name=population_name, get_behavior=True
+                )
 
                 def _split_by_chunks(idx):
                     start_chunk = torch.where(torch.cat((torch.tensor(True).view(1), torch.diff(idx) != 1)))[0]
@@ -721,7 +738,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                     idx_even = torch.cat(chunks[::2])
                     idx_odd = torch.cat(chunks[1::2])
                     return idx_even, idx_odd
-                
+
                 train_idx_encoder, train_idx_decoder = _split_by_chunks(npop.time_split_indices[0])
 
                 # Overwrite these indices
@@ -744,7 +761,9 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                     nonnegative_decoder = True  # trial.suggest_categorical("nonnegative_decoder", [True, False])
 
                     # Make the position basis with current hyperparameters
-                    position_basis = make_position_basis(behavior_data["position"], behavior_data["environment"], num_basis=num_basis, basis_width=basis_width)
+                    position_basis = make_position_basis(
+                        behavior_data["position"], behavior_data["environment"], num_basis=num_basis, basis_width=basis_width
+                    )
 
                     # split the data into training and validation sets
                     train_source_enc = npop.get_split_data(0, center=False, scale=True, scale_type="preserve")[0]
@@ -756,8 +775,12 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
                     train_position_dec = npop.apply_split(position_basis.T, 1)
 
                     # build an encoder on the training data
-                    encoder = ReducedRankRegression(alpha=alpha_encoder, fit_intercept=fit_intercept_encoder).fit(train_source_enc.T, train_position_enc.T)
-                    decoder = ReducedRankRegression(alpha=alpha_decoder, fit_intercept=fit_intercept_decoder).fit(train_position_dec.T, train_target_dec.T)
+                    encoder = ReducedRankRegression(alpha=alpha_encoder, fit_intercept=fit_intercept_encoder).fit(
+                        train_source_enc.T, train_position_enc.T
+                    )
+                    decoder = ReducedRankRegression(alpha=alpha_decoder, fit_intercept=fit_intercept_decoder).fit(
+                        train_position_dec.T, train_target_dec.T
+                    )
 
                     # get the encoder and decoder predictions
                     val_position_hat = encoder.predict(val_source.T, nonnegative=nonnegative_encoder)
@@ -765,7 +788,6 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
                     # return the validation score
                     return val_target_score
-
 
                 def test_rrr_state(params):
                     # Make the position basis with optimal hyperparameters
@@ -795,7 +817,7 @@ def add_rrr_state_results(all_sessions, keep_planes=[1, 2, 3, 4], population_nam
 
                     # Return test score
                     return test_target_score
-                
+
                 # Optimize the model
                 study = optuna.create_study(direction="maximize")
                 study.optimize(optimize_rrr_state, n_trials=24, n_jobs=2, show_progress_bar=True)
@@ -895,11 +917,12 @@ def make_rrr_state_example(all_sessions, population_name=None, keep_planes=[1, 2
     spkmaps = pcss.get_spkmap(average=True, trials="full")
     spkmaps_source = [torch.tensor(spkmap[npop.cell_split_indices[0]], dtype=torch.float32) for spkmap in spkmaps]
     spkmaps_target = [torch.tensor(spkmap[npop.cell_split_indices[1]], dtype=torch.float32) for spkmap in spkmaps]
-    
+
     # Clear out nan positions
     idx_nan = torch.any(
         torch.stack([torch.any(torch.isnan(s), dim=0) for s in spkmaps_source], dim=0)
-        | torch.stack([torch.any(torch.isnan(s), dim=0) for s in spkmaps_target], dim=0), dim=0
+        | torch.stack([torch.any(torch.isnan(s), dim=0) for s in spkmaps_target], dim=0),
+        dim=0,
     )
     idx_to_original_position = torch.where(~idx_nan)[0]
     spkmaps_source = [s[:, ~idx_nan] for s in spkmaps_source]
@@ -922,7 +945,6 @@ def make_rrr_state_example(all_sessions, population_name=None, keep_planes=[1, 2
     # Get the train / validation data for the behavior position
     train_position = npop.apply_split(position_basis.T, 0)
     test_position = npop.apply_split(position_basis.T, 2)
-    
 
     # build an encoder on the training data
     encoder = ReducedRankRegression(alpha=params["alpha_encoder"], fit_intercept=True).fit(train_source.T, train_position.T)
@@ -963,42 +985,66 @@ def make_rrr_state_example(all_sessions, population_name=None, keep_planes=[1, 2
     vmax_pos = test_position_hat.max() * 0.5
     roi_extent = [0, test_source.shape[1], 0, test_source.shape[0]]
 
-
     from matplotlib.patches import ConnectionPatch
 
     def add_custom_arrow(ax1, ax2, xyA, xyB, color, width, arrowstyle, connectionstyle, mutation_scale=20, zorder=1):
         return ConnectionPatch(
-            xyA=xyA, xyB=xyB, coordsA="axes fraction", coordsB="axes fraction", axesA=ax1, axesB=ax2, arrowstyle=arrowstyle, color=color, linewidth=width, connectionstyle=connectionstyle, zorder=zorder, mutation_scale=mutation_scale,
+            xyA=xyA,
+            xyB=xyB,
+            coordsA="axes fraction",
+            coordsB="axes fraction",
+            axesA=ax1,
+            axesB=ax2,
+            arrowstyle=arrowstyle,
+            color=color,
+            linewidth=width,
+            connectionstyle=connectionstyle,
+            zorder=zorder,
+            mutation_scale=mutation_scale,
         )
+
+    # Model Level controls which part of the example to make a plot for
+    # Model level 0 is just PF model
+    # Model level 1 is optimized PF model
+    # Model level 2 introduces the DCV - RBF(Position) model
+    # Model level 3 introduces the RBF - Target model
+    # Model level 4 introduces the RRR model
+    # Model level 5 will keep the RRR model but remove the DCV arrows
+    # Model level 35 is the same as 2 but without the DCV arrows
+    model_level = 35  # np.inf
 
     fig, ax = plt.subplots(5, 1, figsize=(10, 10), sharex=True)
 
     # Source ROI
-    ax[0].imshow(test_source[source_sort], extent=roi_extent, aspect="auto", cmap="gray_r", vmin=vmin, vmax=vmax)
-    ax[0].set_ylabel("Source")
+    if model_level >= 1:
+        ax[0].imshow(test_source[source_sort], extent=roi_extent, aspect="auto", cmap="gray_r", vmin=vmin, vmax=vmax)
+        ax[0].set_ylabel("Source")
 
     # True Position & Prediction
     max_position = 200
-    envcol = 'kr'
+    envcol = "kr"
     for idx, envnum in enumerate(environments):
-        pred_label = "Pred" if idx == 0 else None
-        ax[1].plot(pos_estimate[idx] + max_position*idx, color="sienna", linestyle="--", label=pred_label, linewidth=2)
+        if model_level >= 1:
+            pred_label = "Pred" if idx == 0 else None
+            ax[1].plot(pos_estimate[idx] + max_position * idx, color="sienna", linestyle="--", label=pred_label, linewidth=2)
         true_label = "True" if idx == 0 else None
-        ax[1].plot(test_position_by_env[:, idx] + max_position*idx, color=envcol[idx], label=true_label, linewidth=2)
+        ax[1].plot(test_position_by_env[:, idx] + max_position * idx, color=envcol[idx], label=true_label, linewidth=2)
 
     ax[1].set_ylabel("Pos")
     ax[1].legend(fontsize=20, loc="lower right", fancybox=True, shadow=True)
     ax[1].set_ylim(0, max_position * num_environments)
 
-    # RBF(Position) & Prediction
-    extent = [0, test_position.shape[1], 0, test_position_hat.shape[1]]
-    ax[2].imshow(test_position, aspect="auto", cmap="gray_r", extent=extent, interpolation="none", vmin=vmin)
-    ax[2].invert_yaxis()
-    ax[2].set_ylabel("RBF(Pos)")
+    if model_level >= 2:
+        # RBF(Position) & Prediction
+        extent = [0, test_position.shape[1], 0, test_position_hat.shape[1]]
+        ax[2].imshow(test_position, aspect="auto", cmap="gray_r", extent=extent, interpolation="none", vmin=vmin)
+        ax[2].invert_yaxis()
+        ax[2].set_ylabel("RBF(Pos)")
 
-    ax[3].imshow(test_position_hat.T, aspect="auto", extent=extent, cmap="Purples", interpolation="none", vmin=vmin, vmax=vmax_pos)
-    ax[3].invert_yaxis()
-    ax[3].set_ylabel("Pred")
+    if model_level >= 2:
+        ax[3].imshow(test_position_hat.T, aspect="auto", extent=extent, cmap="Purples", interpolation="none", vmin=vmin, vmax=vmax_pos)
+        ax[3].invert_yaxis()
+        ax[3].set_ylabel("Pred")
 
     # Target ROI
     ax[4].imshow(test_target[target_sort], extent=roi_extent, aspect="auto", cmap="gray_r", vmin=vmin, vmax=vmax)
@@ -1011,34 +1057,79 @@ def make_rrr_state_example(all_sessions, population_name=None, keep_planes=[1, 2
     # Remove yticks
     for a in ax:
         a.set_yticks([])
-    
+
     left_x_start = -0.06
     right_x_start = 1.01
     mutation_scale = 40
+    even_inner_rad = 0.15
     inner_rad = 0.25
     outer_rad = 0.35
 
-    black_arrow = add_custom_arrow(ax[1], ax[4], (left_x_start, 0.5), (left_x_start, 0.35), 'black', 5, '-|>', f'arc3,rad={outer_rad}', mutation_scale=mutation_scale)
-    fig.add_artist(black_arrow)
+    arrow_level0 = add_custom_arrow(
+        ax[1], ax[4], (left_x_start, 0.5), (left_x_start, 0.25), "black", 5, "-|>", f"arc3,rad={outer_rad}", mutation_scale=mutation_scale
+    )
+    fig.add_artist(arrow_level0)
 
-    # Orange arrows from ax[0] to ax[1] then ax[1] to ax[4] on the left
-    orange_arrow1 = add_custom_arrow(ax[0], ax[1], (left_x_start, 0.5), (left_x_start, 0.65), 'sienna', 5, '-|>', f'arc3,rad={inner_rad}', mutation_scale=mutation_scale)
-    orange_arrow2 = add_custom_arrow(ax[1], ax[4], (left_x_start, 0.5), (left_x_start, 0.65), 'sienna', 5, '-|>', f'arc3,rad={inner_rad}', mutation_scale=mutation_scale)
-    fig.add_artist(orange_arrow1)
-    fig.add_artist(orange_arrow2)
+    if model_level >= 1:
+        # Arrows from ax[0] to ax[1] then ax[1] to ax[4] on the left
+        arrow_level1_1 = add_custom_arrow(
+            ax[0], ax[1], (left_x_start, 0.5), (left_x_start, 0.5), "sienna", 5, "-|>", f"arc3,rad={inner_rad}", mutation_scale=mutation_scale
+        )
+        arrow_level1_2 = add_custom_arrow(
+            ax[1], ax[4], (left_x_start, 0.5), (left_x_start, 0.5), "sienna", 5, "-|>", f"arc3,rad={inner_rad}", mutation_scale=mutation_scale
+        )
+        fig.add_artist(arrow_level1_1)
+        fig.add_artist(arrow_level1_2)
 
-    # Green arrows from ax[0] to ax[3] then ax[3] to ax[4] on the right
-    green_arrow1 = add_custom_arrow(ax[0], ax[3], (right_x_start, 0.5), (right_x_start, 0.5), 'darkmagenta', 5, '-|>', f'arc3,rad=-{inner_rad}', mutation_scale=mutation_scale)
-    green_arrow2 = add_custom_arrow(ax[3], ax[4], (right_x_start, 0.5), (right_x_start, 0.65), 'darkmagenta', 5, '-|>', f'arc3,rad=-{inner_rad}', mutation_scale=mutation_scale)
-    fig.add_artist(green_arrow1)
-    fig.add_artist(green_arrow2)
+    if (model_level >= 2) and (model_level != 5) and (model_level != 35):
+        # Arrows from ax[0] to ax[3] then ax[3] to ax[4] on the right
+        arrow_level2_1 = add_custom_arrow(
+            ax[0], ax[3], (right_x_start, 0.5), (right_x_start, 0.5), "crimson", 5, "-|>", f"arc3,rad=-{inner_rad}", mutation_scale=mutation_scale
+        )
+        arrow_level2_2 = add_custom_arrow(
+            ax[3],
+            ax[4],
+            (right_x_start, 0.5),
+            (right_x_start, 0.65),
+            "crimson",
+            5,
+            "-|>",
+            f"arc3,rad=-{inner_rad}",
+            mutation_scale=mutation_scale,
+        )
+        fig.add_artist(arrow_level2_1)
+        fig.add_artist(arrow_level2_2)
 
-    # Blue arrow from ax[0] to ax[4] on the right
-    blue_arrow = add_custom_arrow(ax[0], ax[4], (right_x_start, 0.5), (right_x_start, 0.35), 'orangered', 5, '-|>', f'arc3,rad=-{outer_rad}', mutation_scale=mutation_scale)
-    fig.add_artist(blue_arrow)
+    if model_level >= 3:
+        # Arrow from ax[2] to ax[4] on the left
+        arrow_level3 = add_custom_arrow(
+            ax[2],
+            ax[4],
+            (left_x_start, 0.5),
+            (left_x_start, 0.75),
+            "mediumvioletred",
+            5,
+            "-|>",
+            f"arc3,rad={even_inner_rad}",
+            mutation_scale=mutation_scale,
+        )
+        fig.add_artist(arrow_level3)
+
+    if (model_level >= 4) and (model_level != 35):
+        # Arrow from ax[0] to ax[4] on the right
+        arrow_level4 = add_custom_arrow(
+            ax[0], ax[4], (right_x_start, 0.5), (right_x_start, 0.35), "orangered", 5, "-|>", f"arc3,rad=-{outer_rad}", mutation_scale=mutation_scale
+        )
+        fig.add_artist(arrow_level4)
 
     plt.tight_layout(h_pad=0.001)
     fig.subplots_adjust(left=0.15, right=0.85)
+
+    if model_level < 1:
+        ax[0].remove()
+    if model_level < 2:
+        ax[2].remove()
+        ax[3].remove()
 
     plt.show()
 
@@ -1046,11 +1137,10 @@ def make_rrr_state_example(all_sessions, population_name=None, keep_planes=[1, 2
     if with_poster2024_save:
         save_directory = pcss.saveDirectory("example_plots")
         save_name = f"{pcss.vrexp.sessionPrint('_')}_state_pred_example"
+        if model_level < np.inf:
+            save_name += f"_level{model_level}"
         save_path = save_directory / save_name
         save_figure(fig, save_path)
-
-
-
 
     total_in_target = np.prod(test_target.shape)
     idx_random = np.random.choice(total_in_target, 250000, replace=False)
@@ -1158,4 +1248,3 @@ def load_rrr_state_results(all_sessions, results="all", population_name=None):
             rbfpos_to_target_score=rbfpos_to_target_score,
         )
     raise ValueError(f"results must be 'all' or 'test_by_mouse', got {results}")
-
