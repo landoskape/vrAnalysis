@@ -1,4 +1,5 @@
 import os, sys
+from copy import copy
 from argparse import ArgumentParser
 from matplotlib import pyplot as plt
 import matplotlib as mpl
@@ -302,7 +303,7 @@ def analyze_rrr_state(results):
         )
     else:
         labels = ["PF", "Opt-PF", "PF", "Opt-PF", "RBF(Pos)", "RRR"]
-        colors = ["black", "sienna", "black", "sienna", "darkmagenta", "orangered"]
+        colors = ["black", "sienna", "black", "sienna", "mediumvioletred", "orangered"]
         with_gain = [False, False, True, True, False, False]
         xd = [0, 1, 2, 3, 4, 5]
         allyd = np.stack(
@@ -321,6 +322,19 @@ def analyze_rrr_state(results):
             )
         )
 
+    # Model Level controls which part of plot to include
+    # Model level 0 is just PF model
+    # Model level 1 adds the optimized PF model
+    # Model level 3 adds the gain terms
+    # Model level 4 adds the RBF term
+    # Model level 5 adds the RRR term
+    # NOTE!!!: This only works when include_extras is False!!!
+    # because model_level is used to index into xd and allyd and the other related components
+    model_level = np.inf
+
+
+for model_level in [0, 1, 3, 4, 5]:
+
     plt.rcParams.update({"font.size": 24})
 
     cosyne = True
@@ -331,22 +345,34 @@ def analyze_rrr_state(results):
         fig_height = 8.5
         fig_width = 8
 
+    if not include_extras and model_level < np.inf:
+        xd_plot = xd[: model_level + 1]
+        allyd_plot = allyd[:, : model_level + 1]
+        labels_plot = labels[: model_level + 1]
+        colors_plot = colors[: model_level + 1]
+        show_gain = model_level >= 3
+    else:
+        xd_plot = copy(xd)
+        allyd_plot = copy(allyd)
+        labels_plot = copy(labels)
+        colors_plot = copy(colors)
+        show_gain = True
+
     fig, ax = plt.subplots(1, figsize=(fig_width, fig_height), layout="constrained")
-    ax.plot(xd, allyd.T, color="k", linestyle="-", marker="o", markersize=12)
-    for x, eachdata, color in zip(xd, allyd.T, colors):
+    ax.plot(xd_plot, allyd_plot.T, color="k", linestyle="-", marker="o", markersize=12)
+    for x, eachdata, color in zip(xd_plot, allyd_plot.T, colors_plot):
         ax.plot(x * np.ones_like(eachdata), eachdata, color=color, linestyle="none", marker="o", markersize=13)
-    ymin, ymax = ax.get_ylim()
-    yrange = ymax - ymin
-    ylim = (ymin - 0.1 * yrange, ymax + 0.1 * yrange)
+    ylim = (-0.1, 0.2)
     # Make a gray patch around the x value spanning the full ylim
-    for x, wg in zip(xd, with_gain):
-        if wg:
-            ax.fill_between([x - 0.5, x + 0.5], ylim[0], ylim[1], color="gray", edgecolor="none", alpha=0.2)
-    ax.text(2.5, ylim[1] * 0.95, "+Gain", ha="center", va="top")
-    ax.set_xticks(ticks=xd, labels=labels, rotation=45, ha="center")
+    if show_gain:
+        for x, wg in zip(xd, with_gain):
+            if wg:
+                ax.fill_between([x - 0.5, x + 0.5], ylim[0], ylim[1], color="gray", edgecolor="none", alpha=0.2)
+        ax.text(2.5, ylim[1] * 0.95, "+Gain", ha="center", va="top")
+    ax.set_xticks(ticks=xd_plot, labels=labels_plot, rotation=45, ha="center")
     ax.set_ylabel("Test Score")
     ax.set_xlim(-0.5, max(xd) + 0.5)
-    for ixtick, color in enumerate(colors):
+    for ixtick, color in enumerate(colors_plot):
         plt.setp(ax.get_xticklabels()[ixtick], color=color)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -369,6 +395,8 @@ def analyze_rrr_state(results):
         save_name = f"decoder_test_score_comparison"
         save_name += "_with_extras" if include_extras else ""
         save_name += "_cosyne" if cosyne else ""
+        if (model_level < np.inf) and (not include_extras):
+            save_name += f"_model_level_{model_level}"
         save_path = save_directory / save_name
         save_figure(fig, save_path)
 
