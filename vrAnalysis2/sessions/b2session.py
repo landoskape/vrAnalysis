@@ -11,6 +11,7 @@ from . import fileManagement as fm
 # Variables that might need to be changed for different users
 dataPath = fm.localDataPath()
 
+
 class vrExperiment(vrSession):
     """
     The vrExperiment object is a postprocessing object used to load and buffer data, and store highly used methods for analyzing data in vr experiments.
@@ -82,131 +83,6 @@ class vrExperiment(vrSession):
             json.dump(self.preprocessing, file, ensure_ascii=False)
         with open(self.sessionPath() / "vrExperimentValues.json", "w") as file:
             json.dump(self.value, file, ensure_ascii=False, cls=NumpyEncoder)
-
-    # ------------------------------------------ special loading functions for data not stored directly in one format ------------------------------------------
-    def loadfcorr(self, meanAdjusted=True, loadFromOne=True):
-        # corrected fluorescence requires a special loading function because it isn't saved directly
-        if loadFromOne:
-            F = self.loadone("mpci.roiActivityF").T
-            Fneu = self.loadone("mpci.roiNeuropilActivityF").T
-        else:
-            F = self.loadS2P("F")
-            Fneu = self.loadS2P("Fneu")
-        meanFneu = np.mean(Fneu, axis=1, keepdims=True) if meanAdjusted else np.zeros((np.sum(self.value["roiPerPlane"]), 1))
-        return F - self.opts["neuropilCoefficient"] * (Fneu - meanFneu)
-
-    def loadS2P(self, varName, concatenate=True, checkVariables=True):
-        # load S2P variable from suite2p folders
-        assert varName in self.value["available"], f"{varName} is not available in the suite2p folders for {self.sessionPrint()}"
-        if varName == "ops":
-            concatenate = False
-            checkVariables = False
-
-        var = [np.load(self.suite2pPath() / planeName / f"{varName}.npy", allow_pickle=True) for planeName in self.value["planeNames"]]
-        if varName == "ops":
-            var = [cvar.item() for cvar in var]
-            return var
-
-        if checkVariables:
-            # if check variables is on, then we check the variables for their shapes
-            # checkVariables should be "off" for initial registration! (see standard usage in "processImaging")
-
-            # first check if ROI variable (if #rows>0)
-            isRoiVars = [self.isRoiVar(cvar) for cvar in var]
-            assert all(isRoiVars) or not (
-                any(isRoiVars)
-            ), f"For {varName}, the suite2p files from planes {[idx for idx,roivar in enumerate(isRoiVars) if roivar]} registered as ROI vars but not the others!"
-            isFrameVars = [self.isFrameVar(cvar) for cvar in var]
-            assert all(isFrameVars) or not (
-                any(isFrameVars)
-            ), f"For {varName}, the suite2p files from planes {[idx for idx,roivar in enumerate(isRoiVars) if roivar]} registered as frame vars but not the others!"
-
-            # Check valid shapes across all planes together, then provide complete error message
-            if all(isRoiVars):
-                validShapes = [cvar.shape[0] == self.value["roiPerPlane"][planeIdx] for planeIdx, cvar in enumerate(var)]
-                assert all(
-                    validShapes
-                ), f"{self.sessionPrint()}:{varName} has a different number of ROIs than registered in planes: {[pidx for pidx,vs in enumerate(validShapes) if not(vs)]}."
-            if all(isFrameVars):
-                validShapes = [cvar.shape[1] == self.value["framePerPlane"][planeIdx] for planeIdx, cvar in enumerate(var)]
-                assert all(
-                    validShapes
-                ), f"{self.sessionPrint()}:{varName} has a different number of frames than registered in planes: {[pidx for pidx,vs in enumerate(validShapes) if not(vs)]}."
-
-        if concatenate:
-            # if concatenation is requested, then concatenate each plane across the ROIs axis so we have just one ndarray of shape: (allROIs, allFrames)
-            if self.isFrameVar(var[0]):
-                var = [v[:, : self.value["numFrames"]] for v in var]  # trim if necesary so each plane has the same number of frames
-            var = np.concatenate(var, axis=0)
-
-        return var
-
-    # shorthands -- note that these require some assumptions about suite2p variables to be met
-    def isRoiVar(self, var):
-        return var.ndim > 0  # useful shorthand for determining if suite2p variable includes one element for each ROI
-
-    def isFrameVar(self, var):
-        return var.ndim > 1 and var.shape[1] > 2  # useful shorthand for determining if suite2p variable includes a column for each frame
-
-    def getPlaneIdx(self):
-        # produce np array of plane ID associated with each ROI (assuming that the data e.g. spks will be concatenated across planes)
-        return np.concatenate(
-            [np.repeat(planeIDs, roiPerPlane) for (planeIDs, roiPerPlane) in zip(self.value["planeIDs"], self.value["roiPerPlane"])]
-        ).astype(np.uint8)
-
-    def getRoiStackPosition(self, mode="weightedmean"):
-        planeIdx = self.getPlaneIdx()
-        stat = self.loadS2P("stat")
-        lam = [s["lam"] for s in stat]
-        ypix = [s["ypix"] for s in stat]
-        xpix = [s["xpix"] for s in stat]
-        if mode == "weightedmean":
-            yc = np.array([np.sum(l * y) / np.sum(l) for l, y in zip(lam, ypix)])
-            xc = np.array([np.sum(l * x) / np.sum(l) for l, x in zip(lam, xpix)])
-        elif mode == "median":
-            yc = np.array([np.median(y) for y in ypix])
-            xc = np.array([np.median(x) for x in xpix])
-        stackPosition = np.stack((xc, yc, planeIdx)).T
-        return stackPosition
-
-    def getMaskVolume(self, cat_planes=False, keep_planes=None):
-        """
-        create volume of masks for each plane in keep_planes (all by default)
-
-        will concatenate across planes if requested or keep each planes volume in a list
-        """
-        # set keep_planes if not provided
-        keep_planes = helpers.check_iterable(keep_planes) if keep_planes is not None else [i for i in range(len(self.value["roiPerPlane"]))]
-
-        # get plane index of each ROI
-        roi_plane_idx = self.getPlaneIdx()
-
-        # get size of reference
-        ly, lx = self.loadS2P("ops")[0]["meanImg"].shape
-
-        # get roi data
-        stat = self.loadS2P("stat")
-        lam = [s["lam"] for s in stat]
-        ypix = [s["ypix"] for s in stat]
-        xpix = [s["xpix"] for s in stat]
-
-        # make volume for each plane
-        mask_volume = []
-        for plane in keep_planes:
-            c_volume = np.zeros((self.value["roiPerPlane"][plane], ly, lx))
-            idx_roi_in_plane = np.where(roi_plane_idx == plane)[0]
-            for roi in range(self.value["roiPerPlane"][plane]):
-                # get index to this ROI
-                c_roi_idx = idx_roi_in_plane[roi]
-                # set pixel values for this ROI
-                c_volume[roi, ypix[c_roi_idx], xpix[c_roi_idx]] = lam[c_roi_idx]
-            mask_volume.append(c_volume)
-
-        # concatenate across planes if requested
-        if cat_planes:
-            mask_volume = np.concatenate(mask_volume, axis=0)
-
-        return mask_volume
 
     def getNumROIs(self, keep_planes=None):
         keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(self.value["roiPerPlane"]))]

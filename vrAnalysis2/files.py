@@ -2,29 +2,24 @@ from pathlib import Path
 from tkinter import Tk
 
 
-def local_data_path():
+def local_data_path() -> Path:
     return Path("C:/Users/andrew/Documents/localData")
 
 
-def literature_data_path():
+def literature_data_path() -> Path:
     return Path("C:/Users/andrew/Documents/literatureData")
 
 
-def storage_path():
+def storage_path() -> Path:
     return Path("D:/localData")
 
 
-def sharedDataPath():
-    return local_data_path() / "sharedData"
-
-
-def analysisPath():
+def analysis_path() -> Path:
     return local_data_path() / "analysis"
 
 
-def server_path(zaru=True):
-    name = "zaru" if zaru else "zortex"
-    return Path(f"//{name}.cortexlab.net/Subjects")
+def server_path(server: str = "zortex") -> Path:
+    return Path(f"//{server}.cortexlab.net/Subjects")
 
 
 def getCopyString(mouseName, datestr="", session="", server=server_path(), toClipboard=True):

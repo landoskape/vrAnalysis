@@ -9,7 +9,7 @@ import numpy as np
 from .. import files
 from ..helpers import PrettyDatetime
 
-data_path = files.literatureDataPath() / "pettitHarvey2022"
+data_path = files.literature_data_path() / "pettitHarvey2022"
 
 
 @dataclass

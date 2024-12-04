@@ -71,7 +71,7 @@ class vrSession(ABC):
     values: SimpleNamespace = field(default_factory=SimpleNamespace, repr=False)
 
     # immutable subclass properties
-    _data_path: str = field(init=False, repr=False)
+    data_path: str = field(init=False, repr=False)
 
     # mutable subclass properties
     spks_type: str = field(init=False, repr=False)
@@ -82,7 +82,7 @@ class vrSession(ABC):
         self.spks_type = self.set_spks_type()
 
         if not isinstance(self.data_path, Path):
-            raise TypeError(f"_data_path must be a Path-like object, received: {type(self.data_path)}")
+            raise TypeError(f"data_path must be a Path-like object, received: {type(self.data_path)}")
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data path does not exist: {self.data_path}")
 
@@ -113,19 +113,19 @@ class vrSession(ABC):
     def _init_data_path(self) -> str:
         """Set the data path for the session"""
 
-    @abstractmethod
     def _additional_loading(self) -> None:
-        """Additional loading for subclasses"""
+        """Additional loading for subclasses.
+
+        Called in the __post_init__ method. Allows subclasses to perform additional
+        loading steps. Default is to do nothing.
+        """
+        pass
 
     # neural data properties
     @property
     def spks(self) -> np.ndarray:
-        """spks property, will load spks data using self.spks_type with the abstract method _get_spks"""
+        """Load spks with the abstract method _get_spks"""
         return self._get_spks()
-
-    @abstractmethod
-    def set_spks_type(self) -> str:
-        """Set spks_type, will determine how to load spks data and is dependent on the vrSession type"""
 
     @abstractmethod
     def _get_spks(self) -> np.ndarray:
@@ -140,18 +140,18 @@ class OneSession(vrSession):
 
     @property
     @abstractmethod
-    def loaders(self) -> dict:
+    def recipe_loaders(self) -> dict:
         """Dictionary of loaders for loading data from recipes"""
 
     @property
     @abstractmethod
-    def transforms(self) -> dict:
+    def recipe_transforms(self) -> dict:
         """Dictionary of transforms for applying to data when loading recipes"""
 
     @property
     def one_path(self):
         """Path to oneData directory"""
-        return self._data_path / "oneData"
+        return self.data_path / "oneData"
 
     def get_saved_one(self):
         """Get all saved oneData files"""
@@ -229,13 +229,13 @@ class OneSession(vrSession):
 
                 # Load data using appropriate loader
                 if recipe.source_arg is not None:
-                    data = self.loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
+                    data = self.recipe_loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
                 else:
-                    data = self.loaders[recipe.loader_type](**recipe.kwargs)
+                    data = self.recipe_loaders[recipe.loader_type](**recipe.kwargs)
 
                 # Apply transforms
                 for transform in recipe.transforms:
-                    data = self.transforms[transform](data)
+                    data = self.recipe_transforms[transform](data)
 
             # add to buffer
             self.one_cache[file_name] = data
@@ -254,15 +254,19 @@ class B2Session(OneSession):
     @property
     def s2p_path(self):
         """Path to suite2p directory"""
-        return self._data_path / "suite2p"
+        return self.data_path / "suite2p"
 
     @property
-    def loaders(self):
-        return {"S2P": self.load_s2p, "stackPosition": self.get_roi_stack_position}
+    def recipe_loaders(self):
+        return {"S2P": self.load_s2p, "roiPosition": self.get_roi_position}
 
     @property
-    def transforms(self):
+    def recipe_transforms(self):
         return {"transpose": lambda x: x.T, "idx_column1": lambda x: x[:, 1]}
+
+    def _get_spks(self) -> np.ndarray:
+        """Load spks data"""
+        return self.loadone(self.spks_type)
 
     def set_spks_type(self) -> str:
         """Set spks_type, will determine which onefile to load spks data from"""
@@ -272,21 +276,13 @@ class B2Session(OneSession):
         """Set the data path for the session"""
         return local_data_path() / self.mouse_name / self.date / self.session_id
 
-    def _get_spks(self) -> np.ndarray:
-        """Load spks data"""
-        return self.loadone(self.spks_type)
-
     def _additional_loading(self):
-        """Additional loading for subclasses"""
-        self.load_registered_experiment()
-
-    def load_registered_experiment(self):
         """Load registered experiment data"""
-        if not (self._data_path / "vrExperimentOptions.json").exists():
+        if not (self.data_path / "vrExperimentOptions.json").exists():
             raise ValueError("session json files were not found! you need to register the session first.")
-        opts = json.load(open(self._data_path / "vrExperimentOptions.json"))
-        preprocessing = json.load(open(self._data_path / "vrExperimentPreprocessing.json"))
-        values = json.load(open(self._data_path / "vrExperimentValues.json"))
+        opts = json.load(open(self.data_path / "vrExperimentOptions.json"))
+        preprocessing = json.load(open(self.data_path / "vrExperimentPreprocessing.json"))
+        values = json.load(open(self.data_path / "vrExperimentValues.json"))
         self.opts = opts
         self.preprocessing = preprocessing
         for key, val in values.items():
@@ -294,11 +290,11 @@ class B2Session(OneSession):
 
     def save_session_prms(self):
         """Save registered session parameters"""
-        with open(self._data_path / "vrExperimentOptions.json", "w") as file:
+        with open(self.data_path / "vrExperimentOptions.json", "w") as file:
             json.dump(self.opts, file, ensure_ascii=False)
-        with open(self._data_path / "vrExperimentPreprocessing.json", "w") as file:
+        with open(self.data_path / "vrExperimentPreprocessing.json", "w") as file:
             json.dump(self.preprocessing, file, ensure_ascii=False)
-        with open(self._data_path / "vrExperimentValues.json", "w") as file:
+        with open(self.data_path / "vrExperimentValues.json", "w") as file:
             json.dump(self.values, file, ensure_ascii=False, cls=NumpyEncoder)
 
     # =============================================================================
@@ -337,12 +333,25 @@ class B2Session(OneSession):
         return var
 
     def get_plane_idx(self):
-        # produce np array of plane ID associated with each ROI (assuming that the data e.g. spks will be concatenated across planes)
+        """Return the plane index for each ROI (concatenated across planes)."""
         planeIDs = self.get_value("planeIDs")
         roiPerPlane = self.get_value("roiPerPlane")
-        return np.concatenate([np.repeat(plane_id, roi_count) for plane_id, roi_count in zip(planeIDs, roiPerPlane)]).astype(np.uint8)
+        return np.repeat(planeIDs, roiPerPlane).astype(np.uint8)
 
-    def get_roi_stack_position(self, mode="weightedmean"):
+    def get_roi_position(self, mode="weightedmean"):
+        """Return the x & y positions and plane index for all ROIs.
+
+        Parameters
+        ----------
+        mode : str, optional
+            Method for calculating the position of the ROI, by default "weightedmean"
+            but can also use median which ignores the intensity (lam) values.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (nROIs, 3) with columns: x-position, y-position, planeIdx
+        """
         planeIdx = self.get_plane_idx()
         stat = self.load_s2p("stat")
         lam = [s["lam"] for s in stat]
