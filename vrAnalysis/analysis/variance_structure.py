@@ -1672,6 +1672,34 @@ def compare_spectral_averages(summary_dicts, return_extras=False):
     return single_env, across_env
 
 
+def compare_cvpca_to_cvfourier(summary_dicts):
+    """
+    get average across environment cvpca and svca for each mouse
+
+    summary dicts is a list of dictionaries containing full spectra data for each mouse to be compared
+    returns a list of lists, where the outer list corresponds to each mouse (e.g. each summary_dict)
+    and the inner list contains the eigenspectra for each session / environment
+    """
+    # get average eigenspectra for each mouse
+    cvpca = []
+    cvfourier = []
+    for summary_dict in summary_dicts:
+        c_cvpca = []
+        c_cvfourier = []
+        # go through each session's across environment eigenspectra
+        for c in [c for cc in summary_dict["cv_by_env_all"] for c in cc]:
+            c_cvpca.append(c)
+
+        for c in [c for cc in summary_dict["cvf_by_env_cov_all"] for c in cc]:
+            c_cvfourier.append(c)
+
+        # add them all to master list
+        cvpca.append(c_cvpca)
+        cvfourier.append(c_cvfourier)
+
+    return cvpca, cvfourier
+
+
 def compare_svca_to_cvpca(summary_dicts):
     """
     get average across environment cvpca and svca for each mouse
@@ -1692,6 +1720,7 @@ def compare_svca_to_cvpca(summary_dicts):
         c_svca_pred = []
         c_svca_pred_cv = []
         c_rank_pf_pred = []
+        c_cvfft = []
         # go through each session's across environment eigenspectra
         for c in summary_dict["cv_across_all"]:
             c_cvpca.append(c)
@@ -2178,7 +2207,18 @@ def plot_spectral_averages_comparison(
         helpers.save_figure(fig, save_path)
 
 
-def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, do_ylog=True, ylog_min=1e-6, with_show=True, with_save=False):
+def plot_svca_vs_cvpca(
+    pcms,
+    summary_dicts,
+    include_cvpca=True,
+    include_pfpred=True,
+    use_partratio=False,
+    normalize=True,
+    do_ylog=True,
+    ylog_min=1e-6,
+    with_show=True,
+    with_save=False,
+):
     cvpca, svca, svca_pred, svca_pred_cv, rank_pf_pred = compare_svca_to_cvpca(summary_dicts)
 
     # if not using a y-log axis, then set the minimum to -inf to not change any data
@@ -2224,6 +2264,16 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
         # find first point where the value in data is less than 0
         return np.argmax(data <= 0, axis=1) - 1
 
+    def _partratio(data):
+        """internal function for measuring the partition ratio of cross-validated eigenspectra
+        using the participation ratio, which is probably smarter and less susceptible to noise"""
+        data = [np.array(d) for d in data]
+        positive_data = [np.maximum(d, 0) for d in data]
+        squared_sum = [np.sum(d) ** 2 for d in positive_data]
+        sum_squared = [np.sum(d**2) for d in positive_data]
+        pr = [s / ss for s, ss in zip(squared_sum, sum_squared)]
+        return np.array(pr)
+
     poster2024 = True
     num_mice = len(pcms)
     mouse_names = [pcm.track.mouse_name for pcm in pcms]
@@ -2243,53 +2293,62 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
         zip(mouse_names, svca, cvpca, svca_pred, svca_pred_cv, rank_pf_pred, num_envs)
     ):
         c_svca_data = _process(c_svca)
-        c_svca_pred_data = _process(c_svca_pred)
-        c_svca_pred_cv_data = _process(c_svca_pred_cv)
+        # c_svca_pred_data = _process(c_svca_pred)
+        if include_pfpred:
+            c_svca_pred_cv_data = _process(c_svca_pred_cv)
+            label_pred_cv = "PF-Pred" if imouse == 0 else None
         c_label = mouse_name  # + (" (svca)" if include_cvpca and imouse == 0 else "")
         label = "Full" if imouse == 0 else None
-        label_pred = "PF-Pred" if imouse == 0 else None
-        label_pred_cv = "CV-PF-Pred" if imouse == 0 else None
         ax[0].plot(range(1, len(c_svca_data) + 1), c_svca_data, color="k", label=label)
-        ax[0].plot(range(1, len(c_svca_pred_cv_data) + 1), c_svca_pred_cv_data, color="b", linestyle="-", label=label_pred_cv)
-        ax[0].plot(range(1, len(c_svca_pred_data) + 1), c_svca_pred_data, color="r", linestyle="-", label=label_pred)
+        if include_pfpred:
+            ax[0].plot(range(1, len(c_svca_pred_cv_data) + 1), c_svca_pred_cv_data, color="b", linestyle="-", label=label_pred_cv)
+            # ax[0].plot(range(1, len(c_svca_pred_data) + 1), c_svca_pred_data, color="r", linestyle="-", label=label_pred)
         if include_cvpca:
             c_cvpca_data = _process(c_cvpca)
-            c_label = None  # "cvpca" if imouse == (num_mice - 1) else None
-            ax[0].plot(range(1, len(c_cvpca_data) + 1), c_cvpca_data, color=colors[imouse], linestyle="--", label=c_label)
+            c_label = "cvpca" if imouse == (num_mice - 1) else None
+            ax[0].plot(range(1, len(c_cvpca_data) + 1), c_cvpca_data, color="r", linestyle="-", label=c_label)
 
         c_num_envs = np.unique(num_env)
         c_dims = []
         s_dims = []
         spred_dims = []
         spredcv_dims = []
-        pfcv_dims = []
+        dim_func = _dimension if not use_partratio else _partratio
         for c_num in c_num_envs:
-            c_dims.append(_dimension([c_cvpca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
-            s_dims.append(_dimension([c_svca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
-            spred_dims.append(_dimension([c_svca_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
-            spredcv_dims.append(_dimension([c_svca_pred_cv[i] for i, n in enumerate(num_env) if n == c_num]).mean())
-            # pf_dims.append(np.array([c_rank_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            c_dims.append(dim_func([c_cvpca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            s_dims.append(dim_func([c_svca[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            spred_dims.append(dim_func([c_svca_pred[i] for i, n in enumerate(num_env) if n == c_num]).mean())
+            spredcv_dims.append(dim_func([c_svca_pred_cv[i] for i, n in enumerate(num_env) if n == c_num]).mean())
 
         svca_label = "Time" if imouse == 0 else None
-        cvpca_label = "Pos" if imouse == 0 else None
-        pf_pred_label = "PF Pred" if imouse == 0 else None
-        pf_pred_cv_label = "PF Pred CV" if imouse == 0 else None
+        if include_cvpca:
+            cvpca_label = "Pos" if imouse == 0 else None
+        if include_pfpred:
+            pf_pred_label = "PF Pred" if imouse == 0 else None
+            pf_pred_cv_label = "PF Pred CV" if imouse == 0 else None
         ax[1].plot(c_num_envs, s_dims, color="k", linestyle="-", marker=".", markersize=12, label=svca_label)
-        ax[1].plot(c_num_envs, c_dims, color="g", linestyle="-", marker=".", markersize=12, label=cvpca_label)
-        ax[1].plot(c_num_envs, spred_dims, color="r", linestyle="-", marker=".", markersize=12, label=pf_pred_label)
-        ax[1].plot(c_num_envs, spredcv_dims, color="b", linestyle="-", marker=".", markersize=12, label=pf_pred_label)
+        if include_cvpca:
+            ax[1].plot(c_num_envs, c_dims, color="r", linestyle="-", marker=".", markersize=12, label=cvpca_label)
+        if include_pfpred:
+            # ax[1].plot(c_num_envs, spred_dims, color="r", linestyle="-", marker=".", markersize=12, label=pf_pred_label)
+            ax[1].plot(c_num_envs, spredcv_dims, color="b", linestyle="-", marker=".", markersize=12, label=pf_pred_cv_label)
 
     ax[0].set_xlabel("SVC-Time Dimension (log)")
     ax[0].set_ylabel(f"Relative Variance ({'log' if do_ylog else 'linear'})")
     ax[1].set_xlabel("# Environments", loc="right")
-    ax[1].set_ylabel("Dimensionality (log)")
+    ax[1].set_ylabel("Dimensionality" + (" (log)" if not use_partratio and do_ylog else ""))
     ax[0].legend(loc="upper right", fontsize=20)
     # ax[1].legend(loc="center", fontsize=20)
     ax[0].set_xscale("log")
     ax[1].set_xlim(0.5, max([max(c_num_envs) for c_num_envs in num_envs]) + 0.5)
+    if use_partratio:
+        ax[1].set_ylim(0, 70)
+    else:
+        ax[1].set_ylim(2, 9e3)
     if do_ylog:
         ax[0].set_yscale("log")
-        ax[1].set_yscale("log")
+        if not use_partratio:
+            ax[1].set_yscale("log")
 
     if poster2024:
         pass
@@ -2311,7 +2370,9 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
     if with_poster2024_save:
         save_directory = pcms[0].saveDirectory("comparisons")
         special_name = "_withcvpca" if include_cvpca else ""
+        special_name = special_name + ("_withpfpred" if include_pfpred else "")
         special_name = special_name + ("logy" if do_ylog else "liny")
+        special_name = special_name + ("_partratio" if use_partratio else "")
         save_path = save_directory / ("svca_comparison" + special_name)
         helpers.save_figure(fig, save_path)
 
@@ -2320,6 +2381,81 @@ def plot_svca_vs_cvpca(pcms, summary_dicts, include_cvpca=True, normalize=True, 
         special_name += "_norm" if normalize else ""
         special_name += "_logy" if do_ylog else "_liny"
         pcms[0].saveFigure(fig.number, "comparisons", "svca" + special_name)
+
+
+def plot_cvpca_vs_fourier(
+    pcms,
+    summary_dicts,
+    include_cvpca=True,
+    include_pfpred=True,
+    use_partratio=False,
+    normalize=True,
+    do_xlog=True,
+    do_ylog=True,
+    ylog_min=1e-6,
+    with_show=True,
+    with_save=False,
+):
+    cvpca, cvfourier = compare_cvpca_to_cvfourier(summary_dicts)
+
+    cvpca = [np.stack(c) for c in cvpca]
+    num_dims = [c.shape[1] for c in cvpca]
+    cvfourier = [np.mean(np.stack(c), axis=1)[:, :nd] for c, nd in zip(cvfourier, num_dims)]
+
+    # if not using a y-log axis, then set the minimum to -inf to not change any data
+    if not do_ylog:
+        ylog_min = -np.inf
+
+    # create processing method
+    def _process(data):
+        """internal function for processing a set of eigenspectra"""
+        # normalize each spectrum
+        if normalize:
+            data = data / np.nansum(data, axis=1, keepdims=True)
+        # average across sessions / environments
+        data = np.mean(data, axis=0)
+        # remove any values below the minimum for log scaling
+        data[data < ylog_min] = np.nan
+        return data
+
+    num_mice = len(pcms)
+    mouse_names = [pcm.track.mouse_name for pcm in pcms]
+    mouse_names = helpers.short_mouse_names(mouse_names)
+
+    plt.rcParams.update({"font.size": 24})
+
+    figdim = 5
+    fig, ax = plt.subplots(1, 1, figsize=(figdim, figdim), layout="constrained")
+    ax = np.reshape(ax, 1)
+    for imouse, (mouse_name, c_cvpca, c_fourier) in enumerate(zip(mouse_names, cvpca, cvfourier)):
+        c_cvpca = _process(c_cvpca)
+        c_fourier = _process(c_fourier)
+        cv_label = "cvPCA" if imouse == 0 else None
+        fr_label = "cvFourier" if imouse == 0 else None
+        ax[0].plot(range(1, len(c_cvpca) + 1), c_cvpca, color="k", label=cv_label)
+        ax[0].plot(range(1, len(c_fourier) + 1), c_fourier, color="b", label=fr_label)
+
+    ax[0].set_xlabel("Dimension" + (" (log)" if do_ylog else " (linear)"))
+    ax[0].set_ylabel(f"{'Rel. ' if normalize else ''}Var. ({'log' if do_ylog else 'linear'})")
+    ax[0].legend(loc="upper right", fontsize=20)
+    if do_xlog:
+        ax[0].set_xscale("log")
+    if do_ylog:
+        ax[0].set_yscale("log")
+    ax[0].spines["top"].set_visible(False)
+    ax[0].spines["right"].set_visible(False)
+
+    if with_show:
+        plt.show()
+
+    if with_save:
+        save_directory = pcms[0].saveDirectory("comparisons")
+        special_name = ""
+        special_name += "_norm" if normalize else ""
+        special_name += "_logx" if do_xlog else "_linx"
+        special_name += "_logy" if do_ylog else "_liny"
+        save_path = save_directory / ("cvpca_vs_fourier" + special_name)
+        helpers.save_figure(fig, save_path)
 
 
 def plot_all_exponential_fits(pcms, spectra_data, relative_session=True, with_show=True, with_save=False):
