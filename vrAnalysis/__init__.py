@@ -1,15 +1,8 @@
-modules = [
-    "fileManagement",
-    "helpers",
-    "functions",
-    "session",
-    "registration",
-    "uiDatabase",
-    "database",
-    "tracking",
-    "analysis",
-    "external",
-]
-
-for pkg in modules:
-   exec('from . import ' + pkg)
+from . import helpers
+from . import fileManagement
+from . import session
+from . import registration
+from . import uiDatabase
+from . import database
+from . import tracking
+from . import analysis
