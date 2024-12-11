@@ -27,7 +27,8 @@ mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
 sys.path.append(mainPath)
 
 from vrAnalysis import tracking
-from vrAnalysis.helpers import named_transpose, edge2center, CurrentSelection, SliderSelector
+from vrAnalysis.helpers import named_transpose, edge2center
+from vrAnalysis.uilib import CurrentSelection, SliderSelector
 from vrAnalysis import analysis
 
 
