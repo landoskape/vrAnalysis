@@ -3,7 +3,6 @@ from pathlib import Path
 from tqdm import tqdm
 import pickle
 import numpy as np
-import faststats as fs
 from scipy.signal import find_peaks
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
@@ -13,7 +12,7 @@ import seaborn as sns
 from .. import helpers
 from ..analysis import placeCellSingleSession
 from .. import database
-
+from .. import faststats as fs
 from dimilibi import Population, SVCA
 
 mousedb = database.vrDatabase("vrMice")

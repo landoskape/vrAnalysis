@@ -16,8 +16,7 @@ import os
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
-import faststats as fs
-
+from vrAnalysis import faststats as fs
 from vrAnalysis import helpers
 from vrAnalysis import fileManagement as fm
 

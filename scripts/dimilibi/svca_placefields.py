@@ -17,8 +17,7 @@ from scripts.dimilibi.helpers import make_position_basis, filter_timepoints, fig
 from vrAnalysis import analysis
 from vrAnalysis import helpers
 from vrAnalysis import database
-
-import faststats as fs
+from vrAnalysis import faststats as fs
 from dimilibi import Population
 from dimilibi import SVCA
 from dimilibi import PCA

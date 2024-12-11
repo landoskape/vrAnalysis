@@ -1,7 +1,6 @@
 from copy import copy
 from tqdm import tqdm
 from functools import wraps
-import faststats as fs
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -10,6 +9,7 @@ from .. import helpers
 from .. import database
 from .. import fileManagement as fm
 from .standardAnalysis import standardAnalysis
+from .. import faststats as fs
 
 sessiondb = database.vrDatabase("vrSessions")
 

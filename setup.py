@@ -52,6 +52,7 @@ setup(
         "vrAnalysis",
         "vrAnalysis.analysis",
         "vrAnalysis.helpers",
+        "vrAnalysis.faststats",
     ],
     python_requires=">=3.9, <=4",
     install_requires=deps_core,

@@ -6,3 +6,4 @@
 # from . import database
 # from . import tracking
 # from . import analysis
+# from . import faststats

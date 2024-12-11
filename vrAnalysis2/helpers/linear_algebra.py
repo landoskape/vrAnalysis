@@ -4,7 +4,7 @@ from sklearn.decomposition import PCA
 from sklearn.decomposition import IncrementalPCA
 
 import torch
-import faststats as fs
+from .. import faststats as fs
 from .indexing import cvFoldSplit
 from .wrangling import named_transpose
 from .signals import vectorCorrelation

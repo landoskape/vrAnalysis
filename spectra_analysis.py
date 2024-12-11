@@ -1,14 +1,14 @@
 import os
 from copy import copy
+from tqdm import tqdm
+import numpy as np
+import pickle
 
 from vrAnalysis import analysis
 from vrAnalysis import tracking
 from vrAnalysis import helpers
 from vrAnalysis import database
-from tqdm import tqdm
-import numpy as np
-import faststats as fs
-import pickle
+from vrAnalysis import faststats as fs
 
 from dimilibi import Population, SVCA
 

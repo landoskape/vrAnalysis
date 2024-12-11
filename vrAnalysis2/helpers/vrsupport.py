@@ -1,6 +1,6 @@
 import numpy as np
 import numba as nb
-import faststats as fs
+from .. import faststats as fs
 
 from . import edge2center, getGaussKernel, convolveToeplitz, cvFoldSplit, vectorCorrelation
 
