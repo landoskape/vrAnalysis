@@ -51,6 +51,7 @@ setup(
     packages=[
         "vrAnalysis",
         "vrAnalysis.analysis",
+        "vrAnalysis.helpers",
     ],
     python_requires=">=3.9, <=4",
     install_requires=deps_core,
