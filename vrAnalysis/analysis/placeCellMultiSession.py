@@ -297,6 +297,7 @@ class placeCellMultiSession(multipleAnalysis):
         by_plane=False,
         idx_ses=None,
         include_latents=False,
+        include_master_embeddings=False,
         **kwargs,
     ):
         """
@@ -352,6 +353,9 @@ class placeCellMultiSession(multipleAnalysis):
         if include_latents:
             latents = [self.pcss[i].get_roicat_latents() for i in idx_ses]
 
+        if include_master_embeddings:
+            embeddings = [self.pcss[i].get_roicat_master_embeddings() for i in idx_ses]
+
         # if using tracked only, then filter and sort by tracking index
         if tracked:
             spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, idx_tracked)]
@@ -363,6 +367,8 @@ class placeCellMultiSession(multipleAnalysis):
             roi_idx = [ridx[idx_track] for ridx, idx_track in zip(roi_idx, idx_tracked)]
             if include_latents:
                 latents = [lat[idx_track] for lat, idx_track in zip(latents, idx_tracked)]
+            if include_master_embeddings:
+                embeddings = [emb[idx_track] for emb, idx_track in zip(embeddings, idx_tracked)]
 
         # if trial average requested, average over trials
         if average:
@@ -379,6 +385,8 @@ class placeCellMultiSession(multipleAnalysis):
             roi_idx = self.track.split_by_plane(roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             if include_latents:
                 latents = self.track.split_by_plane(latents, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            if include_master_embeddings:
+                embeddings = self.track.split_by_plane(embeddings, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # remove positions with nans in any spkmap if requested
         if pop_nan:
@@ -397,6 +405,8 @@ class placeCellMultiSession(multipleAnalysis):
         )
         if include_latents:
             extras["latents"] = latents
+        if include_master_embeddings:
+            extras["embeddings"] = embeddings
         return spkmaps, extras
 
     @handle_idx_ses

@@ -400,6 +400,7 @@ class placeCellSingleSession(standardAnalysis):
         self.idxUseROI = np.any(np.stack([roiPlaneIdx == pidx for pidx in self.keep_planes]), axis=0)
         self.roiPlaneIdx = roiPlaneIdx[self.idxUseROI]
         self.numROIs = self.vrexp.getNumROIs(self.keep_planes)
+        return self.idxUseROI
 
     def load_fast_data(self):
         # get environment data
@@ -504,7 +505,7 @@ class placeCellSingleSession(standardAnalysis):
         if full_trial_flexibility is not None:
             self.full_trial_flexibility = full_trial_flexibility
 
-        self.get_plane_idx(keep_planes=self.keep_planes)
+        _ = self.get_plane_idx(keep_planes=self.keep_planes)
 
         # measure smoothed occupancy map and speed maps, along with the distance bins used to create them
         kwargs = {
@@ -853,10 +854,17 @@ class placeCellSingleSession(standardAnalysis):
 
     def get_roicat_latents(self):
         """get latents describing ROIs from ROINet"""
-        latent_path = self.vrexp.sessionPath() / "roicat" / "roinet_latents.npy"
+        latent_path = self.vrexp.roicatPath() / "roinet_latents.npy"
         if not latent_path.exists():
             raise FileNotFoundError(f"could not find latents file at {latent_path}")
         return np.load(latent_path)
+
+    def get_roicat_master_embeddings(self):
+        """get embeddings of ROIs latents from ROINet (from the master UMAP of all ROIs)"""
+        embeddings_path = self.vrexp.roicatPath() / "master_umap_embeddings.npy"
+        if not embeddings_path.exists():
+            raise FileNotFoundError(f"could not find latents file at {embeddings_path}")
+        return np.load(embeddings_path)
 
     @prepare_data
     def make_snake(self, envnum=None, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max", rawspkmap=None):
