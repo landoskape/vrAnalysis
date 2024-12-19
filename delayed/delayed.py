@@ -1,12 +1,12 @@
 from warnings import warn
 from typing import Any, Tuple, Dict, Callable, Set
 from collections.abc import Mapping, Sequence
+from functools import wraps
 import numpy as np
-import networkx as nx
 from networkx import DiGraph
-from matplotlib import pyplot as plt
 
 from .types import DelayedData, GenericType, T
+from .graph import get_uncached_nodes, correct_computed_status, validate_no_cycles
 
 
 def compute_nested(obj: Any, force_recompute: bool = False, dont_cache: bool = False, depth: int = 0, maximum_depth: int = None) -> Any:
@@ -53,11 +53,11 @@ def compute_nested(obj: Any, force_recompute: bool = False, dont_cache: bool = F
 
 
 class Delayed(GenericType):
-    def __init__(self, func: Callable[..., T], *args: Tuple[Any, ...], cache_data: bool = True, **kwargs: Dict[str, Any]):
+    def __init__(self, func: Callable[..., T], *args: Tuple[Any, ...], disable_cache: bool = False, **kwargs: Dict[str, Any]):
         self._func = func
         self._args = tuple(args)
         self._kwargs = kwargs
-        self.cache_data = cache_data
+        self.disable_cache = disable_cache
         self.ddata = DelayedData()
         self._computing = False  # For tracking computation status
 
@@ -110,13 +110,13 @@ class Delayed(GenericType):
             raise RecursionError(f"Circular dependency detected in delayed computation of {self.func.__name__}")
 
         G = self.get_dependency_graph()
-        self.validate_no_cycles(G)
+        validate_no_cycles(G)
 
         # Update dependents of any changed nodes
-        self._correct_computed_status(G)
+        correct_computed_status(G)
 
         # Get nodes that need recomputing
-        uncached_nodes = self.get_uncached_nodes(G)
+        uncached_nodes = get_uncached_nodes(G)
 
         # Check if the result is already computed and cached and if we aren't forcing a recompute
         needs_compute = force_recompute or recompute_dependencies or uncached_nodes
@@ -135,7 +135,7 @@ class Delayed(GenericType):
             computed_args = [compute_nested(arg, **kwargs) for arg in self.args]
             computed_kwargs = {key: compute_nested(value, **kwargs) for key, value in self.kwargs.items()}
             result = self.func(*computed_args, **computed_kwargs)
-            if self.cache_data and not dont_cache:
+            if not self.disable_cache and not dont_cache:
                 self.ddata.set(result)
             return result
 
@@ -292,143 +292,67 @@ class Delayed(GenericType):
                 v._build_graph(G, visited)
                 G.add_edge(v._get_node_id(), node_id)
 
-    def get_computed_nodes(self, G: DiGraph = None) -> Set[str]:
-        """Return set of node IDs that have been computed."""
-        G = G or self.get_dependency_graph()
-        return {node for node in G.nodes if G.nodes[node].get("computed", False)}
 
-    def get_uncached_nodes(self, G: DiGraph = None) -> Set[str]:
-        G = G or self.get_dependency_graph()
-        return {node for node in G.nodes if not G.nodes[node].get("computed", False)}
+def delayed(func=None, *, disable_cache=False):
+    """Creates a delayed computation that executes only when explicitly evaluated.
 
-    def _correct_computed_status(self, G: DiGraph = None) -> None:
-        """Clear data from nodes that depend on any node that needs recomputing."""
-        G = G or self.get_dependency_graph()
-        uncached = self.get_uncached_nodes(G)
-        dependents = set()
-        to_process = set(uncached)
-        while to_process:
-            node = to_process.pop()  # remove and return an arbitrary element from the set
-            successors = set(G.successors(node))  # get all nodes that depend on this node
-            new_dependents = successors - dependents  # get the nodes that haven't been processed yet
-            dependents.update(new_dependents)  # add them to list of dependents
-            to_process.update(new_dependents)  # add them to the list of nodes to process
+    Parameters
+    ----------
+    func : callable or None
+        The function to be delayed. Will be None if decorator is called with
+        parameters.
+    disable_cache : bool, optional
+        If True, disables caching of computation results. Each call to compute()
+        will re-execute the function, by default False.
 
-        # Clear data from dependent nodes so they'll be recomputed
-        for node in dependents:
-            G.nodes[node]["delayed_obj"].ddata.clear()
+    Returns
+    -------
+    callable or Delayed
+        If used as @delayed:
+            Returns a Delayed object holding the function and arguments
+            for later execution.
+        If used as @delayed(no_cache=...):
+            Returns a decorator function that will create a Delayed object.
 
-    def analyze_dependencies(self) -> Dict[str, Any]:
-        """Analyze the computation graph's dependencies and structure.
+    See Also
+    --------
+    Delayed : The class that handles lazy evaluation of functions
 
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing analysis metrics including:
-            - depth: Maximum depth of the computation graph
-            - n_nodes: Total number of computation nodes
-            - n_edges: Total number of dependencies
-            - leaf_nodes: Number of nodes with no dependencies
-            - root_nodes: Number of nodes with no dependents
-            - is_cyclic: Whether the graph contains cycles
-            - max_in_degree: Maximum number of direct dependencies for any node
-            - max_out_degree: Maximum number of direct dependents for any node
-        """
-        G = self.get_dependency_graph()
+    Examples
+    --------
+    Basic usage with default caching:
 
-        # Get root nodes (those with no predecessors)
-        root_nodes = [node for node in G.nodes() if G.in_degree(node) == 0]
+    >>> @delayed
+    ... def expensive_computation(x):
+    ...     return x * 2
+    ...
+    >>> result = expensive_computation(10)  # No computation yet
+    >>> result.compute()  # Now computes
+    20
 
-        # Get leaf nodes (those with no successors)
-        leaf_nodes = [node for node in G.nodes() if G.out_degree(node) == 0]
+    Disable caching for always-fresh results:
 
-        # Calculate maximum depth (longest path from any root to any leaf)
-        max_depth = 0
-        for root in root_nodes:
-            for leaf in leaf_nodes:
-                try:
-                    path_length = len(nx.shortest_path(G, root, leaf)) - 1
-                    max_depth = max(max_depth, path_length)
-                except nx.NetworkXNoPath:
-                    continue
+    >>> @delayed(no_cache=True)
+    ... def always_recompute(x):
+    ...     return x * 2
+    ...
+    >>> result = always_recompute(10)
+    >>> result.compute()  # Computes without caching
+    20
 
-        return {
-            "depth": max_depth,
-            "n_nodes": G.number_of_nodes(),
-            "n_edges": G.number_of_edges(),
-            "leaf_nodes": len(leaf_nodes),
-            "root_nodes": len(root_nodes),
-            "is_cyclic": not nx.is_directed_acyclic_graph(G),
-            "max_in_degree": max(dict(G.in_degree()).values(), default=0),
-            "max_out_degree": max(dict(G.out_degree()).values(), default=0),
-        }
+    Notes
+    -----
+    The decorated function's computation is deferred until the .compute()
+    method is called on the returned Delayed object. By default, results
+    are cached based on input arguments unless no_cache=True.
+    """
+    # Called as @delayed(disable_cache=...)
+    if func is None:
+        return lambda f: delayed(f, disable_cache=disable_cache)
 
-    def validate_no_cycles(self, G: DiGraph = None) -> None:
-        """Validate that the computation graph has no cycles.
-
-        Raises
-        ------
-        ValueError
-            If cycles are detected in the dependency graph.
-        """
-        G = G or self.get_dependency_graph()
-        if not nx.is_directed_acyclic_graph(G):
-            cycles = list(nx.simple_cycles(G))
-            cycle_str = " -> ".join(cycles[0])  # Show first cycle
-            raise ValueError(f"Circular dependency detected in computation graph: {cycle_str}")
-
-    def get_optimized_pos(self, G, scale=1.0):
-        """Get optimized node positions with proper scaling."""
-        # Get base positions using hierarchical layout
-        generations = list(nx.topological_generations(G))
-
-        pos = {}
-        y_step = 1.0 / (len(generations) + 1)
-        for i, gen in enumerate(generations):
-            y = 1 - y_step * (i + 1)
-            x_step = 1.0 / (len(gen) + 1)
-            for j, node in enumerate(sorted(gen)):
-                x = x_step * (j + 1)
-                pos[node] = (x, y)
-
-        # Fine-tune with spring layout, using hierarchical as starting point
-        pos = nx.spring_layout(G, k=2, iterations=50, pos=pos, fixed=None if scale != 1.0 else pos.keys())
-
-        # Scale positions
-        return {node: (x * scale, y * scale) for node, (x, y) in pos.items()}
-
-    def visualize(self, figsize=(8, 7), scale=1.0, jitter=0.0):
-        G = self.get_dependency_graph()
-        plt.figure(figsize=figsize)
-
-        # Get optimized positions
-        pos = self.get_optimized_pos(G, scale=scale)
-        pos = {node: (x + np.random.uniform(-jitter, jitter), y + np.random.uniform(-jitter, jitter)) for node, (x, y) in pos.items()}
-
-        # Draw with more spacing
-        nx.draw(
-            G,
-            pos,
-            with_labels=True,
-            node_color="lightblue",
-            node_size=1000,
-            font_size=12,
-            font_weight="bold",
-            arrows=True,
-            edge_color="gray",
-            arrowsize=12,
-            # Add minimum spacing between nodes
-            min_target_margin=10,
-            min_source_margin=10,
-        )
-
-
-def delayed(func=None, *, cache_data=True):
-    """Decorator to create a delayed computation"""
-    if func is None:  # Called as @delayed(cache=...)
-        return lambda f: delayed(f, cache_data=cache_data)
-
+    # Called as @delayed or delayed(func, ...)
+    @wraps(func)
     def wrapper(*args, **kwargs):
-        return Delayed(func, *args, **kwargs, cache_data=cache_data)
+        return Delayed(func, *args, **kwargs, disable_cache=disable_cache)
 
     return wrapper

@@ -1,133 +1,135 @@
-from typing import Dict, Set, Optional
+from typing import Any, Dict, Set, Tuple
+import numpy as np
 import networkx as nx
 from networkx import DiGraph
-import weakref
-from .delayed import Delayed
+from matplotlib import pyplot as plt
 
 
-class MasterGraph:
-    """Maintains a master graph of all delayed computation dependencies."""
+def get_computed_nodes(G: DiGraph) -> Set[str]:
+    """Return set of node IDs that have been computed."""
+    return {node for node in G.nodes if G.nodes[node].get("computed", False)}
 
-    _instance = None
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+def get_uncached_nodes(G: DiGraph) -> Set[str]:
+    return {node for node in G.nodes if not G.nodes[node].get("computed", False)}
 
-    def __init__(self):
-        self.graph = DiGraph()
-        self._delayed_objects: Dict[str, weakref.ref[Delayed]] = {}
 
-    def register_node(self, delayed_obj: Delayed) -> None:
-        """Register a new delayed computation object."""
-        node_id = delayed_obj._get_node_id()
-        self._delayed_objects[node_id] = weakref.ref(delayed_obj)
-        self._update_subgraph(delayed_obj)
+def correct_computed_status(G: DiGraph) -> None:
+    """Clear data from nodes that depend on any node that needs recomputing."""
+    uncached = get_uncached_nodes(G)
+    dependents = set()
+    to_process = set(uncached)
+    while to_process:
+        node = to_process.pop()  # remove and return an arbitrary element from the set
+        successors = set(G.successors(node))  # get all nodes that depend on this node
+        new_dependents = successors - dependents  # get the nodes that haven't been processed yet
+        dependents.update(new_dependents)  # add them to list of dependents
+        to_process.update(new_dependents)  # add them to the list of nodes to process
 
-    def _update_subgraph(self, delayed_obj: Delayed) -> None:
-        """Update the subgraph for a given delayed object."""
-        node_id = delayed_obj._get_node_id()
-        self.graph.add_node(node_id, label=delayed_obj.func.__name__, computed=bool(delayed_obj.ddata), func_name=delayed_obj.func.__name__)
+    # Clear data from dependent nodes so they'll be recomputed
+    for node in dependents:
+        G.nodes[node]["delayed_obj"].ddata.clear()
 
-        # Remove existing edges for this node (to reset them in case of changes)
-        self.graph.remove_edges_from(list(self.graph.in_edges(node_id)) + list(self.graph.out_edges(node_id)))
 
-        # Add dependencies on arguments
-        for arg in delayed_obj.args:
-            if isinstance(arg, Delayed):
-                self._add_dependency(arg, node_id)
-                arg_id = arg._get_node_id()
-                self.graph.add_edge(arg_id, node_id)
-                if arg_id not in self._delayed_objects:
-                    self.register_node(arg)
+def analyze_dependencies(G: DiGraph) -> Dict[str, Any]:
+    """Analyze the computation graph's dependencies and structure.
 
-        # Add dependencies on keyword arguments
-        for value in delayed_obj.kwargs.values():
-            if isinstance(value, Delayed):
-                value_id = value._get_node_id()
-                self.graph.add_edge(value_id, node_id)
-                if value_id not in self._delayed_objects:
-                    self.register_node(value)
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing analysis metrics including:
+        - depth: Maximum depth of the computation graph
+        - n_nodes: Total number of computation nodes
+        - n_edges: Total number of dependencies
+        - leaf_nodes: Number of nodes with no dependencies
+        - root_nodes: Number of nodes with no dependents
+        - is_cyclic: Whether the graph contains cycles
+        - max_in_degree: Maximum number of direct dependencies for any node
+        - max_out_degree: Maximum number of direct dependents for any node
+    """
+    # Get root nodes (those with no predecessors)
+    root_nodes = [node for node in G.nodes() if G.in_degree(node) == 0]
 
-    def _add_dependency(self, source_node: str, target_id: Delayed) -> None:
-        """Add a dependency between two nodes."""
-        source_id = source_node._get_node_id()
-        self.graph.add_edge(source_id, target_id)
-        if source_id not in self._delayed_objects:
-            self.register_node(target_node)
+    # Get leaf nodes (those with no successors)
+    leaf_nodes = [node for node in G.nodes() if G.out_degree(node) == 0]
 
-    def _update_subgraph(self, delayed_obj: Delayed) -> None:
-        """Update the subgraph for a given delayed object."""
-        node_id = delayed_obj._get_node_id()
+    # Calculate maximum depth (longest path from any root to any leaf)
+    max_depth = 0
+    for root in root_nodes:
+        for leaf in leaf_nodes:
+            try:
+                path_length = len(nx.shortest_path(G, root, leaf)) - 1
+                max_depth = max(max_depth, path_length)
+            except nx.NetworkXNoPath:
+                continue
 
-        # Remove existing edges for this node
-        self.graph.remove_edges_from(list(self.graph.in_edges(node_id)) + list(self.graph.out_edges(node_id)))
+    return {
+        "depth": max_depth,
+        "n_nodes": G.number_of_nodes(),
+        "n_edges": G.number_of_edges(),
+        "leaf_nodes": len(leaf_nodes),
+        "root_nodes": len(root_nodes),
+        "is_cyclic": not nx.is_directed_acyclic_graph(G),
+        "max_in_degree": max(dict(G.in_degree()).values(), default=0),
+        "max_out_degree": max(dict(G.out_degree()).values(), default=0),
+    }
 
-        # Update node properties
-        self.graph.add_node(node_id, label=delayed_obj.func.__name__, computed=bool(delayed_obj.ddata), func_name=delayed_obj.func.__name__)
 
-        # Add edges for arguments
-        for arg in delayed_obj.args:
-            if isinstance(arg, Delayed):
-                arg_id = arg._get_node_id()
-                self.graph.add_edge(arg_id, node_id)
-                # Recursively update if not already in graph
-                if arg_id not in self._delayed_objects:
-                    self.register_delayed(arg)
+def validate_no_cycles(G: DiGraph) -> None:
+    """Validate that the computation graph has no cycles.
 
-        # Add edges for keyword arguments
-        for value in delayed_obj.kwargs.values():
-            if isinstance(value, Delayed):
-                value_id = value._get_node_id()
-                self.graph.add_edge(value_id, node_id)
-                # Recursively update if not already in graph
-                if value_id not in self._delayed_objects:
-                    self.register_delayed(value)
+    Raises
+    ------
+    ValueError
+        If cycles are detected in the dependency graph.
+    """
+    if not nx.is_directed_acyclic_graph(G):
+        cycles = list(nx.simple_cycles(G))
+        cycle_str = " -> ".join(cycles[0])  # Show first cycle
+        raise ValueError(f"Circular dependency detected in computation graph: {cycle_str}")
 
-    def cleanup_stale_references(self) -> None:
-        """Remove references to delayed objects that have been garbage collected."""
-        stale_nodes = set()
-        for node_id, delayed_ref in self._delayed_objects.items():
-            if delayed_ref() is None:  # Object has been garbage collected
-                stale_nodes.add(node_id)
 
-        # Remove stale nodes and their references
-        for node_id in stale_nodes:
-            self.graph.remove_node(node_id)
-            del self._delayed_objects[node_id]
+def get_optimized_pos(G: DiGraph, scale: float = 1.0):
+    """Get optimized node positions with proper scaling."""
+    # Get base positions using hierarchical layout
+    generations = list(nx.topological_generations(G))
 
-    def get_affected_nodes(self, node_id: str) -> Set[str]:
-        """Get all nodes that depend on the given node."""
-        return set(nx.descendants(self.graph, node_id))
+    pos = {}
+    y_step = 1.0 / (len(generations) + 1)
+    for i, gen in enumerate(generations):
+        y = 1 - y_step * (i + 1)
+        x_step = 1.0 / (len(gen) + 1)
+        for j, node in enumerate(sorted(gen)):
+            x = x_step * (j + 1)
+            pos[node] = (x, y)
 
-    def propagate_recomputation(self, node_id: str) -> None:
-        """Mark all dependent nodes as needing recomputation."""
-        affected = self.get_affected_nodes(node_id)
-        for affected_id in affected:
-            delayed_ref = self._delayed_objects.get(affected_id)
-            if delayed_ref is not None:
-                delayed_obj = delayed_ref()
-                if delayed_obj is not None:
-                    delayed_obj.ddata.clear()
+    # Fine-tune with spring layout, using hierarchical as starting point
+    pos = nx.spring_layout(G, k=2, iterations=50, pos=pos, fixed=None if scale != 1.0 else pos.keys())
 
-    def visualize_subgraph(self, root_node_id: str, depth: Optional[int] = None):
-        """Visualize a subgraph starting from the given node up to specified depth."""
-        if depth is None:
-            nodes = {root_node_id} | self.get_affected_nodes(root_node_id)
-        else:
-            nodes = set()
-            current_nodes = {root_node_id}
-            for _ in range(depth + 1):
-                nodes.update(current_nodes)
-                next_nodes = set()
-                for node in current_nodes:
-                    next_nodes.update(self.graph.successors(node))
-                current_nodes = next_nodes
+    # Scale positions
+    return {node: (x * scale, y * scale) for node, (x, y) in pos.items()}
 
-        subgraph = self.graph.subgraph(nodes)
-        delayed_ref = self._delayed_objects.get(root_node_id)
-        if delayed_ref is not None:
-            delayed_obj = delayed_ref()
-            if delayed_obj is not None:
-                delayed_obj.visualize(G=subgraph)
+
+def visualize(G: DiGraph, figsize: Tuple[int] = (8, 7), scale: float = 1.0, jitter: float = 0.0):
+    plt.figure(figsize=figsize)
+
+    # Get optimized positions
+    pos = get_optimized_pos(G, scale=scale)
+    pos = {node: (x + np.random.uniform(-jitter, jitter), y + np.random.uniform(-jitter, jitter)) for node, (x, y) in pos.items()}
+
+    # Draw with more spacing
+    nx.draw(
+        G,
+        pos,
+        with_labels=True,
+        node_color="lightblue",
+        node_size=1000,
+        font_size=12,
+        font_weight="bold",
+        arrows=True,
+        edge_color="gray",
+        arrowsize=12,
+        # Add minimum spacing between nodes
+        min_target_margin=10,
+        min_source_margin=10,
+    )
