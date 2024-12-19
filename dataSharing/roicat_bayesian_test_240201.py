@@ -48,7 +48,7 @@ def generate_dictionary(mouse_name, cutoffs):
 
     # Select best VR environment and sessions
     env, idx_ses = roistat.env_idx_ses_selector(envmethod="most", sesmethod=-1)
-    spkmaps, relmse, relcor, _, _, _, _ = roistat.get_spkmaps(
+    spkmaps, extras = roistat.get_spkmaps(
         env,
         trials="full",
         average=True,
@@ -57,6 +57,8 @@ def generate_dictionary(mouse_name, cutoffs):
         by_plane=True,
         idx_ses=idx_ses,
     )
+    relmse = extras["relmse"]
+    relcor = extras["relcor"]
     idx_reliable = [[(mse > cutoffs[0]) & (cor > cutoffs[1]) for mse, cor in zip(rmse, rcor)] for rmse, rcor in zip(relmse, relcor)]
     spkmap_centers = roistat.get_from_pcss("distcenters", idx_ses[0])
 

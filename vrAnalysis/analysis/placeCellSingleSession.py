@@ -851,6 +851,13 @@ class placeCellSingleSession(standardAnalysis):
 
         return pfloc, pfidx
 
+    def get_roicat_latents(self):
+        """get latents describing ROIs from ROINet"""
+        latent_path = self.vrexp.sessionPath() / "roicat" / "roinet_latents.npy"
+        if not latent_path.exists():
+            raise FileNotFoundError(f"could not find latents file at {latent_path}")
+        return np.load(latent_path)
+
     @prepare_data
     def make_snake(self, envnum=None, reliable=True, cutoffs=(0.4, 0.7), maxcutoffs=None, method="max", rawspkmap=None):
         """make snake data from train and test sessions, for particular environment if requested"""

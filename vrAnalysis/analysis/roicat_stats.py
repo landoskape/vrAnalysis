@@ -78,7 +78,7 @@ class RoicatStats(placeCellMultiSession):
         idx_ses_pairs = helpers.all_pairs(idx_ses)
 
         # get all spkmaps from requested sessions
-        spkmaps, relmse, relcor, pfloc, _, _, roi_idx = self.get_spkmaps(
+        spkmaps, extras = self.get_spkmaps(
             envnum,
             trials="full",
             average=True,
@@ -87,6 +87,10 @@ class RoicatStats(placeCellMultiSession):
             by_plane=True,
             **kwargs,
         )
+        relmse = extras["relmse"]
+        relcor = extras["relcor"]
+        pfloc = extras["pfloc"]
+        roi_idx = extras["roi_idx"]
 
         # get positions that aren't nan (use same set of positions across all spkmaps)
         idx_pos_not_nan = np.all(np.stack([~np.any(np.isnan(s), axis=0) for spkmap in spkmaps for s in spkmap]), axis=0)

@@ -296,6 +296,7 @@ class placeCellMultiSession(multipleAnalysis):
         pf_method="max",
         by_plane=False,
         idx_ses=None,
+        include_latents=False,
         **kwargs,
     ):
         """
@@ -314,6 +315,8 @@ class placeCellMultiSession(multipleAnalysis):
 
         pf_method determines how to measure the place field location-- can either be
         'max' for the location at peak value or 'com' for a center of mass measurement
+
+        if include_latents is set to True, will include the roinet latents in the output
         """
         if smooth is None:
             smooth = self.smoothFilter
@@ -345,6 +348,10 @@ class placeCellMultiSession(multipleAnalysis):
         # get place field for ROIs
         pfloc, pfidx = helpers.named_transpose([self.pcss[ises].get_place_field(spkmap, method=pf_method) for ises, spkmap in zip(idx_ses, spkmaps)])
 
+        # get latents if requested
+        if include_latents:
+            latents = [self.pcss[i].get_roicat_latents() for i in idx_ses]
+
         # if using tracked only, then filter and sort by tracking index
         if tracked:
             spkmaps = [spkmap[idx_track] for spkmap, idx_track in zip(spkmaps, idx_tracked)]
@@ -354,6 +361,8 @@ class placeCellMultiSession(multipleAnalysis):
             pfloc = [pfl[idx_track] for pfl, idx_track in zip(pfloc, idx_tracked)]
             pfidx = [np.argsort(pfl) for pfl in pfloc]
             roi_idx = [ridx[idx_track] for ridx, idx_track in zip(roi_idx, idx_tracked)]
+            if include_latents:
+                latents = [lat[idx_track] for lat, idx_track in zip(latents, idx_tracked)]
 
         # if trial average requested, average over trials
         if average:
@@ -368,6 +377,8 @@ class placeCellMultiSession(multipleAnalysis):
             pfloc = self.track.split_by_plane(pfloc, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             pfidx = self.track.split_by_plane(pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             roi_idx = self.track.split_by_plane(roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            if include_latents:
+                latents = self.track.split_by_plane(latents, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # remove positions with nans in any spkmap if requested
         if pop_nan:
@@ -376,7 +387,17 @@ class placeCellMultiSession(multipleAnalysis):
             spkmaps = [sm[..., ~nan_positions] for sm in spkmaps]
 
         # return data
-        return spkmaps, relmse, relcor, pfloc, pfidx, idx_red, roi_idx
+        extras = dict(
+            relmse=relmse,
+            relcor=relcor,
+            idx_red=idx_red,
+            pfloc=pfloc,
+            pfidx=pfidx,
+            roi_idx=roi_idx,
+        )
+        if include_latents:
+            extras["latents"] = latents
+        return spkmaps, extras
 
     @handle_idx_ses
     def make_rel_data(self, envnum, sortby=None, idx_ses=None):
