@@ -548,8 +548,8 @@ def load_spectra_data(pcm, args, save_as_temp=True, reload=True):
         # get spks of all cells (in time, not space) -- filter by good planes (which is defaulted to all but first, which is usually flyback)
         idx_rois = []
         for v in vss:
-            v.get_plane_idx(keep_planes=[1, 2, 3, 4])
-            idx_rois.append(v.idxUseROI)
+            idx_use_roi = v.get_plane_idx(keep_planes=[1, 2, 3, 4])
+            idx_rois.append(idx_use_roi)
         ospks = [v.vrexp.loadone("mpci.roiActivityDeconvolvedOasis")[:, idx] for v, idx in zip(vss, idx_rois)]
 
         # get spkmaps of all cells / just reliable cells
