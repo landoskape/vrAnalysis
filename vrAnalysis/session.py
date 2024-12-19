@@ -94,6 +94,9 @@ class vrSession:
     def suite2pPath(self):
         return self.sessionPath() / "suite2p"
 
+    def roicatPath(self):
+        return self.sessionPath() / "roicat"
+
     def getSavedOne(self):
         return self.onePath().glob("*.npy")
 
