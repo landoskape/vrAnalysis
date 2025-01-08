@@ -1,0 +1,52 @@
+body { 
+    font-family: Arial, sans-serif; 
+    max-width: 1000px; 
+    margin: 40px auto; 
+    padding: 0 20px; 
+}
+
+.controls {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+.control-label {
+    font-weight: bold;
+    min-width: 100px;
+}
+
+button {
+    padding: 8px 16px;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+input {
+    width: 80px;
+    padding: 8px;
+    font-size: 16px;
+}
+
+.plot-container {
+    margin: 20px 0;
+}
+
+#true-roi-idx {
+    margin-left: 10px;
+    color: #666;
+}
+
+input[type="button"] {
+    width: auto;
+}

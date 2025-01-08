@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Place Field Viewer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <h1>Place Field Viewer</h1>
+    
+    <div class="controls">
+        <div class="control-group">
+            <span class="control-label">Mouse:</span>
+            <button onclick="updateMouse(-1)">←</button>
+            <span id="mouse-display"></span>
+            <button onclick="updateMouse(1)">→</button>
+        </div>
+        
+        <div class="control-group">
+            <span class="control-label">ROI Index:</span>
+            <button onclick="updateRoiIdx(-1)">←</button>
+            <input type="number" id="roi-idx-input" value="0" onchange="setRoiIdx(this.value)">
+            <button onclick="updateRoiIdx(1)">→</button>
+            <span id="true-roi-idx"></span>
+        </div>
+        
+        <div class="control-group">
+            <span class="control-label">Percentiles:</span>
+            <input type="number" id="min-percentile" value="90" min="0" max="100" 
+                   onchange="setPercentiles()" style="width: 60px"> -
+            <input type="number" id="max-percentile" value="100" min="0" max="100" 
+                   onchange="setPercentiles()" style="width: 60px">
+        </div>
+        
+        <div class="control-group">
+            <span class="control-label">Target Session:</span>
+            <button onclick="updateTargetSes(-1)">←</button>
+            <input type="number" id="target-ses-input" value="0" onchange="setTargetSes(this.value)">
+            <button onclick="updateTargetSes(1)">→</button>
+        </div>
+        
+        <div class="control-group">
+            <span class="control-label">Dead Trials:</span>
+            <input type="number" id="dead-trials" value="5" min="0" onchange="setDeadTrials(this.value)">
+        </div>
+
+        <div class="control-group">
+            <span class="control-label">Remember ROI:</span>
+            <input type="button" id="remember-roi" value="Print ROI Details" onclick="printRoiDetails()">
+        </div>
+    </div>
+    
+    <div class="plot-container">
+        <img id="plot-image" width="100%">
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/viewer.js') }}"></script>
+</body>
+</html>
