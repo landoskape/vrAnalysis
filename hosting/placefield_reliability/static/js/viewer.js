@@ -115,7 +115,7 @@ function updatePlot() {
 function updateMouse(delta) {
     state.mouseIndex = (state.mouseIndex + delta + state.mouseNames.length) % state.mouseNames.length;
     updateMouseDisplay();
-    resetSessionRange();
+    updateSessionRange();
 }
 
 function updateMouseDisplay() {

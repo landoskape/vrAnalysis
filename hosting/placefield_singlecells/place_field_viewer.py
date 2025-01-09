@@ -26,7 +26,7 @@ class PlaceFieldViewer:
             self._prepare_mouse_data(mouse_name, fast_mode)
 
     def _prepare_mouse_data(self, mouse_name, fast_mode):
-        keep_planes = [1] if fast_mode else [1, 2]
+        keep_planes = [1] if fast_mode else [1, 2, 3, 4]
         track = tracking.tracker(mouse_name)  # get tracker object for mouse
         pcm = analysis.placeCellMultiSession(track, autoload=False, keep_planes=keep_planes)
         envnum, idx_ses = pcm.env_idx_ses_selector(envmethod="second", sesmethod=4)
