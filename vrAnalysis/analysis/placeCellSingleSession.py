@@ -487,6 +487,7 @@ class placeCellSingleSession(standardAnalysis):
         with_test=False,
         full_trial_flexibility=None,
         new_split=True,
+        keep_buffer=False,
     ):
         """load standard data for basic place cell analysis"""
         # update onefile if using a different measure of activity
@@ -531,6 +532,9 @@ class placeCellSingleSession(standardAnalysis):
 
         # measure reliability
         self.measure_reliability(new_split=new_split, with_test=with_test)
+
+        if not keep_buffer:
+            self.vrexp.clearBuffer()
 
     def _return_trial_indices(self, occmap, distedges, full_trial_flexibility=None):
         """helper for determining with trials the mouse explored the whole environment"""
