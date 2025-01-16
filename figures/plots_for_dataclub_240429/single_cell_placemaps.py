@@ -19,7 +19,7 @@ if __name__ == "__main__":
     spks_prediction = vss.generate_spks_prediction(spks, spkmaps, frame_position, idx_valid, background_value=np.nan)
     spks_prediction_xx = vss.generate_spks_prediction(spks, spkmaps, frame_position_xx, idx_valid_xx, background_value=np.nan)
     idx_reliable = vss.get_reliable(cutoffs=(0.4, 0.7))
-    relmse, relcor = vss.get_reliability_values()
+    relmse, relcor, relloo = vss.get_reliability_values()
     any_reliable = np.any(np.stack(idx_reliable), axis=0)
     distedges = vss.distedges
     distcenters = vss.distcenters
