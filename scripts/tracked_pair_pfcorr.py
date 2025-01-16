@@ -96,7 +96,7 @@ def analyze_roicat_labels(mouse_name, args, classifier):
     ctl_distribution = helpers.fractional_histogram(np.concatenate([classe[~ired] for classe, ired in zip(classes, idx_red)]), bins=bins)[0]
     red_distribution = helpers.fractional_histogram(np.concatenate([classe[ired] for classe, ired in zip(classes, idx_red)]), bins=bins)[0]
 
-    _, relcor = helpers.named_transpose([pcm.pcss[i].get_reliability_values(envnum=use_environment) for i in idx_ses])
+    _, relcor, _ = helpers.named_transpose([pcm.pcss[i].get_reliability_values(envnum=use_environment) for i in idx_ses])
     relcor = list(map(lambda x: x[0], relcor))
 
     ctl_class_reliability = np.zeros(num_labels)

@@ -87,7 +87,7 @@ plt.show()
 
 
 envselect = lambda tuples, idx: map(lambda x: x[idx], tuples)
-relmse, relcor = envselect(pcss.get_reliability_values(), 0)
+relmse, relcor, relloo = envselect(pcss.get_reliability_values(), 0)
 
 avgmse, avgcor = [], []
 for idim in range(cvpca_v[0].shape[1]):

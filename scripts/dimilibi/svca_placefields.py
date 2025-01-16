@@ -143,9 +143,9 @@ def process_session(ses):
     print("measuring reliability and sorting place fields")
 
     # Measure the reliability of the place fields
-    urelmse, urelcor = select_env(pcss.get_reliability_values(envnum=envnum, rawspkmap=u_rawspkmap), 0)
-    vrelmse, vrelcor = select_env(pcss.get_reliability_values(envnum=envnum, rawspkmap=v_rawspkmap), 0)
-    relmse, relcor = select_env(pcss.get_reliability_values(envnum=envnum), 0)
+    urelmse, urelcor, urelloo = select_env(pcss.get_reliability_values(envnum=envnum, rawspkmap=u_rawspkmap), 0)
+    vrelmse, vrelcor, vrelloo = select_env(pcss.get_reliability_values(envnum=envnum, rawspkmap=v_rawspkmap), 0)
+    relmse, relcor, relloo = select_env(pcss.get_reliability_values(envnum=envnum), 0)
 
     # Percentile to show:
     prctile_cutoff = 95

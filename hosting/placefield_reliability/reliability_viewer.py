@@ -50,12 +50,18 @@ class ReliabilityViewer:
         idx_ses_second_re_second = [ses - idx_ses_second[0] for ses in idx_ses_second]
         idx_ses_re_second = [ses - idx_ses_second[0] for ses in idx_ses]
         idx_red = [pcm.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
-        relmse_first, relcor_first = helpers.named_transpose([pcm.pcss[i].get_reliability_values(envnum=envnum_first) for i in idx_ses_first])
+        relmse_first, relcor_first, relloo_first = helpers.named_transpose(
+            [pcm.pcss[i].get_reliability_values(envnum=envnum_first) for i in idx_ses_first]
+        )
         relmse_first = list(map(lambda x: x[0], relmse_first))
         relcor_first = list(map(lambda x: x[0], relcor_first))
-        relmse_second, relcor_second = helpers.named_transpose([pcm.pcss[i].get_reliability_values(envnum=envnum_second) for i in idx_ses_second])
+        relloo_first = list(map(lambda x: x[2], relloo_first))
+        relmse_second, relcor_second, relloo_first = helpers.named_transpose(
+            [pcm.pcss[i].get_reliability_values(envnum=envnum_second) for i in idx_ses_second]
+        )
         relmse_second = list(map(lambda x: x[0], relmse_second))
         relcor_second = list(map(lambda x: x[0], relcor_second))
+        relloo_second = list(map(lambda x: x[2], relloo_second))
         idx_tracked = track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         self.track[mouse_name] = track
