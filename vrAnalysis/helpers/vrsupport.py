@@ -236,6 +236,84 @@ def measureReliability(spkmap, numcv=3, numRepeats=1, fraction_nan_permitted=0.0
     return relmse, relcor
 
 
+@nb.njit(parallel=True, fastmath=True)
+def _jit_reliability_loo(spkmap: np.ndarray) -> np.ndarray:
+    """Calculate trial-by-trial reliability using leave-one-out cross-validation.
+
+    For each trial and ROI, computes the correlation between that trial's activity
+    and the average activity pattern from all other trials.
+
+    Args:
+        spkmap: 3D array of shape (num_rois, num_trials, num_positions) containing
+               spatial activity maps for each ROI and trial.
+
+    Returns:
+        trial_consistency: 2D array of shape (num_rois, num_trials) containing the
+                         correlation between each trial and the average of other trials
+                         for each ROI. Values range from -1 to 1, where:
+                         - 1 indicates perfect correlation
+                         - 0 indicates no correlation
+                         - -1 indicates perfect anti-correlation
+                         NaN values indicate invalid/missing data
+    """
+    num_rois, num_trials, num_positions = spkmap.shape
+    trial_average = np.zeros((num_rois, num_positions))
+    for roi in nb.prange(num_rois):
+        for position in range(num_positions):
+            trial_average[roi, position] = np.mean(spkmap[roi, :, position])
+
+    trial_consistency = np.full((num_rois, num_trials), np.nan)
+    for trial in nb.prange(num_trials):
+        # First get the average excluding the current trial
+        average_except_trial = (trial_average - (spkmap[:, trial] / num_trials)) * (num_trials / (num_trials - 1))
+
+        for roi in range(num_rois):
+            average_dev = average_except_trial[roi] - np.mean(average_except_trial[roi])
+            average_std = np.sqrt(np.sum(average_dev**2) / (num_trials - 1))
+            trial_dev = spkmap[roi, trial] - np.mean(spkmap[roi, trial])
+            trial_std = np.sqrt(np.sum(trial_dev**2) / (num_trials - 1))
+            if average_std == 0 or trial_std == 0:
+                trial_consistency[roi, trial] = 0
+            else:
+                z_average_dev_norm = average_dev / average_std
+                z_trial_dev_norm = trial_dev / trial_std
+                z_product = np.sum(z_average_dev_norm * z_trial_dev_norm) / (num_trials - 1)
+                trial_consistency[roi, trial] = z_product
+    return trial_consistency
+
+
+def reliability_loo(spkmap: np.ndarray, weighted: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """Calculate overall spatial reliability scores using leave-one-out cross-validation.
+
+    For each ROI, computes how consistent its spatial activity pattern is across trials
+    by correlating each trial with the average of all other trials.
+
+    Args:
+        spkmap: 3D array of shape (num_rois, num_trials, num_positions) containing
+               spatial activity maps for each ROI and trial.
+        weighted: If True, weights each trial's contribution by its RMS activity level
+                 when computing the final score. This reduces the impact of low-activity
+                 trials that may be dominated by noise.
+
+    Returns:
+        tuple containing:
+            - score: 1D array of shape (num_rois,) containing the average reliability
+                    score for each ROI. Higher values indicate more consistent spatial
+                    activity patterns across trials.
+            - trial_consistency: 2D array of shape (num_rois, num_trials) containing
+                               the per-trial reliability measurements used to compute
+                               the final scores.
+    """
+    trial_consistency = _jit_reliability_loo(spkmap)
+    # Use RMS activity on each trial as weights if requested
+    if weighted:
+        weights = np.sqrt(np.mean(spkmap**2, axis=2))
+        idx_all_zero = np.all(weights == 0, axis=1)
+        weights[idx_all_zero] = 1.0
+    score = np.average(trial_consistency, axis=1, weights=weights)
+    return score
+
+
 def measureSpatialInformation(occmap, spkmap):
     """
     measure the spatial information of spiking for each ROI using the formula in this paper:
