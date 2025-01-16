@@ -15,27 +15,30 @@ class PlaceFieldViewer:
         df = mousedb.getTable(trackerExists=True)
         self.mouse_names = df["mouseName"].unique()
         if fast_mode:
-            self.mouse_names = self.mouse_names[:2]
+            self.mouse_names = ["CR_Hippocannula6", "CR_Hippocannula7"]
         print(self.mouse_names)
         self.env_selection = {}
         self.idx_ses_selection = {}
         self.spkmaps = {}
         self.extras = {}
+        self.num_sessions = 4
+        self.ses_per_mouse = {}
 
         for mouse_name in tqdm(self.mouse_names, desc="Preparing mouse data", leave=True):
             self._prepare_mouse_data(mouse_name, fast_mode)
 
     def _prepare_mouse_data(self, mouse_name, fast_mode):
-        keep_planes = [1] if fast_mode else [1, 2, 3, 4]
+        keep_planes = [1, 2, 3, 4]
         track = tracking.tracker(mouse_name)  # get tracker object for mouse
         pcm = analysis.placeCellMultiSession(track, autoload=False, keep_planes=keep_planes)
-        envnum, idx_ses = pcm.env_idx_ses_selector(envmethod="second", sesmethod=4)
+        envnum, idx_ses = pcm.env_idx_ses_selector(envmethod="second", sesmethod=self.num_sessions)
         spkmaps, extras = pcm.get_spkmaps(envnum=envnum, idx_ses=idx_ses, trials="full", average=False, tracked=True)
 
         self.env_selection[mouse_name] = (envnum, idx_ses)
         self.idx_ses_selection[mouse_name] = idx_ses
         self.spkmaps[mouse_name] = spkmaps
         self.extras[mouse_name] = extras
+        self.ses_per_mouse[mouse_name] = len(idx_ses)
 
     def _make_roi_trajectory(self, spkmaps, roi_idx, dead_trials=None):
         if dead_trials is None:
@@ -51,12 +54,20 @@ class PlaceFieldViewer:
         env_trialnum = [item for pair in zip(trial_env, dead_trial_env) for item in pair if item is not None]
         return np.concatenate(interleaved, axis=0), np.concatenate(env_trialnum)
 
-    def _gather_idxs(self, mouse_name, idx_target_ses, min_percentile=90, max_percentile=100):
-        all_values = np.concatenate(self.extras[mouse_name]["relcor"])
-        reliability_values = self.extras[mouse_name]["relcor"][idx_target_ses]
+    def _gather_idxs(self, mouse_name, idx_target_ses, min_percentile=90, max_percentile=100, red_cells=False):
+        all_values = np.concatenate(self.extras[mouse_name]["relloo"])
+        reliability_values = self.extras[mouse_name]["relloo"][idx_target_ses]
+
         min_threshold = np.percentile(all_values, min_percentile)
         max_threshold = np.percentile(all_values, max_percentile)
-        return np.where((reliability_values > min_threshold) & (reliability_values < max_threshold))[0]
+        idx_in_percentile = (reliability_values > min_threshold) & (reliability_values < max_threshold)
+
+        idx_red = np.any(np.stack([ired for ired in self.extras[mouse_name]["idx_red"]]), axis=0)
+        if not red_cells:
+            idx_red = ~idx_red
+
+        idx_keepers = np.where(np.logical_and(idx_in_percentile, idx_red))[0]
+        return idx_keepers
 
     def _com(self, data, axis=-1):
         x = np.arange(data.shape[axis])
@@ -64,9 +75,19 @@ class PlaceFieldViewer:
         com[np.any(data < 0, axis=axis)] = np.nan
         return com
 
-    def get_plot(self, mouse_name, roi_idx, min_percentile=90, max_percentile=100, idx_target_ses=0, dead_trials=5):
+    def get_plot(
+        self,
+        mouse_name,
+        roi_idx,
+        min_percentile=90,
+        max_percentile=100,
+        idx_target_ses=0,
+        dead_trials=5,
+        red_cells=False,
+        fig_number: int = 1,
+    ):
         spkmaps = self.spkmaps[mouse_name]
-        idxs = self._gather_idxs(mouse_name, idx_target_ses, min_percentile, max_percentile)
+        idxs = self._gather_idxs(mouse_name, idx_target_ses, min_percentile, max_percentile, red_cells)
 
         if len(idxs) == 0:
             # Create an empty figure with a message
@@ -86,6 +107,9 @@ class PlaceFieldViewer:
         roi_idx = roi_idx % len(idxs)  # Wrap around if too large
         idx_roi_to_plot = idxs[roi_idx]
 
+        relcor = ",".join([f"{ses[idx_roi_to_plot]:.2f}" for ses in self.extras[mouse_name]["relcor"]])
+        relloo = ",".join([f"{ses[idx_roi_to_plot]:.2f}" for ses in self.extras[mouse_name]["relloo"]])
+
         roi_trajectory, env_trialnum = self._make_roi_trajectory(spkmaps, idx_roi_to_plot, dead_trials=dead_trials)
 
         idx_not_nan = ~np.any(np.isnan(roi_trajectory), axis=1)
@@ -97,7 +121,7 @@ class PlaceFieldViewer:
         cmap.set_bad((1, 0.8, 0.8))  # Light red color
         ses_col = plt.cm.Set1(np.linspace(0, 1, len(self.idx_ses_selection[mouse_name])))
 
-        fig = plt.figure(1, figsize=(10, 8))
+        fig = plt.figure(fig_number, figsize=(10, 8))
         fig.clf()
 
         ax = fig.add_subplot(131)
@@ -148,7 +172,7 @@ class PlaceFieldViewer:
         ax.set_yticks([])
         ax.set_xlabel("Activity (sigma)")
 
-        fig.suptitle(f"Mouse: {mouse_name}, ROI: {idx_roi_to_plot}, Target Session: {idx_target_ses}")
+        fig.suptitle(f"Mouse: {mouse_name}, ROI: {idx_roi_to_plot}, Target Session: {idx_target_ses}\nRelCor: {relcor}\nRelLoo: {relloo}")
 
         return fig
 

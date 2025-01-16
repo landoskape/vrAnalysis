@@ -43,9 +43,14 @@
             <input type="number" id="dead-trials" value="5" min="0" onchange="setDeadTrials(this.value)">
         </div>
 
-        <div class="control-group">
+        <!-- <div class="control-group">
             <span class="control-label">Remember ROI:</span>
             <input type="button" id="remember-roi" value="Print ROI Details" onclick="printRoiDetails()">
+        </div> -->
+                
+        <div class="control-group">
+            <span class="control-label">Red Cells:</span>
+            <input type="checkbox" id="redCells" checked onchange="updateRedCells(this.checked)">
         </div>
     </div>
     

@@ -6,7 +6,8 @@ let state = {
     targetSes: 0,
     deadTrials: 5,
     mouseNames: [],
-    trueRoiIdx: 0
+    trueRoiIdx: 0,
+    redCells: true,
 };
 
 // Fetch initial data from server
@@ -15,8 +16,14 @@ fetch('/init-data')
     .then(data => {
         state.mouseNames = data.mouse_names;
         updateMouseDisplay();
-        updatePlot();
+        updateRedCellsDisplay();
+        updatePlot(reset_roi_idx=true);
     });
+
+function updateRedCells(value) {
+    state.redCells = value;
+    updatePlot(reset_roi_idx=true);
+}
 
 function updatePlot(reset_roi_idx=false) {
     if (reset_roi_idx) {
@@ -24,11 +31,11 @@ function updatePlot(reset_roi_idx=false) {
         fetchAndUpdateRoi(state.roiIdx, updatePlotAfter=false);
     }
 
-    const url = `/plot?mouse_idx=${state.mouseIndex}&roi_idx=${state.roiIdx}&min_percentile=${state.minPercentile}&max_percentile=${state.maxPercentile}&target_ses=${state.targetSes}&dead_trials=${state.deadTrials}`;
+    const url = `/plot?mouse_idx=${state.mouseIndex}&roi_idx=${state.roiIdx}&min_percentile=${state.minPercentile}&max_percentile=${state.maxPercentile}&target_ses=${state.targetSes}&dead_trials=${state.deadTrials}&red_cells=${state.redCells}`;
     document.getElementById('plot-image').src = url;
     
     // Update true ROI index display
-    fetch(`/get-true-roi-idx?mouse_idx=${state.mouseIndex}&roi_idx=${state.roiIdx}&min_percentile=${state.minPercentile}&max_percentile=${state.maxPercentile}&idx_target_ses=${state.targetSes}`)
+    fetch(`/get-true-roi-idx?mouse_idx=${state.mouseIndex}&roi_idx=${state.roiIdx}&min_percentile=${state.minPercentile}&max_percentile=${state.maxPercentile}&idx_target_ses=${state.targetSes}&red_cells=${state.redCells}`)
         .then(response => response.json())
         .then(data => {
             document.getElementById('true-roi-idx').textContent = 
@@ -54,6 +61,10 @@ function updateMouseDisplay() {
     document.getElementById('mouse-display').textContent = state.mouseNames[state.mouseIndex];
 }
 
+function updateRedCellsDisplay() {
+    document.getElementById('red-cells-display').checked = state.redCells;
+}
+
 function handleRoiUpdate(newRoiIdx, data, updatePlotAfter = true) {
     if (data.total_rois > 0) {
         state.roiIdx = newRoiIdx % data.total_rois;
@@ -72,7 +83,7 @@ function handleRoiUpdate(newRoiIdx, data, updatePlotAfter = true) {
 }
 
 function fetchAndUpdateRoi(newRoiIdx, updatePlotAfter = true) {
-    fetch(`/get-true-roi-idx?mouse_idx=${state.mouseIndex}&roi_idx=${newRoiIdx}&min_percentile=${state.minPercentile}&max_percentile=${state.maxPercentile}&idx_target_ses=${state.targetSes}`)
+    fetch(`/get-true-roi-idx?mouse_idx=${state.mouseIndex}&roi_idx=${newRoiIdx}&min_percentile=${state.minPercentile}&max_percentile=${state.maxPercentile}&idx_target_ses=${state.targetSes}&red_cells=${state.redCells}`)
         .then(response => response.json())
         .then(data => handleRoiUpdate(newRoiIdx, data, updatePlotAfter));
 }
@@ -109,15 +120,24 @@ function setPercentiles() {
 }
 
 function updateTargetSes(delta) {
-    state.targetSes = (state.targetSes + delta + 4) % 4;  // Hardcoded to 4 sessions
-    document.getElementById('target-ses-input').value = state.targetSes;
-    updatePlot(reset_roi_idx=true);
+    // Get the number of sessions for current mouse from the server
+    fetch(`/get-sessions?mouse_idx=${state.mouseIndex}`)
+        .then(response => response.json())
+        .then(data => {
+            state.targetSes = (state.targetSes + delta + data.num_sessions) % data.num_sessions;
+            document.getElementById('target-ses-input').value = state.targetSes;
+            updatePlot(reset_roi_idx=true);
+        });
 }
 
 function setTargetSes(value) {
-    state.targetSes = Math.max(0, parseInt(value) || 0) % 4;
-    document.getElementById('target-ses-input').value = state.targetSes;
-    updatePlot(reset_roi_idx=true);
+    fetch(`/get-sessions?mouse_idx=${state.mouseIndex}`)
+        .then(response => response.json())
+        .then(data => {
+            state.targetSes = Math.max(0, parseInt(value) || 0) % data.num_sessions;
+            document.getElementById('target-ses-input').value = state.targetSes;
+            updatePlot(reset_roi_idx=true);
+        });
 }
 
 function setDeadTrials(value) {

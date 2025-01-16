@@ -36,9 +36,20 @@ def create_app(fast_mode=False):
         print(statement)
         return statement
 
+    @app.route("/get-sessions")
+    def get_sessions():
+        mouse_idx = int(request.args.get("mouse_idx", 0))
+        mouse_name = viewer.mouse_names[mouse_idx]
+        return jsonify({"num_sessions": viewer.ses_per_mouse[mouse_name]})
+
     @app.route("/init-data")
     def init_data():
-        return jsonify({"mouse_names": viewer.mouse_names.tolist()})
+        return jsonify(
+            {
+                "mouse_names": viewer.mouse_names,
+                "num_sessions": viewer.ses_per_mouse[viewer.mouse_names[0]],  # Initial sessions for first mouse
+            }
+        )
 
     @app.route("/get-true-roi-idx")
     def get_true_roi_idx():
@@ -49,7 +60,8 @@ def create_app(fast_mode=False):
 
         mouse_name = viewer.mouse_names[mouse_idx]
         idx_target_ses = int(request.args.get("idx_target_ses", 0))
-        idxs = viewer._gather_idxs(mouse_name, idx_target_ses, min_percentile, max_percentile)
+        red_cells = request.args.get("red_cells", "true").lower() == "true"
+        idxs = viewer._gather_idxs(mouse_name, idx_target_ses, min_percentile, max_percentile, red_cells)
         if len(idxs) == 0:
             return jsonify({"true_roi_idx": -1, "total_rois": 0})
 
@@ -72,6 +84,7 @@ def create_app(fast_mode=False):
             max_percentile = float(request.args.get("max_percentile", 100))
             target_ses = int(request.args.get("target_ses", 0))
             dead_trials = int(request.args.get("dead_trials", 5))
+            red_cells = request.args.get("red_cells", "true").lower() == "true"
 
             mouse_name = viewer.mouse_names[mouse_idx]
             fig = viewer.get_plot(
@@ -81,6 +94,7 @@ def create_app(fast_mode=False):
                 max_percentile=max_percentile,
                 idx_target_ses=target_ses,
                 dead_trials=dead_trials,
+                red_cells=red_cells,
             )
 
             buf = io.BytesIO()
