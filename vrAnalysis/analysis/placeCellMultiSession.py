@@ -238,8 +238,12 @@ class placeCellMultiSession(multipleAnalysis):
             self.keep_planes = keep_planes
 
         # create place cell single session objects for each session
+        if self.autoload:
+            progress_bar = tqdm(self.track.sessions, desc="Loading place cell single session objects", leave=False)
+        else:
+            progress_bar = self.track.sessions
         pcss_arguments = self.make_pcss_arguments()
-        self.pcss = [placeCellSingleSession(ses, **pcss_arguments) for ses in self.track.sessions]
+        self.pcss = [placeCellSingleSession(ses, **pcss_arguments) for ses in progress_bar]
         self.pcss_loaded = [self.autoload for _ in range(len(self.pcss))]
         self.environments = np.unique(np.concatenate([pcss.environments for pcss in self.pcss]))
 
@@ -249,7 +253,7 @@ class placeCellMultiSession(multipleAnalysis):
         self.num_ses = len(self.idx_ses)
         idx_to_load = [idx for idx in self.idx_ses if not (self.pcss_loaded[idx])]
         if len(idx_to_load) > 0:
-            for sesidx in tqdm(idx_to_load):
+            for sesidx in tqdm(idx_to_load, desc="Loading place cell single session data", leave=False):
                 self.pcss[sesidx].load_data(**kwargs)
                 self.pcss_loaded[sesidx] = True
 
@@ -339,12 +343,13 @@ class placeCellMultiSession(multipleAnalysis):
         idx_red = [self.pcss[i].vrexp.getRedIdx(keep_planes=self.keep_planes) for i in idx_ses]
 
         # get reliability values for ROIs
-        relmse, relcor = helpers.named_transpose([self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses])
+        relmse, relcor, relloo = helpers.named_transpose([self.pcss[i].get_reliability_values(envnum=envnum) for i in idx_ses])
 
         # get_reliability_values returns a list of relmse/relcor values for each environment
         # since only envnum (len(envnum)==1) was requested, get the 0th index for each relmse & relcor
         relmse = list(map(lambda x: x[0], relmse))
         relcor = list(map(lambda x: x[0], relcor))
+        relloo = list(map(lambda x: x[0], relloo))
 
         # get place field for ROIs
         pfloc, pfidx = helpers.named_transpose([self.pcss[ises].get_place_field(spkmap, method=pf_method) for ises, spkmap in zip(idx_ses, spkmaps)])
@@ -362,6 +367,7 @@ class placeCellMultiSession(multipleAnalysis):
             idx_red = [i_red[idx_track] for i_red, idx_track in zip(idx_red, idx_tracked)]
             relmse = [mse[idx_track] for mse, idx_track in zip(relmse, idx_tracked)]
             relcor = [cor[idx_track] for cor, idx_track in zip(relcor, idx_tracked)]
+            relloo = [loo[idx_track] for loo, idx_track in zip(relloo, idx_tracked)]
             pfloc = [pfl[idx_track] for pfl, idx_track in zip(pfloc, idx_tracked)]
             pfidx = [np.argsort(pfl) for pfl in pfloc]
             roi_idx = [ridx[idx_track] for ridx, idx_track in zip(roi_idx, idx_tracked)]
@@ -380,6 +386,7 @@ class placeCellMultiSession(multipleAnalysis):
             idx_red = self.track.split_by_plane(idx_red, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             relmse = self.track.split_by_plane(relmse, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             relcor = self.track.split_by_plane(relcor, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
+            relloo = self.track.split_by_plane(relloo, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             pfloc = self.track.split_by_plane(pfloc, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             pfidx = self.track.split_by_plane(pfidx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
             roi_idx = self.track.split_by_plane(roi_idx, dim=0, tracked=tracked, idx_ses=idx_ses, keep_planes=self.keep_planes)
@@ -398,6 +405,7 @@ class placeCellMultiSession(multipleAnalysis):
         extras = dict(
             relmse=relmse,
             relcor=relcor,
+            relloo=relloo,
             idx_red=idx_red,
             pfloc=pfloc,
             pfidx=pfidx,
