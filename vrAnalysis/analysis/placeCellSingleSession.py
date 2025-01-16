@@ -355,6 +355,7 @@ class placeCellSingleSession(standardAnalysis):
         numcv=2,
         standardizeSpks=True,
         smoothWidth=1,
+        smoothWidth_reliability=10,
         full_trial_flexibility=3,
         use_all_rois=False,
     ):
@@ -366,6 +367,7 @@ class placeCellSingleSession(standardAnalysis):
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
         self.smoothWidth = smoothWidth
+        self.smoothWidth_reliability = smoothWidth_reliability
         self.full_trial_flexibility = full_trial_flexibility
         self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(vrexp.value["roiPerPlane"]))]
         self.use_all_rois = use_all_rois
@@ -737,7 +739,7 @@ class placeCellSingleSession(standardAnalysis):
     def measure_reliability(self, new_split=True, with_test=False, smoothWidth=-1, total_folds=3, train_folds=2, rawspkmap=None, return_only=False):
         """method for measuring reliability in each environment"""
         if smoothWidth == -1:
-            smoothWidth = self.smoothWidth
+            smoothWidth = self.smoothWidth_reliability
 
         # create a train/test split
         if new_split:
@@ -746,27 +748,39 @@ class placeCellSingleSession(standardAnalysis):
         # measure reliability of spiking (in two ways)
         spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="train", rawspkmap=rawspkmap)
         relmse, relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
+        relloo = [helpers.reliability_loo(smap) for smap in spkmap]
 
         # If not returning values only, save them to the object
         if not return_only:
-            self.relmse, self.relcor = np.stack(relmse), np.stack(relcor)
+            self.relmse, self.relcor, self.relloo = np.stack(relmse), np.stack(relcor), np.stack(relloo)
 
         if with_test:
             # measure on test trials
             spkmap = self.get_spkmap(average=False, smooth=smoothWidth, trials="test", rawspkmap=rawspkmap)
             test_relmse, test_relcor = helpers.named_transpose([helpers.measureReliability(smap, numcv=self.numcv) for smap in spkmap])
+            test_relloo = [helpers.reliability_loo(smap) for smap in spkmap]
             if not return_only:
-                self.test_relmse, self.test_relcor = np.stack(test_relmse), np.stack(test_relcor)
+                self.test_relmse, self.test_relcor, self.test_relloo = np.stack(test_relmse), np.stack(test_relcor), np.stack(test_relloo)
         else:
             # Alert the user that the training data was (re)calculated without testing
             if not return_only:
-                self.test_relmse, self.test_relcor = None, None
+                self.test_relmse, self.test_relcor, self.test_relloo = None, None, None
 
         if return_only:
+            reliability = dict(
+                relmse=np.stack(relmse),
+                relcor=np.stack(relcor),
+                relloo=np.stack(relloo),
+            )
             if with_test:
-                return np.stack(relmse), np.stack(relcor), np.stack(test_relmse), np.stack(test_relcor)
-            else:
-                return np.stack(relmse), np.stack(relcor)
+                reliability.update(
+                    dict(
+                        test_relmse=np.stack(test_relmse),
+                        test_relcor=np.stack(test_relcor),
+                        test_relloo=np.stack(test_relloo),
+                    )
+                )
+            return reliability
 
     @prepare_data
     def get_reliability_values(self, envnum=None, with_test=False, rawspkmap=None):
@@ -781,27 +795,33 @@ class placeCellSingleSession(standardAnalysis):
         if rawspkmap is None:
             relmse = self.relmse
             relcor = self.relcor
+            relloo = self.relloo
             if with_test:
                 test_relmse = self.test_relmse
                 test_relcor = self.test_relcor
+                test_relloo = self.test_relloo
         else:
             # if rawspkmap is provided, calculate reliability values using this spkmap
             if with_test:
-                relmse, relcor, test_relmse, test_relcor = self.measure_reliability(return_only=True, with_test=True, rawspkmap=rawspkmap)
+                relmse, relcor, test_relmse, test_relcor, test_relloo = self.measure_reliability(
+                    return_only=True, with_test=True, rawspkmap=rawspkmap
+                )
             else:
                 relmse, relcor = self.measure_reliability(return_only=True, with_test=False, rawspkmap=rawspkmap)
 
         mse = [relmse[ii] for ii in envidx]
         cor = [relcor[ii] for ii in envidx]
+        loo = [relloo[ii] for ii in envidx]
 
         # if not with_test trials, just return mse/cor on train trials
         if not with_test:
-            return mse, cor
+            return mse, cor, loo
 
         # if with_test, get these too and return them all
         msetest = [test_relmse[ii] for ii in envidx]
         cortest = [test_relcor[ii] for ii in envidx]
-        return mse, cor, msetest, cortest
+        lootest = [test_relloo[ii] for ii in envidx]
+        return mse, cor, loo, msetest, cortest, lootest
 
     @prepare_data
     def get_reliable(self, envnum=None, cutoffs=None, maxcutoffs=None, rawspkmap=None):
