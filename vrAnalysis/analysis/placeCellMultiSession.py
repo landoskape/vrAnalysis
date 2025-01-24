@@ -1,3 +1,4 @@
+from typing import List
 from copy import copy
 from tqdm import tqdm
 from functools import wraps
@@ -48,6 +49,8 @@ class placeCellMultiSession(multipleAnalysis):
     ---------------
     == I just started this file, will populate standard usage later! ==
     """
+
+    pcss: List[placeCellSingleSession]
 
     def __init__(
         self,
