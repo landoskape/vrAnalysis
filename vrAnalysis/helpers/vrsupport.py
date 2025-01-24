@@ -310,6 +310,8 @@ def reliability_loo(spkmap: np.ndarray, weighted: bool = True) -> tuple[np.ndarr
         weights = np.sqrt(np.mean(spkmap**2, axis=2))
         idx_all_zero = np.all(weights == 0, axis=1)
         weights[idx_all_zero] = 1.0
+    else:
+        weights = None
     score = np.average(trial_consistency, axis=1, weights=weights)
     return score
 
