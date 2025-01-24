@@ -175,6 +175,3 @@ class PlaceFieldViewer:
         fig.suptitle(f"Mouse: {mouse_name}, ROI: {idx_roi_to_plot}, Target Session: {idx_target_ses}\nRelCor: {relcor}\nRelLoo: {relloo}")
 
         return fig
-
-    def __call__(self, mouse_name, roi_idx, min_percentile=90, max_percentile=100, idx_target_ses=0, dead_trials=5):
-        return self.get_plot(mouse_name, roi_idx, min_percentile, max_percentile, idx_target_ses, dead_trials)
