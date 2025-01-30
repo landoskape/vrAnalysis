@@ -174,7 +174,7 @@ class FluorTypeSpkmapsViewer(Viewer):
             ax_lineplot.plot(data, color=self.fluor_type_loader.fluor_colors[ft], label=ft)
         ax_lineplot.set_title(title)
         ax_lineplot.set_ylabel("Activity")
-        ax_lineplot.legend(loc="best")
+        ax_lineplot.legend(loc="best", fontsize=8)
 
         ax_position = fig.add_subplot(gs[1, 0])
         ax_position.sharex(ax_lineplot)
