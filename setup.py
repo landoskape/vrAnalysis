@@ -48,12 +48,7 @@ setup(
     url="https://github.com/landoskape/vrAnalysis",
     author="Andrew T. Landau",
     license="LICENSE",
-    packages=[
-        "vrAnalysis",
-        "vrAnalysis.analysis",
-        "vrAnalysis.helpers",
-        "vrAnalysis.faststats",
-    ],
+    packages=["vrAnalysis", "vrAnalysis.analysis", "vrAnalysis.helpers", "vrAnalysis.faststats", "photometry", "dimilibi"],
     python_requires=">=3.9, <=4",
     install_requires=deps_core,
     extras_require={
