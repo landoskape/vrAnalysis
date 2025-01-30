@@ -802,12 +802,14 @@ class placeCellSingleSession(standardAnalysis):
                 test_relloo = self.test_relloo
         else:
             # if rawspkmap is provided, calculate reliability values using this spkmap
+            reliability_output = self.measure_reliability(return_only=True, with_test=with_test, rawspkmap=rawspkmap)
+            relmse = reliability_output["relmse"]
+            relcor = reliability_output["relcor"]
+            relloo = reliability_output["relloo"]
             if with_test:
-                relmse, relcor, test_relmse, test_relcor, test_relloo = self.measure_reliability(
-                    return_only=True, with_test=True, rawspkmap=rawspkmap
-                )
-            else:
-                relmse, relcor = self.measure_reliability(return_only=True, with_test=False, rawspkmap=rawspkmap)
+                test_relmse = reliability_output["test_relmse"]
+                test_relcor = reliability_output["test_relcor"]
+                test_relloo = reliability_output["test_relloo"]
 
         mse = [relmse[ii] for ii in envidx]
         cor = [relcor[ii] for ii in envidx]
