@@ -1,6 +1,16 @@
+from contextlib import contextmanager
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+
+
+@contextmanager
+def batch_plot_context():
+    plt.ioff()
+    try:
+        yield
+    finally:
+        plt.ion()
 
 
 def save_figure(fig, path, **kwargs):
