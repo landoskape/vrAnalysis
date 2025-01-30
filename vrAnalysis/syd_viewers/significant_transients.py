@@ -1,6 +1,7 @@
 from typing import Optional, Dict
 import numpy as np
 from matplotlib import pyplot as plt
+import matplotlib as mpl
 from vrAnalysis import helpers
 from vrAnalysis import database
 from vrAnalysis import session
@@ -133,22 +134,33 @@ class SigTransientLoader:
 
         fig = plt.figure(figsize=(8, 6), layout="constrained")
         fig.clf()
+        subfigs = fig.subfigures(1, 2, wspace=0.05)
 
-        gs = fig.add_gridspec(3, 1)
-        ax_lineplot = fig.add_subplot(gs[0])
+        # Create two separate GridSpec objects
+        gs_left = subfigs[0].add_gridspec(3, 1)
+        gs_right = subfigs[1].add_gridspec(3, 1, height_ratios=[1, 1, 0.2])
+
+        # Left column plots (evenly distributed)
+        ax_lineplot = fig.add_subplot(gs_left[0])
+        ax_dff = fig.add_subplot(gs_left[1])
+        ax_sigplot = fig.add_subplot(gs_left[2])
+
+        # Right section plots
+        ax_pos_durs = fig.add_subplot(gs_right[0])
+        ax_neg_durs = fig.add_subplot(gs_right[1])
+        ax_cbar = fig.add_subplot(gs_right[2])
+
         ax_lineplot.plot(data["ftimes"], data["fcorr"], color="k", linewidth=1, label="fcorr")
         ax_lineplot.plot(data["ftimes"], data["significant_fluorescence"], color="b", linewidth=1, label="sig.transients")
         ax_lineplot.set_ylabel("Activity")
         ax_lineplot.set_title(f"ROI: {state['roi']}")
         ax_lineplot.set_xlim(0, xmax)
 
-        ax_dff = fig.add_subplot(gs[1])
         ax_dff.plot(data["ftimes"], data["dff"], color="k", linewidth=1, label="dff")
         ax_dff.axhline(0, color="r", linestyle="--", linewidth=0.5)
         ax_dff.set_ylabel("DFF")
         ax_dff.set_xlim(0, xmax)
 
-        ax_sigplot = fig.add_subplot(gs[2])
         ax_sigplot.imshow(data["significant_transients"][:, 0].T, interpolation="none", aspect="auto", vmin=0, vmax=1, cmap="gray", extent=extent)
         ax_sigplot.set_xlim(0, xmax)
         ax_sigplot.set_yticks(np.arange(num_threshold))
@@ -156,6 +168,44 @@ class SigTransientLoader:
 
         ax_dff.sharex(ax_lineplot)
         ax_sigplot.sharex(ax_lineplot)
+
+        max_duration = 0
+        for i, threshold in enumerate(data["thresholds"]):
+            pos_durs = data["stats"][i]["positive_durations"]
+            neg_durs = data["stats"][i]["negative_durations"]
+            if len(pos_durs) > 0:
+                max_duration = max(max_duration, np.max(pos_durs))
+            if len(neg_durs) > 0:
+                max_duration = max(max_duration, np.max(neg_durs))
+
+        cmap = mpl.colormaps["cividis"]
+        norm = mpl.colors.Normalize(vmin=min(data["thresholds"]), vmax=max(data["thresholds"]))
+        colors = [cmap(norm(threshold)) for threshold in data["thresholds"]]
+
+        max_counts = 0
+        binedges = np.arange(-0.5, max_duration + 0.5, 1)
+        for i, threshold in enumerate(data["thresholds"]):
+            c_pos_counts = np.cumsum(np.histogram(data["stats"][i]["positive_durations"], bins=binedges)[0])
+            max_counts = max(max_counts, np.max(c_pos_counts))
+            ax_pos_durs.plot(binedges[:-1], c_pos_counts, color=colors[i])
+
+            c_neg_counts = np.cumsum(np.histogram(data["stats"][i]["negative_durations"], bins=binedges)[0])
+            max_counts = max(max_counts, np.max(c_neg_counts))
+            ax_neg_durs.plot(binedges[:-1], c_neg_counts, color=colors[i])
+
+        cbar = mpl.colorbar.ColorbarBase(ax_cbar, cmap=cmap, norm=norm, orientation="horizontal")
+        cbar.set_label("Threshold")
+
+        ax_pos_durs.set_xlim(0, max_duration)
+        ax_neg_durs.set_xlim(0, max_duration)
+        ax_pos_durs.set_ylim(0, max_counts)
+        ax_neg_durs.set_ylim(0, max_counts)
+        ax_neg_durs.set_xlabel("Duration (s)")
+        ax_neg_durs.set_ylabel("Cumulative Counts")
+        ax_pos_durs.set_xlabel("Duration (s)")
+        ax_pos_durs.set_ylabel("Cumulative Counts")
+        ax_pos_durs.set_title("Positive Transients")
+        ax_neg_durs.set_title("Negative Transients")
 
         return fig
 

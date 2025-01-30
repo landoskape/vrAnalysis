@@ -82,18 +82,13 @@ def get_significant_transients(dff, threshold_levels=np.arange(0.8, 4.2, 0.2), f
     significant_transients = np.zeros((dff.shape[0], dff.shape[1], num_thresholds), dtype=bool)
 
     if return_stats:
-        max_duration = 100
-        num_rois = dff.shape[1]
-
-        def _empty_fpr_stat():
-            return np.zeros((num_thresholds, max_duration + 1, num_rois))
-
-        fpr_stat_keys = ["num_positive", "num_negative", "fpr"]
-        fpr_stats = {f: _empty_fpr_stat() for f in fpr_stat_keys}
+        fpr_stats = []
 
     # Compute putative transients
     progress = tqdm(threshold_levels, desc="Measuring transients at each threshold...", leave=True) if verbose else threshold_levels
     for ithreshold, threshold in enumerate(progress):
+
+        fpr_stats.append({})
 
         # For each ROI, compute the FPR for each transient duration
         roi_progress = tqdm(range(dff.shape[1]), desc="Measuring each ROI...", leave=False) if verbose else range(dff.shape[1])
@@ -116,15 +111,9 @@ def get_significant_transients(dff, threshold_levels=np.arange(0.8, 4.2, 0.2), f
                     transient_significant[durations == duration] = True
 
                 if return_stats:
-                    if duration < max_duration:
-                        fpr_stats["num_positive"][ithreshold, duration, iroi] = np.sum(durations == duration)
-                        fpr_stats["num_negative"][ithreshold, duration, iroi] = np.sum(neg_durations == duration)
-                        fpr_stats["fpr"][ithreshold, duration, iroi] = fpr
-                    else:
-                        idx_duration = max_duration
-                        fpr_stats["num_positive"][ithreshold, idx_duration, iroi] = np.sum(durations >= idx_duration)
-                        fpr_stats["num_negative"][ithreshold, idx_duration, iroi] = np.sum(neg_durations >= idx_duration)
-                        fpr_stats["fpr"][ithreshold, idx_duration, iroi] = fpr
+                    fpr_stats[ithreshold]["positive_durations"] = durations
+                    fpr_stats[ithreshold]["negative_durations"] = neg_durations
+                    fpr_stats[ithreshold]["fpr"] = fpr
 
             # Record the significant transients
             for i, is_sig in enumerate(transient_significant):
