@@ -7,6 +7,7 @@ import numpy as np
 from numpyencoder import NumpyEncoder
 from . import helpers
 from . import fileManagement as fm
+from scipy.sparse import csc_array, save_npz, load_npz
 
 # Variables that might need to be changed for different users
 dataPath = fm.localDataPath()
@@ -88,6 +89,9 @@ class vrSession:
     def onePath(self):
         return self.sessionPath() / "oneData"
 
+    def spkmapsPath(self):
+        return self.sessionPath() / "spkmaps"
+
     def rawDataPath(self):
         return self.sessionPath() / "rawDataPath"
 
@@ -98,7 +102,7 @@ class vrSession:
         return self.sessionPath() / "roicat"
 
     def getSavedOne(self):
-        return self.onePath().glob("*.npy")
+        return list(self.onePath().glob("*.npy")) + list(self.onePath().glob("*.npz"))
 
     def printSavedOne(self):
         # Return all names of one variables stored in this experiment's directory
@@ -231,8 +235,56 @@ class vrExperiment(vrSession):
 
         raise AttributeError(f"'{name}' is not an attribute of self (vrExperiment object) and is not a key in self.value.")
 
+    # ----- extra saving for spkmaps -----
+    def spkmap_path(self, activity_type, envnum, params=False):
+        name = f"{activity_type}.env{envnum}"
+        if params:
+            name += ".params"
+        return self.spkmapsPath() / (name + ".npy")
+
+    def save_spkmaps(self, activity_type, spkmaps, envnum, params=None):
+        if len(spkmaps) != len(envnum):
+            raise ValueError(f"Number of spkmaps ({len(spkmaps)}) does not match number of environments ({len(envnum)})")
+
+        for smap, env in zip(spkmaps, envnum):
+            path = self.spkmap_path(activity_type, env)
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(path, smap)
+            if params is not None:
+                path = self.spkmap_path(activity_type, env, params=True)
+                np.save(path, params)
+
+    def load_spkmaps(self, activity_type, envnum=None):
+        if envnum is None:
+            trial_envnum = self.loadone("trials.environmentIndex")
+            envnum = np.unique(trial_envnum)
+        envnum = helpers.check_iterable(envnum)
+        path = [self.spkmap_path(activity_type, env) for env in envnum]
+        path_exists = [p.exists() for p in path]
+        if not all(path_exists):
+            missing_paths = [p for p, exists in zip(path, path_exists) if not exists]
+            activity_types = self.identify_spkmaps(None, params=False)
+            raise ValueError(
+                f"The following spkmap paths do not exist: {missing_paths}. The following activity types are available: {activity_types} (check whether the environment number is correct!)"
+            )
+
+        spkmaps = [np.load(p) for p in path]
+        return spkmaps
+
+    def identify_spkmaps(self, envnum=None, params=False):
+        spkmap_path = self.spkmapsPath()
+        env_str = ".env" if envnum is None else f".env{envnum}"
+        if params:
+            env_str += ".params"
+        all_files = list(spkmap_path.glob(f"*{env_str}*"))
+        if not params:
+            all_files = [file for file in all_files if "params" not in file.stem]
+        all_activity_types = [file.stem.split(env_str)[0] for file in all_files]
+        return all_activity_types
+
     # ----------------------------------------------------------------- one data handling --------------------------------------------------------------------
-    def saveone(self, data: Union[np.ndarray, LoadingRecipe], *names: str) -> None:
+    def saveone(self, data: Union[np.ndarray, LoadingRecipe], *names: str, sparse: bool = False) -> None:
         """
         Save data directly or as a loading recipe.
 
@@ -247,13 +299,21 @@ class vrExperiment(vrSession):
         ):
             # Save recipe as a numpy array containing a dictionary
             recipe_dict = data.to_dict()
+            # Add .npy extension to the file name
+            file_name
             np.save(path, np.array(recipe_dict, dtype=object))
+        elif sparse:
+            path = path.with_suffix(".npz")
+            if isinstance(data, csc_array):
+                save_npz(path, data)
+            else:
+                raise ValueError("Data is not a scipy.sparse.csc_array, not supported for saving with sparse=True")
         else:
             # Save data directly to one file
             self.loadBuffer[file_name] = data  # (standard practice is to buffer the data for efficient data handling)
             np.save(path, data)
 
-    def loadone(self, *names: str, force=False) -> np.ndarray:
+    def loadone(self, *names: str, force=False, sparse: bool = False) -> np.ndarray:
         """
         Load data, either directly or by following a recipe.
 
@@ -269,28 +329,32 @@ class vrExperiment(vrSession):
             return self.loadBuffer[file_name]
         else:
             path = self.onePath() / file_name
+            if sparse:
+                path = path.with_suffix(".npz")
             if not (path.exists()):
                 print(f"In session {self.sessionPrint()}, the one file {file_name} doesn't exist. Here is a list of saved oneData files:")
                 for oneFile in self.printSavedOne():
                     print(oneFile)
                 raise ValueError("oneData requested is not available")
 
-            # Load saved numpy array at savepath
-            data = np.load(path, allow_pickle=True)
+            # Load saved numpy array at savepath (or sparse array if sparse=True)
+            if sparse:
+                data = load_npz(path)
+            else:
+                data = np.load(path, allow_pickle=True)
+                if LoadingRecipe.is_recipe(data):
+                    # Get loading recipe
+                    recipe = LoadingRecipe.from_dict(data.item())
 
-            if LoadingRecipe.is_recipe(data):
-                # Get loading recipe
-                recipe = LoadingRecipe.from_dict(data.item())
+                    # Load data using appropriate loader
+                    if recipe.source_arg is not None:
+                        data = self.loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
+                    else:
+                        data = self.loaders[recipe.loader_type](**recipe.kwargs)
 
-                # Load data using appropriate loader
-                if recipe.source_arg is not None:
-                    data = self.loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
-                else:
-                    data = self.loaders[recipe.loader_type](**recipe.kwargs)
-
-                # Apply transforms
-                for transform in recipe.transforms:
-                    data = self.transforms[transform](data)
+                    # Apply transforms
+                    for transform in recipe.transforms:
+                        data = self.transforms[transform](data)
 
             self.loadBuffer[file_name] = data
             return data
@@ -302,6 +366,7 @@ class vrExperiment(vrSession):
 
     def oneFilename(self, *names):
         # create one filename given an arbitrary length list of names
+        # default extension is .npy (this is changed in saveone/loadone when saving/loading sparse arrays)
         return ".".join(names) + ".npy"
 
     def clearBuffer(self, *names):
