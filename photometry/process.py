@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.interpolate import interp1d
-from scipy.signal import detrend, butter, filtfilt
+from scipy.signal import butter, filtfilt
+from scipy import ndimage
+from vrAnalysis.helpers import nearestpoint
 
 
 def resample_with_antialiasing(data, time, new_sampling_rate, filter_order=8):
@@ -198,7 +200,16 @@ def get_cycle_data(signal, start, stop, keep_fraction=0.5, signal_cv_tolerance=0
     return cycle_data, np.array(invalid_cycle)
 
 
-def analyze_data(data, preperiod=0.1, cycle_period_tolerance=0.5, keep_fraction=0.5, signal_cv_tolerance=0.05, sampling_rate=1000):
+def analyze_data(
+    data,
+    preperiod=0.1,
+    postperiod=1.0,
+    cycle_period_tolerance=0.5,
+    keep_fraction=0.5,
+    signal_cv_tolerance=0.05,
+    sampling_rate=1000,
+    filter_func=None,
+):
     """Process a data file, return results and filtered signals."""
     # First check if the data is valid and meets criteria for processing.
     num_samples = len(data["in_data"])
@@ -219,39 +230,51 @@ def analyze_data(data, preperiod=0.1, cycle_period_tolerance=0.5, keep_fraction=
     in1, invalid1 = get_cycle_data(data["in_data"], start1, stop1, keep_fraction=keep_fraction, signal_cv_tolerance=signal_cv_tolerance)
     in2, invalid2 = get_cycle_data(data["in_data"], start2, stop2, keep_fraction=keep_fraction, signal_cv_tolerance=signal_cv_tolerance)
 
-    # Upsample the cycle data to match the original timestamps
-    upsample_cycle_timestamps = time[(time >= cycle_timestamps[0]) & (time <= cycle_timestamps[-1])]
-    upsample_in1 = detrend(interp1d(cycle_timestamps, in1)(upsample_cycle_timestamps))
-    upsample_in2 = detrend(interp1d(cycle_timestamps, in2)(upsample_cycle_timestamps))
-    upsample_offset = np.nonzero(time >= upsample_cycle_timestamps[0])[0][0]
-
     if np.any(invalid1) or np.any(invalid2):
         print(
             f"Warning: excess co. of var. detected for {np.sum(invalid1)/num_samples*100:.2f}% of cycles are invalid for channel 1 and {np.sum(invalid2)/num_samples*100:.2f}% for channel 2."
         )
 
-    # Get start indices for opto cycles
+    # Resample the data to the new sampling rate
+    data_in1, time_data = resample_with_antialiasing(in1, cycle_timestamps, sampling_rate)
+    data_in2, in2_time_rs = resample_with_antialiasing(in2, cycle_timestamps, sampling_rate)
+
+    # Do a 50% percentile filter over 1 second to capture the drift in baseline fluorescence
+    data_in1 = data_in1 - ndimage.percentile_filter(data_in1, 50, size=1000)
+    data_in2 = data_in2 - ndimage.percentile_filter(data_in2, 50, size=1000)
+
+    if filter_func is not None:
+        data_in1 = filter_func(data_in1)
+        data_in2 = filter_func(data_in2)
+
+    if not np.allclose(time_data, in2_time_rs):
+        raise ValueError("Inconsistent time stamps for in1 and in2")
+
+    # Get start indices and times for opto cycles
     start3, stop3, _ = get_opto_cycles(data, min_period=1.0, cycle_period_tolerance=cycle_period_tolerance)
-    start3 = start3 - upsample_offset
-    stop3 = stop3 - upsample_offset
+    opto_start_time = data["out_time"][start3]
 
-    # Get opto start time in upsampled time
-    opto_start_time = upsample_cycle_timestamps[start3]
-    upsample_opto_data = data["out3"][upsample_offset:]
-    upsample_opto_data = upsample_opto_data[: len(upsample_cycle_timestamps)]
+    # And also get the time of opto start / stops in the new sampling rate
+    # returns index of y closest to each point in x and distance between points
+    start3, error_start3 = nearestpoint(opto_start_time, time_data)
 
-    samples_pre = int(preperiod / np.mean(np.diff(upsample_cycle_timestamps)))
+    # Interpolate opto data to in_data timestamps
+    opto_data = interp1d(data["out_time"], data["out3"], bounds_error=False, fill_value="extrapolate")(time_data)
 
     # Get cycle data for opto cycles
     in1_opto = []
     in2_opto = []
     out3_opto = []
     time_opto = []
-    for istart, istop in zip(start3, stop3):
-        in1_opto.append(upsample_in1[istart - samples_pre : istop])
-        in2_opto.append(upsample_in2[istart - samples_pre : istop])
-        out3_opto.append(data["out3"][istart + upsample_offset - samples_pre : istop + upsample_offset])
-        time_opto.append(upsample_cycle_timestamps[istart - samples_pre : istop] - upsample_cycle_timestamps[istart])
+    samples_pre = int(preperiod * sampling_rate)
+    samples_post = int(postperiod * sampling_rate)
+    for istart in start3:
+        in1_opto.append(data_in1[istart - samples_pre : istart + samples_post])
+        in2_opto.append(data_in2[istart - samples_pre : istart + samples_post])
+        out3_opto.append(opto_data[istart - samples_pre : istart + samples_post])
+
+        # Relative time... should always be the same actually
+        time_opto.append(time_data[istart - samples_pre : istart + samples_post] - time_data[istart])
 
     in1_opto = np.stack(in1_opto)
     in2_opto = np.stack(in2_opto)
@@ -263,11 +286,11 @@ def analyze_data(data, preperiod=0.1, cycle_period_tolerance=0.5, keep_fraction=
         in2_opto=in2_opto,
         out3_opto=out3_opto,
         time_opto=time_opto,
-        opto_start_time=opto_start_time,
-        data_in1=upsample_in1,
-        data_in2=upsample_in2,
-        data_opto=upsample_opto_data,
-        time_data=upsample_cycle_timestamps,
+        opto_start_time=opto_start_time - time_data[0],
+        data_in1=data_in1,
+        data_in2=data_in2,
+        data_opto=opto_data,
+        time_data=time_data - time_data[0],
     )
 
     return results

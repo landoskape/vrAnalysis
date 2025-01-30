@@ -8,7 +8,6 @@ from functools import partial
 from tqdm import tqdm
 
 from vrAnalysis import fileManagement as files
-from vrAnalysis import helpers
 
 from .process import analyze_data
 
@@ -73,20 +72,24 @@ def check_doric_filetree(mouse_name):
             return None
 
 
-def process_single_file(file, samples, preperiod, postperiod):
+def process_single_file(file, preperiod, postperiod, samples=None):
     """Process a single data file and return interpolated data."""
     results = analyze_data(file, preperiod=preperiod + 0.01)
 
-    # Extract and process data
+    if samples is None:
+        samples = np.linspace(-preperiod, postperiod, int((postperiod + preperiod) * 1000 + 1))
+
+    # Extract and process data timelocked to each opto pulse
     c_idx = results["time_opto"] < postperiod + preperiod
     c_time = results["time_opto"][c_idx]
     c_data = np.mean(results["in2_opto"][:, c_idx] - results["in1_opto"][:, c_idx], axis=0)
 
     # Interpolate and detrend
-    c_interp = interp1d(c_time, c_data, kind="cubic")(samples)
+    c_interp = interp1d(c_time, c_data, kind="cubic", bounds_error=False, fill_value="extrapolate")(samples)
     c_interp = detrend(c_interp)
 
-    results["interp"] = c_interp
+    results["time_opto_response"] = samples
+    results["opto_response"] = c_interp
     return results
 
 
@@ -120,8 +123,8 @@ def process_data_parallel(data, preperiod=0.2, postperiod=1.0, n_processes=4):
     with Pool(processes=n_processes) as pool:
         results = list(pool.imap(process_func, tqdm(data, desc="Processing files")))
 
-    interp_data = [x["interp"] for x in results]
-    averages = np.stack(interp_data)
+    opto_responses = [x["opto_response"] for x in results]
+    average_opto_response = np.stack(opto_responses)
 
     # Stack results
-    return results, averages
+    return results, average_opto_response
