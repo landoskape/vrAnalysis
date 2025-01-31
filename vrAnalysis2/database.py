@@ -517,7 +517,7 @@ class session_database(base_database):
         """print list of unique mice names in session iterable"""
         print(self.miceInSessions(iterSession))
 
-    def iterSessions(self, **kwConditions):
+    def iterSessions(self, **kwConditions) -> list[session.vrSession]:
         """Creates list of sessions that can be iterated through"""
         df = self.getTable(**kwConditions)
         return self.createSessionIterable(df)

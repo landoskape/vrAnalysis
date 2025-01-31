@@ -60,6 +60,9 @@ def argbool(value):
 class PrettyDatetime(datetime):
     """Subclass of datetime with a prettier __repr__"""
 
+    def __str__(self) -> str:
+        return self.strftime("%Y-%m-%d")
+
     def __repr__(self) -> str:
         return self.strftime("%Y-%m-%d")
 

@@ -300,7 +300,6 @@ class vrExperiment(vrSession):
             # Save recipe as a numpy array containing a dictionary
             recipe_dict = data.to_dict()
             # Add .npy extension to the file name
-            file_name
             np.save(path, np.array(recipe_dict, dtype=object))
         elif sparse:
             path = path.with_suffix(".npz")

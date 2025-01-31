@@ -3,7 +3,8 @@ from tkinter import Tk
 
 
 def local_data_path() -> Path:
-    return Path("C:/Users/andrew/Documents/localData")
+    # return Path("C:/Users/andrew/Documents/localData")
+    return storage_path()
 
 
 def literature_data_path() -> Path:
