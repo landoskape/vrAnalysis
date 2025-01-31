@@ -1,14 +1,12 @@
-from warnings import warn
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any, List
 from types import SimpleNamespace
 import numpy as np
-import json
+from scipy.sparse import csc_array, save_npz, load_npz
 from ..helpers import PrettyDatetime
-from ..files import local_data_path
-from numpyencoder import NumpyEncoder
 
 
 class LoadingRecipe:
@@ -59,59 +57,23 @@ class LoadingRecipe:
 
 
 @dataclass
-class vrSession(ABC):
-    """Top-level data class to store and manage behavioral and neural data from a single session."""
+class SessionData(ABC):
+    """Base class for session data"""
 
     # session identifiers
     mouse_name: str
-    date: PrettyDatetime
+    date: Union[str, datetime, PrettyDatetime]
     session_id: Optional[str] = None
 
     # additional fields
-    values: SimpleNamespace = field(default_factory=SimpleNamespace, repr=False)
-
-    # immutable subclass properties
-    data_path: str = field(init=False, repr=False)
-
-    # mutable subclass properties
-    spks_type: str = field(init=False, repr=False)
+    values: SimpleNamespace = field(default_factory=SimpleNamespace, repr=False, init=False)
 
     def __post_init__(self):
         """Post-initialization method to set all properties specific to subclasses"""
-        self.data_path = self._init_data_path()
-        self.spks_type = self.set_spks_type()
-
-        if not isinstance(self.data_path, Path):
-            raise TypeError(f"data_path must be a Path-like object, received: {type(self.data_path)}")
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"Data path does not exist: {self.data_path}")
-
-        # additional loading for subclasses
+        # Enable additional loading for subclasses if required
+        # usually to put things in the values namespace
+        self.date = str(PrettyDatetime.make_pretty(self.date))
         self._additional_loading()
-
-    def get_value(self, key: str) -> object:
-        """Get additional values from the session"""
-        return getattr(self.values, key, None)
-
-    def set_value(self, key: str, value: object) -> None:
-        """Set additional values to the session"""
-        setattr(self.values, key, value)
-
-    def session_print(self, joinby="/") -> str:
-        """Useful function for generating string of session name for useful feedback to user"""
-        return joinby.join(self.session_name)
-
-    @property
-    def session_name(self) -> tuple[str]:
-        """Function for returning mouse name, date string, and session id"""
-        if self.session_id:
-            return self.mouse_name, self.date, self.session_id
-        else:
-            return self.mouse_name, self.date
-
-    @abstractmethod
-    def _init_data_path(self) -> str:
-        """Set the data path for the session"""
 
     def _additional_loading(self) -> None:
         """Additional loading for subclasses.
@@ -121,63 +83,114 @@ class vrSession(ABC):
         """
         pass
 
-    # neural data properties
     @property
-    def spks(self) -> np.ndarray:
-        """Load spks with the abstract method _get_spks"""
-        return self._get_spks()
-
     @abstractmethod
-    def _get_spks(self) -> np.ndarray:
-        """Load spks data"""
+    def spks(self) -> np.ndarray:
+        """Neural spks data -- always required!"""
+        pass
+
+    @property
+    def session_name(self) -> tuple[str]:
+        """Function for returning the session identifier as a tuple"""
+        if self.session_id:
+            return self.mouse_name, self.date, self.session_id
+        else:
+            return self.mouse_name, self.date
+
+    def session_print(self, joinby="/") -> str:
+        """Useful function for generating string of session name"""
+        return joinby.join(self.session_name)
+
+    def get_value(self, key: str) -> object:
+        """Get values from the session stored in the values namespace"""
+        return getattr(self.values, key, None)
+
+    def set_value(self, key: str, value: object) -> None:
+        """Set values to the session stored in the values namespace"""
+        setattr(self.values, key, value)
 
 
-class OneSession(vrSession):
+@dataclass
+class OneSession(SessionData, ABC):
     """Top-level class to manage data that uses the onedata format to save & load data"""
 
+    # session data path -- identifies where the session data is stored and loaded from
+    data_path: Union[Path, str] = field(init=False, repr=False)
+
     # a cache for onedata
-    one_cache: dict = field(default_factory=dict, repr=False)
+    one_cache: dict = field(default_factory=dict, repr=False, init=False)
+
+    def _additional_loading(self) -> None:
+        """Extra loading implemented in the postinit of the SessionData class!"""
+        # OneSessions require a data_path to be defined
+        self.data_path = self._init_data_path()
+
+    @abstractmethod
+    def _init_data_path(self) -> Union[Path, str]:
+        """Defines the data path for the session data
+
+        This is required for all subclasses of OneSessions to define!
+        """
+        pass
 
     @property
-    @abstractmethod
     def recipe_loaders(self) -> dict:
-        """Dictionary of loaders for loading data from recipes"""
+        """Dictionary of loaders for loading data from recipes.
+
+        This is to enable specialized loading of onedata stored with recipes.
+        If not specified, attempting to load a recipe will raise an error.
+        """
+        raise NotImplementedError(f"Attempting to load a recipe from {self.session_print()} but no recipe_loaders are specified.")
 
     @property
-    @abstractmethod
     def recipe_transforms(self) -> dict:
-        """Dictionary of transforms for applying to data when loading recipes"""
+        """Dictionary of transforms for applying to data when loading recipes.
+
+        This is to enable specialized transforms of onedata stored with recipes.
+        If not specified, attempting to load a recipe that requires a transform
+        will raise an error.
+        """
+        raise NotImplementedError(f"Attempting to transform a loaded recipe from {self.session_print()} but no recipe_transforms are specified.")
 
     @property
-    def one_path(self):
-        """Path to oneData directory"""
-        return self.data_path / "oneData"
+    def one_path(self) -> Path:
+        """Path to onedata directory"""
+        return self.data_path / "onedata"
 
-    def get_saved_one(self):
-        """Get all saved oneData files"""
-        return self.one_path.glob("*.npy")
+    def get_saved_one(self) -> list[Path]:
+        """Get all saved onedata files"""
+        return list(self.one_path.glob("*.npy"))
 
-    def print_saved_one(self):
-        """Print all saved oneData files"""
-        return [name.stem for name in self.get_saved_one()]
+    def print_saved_one(self, include_path: bool = False, include_extension: bool = False) -> list[str]:
+        """Print all saved onedata files"""
 
-    def clear_one_data(self, one_file_names=None, certainty=False):
-        """Clear oneData files from the session directory"""
+        def _format_name(name: Path):
+            onename = name.stem
+            if include_extension:
+                onename = onename + name.suffix
+            if include_path:
+                onename = name.parent / onename
+            return onename
+
+        return [_format_name(name) for name in self.get_saved_one()]
+
+    def clear_one_data(self, one_file_names: List[str] = None, certainty: bool = False) -> None:
+        """Clear onedata files from the session directory"""
         if not certainty:
-            print(f"You have to be certain to clear oneData! (This means set kwarg certainty=True).")
+            print(f"You have to be certain to clear onedata! (This means set kwarg certainty=True).")
             return None
         one_files = self.get_saved_one()
         if one_file_names:
             one_files = [file for file in one_files if file.stem in one_file_names]
         for file in one_files:
             file.unlink()
-        print(f"Cleared oneData from session: {self.session_print()}")
+        print(f"Cleared onedata from session: {self.session_print()}")
 
-    def get_one_filename(self, *names):
+    def get_one_filename(self, *names) -> str:
         """create one filename given an arbitrary length list of names"""
         return ".".join(names) + ".npy"
 
-    def saveone(self, data: Union[np.ndarray, LoadingRecipe], *names: str) -> None:
+    def saveone(self, data: Union[np.ndarray, LoadingRecipe], *names: str, sparse: bool = False) -> None:
         """
         Save data directly or as a loading recipe.
 
@@ -193,14 +206,20 @@ class OneSession(vrSession):
             # Save recipe as a numpy array containing a dictionary
             recipe_dict = data.to_dict()
             np.save(path, np.array(recipe_dict, dtype=object))
+        elif sparse:
+            path = path.with_suffix(".npz")
+            if isinstance(data, csc_array):
+                save_npz(path, data)
+            else:
+                raise ValueError("Data is not a scipy.sparse.csc_array, not supported for saving with sparse=True")
         else:
             # Save data directly to one file
             self.one_cache[file_name] = data  # (standard practice is to buffer the data for efficient data handling)
             np.save(path, data)
 
-    def loadone(self, *names: str, force=False) -> np.ndarray:
+    def loadone(self, *names: str, force=False, sparse: bool = False) -> np.ndarray:
         """
-        Load data, either directly, from the buffer, or by following a recipe.
+        Load data, either directly or by following a recipe.
 
         Args:
             names: Sequence of strings to join into filename (e.g., "mpci", "roiActivityF" -> "mpci.roiActivityF")
@@ -214,154 +233,37 @@ class OneSession(vrSession):
             return self.one_cache[file_name]
         else:
             path = self.one_path / file_name
+            if sparse:
+                path = path.with_suffix(".npz")
+                file_name = path.stem + path.suffix
             if not (path.exists()):
-                print(f"In session {self.session_print}, the one file {file_name} doesn't exist. Here is a list of saved oneData files:")
-                for oneFile in self.print_saved_one():
-                    print(oneFile)
-                raise ValueError("oneData requested is not available")
+                print(f"In session {self.session_print()}, the one file {file_name} doesn't exist. Here is a list of saved oneData files:")
+                for one_file in self.print_saved_one():
+                    print(one_file)
+                raise ValueError("onedata requested is not available")
 
-            # Load saved numpy array at savepath
-            data = np.load(path, allow_pickle=True)
+            # Load saved numpy array at savepath (or sparse array if sparse=True)
+            if sparse:
+                data = load_npz(path)
+            else:
+                data = np.load(path, allow_pickle=True)
+                if LoadingRecipe.is_recipe(data):
+                    # Get loading recipe
+                    recipe = LoadingRecipe.from_dict(data.item())
 
-            if LoadingRecipe.is_recipe(data):
-                # Get loading recipe
-                recipe = LoadingRecipe.from_dict(data.item())
+                    # Load data using appropriate loader
+                    if recipe.source_arg is not None:
+                        data = self.recipe_loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
+                    else:
+                        data = self.recipe_loaders[recipe.loader_type](**recipe.kwargs)
 
-                # Load data using appropriate loader
-                if recipe.source_arg is not None:
-                    data = self.recipe_loaders[recipe.loader_type](recipe.source_arg, **recipe.kwargs)
-                else:
-                    data = self.recipe_loaders[recipe.loader_type](**recipe.kwargs)
+                    # Apply transforms
+                    for transform in recipe.transforms:
+                        data = self.recipe_transforms[transform](data)
 
-                # Apply transforms
-                for transform in recipe.transforms:
-                    data = self.recipe_transforms[transform](data)
-
-            # add to buffer
             self.one_cache[file_name] = data
             return data
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         """Clear cached data to free memory"""
         self.one_cache = {}
-
-
-@dataclass
-class B2Session(OneSession):
-    opts: dict = field(default_factory=dict, repr=False)
-    preprocessing: list[str] = field(default_factory=list, repr=False)
-
-    @property
-    def s2p_path(self):
-        """Path to suite2p directory"""
-        return self.data_path / "suite2p"
-
-    @property
-    def recipe_loaders(self):
-        return {"S2P": self.load_s2p, "roiPosition": self.get_roi_position}
-
-    @property
-    def recipe_transforms(self):
-        return {"transpose": lambda x: x.T, "idx_column1": lambda x: x[:, 1]}
-
-    def _get_spks(self) -> np.ndarray:
-        """Load spks data"""
-        return self.loadone(self.spks_type)
-
-    def set_spks_type(self) -> str:
-        """Set spks_type, will determine which onefile to load spks data from"""
-        return "mpci.roiActivityDeconvolvedOasis"
-
-    def _init_data_path(self) -> str:
-        """Set the data path for the session"""
-        return local_data_path() / self.mouse_name / self.date / self.session_id
-
-    def _additional_loading(self):
-        """Load registered experiment data"""
-        if not (self.data_path / "vrExperimentOptions.json").exists():
-            raise ValueError("session json files were not found! you need to register the session first.")
-        opts = json.load(open(self.data_path / "vrExperimentOptions.json"))
-        preprocessing = json.load(open(self.data_path / "vrExperimentPreprocessing.json"))
-        values = json.load(open(self.data_path / "vrExperimentValues.json"))
-        self.opts = opts
-        self.preprocessing = preprocessing
-        for key, val in values.items():
-            self.set_value(key, val)
-
-    def save_session_prms(self):
-        """Save registered session parameters"""
-        with open(self.data_path / "vrExperimentOptions.json", "w") as file:
-            json.dump(self.opts, file, ensure_ascii=False)
-        with open(self.data_path / "vrExperimentPreprocessing.json", "w") as file:
-            json.dump(self.preprocessing, file, ensure_ascii=False)
-        with open(self.data_path / "vrExperimentValues.json", "w") as file:
-            json.dump(self.values, file, ensure_ascii=False, cls=NumpyEncoder)
-
-    # =============================================================================
-    # Suite2p loading functions
-    # =============================================================================
-    def loadfcorr(self, mean_adjusted=True, try_from_one=True):
-        # corrected fluorescence requires a special loading function because it isn't saved directly
-        if try_from_one:
-            F = self.loadone("mpci.roiActivityF").T
-            Fneu = self.loadone("mpci.roiNeuropilActivityF").T
-        else:
-            F = self.load_s2p("F")
-            Fneu = self.load_s2p("Fneu")
-        meanFneu = np.mean(Fneu, axis=1, keepdims=True) if mean_adjusted else np.zeros((np.sum(self.get_value("roiPerPlane")), 1))
-        return F - self.opts["neuropilCoefficient"] * (Fneu - meanFneu)
-
-    def load_s2p(self, varName, concatenate=True):
-        # load S2P variable from suite2p folders
-        assert varName in self.get_value("available"), f"{varName} is not available in the suite2p folders for {self.session_print()}"
-        frame_vars = ["F", "F_chan2", "Fneu", "Fneu_chan2", "spks"]
-
-        if varName == "ops":
-            concatenate = False
-
-        var = [np.load(self.s2p_path / planeName / f"{varName}.npy", allow_pickle=True) for planeName in self.get_value("planeNames")]
-        if varName == "ops":
-            var = [cvar.item() for cvar in var]
-            return var
-
-        if concatenate:
-            # if concatenation is requested, then concatenate each plane across the ROIs axis so we have just one ndarray of shape: (allROIs, allFrames)
-            if varName in frame_vars:
-                var = [v[:, : self.get_value("numFrames")] for v in var]  # trim if necesary so each plane has the same number of frames
-            var = np.concatenate(var, axis=0)
-
-        return var
-
-    def get_plane_idx(self):
-        """Return the plane index for each ROI (concatenated across planes)."""
-        planeIDs = self.get_value("planeIDs")
-        roiPerPlane = self.get_value("roiPerPlane")
-        return np.repeat(planeIDs, roiPerPlane).astype(np.uint8)
-
-    def get_roi_position(self, mode="weightedmean"):
-        """Return the x & y positions and plane index for all ROIs.
-
-        Parameters
-        ----------
-        mode : str, optional
-            Method for calculating the position of the ROI, by default "weightedmean"
-            but can also use median which ignores the intensity (lam) values.
-
-        Returns
-        -------
-        np.ndarray
-            Array of shape (nROIs, 3) with columns: x-position, y-position, planeIdx
-        """
-        planeIdx = self.get_plane_idx()
-        stat = self.load_s2p("stat")
-        lam = [s["lam"] for s in stat]
-        ypix = [s["ypix"] for s in stat]
-        xpix = [s["xpix"] for s in stat]
-        if mode == "weightedmean":
-            yc = np.array([np.sum(l * y) / np.sum(l) for l, y in zip(lam, ypix)])
-            xc = np.array([np.sum(l * x) / np.sum(l) for l, x in zip(lam, xpix)])
-        elif mode == "median":
-            yc = np.array([np.median(y) for y in ypix])
-            xc = np.array([np.median(x) for x in xpix])
-        stackPosition = np.stack((xc, yc, planeIdx)).T
-        return stackPosition
