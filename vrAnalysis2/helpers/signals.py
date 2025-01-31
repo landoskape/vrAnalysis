@@ -1,6 +1,7 @@
 import numpy as np
 import scipy as sp
 import torch
+from numba import njit, prange
 
 from .wrangling import transpose_list, named_transpose
 
@@ -470,3 +471,81 @@ def fit_gaussians(data, x=None):
 
     amplitude, center, width = named_transpose(popts)
     return amplitude, center, width, r_squared
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def pad_array(arr, pad_width, mode, cval=0.0):
+    """
+    Pad array edges with different modes.
+
+    Parameters:
+    arr: 1D numpy array
+    pad_width: Number of values padded to each edge
+    mode: String indicating padding mode ('reflect', 'constant', 'nearest', 'mirror', 'wrap')
+    cval: Constant value for 'constant' mode
+
+    Returns:
+    Padded array
+    """
+    n = len(arr)
+    padded = np.zeros(n + 2 * pad_width, dtype=arr.dtype)
+
+    # Fill the center with input array
+    padded[pad_width : pad_width + n] = arr
+
+    # Handle different padding modes
+    if mode == "reflect":
+        for i in prange(pad_width):
+            padded[pad_width - 1 - i] = arr[i]
+            padded[pad_width + n + i] = arr[n - 1 - i]
+    elif mode == "constant":
+        padded[:pad_width] = cval
+        padded[pad_width + n :] = cval
+    elif mode == "nearest":
+        padded[:pad_width] = arr[0]
+        padded[pad_width + n :] = arr[-1]
+    elif mode == "mirror":
+        for i in prange(pad_width):
+            padded[pad_width - 1 - i] = arr[i + 1]
+            padded[pad_width + n + i] = arr[n - 2 - i]
+    elif mode == "wrap":
+        for i in prange(pad_width):
+            padded[pad_width - 1 - i] = arr[n - 1 - i]
+            padded[pad_width + n + i] = arr[i]
+    return padded
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def percentile_filter(arr, window_size, percentile, mode="reflect", cval=0.0):
+    """
+    Numba-accelerated percentile filter with boundary handling.
+
+    Operates on columns! Is like percentile_filter(..., axis=0)
+
+    Parameters:
+    arr: 2D numpy array of shape (rows, cols)
+    window_size: Integer size of the sliding window
+    percentile: Percentile value between 0 and 100
+    mode: Boundary handling mode ('reflect', 'constant', 'nearest', 'mirror', 'wrap')
+    cval: Constant value for 'constant' mode
+
+    Returns:
+    2D numpy array of same shape as input with percentile filtered values
+    """
+    rows, cols = arr.shape
+    result = np.zeros_like(arr)
+
+    # Calculate padding size
+    pad_width = window_size // 2
+
+    # Process each column independently
+    for col in prange(cols):
+        # Pad column according to mode
+        col_data = pad_array(arr[:, col], pad_width, mode, cval)
+
+        # Slide window and compute percentile
+        for i in range(rows):
+            window = col_data[i : i + window_size]
+            result[i, col] = np.percentile(window, percentile)
+
+    return result

@@ -1,4 +1,6 @@
+from typing import Union
 from argparse import ArgumentTypeError
+from datetime import datetime
 
 
 def cutoff_type(cutoff):
@@ -53,3 +55,32 @@ def argbool(value):
         return False
     else:
         raise ArgumentTypeError("Boolean value expected.")
+
+
+class PrettyDatetime(datetime):
+    """Subclass of datetime with a prettier __repr__"""
+
+    def __repr__(self) -> str:
+        return self.strftime("%Y-%m-%d")
+
+    @classmethod
+    def make_pretty(cls, dt: Union[datetime, str, float]) -> "PrettyDatetime":
+        """Convert a datetime object to PrettyDatetime"""
+        if isinstance(dt, datetime):
+            return cls.fromtimestamp(dt.timestamp())
+        elif isinstance(dt, str):
+            return cls.strptime(dt, "%Y-%m-%d")
+        elif isinstance(dt, float):
+            return cls.fromtimestamp(dt)
+        else:
+            raise ValueError(f"Invalid input type for PrettyDatetime: {type(dt)}")
+
+    @classmethod
+    def from_datetime(cls, dt: datetime) -> "PrettyDatetime":
+        """Convert a datetime object to PrettyDatetime"""
+        return cls.fromtimestamp(dt.timestamp())
+
+    @classmethod
+    def from_string(cls, date_string: str, format: str = "%Y-%m-%d") -> "PrettyDatetime":
+        """Convert a string to PrettyDatetime using the specified format"""
+        return cls.strptime(date_string, format)

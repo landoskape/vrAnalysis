@@ -7,7 +7,11 @@ from .wrangling import check_iterable
 # ------------------------------------ index handling ------------------------------------
 def all_pairs(idx_ses):
     """Return all pairs without replacement of elements in iterable idx_ses"""
-    return np.array([np.array(pair) for pair in combinations(idx_ses, 2)], dtype=int)
+    np_pairs = [np.array(pair) for pair in combinations(idx_ses, 2)]
+    stacked_pairs = np.stack(np_pairs, axis=0, dtype=int)
+    if stacked_pairs.ndim == 1:
+        stacked_pairs = np.reshape(stacked_pairs, (1, 2))
+    return stacked_pairs
 
 
 def index_on_dim(numpy_array, index, dim):
