@@ -1,6 +1,6 @@
 # inclusions
 import re
-import time
+import warnings
 from tqdm import tqdm
 import pickle
 from pathlib import Path
@@ -169,27 +169,38 @@ class tracker:
             ops_paths = [Path(sp) for sp in results["input_data"]["paths_ops"]]
             for stat_path, ops_path in zip(stat_paths, ops_paths):
                 # then for each file path, make sure it comes from the same storage location
-                assert all(
-                    [sp.lower() == dp.lower() for (sp, dp) in zip(stat_path.parts[: self.num_parts_data_path], self.data_path().parts)]
-                ), f"stat_path ({stat_path}) does not match data_path ({self.data_path()})!"
-                assert all(
-                    [op.lower() == dp.lower() for (op, dp) in zip(ops_path.parts[: self.num_parts_data_path], self.data_path().parts)]
-                ), f"ops_path ({ops_path}) does not match data_path ({self.data_path()})!"
+                path_mismatch_msg = (
+                    lambda s2p_output, data_path: f"{s2p_output}_path ({data_path}) does not match data_path ({self.data_path().parts[:self.num_parts_data_path]})!"
+                )
+                if not all([sp.lower() == dp.lower() for (sp, dp) in zip(stat_path.parts[: self.num_parts_data_path], self.data_path().parts)]):
+                    # Need to change effective num_parts to match (I probably moved the data from C: to D:...)
+                    last_folder = self.data_path().parts[-1]
+                    if last_folder not in stat_path.parts:
+                        raise ValueError(path_mismatch_msg("stat", stat_path))
+                    c_mouse_name_index = stat_path.parts.index(last_folder) + 1
+
+                    # Check if ops path is also from same location...
+                    if not all(
+                        [op.lower() == sp.lower() for (op, sp) in zip(ops_path.parts[:c_mouse_name_index], stat_path.parts[:c_mouse_name_index])]
+                    ):
+                        raise ValueError("Stats and Ops paths do not match!")
+                else:
+                    c_mouse_name_index = self.num_parts_data_path
 
                 # the mouse name, date string, and session id are the next "groups" in the path according to Alyx database convention
-                tracked_mouse_name[planeidx].append(stat_path.parts[self.num_parts_data_path])
-                tracked_date_string[planeidx].append(stat_path.parts[self.num_parts_data_path + 1])
-                tracked_session_id[planeidx].append(stat_path.parts[self.num_parts_data_path + 2])
+                tracked_mouse_name[planeidx].append(stat_path.parts[c_mouse_name_index])
+                tracked_date_string[planeidx].append(stat_path.parts[c_mouse_name_index + 1])
+                tracked_session_id[planeidx].append(stat_path.parts[c_mouse_name_index + 2])
 
                 # check that session indicators are the same between the stat paths and ops paths
                 assert (
-                    stat_path.parts[self.num_parts_data_path] == ops_path.parts[self.num_parts_data_path]
+                    stat_path.parts[c_mouse_name_index] == ops_path.parts[c_mouse_name_index]
                 ), f"mouse name doesn't match for stat and ops: ({stat_path}), ({ops_path})"
                 assert (
-                    stat_path.parts[self.num_parts_data_path + 1] == ops_path.parts[self.num_parts_data_path + 1]
+                    stat_path.parts[c_mouse_name_index + 1] == ops_path.parts[c_mouse_name_index + 1]
                 ), f"date string doesn't match for stat and ops: ({stat_path}), ({ops_path})"
                 assert (
-                    stat_path.parts[self.num_parts_data_path + 2] == ops_path.parts[self.num_parts_data_path + 2]
+                    stat_path.parts[c_mouse_name_index + 2] == ops_path.parts[c_mouse_name_index + 2]
                 ), f"session id doesn't match for stat and ops: ({stat_path}), ({ops_path})"
 
         # make sure value is consistent across planes and return single value per session if it is
