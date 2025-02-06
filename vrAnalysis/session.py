@@ -255,7 +255,7 @@ class vrExperiment(vrSession):
                 path = self.spkmap_path(activity_type, env, params=True)
                 np.save(path, params)
 
-    def load_spkmaps(self, activity_type, envnum=None):
+    def load_spkmaps(self, activity_type, envnum=None, return_params=False):
         if envnum is None:
             trial_envnum = self.loadone("trials.environmentIndex")
             envnum = np.unique(trial_envnum)
@@ -269,8 +269,21 @@ class vrExperiment(vrSession):
                 f"The following spkmap paths do not exist: {missing_paths}. The following activity types are available: {activity_types} (check whether the environment number is correct!)"
             )
 
+        if not return_params:
+            # Put it here to avoid loading if the function will raise an error
+            spkmaps = [np.load(p) for p in path]
+            return spkmaps
+
+        params_path = [self.spkmap_path(activity_type, env, params=True) for env in envnum]
+        params_path_exists = [p.exists() for p in params_path]
+        if not all(params_path_exists):
+            missing_params_paths = [p for p, exists in zip(params_path, params_path_exists) if not exists]
+            raise ValueError(
+                f"The following spkmap params paths do not exist: {missing_params_paths}. Check whether the environment number is correct!"
+            )
         spkmaps = [np.load(p) for p in path]
-        return spkmaps
+        params = [np.load(p, allow_pickle=True).item() for p in params_path]
+        return spkmaps, params
 
     def identify_spkmaps(self, envnum=None, params=False):
         spkmap_path = self.spkmapsPath()
@@ -294,12 +307,13 @@ class vrExperiment(vrSession):
         """
         file_name = self.oneFilename(*names)
         path = self.onePath() / file_name
+        if path.exists():
+            print(f"Warning: {file_name} already exists in {self.onePath()}. Overwriting...")
         if isinstance(data, LoadingRecipe) or (
             hasattr(data, "to_dict") and (hasattr(data, "RECIPE_MARKER") and data.RECIPE_MARKER == LoadingRecipe.RECIPE_MARKER)
         ):
             # Save recipe as a numpy array containing a dictionary
             recipe_dict = data.to_dict()
-            # Add .npy extension to the file name
             np.save(path, np.array(recipe_dict, dtype=object))
         elif sparse:
             path = path.with_suffix(".npz")
@@ -312,7 +326,7 @@ class vrExperiment(vrSession):
             self.loadBuffer[file_name] = data  # (standard practice is to buffer the data for efficient data handling)
             np.save(path, data)
 
-    def loadone(self, *names: str, force=False, sparse: bool = False) -> np.ndarray:
+    def loadone(self, *names: str, force=False, sparse: bool = False, sparse_to_dense: bool = True) -> np.ndarray:
         """
         Load data, either directly or by following a recipe.
 
@@ -330,7 +344,17 @@ class vrExperiment(vrSession):
             path = self.onePath() / file_name
             if sparse:
                 path = path.with_suffix(".npz")
-            if not (path.exists()):
+                file_name = path.stem + path.suffix
+            if not path.exists():
+                # Let's try seeing if it's a sparse array
+                exists_with_sparse_extension = path.with_suffix(".npz").exists()
+                # If it is, then switch to sparse array automatically
+                if exists_with_sparse_extension:
+                    sparse = True
+                    path = path.with_suffix(".npz")
+                    file_name = path.stem + path.suffix
+
+            if not path.exists():
                 print(f"In session {self.sessionPrint()}, the one file {file_name} doesn't exist. Here is a list of saved oneData files:")
                 for oneFile in self.printSavedOne():
                     print(oneFile)
@@ -339,6 +363,8 @@ class vrExperiment(vrSession):
             # Load saved numpy array at savepath (or sparse array if sparse=True)
             if sparse:
                 data = load_npz(path)
+                if sparse_to_dense:
+                    data = data.toarray()
             else:
                 data = np.load(path, allow_pickle=True)
                 if LoadingRecipe.is_recipe(data):
