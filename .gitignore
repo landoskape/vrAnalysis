@@ -1,6 +1,9 @@
 # VSCODE
 .vscode/
 
+# Cursor
+.cursor/
+
 # Saved files
 *.pkl
 cachedir/

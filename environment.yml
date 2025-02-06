@@ -6,9 +6,9 @@ channels:
   - nvidia
   - defaults
 dependencies:
-  - python=3.9
+  - python=3.11
   - pip
-  - numpy=1.24
+  - numpy==1.24
   - scipy
   - numba
   - matplotlib
@@ -17,10 +17,10 @@ dependencies:
   - jupyterlab
   - oasis-deconv
   - cvxpy
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.1
+  # - pytorch
+  # - torchvision
+  # - torchaudio
+  # - pytorch-cuda=12.1
   - pip:
     - numpyencoder
     - pyqt5
@@ -34,4 +34,3 @@ dependencies:
     - ratinabox
     - rastermap
     - optuna
-    - cachecache
