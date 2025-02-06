@@ -92,3 +92,8 @@ The implementation should follow B2Session's patterns:
 - Clear property definitions
 - Inheritance from abstract base classes
 - Clear separation of concerns
+
+Handling spkmaps:
+I want the session objects to handle spkmaps -- I want the spkmaps with smoothing etc to be saved as onedata,
+but of course we need them to be recoverable too. So it's important that the parameters used for saving them
+are also present -- including trial information! (I only save "full" trials). 
