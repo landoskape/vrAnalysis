@@ -121,7 +121,7 @@ class multipleAnalysis(standardAnalysis):
 
         saves a temporary file in the analysis directory with the name provided
         """
-        print(f"{self.name} is saving a temporary file:")
+        print(f"{self.name} is saving a temporary file for {name}")
         with open(self.saveDirectory("temp") / name, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
