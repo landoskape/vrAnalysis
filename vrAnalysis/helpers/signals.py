@@ -295,26 +295,52 @@ def phaseCorrelation(staticImage, shiftedImage, eps=0, window=None):
     return np.fft.fftshift(np.fft.ifft2(R).real, axes=(-2, -1))
 
 
-def convolveToeplitz(data, kk, axis=-1, mode="same", device="cpu"):
+@torch.no_grad()
+def convolveToeplitz(data, kk, axis=-1, mode="same", device="cpu", force_torch=False):
     # convolve data on requested axis (default:-1) using a toeplitz matrix of kk
     # equivalent to np.convolve(data,kk,mode=mode) for each array on requested axis in data
     # uses torch for possible GPU speed up, default device set after imports
     assert -1 <= axis <= data.ndim, "requested axis does not exist"
-    data = np.moveaxis(data, axis, -1)  # move target axis
-    dataShape = data.shape
-    with torch.no_grad():
+
+    use_torch = isinstance(data, torch.Tensor)
+    if use_torch:
+        data = data.to(device)
+        data = torch.moveaxis(data, axis, -1)
+        data_shape = data.shape
+        conv_mat = torch.tensor(sp.linalg.convolution_matrix(kk, data_shape[-1], mode=mode).T).to(device)
+        data_reshaped = data.reshape(-1, data_shape[-1]).contiguous()
+        output = torch.matmul(data_reshaped, conv_mat)
+        new_data_shape = (*data_shape[:-1], conv_mat.shape[1])
+        output = output.reshape(new_data_shape)
+        if device == "cuda":
+            # don't keep data on GPU
+            del conv_mat, data_reshaped  # delete variables
+            torch.cuda.empty_cache()  # clear memory
+        return output.moveaxis(-1, axis)
+    elif force_torch:
+        data = np.moveaxis(data, axis, -1)  # move target axis
+        dataShape = data.shape
         # if there are not many signals to convolve, this is a tiny slower
         # if there are many signals to convolve (order of ROIs in a recording), this is waaaaayyyy faster
         convMat = torch.tensor(sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T).to(device)
         dataReshape = torch.tensor(np.reshape(data, (-1, dataShape[-1]))).to(device)
         output = torch.matmul(dataReshape, convMat).cpu().numpy()
-    newDataShape = (*dataShape[:-1], convMat.shape[1])
-    output = np.reshape(output, newDataShape)
-    if device == "cuda":
-        # don't keep data on GPU
-        del convMat, dataReshape  # delete variables
-        torch.cuda.empty_cache()  # clear memory
-    return np.moveaxis(output, -1, axis)
+        newDataShape = (*dataShape[:-1], convMat.shape[1])
+        output = np.reshape(output, newDataShape)
+        if device == "cuda":
+            # don't keep data on GPU
+            del convMat, dataReshape  # delete variables
+            torch.cuda.empty_cache()  # clear memory
+        return np.moveaxis(output, -1, axis)
+    else:
+        data = np.moveaxis(data, axis, -1)  # move target axis
+        dataShape = data.shape
+        convMat = sp.linalg.convolution_matrix(kk, dataShape[-1], mode=mode).T
+        dataReshape = np.reshape(data, (-1, dataShape[-1]))
+        output = np.matmul(dataReshape, convMat)
+        newDataShape = (*dataShape[:-1], convMat.shape[1])
+        output = np.reshape(output, newDataShape)
+        return np.moveaxis(output, -1, axis)
 
 
 def get_fourier_basis(L, Fs=1.0):
