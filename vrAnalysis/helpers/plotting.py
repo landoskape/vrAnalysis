@@ -11,6 +11,7 @@ def batch_plot_context():
         yield
     finally:
         plt.ion()
+        plt.close("all")
 
 
 def save_figure(fig, path, **kwargs):
