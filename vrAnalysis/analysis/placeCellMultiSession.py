@@ -250,11 +250,11 @@ class placeCellMultiSession(multipleAnalysis):
         self.pcss_loaded = [self.autoload for _ in range(len(self.pcss))]
         self.environments = np.unique(np.concatenate([pcss.environments for pcss in self.pcss]))
 
-    def load_pcss_data(self, *, idx_ses=None, **kwargs):
+    def load_pcss_data(self, *, idx_ses=None, force_reload_pcss=False, **kwargs):
         """load pcss data from requested sessions with kwargs"""
         self.idx_ses = self.track.get_idx_session(idx_ses=idx_ses)
         self.num_ses = len(self.idx_ses)
-        idx_to_load = [idx for idx in self.idx_ses if not (self.pcss_loaded[idx])]
+        idx_to_load = [idx for idx in self.idx_ses if not (self.pcss_loaded[idx] and not force_reload_pcss)]
         if len(idx_to_load) > 0:
             for sesidx in tqdm(idx_to_load, desc="Loading place cell single session data", leave=False):
                 self.pcss[sesidx].load_data(**kwargs)
@@ -305,6 +305,8 @@ class placeCellMultiSession(multipleAnalysis):
         idx_ses=None,
         include_latents=False,
         include_master_embeddings=False,
+        use_saved_spkmap=False,
+        force_reload_pcss=False,
         **kwargs,
     ):
         """
@@ -325,19 +327,26 @@ class placeCellMultiSession(multipleAnalysis):
         'max' for the location at peak value or 'com' for a center of mass measurement
 
         if include_latents is set to True, will include the roinet latents in the output
-        """
-        if smooth is None:
-            smooth = self.smoothFilter
 
+        if use_saved_spkmap is set to True, will use the saved spkmap from each session object
+        """
         # load all data now
-        self.load_pcss_data(idx_ses=idx_ses, **kwargs)
+        if not use_saved_spkmap:
+            self.load_pcss_data(idx_ses=idx_ses, force_reload_pcss=force_reload_pcss, **kwargs)
 
         # get track index if requested
         if tracked:
             idx_tracked = self.track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         # get spkmaps (#ROI, #Trials, #SpatialBins)
-        spkmaps = [self.pcss[i].get_spkmap(envnum, average=False, pop_nan=False, smooth=smooth, trials=trials)[0] for i in idx_ses]
+        if use_saved_spkmap:
+            if smooth is not None:
+                print("smooth will be ignored because use_saved_spkmap is set to True")
+            spkmaps = [self.pcss[i].load_spkmap(envnum=envnum, average=False, pop_nan=False, trials=trials)[0] for i in idx_ses]
+        else:
+            if smooth is None:
+                smooth = self.smoothFilter
+            spkmaps = [self.pcss[i].get_spkmap(envnum, average=False, pop_nan=False, smooth=smooth, trials=trials)[0] for i in idx_ses]
 
         # make ROI index
         roi_idx = [np.arange(s.shape[0]) for s in spkmaps]

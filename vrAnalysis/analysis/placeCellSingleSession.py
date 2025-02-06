@@ -576,8 +576,74 @@ class placeCellSingleSession(standardAnalysis):
         return spks
 
     @prepare_data
+    def load_spkmap(
+        self,
+        envnum=None,
+        activity_type="mpci.roiActivityDeconvolvedOasis",
+        average=True,
+        trials="full",
+        pop_nan=True,
+        new_split=False,
+        split_params={},
+        return_params=False,
+    ):
+        """
+        method for loading spkmaps from a list of environments
+        similar to get_spkmap (see it's docstring) but load spkmaps from session objects
+        """
+        # use all environments if none requested
+        if envnum is None:
+            envnum = np.copy(self.environments)
+
+        # convert envnum into iterable index to environment in session
+        envnum = helpers.check_iterable(envnum)  # make sure envnum is iterable
+        envidx = self.envnum_to_idx(envnum)  # convert environment numbers to indices
+
+        # load spkmaps
+        if return_params:
+            env_spkmap, env_params = self.vrexp.load_spkmaps(activity_type=activity_type, envnum=envnum, return_params=True)
+        else:
+            env_spkmap = self.vrexp.load_spkmaps(activity_type=activity_type, envnum=envnum)
+
+        # get requested trials
+        if (trials == "train" or trials == "test") and new_split:
+            self.define_train_test_split(**split_params)
+
+        if trials == "train":
+            idx_keep_trials = [np.isin(self.idxFullTrialEachEnv[ei], self.train_idx[ei]) for ei in envidx]
+        elif trials == "test":
+            idx_keep_trials = [np.isin(self.idxFullTrialEachEnv[ei], self.test_idx[ei]) for ei in envidx]
+        elif trials == "full":
+            idx_keep_trials = [np.ones(len(self.idxFullTrialEachEnv[ei]), dtype=bool) for ei in envidx]
+        else:
+            raise ValueError(f"Didn't recognize trials option (received '{trials}', expected 'full', 'train', or 'test')")
+
+        env_spkmap = [esm[:, ikt] for esm, ikt in zip(env_spkmap, idx_keep_trials)]
+
+        # remove positions with nans in any spkmap if requested
+        if pop_nan:
+            marginal_axis = 0 if average else (0, 1)
+            nan_positions = np.any(np.stack([np.any(np.isnan(esm), axis=marginal_axis) for esm in env_spkmap]), axis=0)
+            env_spkmap = [esm[..., ~nan_positions] for esm in env_spkmap]
+
+        # return spkmap
+        if return_params:
+            return env_spkmap, env_params
+        else:
+            return env_spkmap
+
+    @prepare_data
     def get_spkmap(
-        self, envnum=None, average=True, smooth=None, trials="full", pop_nan=True, new_split=False, split_params={}, rawspkmap=None, occmap=None
+        self,
+        envnum=None,
+        average=True,
+        smooth=None,
+        trials="full",
+        pop_nan=True,
+        new_split=False,
+        split_params={},
+        rawspkmap=None,
+        occmap=None,
     ):
         """
         method for getting a spkmap from a list of environments
@@ -687,9 +753,8 @@ class placeCellSingleSession(standardAnalysis):
         if smooth is not None:
             # if smoothing, nans will get confusing so we need to reset nans with 0s then reset them
             occ_idxnan = np.isnan(occmap)
-            spk_idxnan = np.isnan(spkmap)
             occmap[occ_idxnan] = 0
-            spkmap[spk_idxnan] = 0
+            spkmap[occ_idxnan] = 0
 
             # do smoothing
             kk = helpers.getGaussKernel(self.distcenters, smooth)
@@ -698,7 +763,7 @@ class placeCellSingleSession(standardAnalysis):
 
             # reset nans
             occmap[occ_idxnan] = np.nan
-            spkmap[spk_idxnan] = np.nan
+            spkmap[occ_idxnan] = np.nan
 
         # correct spkmap by occupancy
         spkmap = helpers.correctMap(occmap, spkmap)
@@ -710,7 +775,6 @@ class placeCellSingleSession(standardAnalysis):
         if average:
             spkmap = spkmap.squeeze()
 
-        # return spkmap
         return spkmap
 
     def define_train_test_split(self, total_folds=3, train_folds=2):
