@@ -32,25 +32,32 @@ def get_args():
     parser = ArgumentParser(description="Calculate reliability of place cells between familiar and novel environments")
     parser.add_argument("--process-mouse-data", default=False, type=argbool, help="Process mouse data and save to temp files")
     parser.add_argument(
-        "--mouse-summary-data",
+        "--mouse-reliability",
         default=False,
         type=argbool,
         help="Load mouse data from temp files and make summary plots for each one.",
     )
     parser.add_argument(
-        "--grand-comparison-reliability-only",
+        "--mouse-reliability-red-vs-ctl",
+        default=False,
+        type=argbool,
+        help="Make a summary plot of reliability between red and ctl for each mouse.",
+    )
+    parser.add_argument(
+        "--compare-reliability",
         default=False,
         type=argbool,
         help="Make a grand comparison plot of reliability between familiar and novel environments for all mice.",
     )
+
     parser.add_argument(
-        "--mouse-summary-fraction-active-vs-reliability",
+        "--mouse-favsrel",
         default=False,
         type=argbool,
         help="Make a summary plot of fraction active vs reliability for each mouse.",
     )
-    parser.add_argument("--keep_mice", type=str, nargs="+", help="Mice to keep", default=None)
-    parser.add_argument("--ignore_mice", type=str, nargs="+", help="Mice to ignore", default=None)
+    parser.add_argument("--keep-mice", type=str, nargs="+", help="Mice to keep", default=None)
+    parser.add_argument("--ignore-mice", type=str, nargs="+", help="Mice to ignore", default=None)
     return parser.parse_args()
 
 
@@ -180,7 +187,81 @@ def mouse_summary_reliability_only(mouse, reduction="mean"):
 
     fig.suptitle(f"{mouse}")
 
-    pcm.saveFigure(fig, "reliability_familiar_vs_novel", f"{mouse}_summary_{reduction}")
+    pcm.saveFigure(fig, "reliability_familiar_vs_novel", f"summary_{reduction}_{mouse}")
+
+
+def mouse_summary_reliability_red_vs_ctl(mouse, onefile, reduction="mean"):
+    track = tracker(mouse)
+    pcm = placeCellMultiSession(track, autoload=False)
+    mouse_reliability_data = pcm.load_temp_file(temp_file_name_reliability_values(mouse))
+
+    env_first, env_second, idx_ses = pick_sessions(pcm)
+
+    num_sessions = len(idx_ses)
+
+    def color_violins(parts, facecolor=None, linecolor=None):
+        """Helper to color parts manually."""
+        if facecolor is not None:
+            for pc in parts["bodies"]:
+                pc.set_facecolor(facecolor)
+        if linecolor is not None:
+            for partname in ("cbars", "cmins", "cmaxes", "cmeans", "cmedians"):
+                if partname in parts:
+                    lc = parts[partname]
+                    lc.set_edgecolor(linecolor)
+
+    if reduction == "mean":
+        reduce_func = np.mean
+    elif reduction == "median":
+        reduce_func = np.median
+    else:
+        raise ValueError(f"Invalid reduction method: {reduction}")
+
+    rel_first = mouse_reliability_data[onefile]["rel_first"]
+    rel_second = mouse_reliability_data[onefile]["rel_second"]
+    idx_red = mouse_reliability_data["idx_red"]
+
+    # Ignore sessions with no red cells
+    idx_ses = [idx for idx in idx_ses if np.sum(idx_red[idx_ses.index(idx)]) > 0]
+
+    # If no sessions are left, return
+    if len(idx_ses) == 0:
+        return
+
+    plt.close("all")
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5), layout="constrained")
+    for ienv, (envname, reldata) in enumerate(zip(["Familiar", "Novel"], [rel_first, rel_second])):
+
+        for ii, ises in enumerate(idx_ses):
+            parts = ax[ienv].violinplot(reldata[ii][~idx_red[ii]], positions=[ii], showextrema=False, side="low")
+            color_violins(parts, facecolor=("k", 0.1))
+
+            parts = ax[ienv].violinplot(reldata[ii][idx_red[ii]], positions=[ii], showextrema=False, side="high")
+            color_violins(parts, facecolor=("r", 0.1))
+
+        ax[ienv].plot(
+            range(num_sessions),
+            [reduce_func(reldata[ii][~idx_red[ii]]) for ii in range(num_sessions)],
+            "k-",
+            label=f"Control Cells {reduction}",
+        )
+        ax[ienv].plot(
+            range(num_sessions),
+            [reduce_func(reldata[ii][idx_red[ii]]) for ii in range(num_sessions)],
+            "r-",
+            label=f"Red Cells {reduction}",
+        )
+
+        ax[ienv].set_xticks(np.arange(num_sessions))
+        ax[ienv].set_xticklabels(idx_ses)
+        ax[ienv].legend(loc="lower right")
+        ax[ienv].set_xlabel("Session #")
+        ax[ienv].set_ylabel("Reliability")
+        ax[ienv].set_title(f"{envname}")
+
+    fig.suptitle(f"{mouse}")
+
+    pcm.saveFigure(fig, "reliability_familiar_vs_novel", f"summary_redvsctl_{reduction}_{onefile}_{mouse}")
 
 
 def grand_comparison_reliability_only(mice, reduction="mean"):
@@ -294,7 +375,7 @@ def mouse_summary_reliability_vs_fraction_active(mouse, onefile=onefiles[-1]):
         ax[1, ii].set_title(f"Novel {idx}")
 
     fig.suptitle(f"{mouse}")
-    pcm.saveFigure(fig, "reliability_familiar_vs_novel", f"{mouse}_fraction_active_vs_reliability_ctlred")
+    pcm.saveFigure(fig, "reliability_familiar_vs_novel", f"fraction_active_vs_reliability_ctlred_{onefile}_{mouse}")
 
 
 if __name__ == "__main__":
@@ -307,18 +388,26 @@ if __name__ == "__main__":
         for mouse in progress_bar:
             process_mouse_data(mouse)
 
-    if args.mouse_summary_data:
+    if args.mouse_reliability:
         with helpers.batch_plot_context():
             for mouse in tqdm(mice, desc="Reliability only plots for each mouse..."):
                 mouse_summary_reliability_only(mouse, reduction="mean")
                 mouse_summary_reliability_only(mouse, reduction="median")
 
-    if args.grand_comparison_reliability_only:
+    if args.mouse_reliability_red_vs_ctl:
+        with helpers.batch_plot_context():
+            for mouse in tqdm(mice, desc="Reliability Red vs Ctl plots for each mouse..."):
+                for onefile in onefiles:
+                    mouse_summary_reliability_red_vs_ctl(mouse, onefile, reduction="mean")
+                    mouse_summary_reliability_red_vs_ctl(mouse, onefile, reduction="median")
+
+    if args.compare_reliability:
         with helpers.batch_plot_context():
             grand_comparison_reliability_only(mice, reduction="mean")
             grand_comparison_reliability_only(mice, reduction="median")
 
-    if args.mouse_summary_fraction_active_vs_reliability:
+    if args.mouse_favsrel:
         with helpers.batch_plot_context():
             for mouse in tqdm(mice, desc="Reliability vs Fraction Active plots for each mouse..."):
-                mouse_summary_reliability_vs_fraction_active(mouse)
+                for onefile in onefiles:
+                    mouse_summary_reliability_vs_fraction_active(mouse, onefile=onefile)

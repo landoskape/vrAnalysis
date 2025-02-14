@@ -70,7 +70,7 @@ class PlaceFieldLoader:
 
                 if tracked:
                     idx_red = np.any(np.stack([ired for ired in extras["idx_red"]]), axis=0)
-                    idx_red = np.tile(np.expand_dims(idx_red, axis=1), (fraction_active_data.shape[1]), 1)
+                    idx_red = np.tile(np.expand_dims(idx_red, axis=0), (fraction_active_data.shape[0], 1))
                 else:
                     idx_red = [ired for ired in extras["idx_red"]]
 
@@ -323,11 +323,12 @@ class PlaceFieldLoader:
         levels = np.linspace(min_level, max_level, num_levels) if num_levels > 1 else [(max_level + min_level) / 2]
         kde_ctl = self.kde_ctl[envoption][fraction_active_name][idx_ses]
         kde_red = self.kde_red[envoption][fraction_active_name][idx_ses]
-        contours_ctl = kde_ctl.contours(levels)
-        contours_red = kde_red.contours(levels)
 
-        contour_cmap = plt.cm.coolwarm
-        colors = contour_cmap(np.linspace(0, 1, num_levels))
+        if state["show_contours"]:
+            contours_ctl = kde_ctl.contours(levels)
+            contours_red = kde_red.contours(levels)
+            contour_cmap = plt.cm.coolwarm
+            colors = contour_cmap(np.linspace(0, 1, num_levels))
 
         fig, ax = plt.subplots(1, 3, figsize=(9, 3.5), layout="constrained")
 
@@ -339,9 +340,10 @@ class PlaceFieldLoader:
         ax[1].imshow(red_plot_data, cmap="gray_r", extent=kde_red.extent, aspect="auto", vmin=0, vmax=max_pdf)
 
         # Plot the contours
-        for ctl, red, color in zip(contours_ctl, contours_red, colors):
-            plot_contours(ctl, ax=ax[0], color=color, linewidth=1.0, alpha=1.0)
-            plot_contours(red, ax=ax[1], color=color, linewidth=1.0, alpha=1.0)
+        if state["show_contours"]:
+            for ctl, red, color in zip(contours_ctl, contours_red, colors):
+                plot_contours(ctl, ax=ax[0], color=color, linewidth=1.0, alpha=1.0)
+                plot_contours(red, ax=ax[1], color=color, linewidth=1.0, alpha=1.0)
 
         # Plot the difference in the distributions
         difference = kde_red.plot_data - kde_ctl.plot_data
@@ -358,23 +360,24 @@ class PlaceFieldLoader:
         ax[1].set_title(f"Red Cells N={self.kde_red[envoption][fraction_active_name][idx_ses].x.size}")
         ax[2].set_title("Difference (Red - Control)")
 
-        # Boundaries for the colorbar
-        inset = ax[0].inset_axes([0.05, 0.57, 0.1, 0.4])
-        step_size = levels[1] - levels[0]
-        color_lims = [min_level - step_size / 2, max_level + step_size / 2]
-        yticks = levels
-        max_ticks = 5
-        if num_levels > max_ticks:
-            from math import ceil
+        if state["show_contours"]:
+            # Boundaries for the colorbar
+            inset = ax[0].inset_axes([0.05, 0.57, 0.1, 0.4])
+            step_size = levels[1] - levels[0]
+            color_lims = [min_level - step_size / 2, max_level + step_size / 2]
+            yticks = levels
+            max_ticks = 5
+            if num_levels > max_ticks:
+                from math import ceil
 
-            step = ceil((num_levels - 1) / (max_ticks - 1))  # -1s ensure first/last included
-            indices = list(range(0, num_levels - 1, step)) + [num_levels - 1]
-            yticks = yticks[indices]
-        inset.imshow(np.flipud(np.reshape(colors, (num_levels, 1, 4))), aspect="auto", extent=[0, 1, color_lims[0], color_lims[1]])
-        inset.set_xticks([])
-        inset.set_yticks(yticks)
-        inset.set_yticklabels([f"{level:.2f}" for level in yticks])
-        inset.yaxis.tick_right()
+                step = ceil((num_levels - 1) / (max_ticks - 1))  # -1s ensure first/last included
+                indices = list(range(0, num_levels - 1, step)) + [num_levels - 1]
+                yticks = yticks[indices]
+            inset.imshow(np.flipud(np.reshape(colors, (num_levels, 1, 4))), aspect="auto", extent=[0, 1, color_lims[0], color_lims[1]])
+            inset.set_xticks([])
+            inset.set_yticks(yticks)
+            inset.set_yticklabels([f"{level:.2f}" for level in yticks])
+            inset.yaxis.tick_right()
 
         fig.suptitle(
             f"Mouse: {self.mouse_name}, Env: {envoption}, ActivityMethod: {state['fraction_active_method']}, FractionMethod: {state['fraction_active_type']}"
@@ -423,6 +426,7 @@ class SummaryViewer(Viewer):
         self.add_integer("idx_ses", value=0, min_value=0, max_value=1)
         self.add_float_range("level_range", value=(0.5, 0.9), min_value=0.0, max_value=1.0, step=0.01)
         self.add_integer("num_levels", value=10, min_value=1, max_value=100)
+        self.add_boolean("show_contours", value=True)
         self.add_selection("fraction_active_method", options=FractionActive.activity_methods, value="rms")
         self.add_selection("fraction_active_type", options=FractionActive.fraction_methods, value="participation")
 
