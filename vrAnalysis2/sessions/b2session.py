@@ -4,7 +4,7 @@ import numpy as np
 import json
 from numpyencoder import NumpyEncoder
 from ..files import local_data_path
-from .base import OneSession
+from .base import SessionData
 
 
 def create_b2session(mouse_name: str, date: str, session_id: str, spks_type: Optional[str] = None) -> "B2Session":
@@ -15,7 +15,7 @@ def create_b2session(mouse_name: str, date: str, session_id: str, spks_type: Opt
 
 
 @dataclass
-class B2Session(OneSession):
+class B2Session(SessionData):
     spks_type: str = field(default="oasis", repr=False)
     opts: dict = field(default_factory=dict, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
@@ -44,9 +44,26 @@ class B2Session(OneSession):
         elif spks_type == "neuropil":
             return self.loadone("mpci.roiNeuropilActivityF")
         elif spks_type == "significant":
-            return self.loadone("mpci.roiSignificantFluorescence", sparse=True)
+            return self.loadone("mpci.roiSignificantFluorescence", sparse=True, keep_sparse=False)
         elif spks_type == "corrected":
             return self.loadfcorr().T
+        else:
+            raise ValueError(f"spks_type {spks_type} not recognized")
+
+    def _are_spks_zero_baseline(self, spks_type: str) -> bool:
+        """Check if the spks are nonnegative"""
+        if spks_type == "oasis":
+            return True
+        elif spks_type == "deconvolved":
+            return True
+        elif spks_type == "raw":
+            return False
+        elif spks_type == "neuropil":
+            return False
+        elif spks_type == "significant":
+            return True
+        elif spks_type == "corrected":
+            return False
         else:
             raise ValueError(f"spks_type {spks_type} not recognized")
 
@@ -58,6 +75,46 @@ class B2Session(OneSession):
     @property
     def spks(self):
         return self.get_spks(self.spks_type)
+
+    @property
+    def zero_baseline_spks(self) -> bool:
+        return self._are_spks_zero_baseline(self.spks_type)
+
+    @property
+    def timestamps(self):
+        return self.loadone("mpci.times")
+
+    @property
+    def env_length(self):
+        """Return the env length for each trial
+
+        Part of SessionToSpkmapProtocol: Needs documentation
+        """
+        return self.loadone("trials.roomLength")
+
+    @property
+    def positions(self):
+        """Return the position of the mouse during the VR experiment and timestamps
+
+        Part of SessionToSpkmapProtocol: Needs documentation
+        """
+        timestamps = self.loadone("positionTracking.times")
+        position = self.loadone("positionTracking.position")
+        idx_behave_to_frame = self.loadone("positionTracking.mpci")
+        trial_start_index = self.loadone("trials.positionTracking")
+        num_samples = len(position)
+        trial_numbers = np.arange(len(trial_start_index))
+        trial_lengths = np.append(np.diff(trial_start_index), num_samples - trial_start_index[-1])
+        trial_numbers = np.repeat(trial_numbers, trial_lengths)
+        return timestamps, position, trial_numbers, idx_behave_to_frame
+
+    @property
+    def num_trials(self):
+        """Return the number of trials in the session
+
+        Part of SessionToSpkmapProtocol: Needs documentation
+        """
+        return self.get_value("numTrials")
 
     def set_spks_type(self, spks_type: str) -> str:
         """Set spks_type, will determine which onefile to load spks data from"""

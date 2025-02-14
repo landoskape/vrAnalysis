@@ -65,14 +65,21 @@ class SessionData(ABC):
     date: Union[str, datetime, PrettyDatetime]
     session_id: Optional[str] = None
 
-    # additional fields
+    # session data path -- identifies where the session data is stored and loaded from
+    data_path: Union[Path, str] = field(init=False, repr=False)
+
+    # Values: namespace for storing arbitrary data -- useful for flexible storing of (small bytes) data
     values: SimpleNamespace = field(default_factory=SimpleNamespace, repr=False, init=False)
+
+    # A cache for buffering onedata files
+    one_cache: dict = field(default_factory=dict, repr=False, init=False)
 
     def __post_init__(self):
         """Post-initialization method to set all properties specific to subclasses"""
         # Enable additional loading for subclasses if required
         # usually to put things in the values namespace
         self.date = str(PrettyDatetime.make_pretty(self.date))
+        self.data_path = self._init_data_path()
         self._additional_loading()
 
     def _additional_loading(self) -> None:
@@ -80,6 +87,14 @@ class SessionData(ABC):
 
         Called in the __post_init__ method. Allows subclasses to perform additional
         loading steps. Default is to do nothing.
+        """
+        pass
+
+    @abstractmethod
+    def _init_data_path(self) -> Union[Path, str]:
+        """Defines the data path for the session data
+
+        This is required for all subclasses of SessionData to define!
         """
         pass
 
@@ -108,30 +123,6 @@ class SessionData(ABC):
     def set_value(self, key: str, value: object) -> None:
         """Set values to the session stored in the values namespace"""
         setattr(self.values, key, value)
-
-
-@dataclass
-class OneSession(SessionData, ABC):
-    """Top-level class to manage data that uses the onedata format to save & load data"""
-
-    # session data path -- identifies where the session data is stored and loaded from
-    data_path: Union[Path, str] = field(init=False, repr=False)
-
-    # a cache for onedata
-    one_cache: dict = field(default_factory=dict, repr=False, init=False)
-
-    def _additional_loading(self) -> None:
-        """Extra loading implemented in the postinit of the SessionData class!"""
-        # OneSessions require a data_path to be defined
-        self.data_path = self._init_data_path()
-
-    @abstractmethod
-    def _init_data_path(self) -> Union[Path, str]:
-        """Defines the data path for the session data
-
-        This is required for all subclasses of OneSessions to define!
-        """
-        pass
 
     @property
     def recipe_loaders(self) -> dict:
@@ -217,25 +208,29 @@ class OneSession(SessionData, ABC):
             self.one_cache[file_name] = data  # (standard practice is to buffer the data for efficient data handling)
             np.save(path, data)
 
-    def loadone(self, *names: str, force=False, sparse: bool = False) -> np.ndarray:
+    def loadone(self, *names: str, force: bool = False, sparse: bool = False, keep_sparse: bool = False) -> np.ndarray:
         """
         Load data, either directly or by following a recipe.
 
         Args:
             names: Sequence of strings to join into filename (e.g., "mpci", "roiActivityF" -> "mpci.roiActivityF")
             force: If True, reload data even if it is already in the buffer
+            sparse: If True, return a sparse array
+            keep_sparse: If True, return a sparse array when the data is sparse -- otherwise returns a dense array
 
         Returns:
             Loaded and potentially transformed data
         """
         file_name = self.get_one_filename(*names)
+        path = self.one_path / file_name
+        if sparse:
+            path = path.with_suffix(".npz")
+            file_name = path.stem + path.suffix
+
         if not force and file_name in self.one_cache.keys():
             return self.one_cache[file_name]
+
         else:
-            path = self.one_path / file_name
-            if sparse:
-                path = path.with_suffix(".npz")
-                file_name = path.stem + path.suffix
             if not (path.exists()):
                 print(f"In session {self.session_print()}, the one file {file_name} doesn't exist. Here is a list of saved oneData files:")
                 for one_file in self.print_saved_one():
@@ -245,6 +240,8 @@ class OneSession(SessionData, ABC):
             # Load saved numpy array at savepath (or sparse array if sparse=True)
             if sparse:
                 data = load_npz(path)
+                if not keep_sparse:
+                    data = data.toarray()
             else:
                 data = np.load(path, allow_pickle=True)
                 if LoadingRecipe.is_recipe(data):
