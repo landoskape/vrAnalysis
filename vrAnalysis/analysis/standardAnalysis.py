@@ -132,7 +132,7 @@ class multipleAnalysis(standardAnalysis):
         attempts to save matplotlib figure(figNumber) in the save directory with a particular name
         """
         print(f"{self.name} is saving a {multiname} figure for {name}")
-        figpath = (self.saveDirectory(multiname) / name).with_suffix(".png")
+        figpath = self.saveDirectory(multiname) / (name + ".png")
         if not figpath.parent.is_dir():
             figpath.parent.mkdir(parents=True)
         plt.figure(figNumber)
