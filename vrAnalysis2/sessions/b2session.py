@@ -109,6 +109,11 @@ class B2Session(SessionData):
         return timestamps, position, trial_numbers, idx_behave_to_frame
 
     @property
+    def trial_environment(self):
+        """Return the environment for each trial"""
+        return self.loadone("trials.environmentIndex")
+
+    @property
     def num_trials(self):
         """Return the number of trials in the session
 

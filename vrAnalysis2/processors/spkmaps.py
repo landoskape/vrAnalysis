@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, asdict
 import numpy as np
 import numba as nb
 import json
-from typing import Dict, Any, Union, Tuple, NamedTuple
+from typing import Dict, Any, Union, Tuple, NamedTuple, Iterable
 from typing import Protocol, runtime_checkable
 import speedystats as ss
 from .. import helpers
@@ -18,12 +18,111 @@ class Maps(NamedTuple):
 
 @runtime_checkable
 class SessionToSpkmapProtocol(Protocol):
-    def spks(self) -> np.ndarray: ...
-    def timestamps(self) -> np.ndarray: ...
-    def env_length(self) -> np.ndarray: ...
-    def positions(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: ...
-    def num_trials(self) -> int: ...
-    def zero_baseline_spks(self) -> bool: ...
+    """Protocol defining the required interface for sessions that can be processed into spike maps.
+
+    This protocol specifies the required properties that must be implemented by any
+    session class that will be used for spike map processing. Each property provides
+    essential data about the recording session, including neural activity, behavioral
+    measurements, and session metadata.
+
+    Required Properties
+    ------------------
+    spks : np.ndarray
+        Spike data for all neurons across all timepoints
+    timestamps : np.ndarray
+        Timestamps for each imaging frame
+    env_length : np.ndarray
+        Length of the environment for each trial
+    positions : Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        Position-related data including timestamps, positions, trial numbers, and frame indices
+    trial_environment : np.ndarray
+        Environment for each trial
+    num_trials : int
+        Total number of trials in the session
+    zero_baseline_spks : bool
+        Whether spike data is already zero-baselined
+    """
+
+    @property
+    def spks(self) -> np.ndarray:
+        """Spike data for all neurons across all timepoints.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (timepoints, neurons) containing spike counts or activity
+        """
+        ...
+
+    @property
+    def timestamps(self) -> np.ndarray:
+        """Timestamps for each imaging frame.
+
+        Returns
+        -------
+        np.ndarray
+            1D array of timestamps in seconds
+        """
+        ...
+
+    @property
+    def env_length(self) -> np.ndarray:
+        """Length of the environment for each trial.
+
+        Returns
+        -------
+        np.ndarray
+            Array containing environment length(s) in spatial units
+        """
+        ...
+
+    @property
+    def positions(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Position-related data arrays.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+            Tuple containing:
+            - timestamps: Time of each position sample
+            - positions: Position values
+            - trial_numbers: Trial number for each sample
+            - idx_behave_to_frame: Indices mapping behavioral samples to imaging frames
+        """
+        ...
+
+    @property
+    def trial_environment(self) -> np.ndarray:
+        """Environment for each trial.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (trials,) containing environment number for each trial
+        """
+        ...
+
+    @property
+    def num_trials(self) -> int:
+        """Total number of trials in the session.
+
+        Returns
+        -------
+        int
+            Number of trials
+        """
+        ...
+
+    @property
+    def zero_baseline_spks(self) -> bool:
+        """Whether spike data is already zero-baselined.
+
+        Returns
+        -------
+        bool
+            True if spike data is zero-baselined, False otherwise
+        """
+        ...
 
 
 @dataclass
@@ -131,34 +230,24 @@ class SpkmapProcessor:
             if not isinstance(self.params, SpkmapParams):
                 raise ValueError(f"params must be a SpkmapParams instance or a dictionary, not {type(self.params)}")
 
-    @property
-    def occmap(self) -> np.ndarray:
-        """Get the occupancy map from the session data
+    def _filter_environments(self, envnum: Union[int, Iterable[int], None] = None) -> np.ndarray:
+        """Filter the session data to only include trials from certain environments
 
-        NOTE:
-        Will integrate a saved onefile(or whatever) check based on params before reprocessing!
+        If envnum is not provided, will return all trials.
         """
-        return self.get_maps(clear_buffer=self.params.clear_buffer, get_speedmap=False, get_spkmap=False).occmap
+        if envnum is None:
+            return np.arange(self.session.num_trials)
+        else:
+            envnum = helpers.check_iterable(envnum)
+            return np.where(np.isin(self.session.trial_environment, envnum))[0]
 
-    @property
-    def speedmap(self) -> np.ndarray:
-        """Get the speed map from the session data
-
-        NOTE:
-        Will integrate a saved onefile(or whatever) check based on params before reprocessing!
-        """
-        return self.get_maps(clear_buffer=self.params.clear_buffer, get_speedmap=True, get_spkmap=False).speedmap
-
-    @property
-    def spkmap(self) -> np.ndarray:
-        """Get the spiking map from the session data
-
-        NOTE:
-        Will integrate a saved onefile(or whatever) check based on params before reprocessing!
-        """
-        return self.get_maps(clear_buffer=self.params.clear_buffer, get_speedmap=False, get_spkmap=True).spkmap
-
-    def get_maps(self, clear_buffer: bool = False, get_speedmap: bool = True, get_spkmap: bool = True) -> Maps:
+    def get_maps(
+        self,
+        envnum: Union[int, Iterable[int], None] = None,
+        get_speedmap: bool = True,
+        get_spkmap: bool = True,
+        clear_buffer: bool = False,
+    ) -> Maps:
         """Get maps (occupancy, speed, spkmap) from session data by processing with provided parameters.
 
         Notes on engineering:
