@@ -114,6 +114,11 @@ class B2Session(SessionData):
         return self.loadone("trials.environmentIndex")
 
     @property
+    def environments(self):
+        """Return the environments used in the session"""
+        return np.unique(self.trial_environment)
+
+    @property
     def num_trials(self):
         """Return the number of trials in the session
 

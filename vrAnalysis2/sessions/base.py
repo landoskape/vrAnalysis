@@ -261,6 +261,10 @@ class SessionData(ABC):
             self.one_cache[file_name] = data
             return data
 
-    def clear_cache(self) -> None:
+    def clear_cache(self, file_names: Optional[List[str]] = None) -> None:
         """Clear cached data to free memory"""
-        self.one_cache = {}
+        if file_names is None:
+            self.one_cache = {}
+        else:
+            for file_name in file_names:
+                self.one_cache.pop(file_name, None)
