@@ -21,6 +21,8 @@ deps_core = [
     "pyodbc",
     "pandas",
     "numpyencoder",
+    "speedystats",
+    "joblib",
 ]
 
 # Extra code for performing registration (these things are extras specifically for oasis)
@@ -59,6 +61,7 @@ setup(
         "vrAnalysis2.processors",
         "vrAnalysis2.sessions",
         "vrAnalysis2.helpers",
+        "roicat_support",
     ],
     python_requires=">=3.9, <=4",
     install_requires=deps_core,
