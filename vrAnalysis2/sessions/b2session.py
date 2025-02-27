@@ -1,29 +1,103 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Any
+import joblib
 import numpy as np
 import json
 from numpyencoder import NumpyEncoder
 from ..files import local_data_path
 from .base import SessionData
+from roicat_support.classifier import load_classifier
+from roicat_support.classifier import get_results_path as get_classifier_results_path
 
 
-def create_b2session(mouse_name: str, date: str, session_id: str, spks_type: Optional[str] = None) -> "B2Session":
-    if spks_type is None:
-        return B2Session(mouse_name, date, session_id)
+def create_b2session(mouse_name: str, date: str, session_id: str, params: "B2SessionParams" | Dict[str, Any] | None = None) -> "B2Session":
+    """Create a B2Session object and (optionally) specify the parameters
+
+    Parameters
+    ----------
+    mouse_name: str
+        The name of the mouse
+    date: str
+        The date of the session
+    session_id: str
+        The id of the session
+    params: B2SessionParams, dict, or None
+        The parameters to use for the session. If None, the default parameters will be used.
+        If a dictionary, it can contain the keys:
+            - spks_type: str (which kind of spks data to load)
+            - keep_planes: list[int] (which planes to keep)
+            - good_labels: list[str] (which labels to keep from the roicat classifier analysis)
+            - fraction_filled_threshold: float (threshold for the fraction of the ROI that is filled -- based on local concavity analysis)
+            - footprint_size_threshold: int (threshold for the size of the ROI)
+    """
+    if params is None:
+        params = B2SessionParams()
+    elif isinstance(params, dict):
+        params = B2SessionParams.from_dict(params)
+    elif isinstance(params, B2SessionParams):
+        pass
     else:
-        return B2Session(mouse_name, date, session_id, spks_type)
+        raise ValueError(f"params must be a B2SessionParams object or a dictionary")
+    return B2Session(mouse_name, date, session_id, params)
+
+
+@dataclass
+class B2SessionParams:
+    spks_type: str = "significant"
+    keep_planes: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    good_labels: list[str] = field(default_factory=lambda: ["c", "d"])
+    fraction_filled_threshold: float | None = None
+    footprint_size_threshold: int | None = None
+
+    @classmethod
+    def from_dict(cls, params: Dict[str, Any]) -> "B2SessionParams":
+        return cls(**params)
+
+    def __post_init__(self):
+        classifier = load_classifier()
+        self._label_to_id = classifier["label_to_id"]
+
+    def update_parameters(self, **kwargs):
+        """Update the parameters for the session"""
+        for key, val in kwargs.items():
+            if key == "good_labels":
+                self.set_good_labels(val)
+            else:
+                setattr(self, key, val)
+
+    @property
+    def good_label_idx(self) -> list[int] | None:
+        """Get the good label indices for the session"""
+        if self.good_labels is None:
+            return None
+        else:
+            return [self._label_to_id[label] for label in self.good_labels]
+
+    def set_good_labels(self, good_labels: list[str] | None) -> list[str]:
+        """Set the good labels for the session"""
+        if good_labels is None:
+            self.good_labels = None
+        else:
+            if any(label not in self._label_to_id for label in good_labels):
+                raise ValueError(f"Not all labels in good_labels are found in the classifier: {good_labels}")
+            self.good_labels = good_labels
 
 
 @dataclass
 class B2Session(SessionData):
-    spks_type: str = field(default="oasis", repr=False)
     opts: dict = field(default_factory=dict, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
+    params: B2SessionParams = field(default_factory=B2SessionParams, repr=False)
 
     @property
     def s2p_path(self):
         """Path to suite2p directory"""
         return self.data_path / "suite2p"
+
+    @property
+    def roicat_path(self):
+        """Path to roicat directory"""
+        return self.data_path / "roicat"
 
     @property
     def recipe_loaders(self):
@@ -69,16 +143,16 @@ class B2Session(SessionData):
 
     def get_spks(self, spks_type: Optional[str] = None):
         """Get spks data for the session. Optionally specify the spks_type to load."""
-        spks_type = spks_type or self.spks_type
+        spks_type = spks_type or self.params.spks_type
         return self._load_spks(spks_type)
 
     @property
     def spks(self):
-        return self.get_spks(self.spks_type)
+        return self.get_spks(self.params.spks_type)
 
     @property
     def zero_baseline_spks(self) -> bool:
-        return self._are_spks_zero_baseline(self.spks_type)
+        return self._are_spks_zero_baseline(self.params.spks_type)
 
     @property
     def timestamps(self):
@@ -126,9 +200,57 @@ class B2Session(SessionData):
         """
         return self.get_value("numTrials")
 
-    def set_spks_type(self, spks_type: str) -> str:
-        """Set spks_type, will determine which onefile to load spks data from"""
-        self.spks_type = spks_type
+    @property
+    def idx_rois(self):
+        """Return the indices of the ROIs to load"""
+        num_rois = self.get_value("numROIs")
+        idx_rois = np.ones(num_rois, dtype=bool)
+
+        # Filter ROIs by which plane they are in
+        if self.params.keep_planes is not None:
+            plane_idx = self.get_plane_idx()
+            idx_rois &= np.isin(plane_idx, self.params.keep_planes)
+
+        # Filter ROIs by the results of the ROICaT classifier analysis
+        if (
+            self.params.good_label_idx is not None
+            or self.params.fraction_filled_threshold is not None
+            or self.params.footprint_size_threshold is not None
+        ):
+            results_path = get_classifier_results_path(self)
+            if results_path.exists():
+                classifier = joblib.load(results_path)
+                class_predictions = classifier["class_predictions"]
+                fill_fraction = classifier["fill_fraction"]
+                footprint_size = classifier["footprint_size"]
+
+                if self.params.good_label_idx is not None:
+                    idx_rois &= np.isin(class_predictions, self.params.good_label_idx)
+
+                if self.params.fraction_filled_threshold is not None:
+                    idx_rois &= fill_fraction > self.params.fraction_filled_threshold
+
+                if self.params.footprint_size_threshold is not None:
+                    idx_rois &= footprint_size > self.params.footprint_size_threshold
+
+        return idx_rois
+
+    def update_params(self, **kwargs):
+        """Update the parameters for the session
+
+        Parameters
+        ----------
+        **kwargs: dict
+            The parameters to update, can be any of the parameters in B2SessionParams
+            (except for good_label_idx, which is set automatically)
+            Including:
+                - spks_type: str
+                - keep_planes: list[int]
+                - good_labels: list[str]
+                - fraction_filled_threshold: float
+                - footprint_size_threshold: int
+        """
+        self.params.update_parameters(**kwargs)
 
     def _init_data_path(self) -> str:
         """Set the data path for the session"""
