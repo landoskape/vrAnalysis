@@ -3,6 +3,12 @@ import inspect
 import math
 
 
+def get_confirmation(message: str = ""):
+    message = message + " Are you sure you want to proceed? (type 'proceed' to continue):"
+    confirmation = input(message)
+    return confirmation == "proceed"
+
+
 class AttributeDict(dict):
     """
     helper class for accessing dictionary values as attributes
