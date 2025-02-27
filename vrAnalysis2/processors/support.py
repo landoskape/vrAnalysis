@@ -51,10 +51,10 @@ def convolve_toeplitz(
 
     use_torch = isinstance(data, torch.Tensor)
     if use_torch:
-        data = data.to(device)
+        data = data.to(device).float()
         data = torch.moveaxis(data, axis, -1)
         data_shape = data.shape
-        conv_mat = torch.tensor(convolution_matrix(kernel, data_shape[-1], mode=mode).T).to(device)
+        conv_mat = torch.tensor(convolution_matrix(kernel, data_shape[-1], mode=mode).T).to(device).float()
         data_reshaped = data.reshape(-1, data_shape[-1]).contiguous()
         output = torch.matmul(data_reshaped, conv_mat)
         new_data_shape = (*data_shape[:-1], conv_mat.shape[1])
@@ -69,8 +69,8 @@ def convolve_toeplitz(
         data_shape = data.shape
         # if there are not many signals to convolve, this is a tiny slower
         # if there are many signals to convolve (order of ROIs in a recording), this is waaaaayyyy faster
-        conv_mat = torch.tensor(convolution_matrix(kernel, data_shape[-1], mode=mode).T).to(device)
-        data_reshaped = torch.tensor(np.reshape(data, (-1, data_shape[-1]))).to(device)
+        conv_mat = torch.tensor(convolution_matrix(kernel, data_shape[-1], mode=mode).T).to(device).float()
+        data_reshaped = torch.tensor(np.reshape(data, (-1, data_shape[-1]))).to(device).float()
         output = torch.matmul(data_reshaped, conv_mat).cpu().numpy()
         new_data_shape = (*data_shape[:-1], conv_mat.shape[1])
         output = np.reshape(output, new_data_shape)
@@ -82,7 +82,7 @@ def convolve_toeplitz(
     else:
         data = np.moveaxis(data, axis, -1)  # move target axis
         data_shape = data.shape
-        conv_mat = convolution_matrix(kernel, data_shape[-1], mode=mode).T
+        conv_mat = convolution_matrix(kernel, data_shape[-1], mode=mode).T.astype(data.dtype)
         data_reshaped = np.reshape(data, (-1, data_shape[-1]))
         output = np.matmul(data_reshaped, conv_mat)
         new_data_shape = (*data_shape[:-1], conv_mat.shape[1])
