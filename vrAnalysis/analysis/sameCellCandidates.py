@@ -1,3 +1,107 @@
+"""
+sameCellCandidates - Analysis tools for identifying and visualizing same-cell ROIs across imaging planes
+
+This module provides tools for analyzing potential same-cell candidates in volumetric imaging data.
+It helps identify ROIs (Regions Of Interest) that might represent the same cell across different
+imaging planes based on their spatial relationships and activity correlations.
+
+Quick Start
+----------
+Basic usage for analyzing correlation between ROIs across planes:
+
+    from vrAnalysis.analysis import sameCellCandidates
+    
+    # Initialize with a VR experiment object
+    scc = sameCellCandidates(vrexp)
+    
+    # Create histograms of correlated ROI pairs across planes
+    scc.planePairHistograms(
+        corrCutoff=[0.5, 0.6, 0.7, 0.8],  # correlation thresholds
+        distanceCutoff=50,                 # maximum distance in μm
+        withShow=True
+    )
+
+Visualization Tools
+-----------------
+The module provides two interactive visualization tools:
+
+1. Basic Cluster Explorer:
+    For exploring ROI clusters based on correlation and distance:
+
+    # Initialize explorer with default parameters
+    explorer = clusterExplorer(
+        scc,
+        corrCutoff=0.4,      # minimum correlation
+        distanceCutoff=20,   # maximum distance in μm
+        keep_planes=[1,2,3,4]
+    )
+
+2. ROICaT Cluster Explorer:
+    For exploring clusters identified by ROICaT:
+
+    # Initialize with ROICaT labels
+    explorer = clusterExplorerROICaT(
+        scc,
+        roicat_labels,       # cluster labels from ROICaT
+        corrCutoff=0.4,
+        distanceCutoff=20
+    )
+
+Analysis Examples
+---------------
+1. Analyze correlation vs distance relationships:
+
+    # Create scatter plot of correlations vs distances
+    scc.scatterForThresholds(
+        keep_planes=[1,2,3,4],
+        distanceCutoff=250
+    )
+
+    # Plot cumulative distributions of correlations
+    scc.cdfForThresholds(
+        distanceCutoff=50,
+        distanceDistant=(50, 250)
+    )
+
+2. Analyze cluster sizes and distributions:
+
+    # Plot cluster size distributions
+    scc.clusterSize(
+        corrCutoffs=[0.3, 0.4, 0.5, 0.6, 0.7],
+        distanceCutoff=30
+    )
+
+    # Analyze distance distributions
+    scc.distanceDistribution(
+        corrCutoffs=np.linspace(0.2, 0.6, 5),
+        maxDistance=200
+    )
+
+Batch Processing
+--------------
+For analyzing multiple sessions:
+
+    from vrAnalysis.database import vrDatabase
+    
+    vrdb = vrDatabase()
+    for ses in vrdb.iterSessions(imaging=True, vrRegistration=True):
+        scc = sameCellCandidates(ses)
+        scc.planePairHistograms(
+            corrCutoff=[0.5, 0.6, 0.7, 0.8],
+            distanceCutoff=50,
+            withSave=True,    # save figures
+            withShow=False    # don't display
+        )
+
+Notes
+-----
+- All distance measurements are in micrometers (μm)
+- Correlation values range from -1 to 1
+- Default plane indices are [1, 2, 3, 4]
+- Interactive visualizations support keyboard navigation (left/right arrows)
+  and mouse interaction for ROI selection
+"""
+
 import time
 from copy import copy
 import numpy as np
@@ -61,10 +165,16 @@ def getConnectedGroups(G):
 
 class sameCellCandidates(standardAnalysis):
     """
-    Measures cross-correlation of pairs of ROI activity with spatial distance
+    Analyzes potential same-cell candidates across imaging planes in volumetric data.
 
     Takes as required input a vrexp object. Optional inputs define parameters of analysis,
     including which activity to run measurement on (could be deconvolvedOasis, or neuropilF, for example).
+
+    Key Features:
+    - Measures cross-correlation between ROI pairs
+    - Analyzes spatial relationships and distances between ROIs
+    - Provides visualization tools for ROI relationships
+    - Supports filtering by correlation thresholds, distances, and planes
 
     Standard usage:
     ---------------
@@ -84,6 +194,17 @@ class sameCellCandidates(standardAnalysis):
     scc.scatterForThresholds(keep_planes=[1,2,3,4], distanceCutoff=250);
 
     The other makes a cumulative distribution plot for ROIs of two different distance ranges...
+
+    Parameters
+    ----------
+    vrexp : object
+        VR experiment object containing imaging data and ROI information
+    onefile : str, optional
+        Path to activity data file (default: "mpci.roiActivityDeconvolvedOasis")
+    autoload : bool, optional
+        Whether to automatically load data on initialization (default: True)
+    keep_planes : list, optional
+        List of plane indices to analyze (default: [1, 2, 3, 4])
     """
 
     def __init__(
@@ -104,7 +225,13 @@ class sameCellCandidates(standardAnalysis):
             self.load_data()
 
     def load_data(self, onefile=None):
-        """load standard data for measuring same cell candidate"""
+        """Load standard data for measuring same cell candidates.
+
+        Parameters
+        ----------
+        onefile : str, optional
+            Path to activity data file. If None, uses the class's onefile attribute.
+        """
         # update onefile if using a different measure of activity
         self.onefile = self.onefile if onefile is None else onefile
 
@@ -137,13 +264,38 @@ class sameCellCandidates(standardAnalysis):
         self.dataloaded = True
 
     def totalFromPairs(self, pairs):
+        """Calculate total number of ROIs from number of pairs.
+
+        Parameters
+        ----------
+        pairs : int
+            Number of ROI pairs
+
+        Returns
+        -------
+        int
+            Total number of ROIs that would generate the given number of pairs
+        """
         assert type(pairs) == int, "pairs is not an integer..."
         n = (1 + np.sqrt(1 + 8 * pairs)) / 2
         assert n.is_integer(), "pairs is not a valid binomial coefficient choose 2..."
         return int(n)
 
     def pairValFromVec(self, vector, squareform=True):
-        """Convert vector to pair values, optionally perform squareform without checks"""
+        """Convert vector to pair values.
+
+        Parameters
+        ----------
+        vector : numpy.ndarray
+            1D array of values
+        squareform : bool, optional
+            Whether to perform squareform without checks (default: True)
+
+        Returns
+        -------
+        tuple
+            Two arrays containing paired values from the input vector
+        """
         assert isinstance(vector, np.ndarray) and vector.ndim == 1, "vector must be 1d numpy array"
         N = len(vector)
         p1 = vector.reshape(-1, 1).repeat(N, axis=1)
@@ -161,6 +313,26 @@ class sameCellCandidates(standardAnalysis):
         distanceCutoff=None,
         extraFilter=None,
     ):
+        """Generate boolean filter for ROI pairs based on multiple criteria.
+
+        Parameters
+        ----------
+        npixCutoff : int, optional
+            Minimum number of pixels for ROI masks
+        keep_planes : list, optional
+            List of plane indices to include
+        corrCutoff : float, optional
+            Minimum correlation threshold
+        distanceCutoff : float, optional
+            Maximum distance between ROI pairs in μm
+        extraFilter : numpy.ndarray, optional
+            Additional boolean filter to apply
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean array indicating which pairs pass all filters
+        """
         assert self.dataloaded, "data is not loaded yet, use 'run()' to get key datapoints"
         if keep_planes is not None:
             assert set(keep_planes) <= set(
@@ -184,6 +356,18 @@ class sameCellCandidates(standardAnalysis):
         return pairIdx
 
     def filterPairs(self, pairIdx):
+        """Filter ROI pair data based on boolean index.
+
+        Parameters
+        ----------
+        pairIdx : numpy.ndarray
+            Boolean array indicating which pairs to keep
+
+        Returns
+        -------
+        tuple
+            Filtered versions of all pair measurements
+        """
         xcROIs = self.xcROIs[pairIdx]
         pwDist = self.pwDist[pairIdx]
         planePair1, planePair2 = self.planePair1[pairIdx], self.planePair2[pairIdx]
@@ -204,7 +388,22 @@ class sameCellCandidates(standardAnalysis):
         )
 
     def scatterForThresholds(self, keep_planes=None, distanceCutoff=None, outputFig=False):
-        """Make color-coded scatter plot to visualize potential thresholds for distance and planes"""
+        """Create scatter plot visualizing correlation vs distance relationships.
+
+        Parameters
+        ----------
+        keep_planes : list, optional
+            List of plane indices to include
+        distanceCutoff : float, optional
+            Maximum distance between ROI pairs in μm
+        outputFig : bool, optional
+            Whether to return the figure object (default: False)
+
+        Returns
+        -------
+        matplotlib.figure.Figure, optional
+            Figure object if outputFig is True
+        """
 
         # filter pairs based on optional cutoffs and plane indices (and more...)
         pairIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=distanceCutoff)
@@ -254,11 +453,29 @@ class sameCellCandidates(standardAnalysis):
         withSave=False,
         withShow=True,
     ):
-        """Make color-coded cumulative distribution plots to visualize potential thresholds for distance and planes
-        the cutoff inputs and keep_planes input are all standard - they go into getPairFilter.
-        the distanceDistant input requires a tuple and determines the range of distances to use for the "distant" group
-        the "close" group is based purely on 'distanceCutoff'
-        This uses a fast approximation of the cdf with prespecified cdfVals, which should be an increasing linspace like array.
+        """Make color-coded cumulative distribution plots to visualize correlation thresholds.
+
+        Creates plots comparing correlation distributions between ROIs at different distances
+        and across different planes.
+
+        Parameters
+        ----------
+        cdfVals : numpy.ndarray, optional
+            Values at which to evaluate CDF (default: np.linspace(0, 1, 11))
+        ylim : tuple, optional
+            Y-axis limits for the plot
+        keep_planes : list, optional
+            List of plane indices to include
+        distanceCutoff : float, optional
+            Maximum distance for "close" ROI pairs in μm (default: 50)
+        corrCutoff : float, optional
+            Minimum correlation threshold
+        distanceDistant : tuple, optional
+            (min, max) distance range for "distant" ROI pairs in μm (default: (50, 250))
+        withSave : bool, optional
+            Whether to save the figure (default: False)
+        withShow : bool, optional
+            Whether to display the figure (default: True)
         """
         assert type(distanceDistant) == tuple and len(distanceDistant) == 2, "distanceDistant should be a tuple specifying the range"
 
@@ -319,16 +536,33 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
 
     def roiCountHandling(
-        self,
-        roiCountCutoffs=np.linspace(0, 1, 11),
-        maxBinConnections=25,
-        keep_planes=None,
-        distanceCutoff=40,
-        withSave=False,
-        withShow=True,
+        self, roiCountCutoffs=np.linspace(0, 1, 11), maxBinConnections=25, keep_planes=None, distanceCutoff=40, withSave=False, withShow=True
     ):
-        """measures statistics about how many ROIs are removed (and other things about the connection graph)"""
+        """Analyze statistics about ROI removal and connection graphs.
 
+        Measures and visualizes how many ROIs are removed under different correlation
+        thresholds and analyzes properties of the connection graph.
+
+        Parameters
+        ----------
+        roiCountCutoffs : numpy.ndarray, optional
+            Correlation thresholds to test (default: np.linspace(0, 1, 11))
+        maxBinConnections : int, optional
+            Maximum number of connections to show in histogram (default: 25)
+        keep_planes : list, optional
+            List of plane indices to include
+        distanceCutoff : float, optional
+            Maximum distance between ROI pairs in μm (default: 40)
+        withSave : bool, optional
+            Whether to save the figure (default: False)
+        withShow : bool, optional
+            Whether to display the figure (default: True)
+
+        Notes
+        -----
+        This method uses the Maximal Independent Set (MIS) algorithm which can be
+        computationally intensive for large numbers of cutoffs.
+        """
         if len(roiCountCutoffs) > 11:
             print(
                 f"Note: number of roiCountCutoffs is {len(roiCountCutoffs)}"
@@ -444,7 +678,25 @@ class sameCellCandidates(standardAnalysis):
         withSave=False,
         withShow=True,
     ):
-        """clusterSize plots the histogram of cluster sizes as the correlation cutoff changes, given other parameters..."""
+        """Analyze and plot cluster size distributions under different correlation thresholds.
+
+        Parameters
+        ----------
+        corrCutoffs : list, optional
+            List of correlation thresholds to analyze (default: [0.3-0.9])
+        distanceCutoff : float, optional
+            Maximum distance between ROI pairs in μm (default: 30)
+        minDistance : float, optional
+            Minimum distance between ROI pairs in μm
+        keep_planes : list, optional
+            List of plane indices to analyze (default: [1, 2, 3, 4])
+        verbose : bool, optional
+            Whether to print progress updates (default: True)
+        withSave : bool, optional
+            Whether to save the figure (default: False)
+        withShow : bool, optional
+            Whether to display the figure (default: True)
+        """
         numCutoffs = len(corrCutoffs)
         extraFilter = self.pwdist > minDistance if minDistance is not None else None
         planeIdx = self.getPairFilter(keep_planes=keep_planes)  # just plane filter for pulling out the relevant pairs
@@ -509,14 +761,23 @@ class sameCellCandidates(standardAnalysis):
         plt.show() if withShow else plt.close()
 
     def planePairHistograms(
-        self,
-        corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85],
-        distanceCutoff=None,
-        withSave=False,
-        withShow=True,
+        self, corrCutoff=[0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85], distanceCutoff=None, withSave=False, withShow=True, returnFigure=False
     ):
-        """Make histogram of number of pairs across specific planes meeting some correlation threshold"""
+        """Create histograms of ROI pairs across planes meeting correlation thresholds.
 
+        Parameters
+        ----------
+        corrCutoff : list or float, optional
+            Single correlation threshold or list of thresholds (default: [0.25-0.85])
+        distanceCutoff : float, optional
+            Maximum distance between ROI pairs in μm
+        withSave : bool, optional
+            Whether to save the figure (default: False)
+        withShow : bool, optional
+            Whether to display the figure (default: True)
+        returnFigure : bool, optional
+            Whether to return the figure (default: False)
+        """
         if len(corrCutoff) > 1:
             minCutoff = min(corrCutoff)
             corrCutoff = sorted(corrCutoff)  # make sure it goes from smallest to highest cutoff
@@ -569,17 +830,35 @@ class sameCellCandidates(standardAnalysis):
             self.saveFigure(fig.number, "planePairHistogram")
 
         # Show figure if requested
-        plt.show() if withShow else plt.close()
+        if withShow:
+            plt.show()
+        else:
+            if not returnFigure:
+                plt.close()
+
+        if returnFigure:
+            return fig
 
     def distanceDistribution(
-        self,
-        corrCutoffs=np.linspace(0.2, 0.6, 5),
-        maxDistance=200,
-        normalize="counts",
-        keep_planes=[1, 2, 3, 4],
-        withSave=False,
-        withShow=True,
+        self, corrCutoffs=np.linspace(0.2, 0.6, 5), maxDistance=200, normalize="counts", keep_planes=[1, 2, 3, 4], withSave=False, withShow=True
     ):
+        """Analyze and plot the distribution of distances between correlated ROIs.
+
+        Parameters
+        ----------
+        corrCutoffs : numpy.ndarray, optional
+            Correlation thresholds to analyze (default: np.linspace(0.2, 0.6, 5))
+        maxDistance : float, optional
+            Maximum distance to include in analysis in μm (default: 200)
+        normalize : str, optional
+            Type of normalization to apply: "counts", "relative", or "probability" (default: "counts")
+        keep_planes : list, optional
+            List of plane indices to analyze (default: [1, 2, 3, 4])
+        withSave : bool, optional
+            Whether to save the figure (default: False)
+        withShow : bool, optional
+            Whether to display the figure (default: True)
+        """
         planeIdx = self.getPairFilter(keep_planes=keep_planes, distanceCutoff=maxDistance)
         corrIdx = [planeIdx & (self.xcROIs > cc) for cc in corrCutoffs]
         corrDistanceDistribution = [self.pwDist[cidx] for cidx in corrIdx]
@@ -732,6 +1011,35 @@ class sameCellCandidates(standardAnalysis):
 
 
 class clusterExplorer(sameCellCandidates):
+    """Interactive visualization tool for exploring ROI clusters based on correlation and distance.
+
+    This class provides an interactive matplotlib interface for exploring relationships
+    between ROIs, allowing users to visualize:
+    - ROI activity traces
+    - Neuropil signals
+    - Spatial relationships between ROIs
+    - Cluster memberships
+
+    Parameters
+    ----------
+    scc : sameCellCandidates
+        Parent sameCellCandidates object containing the analysis data
+    maxCluster : int, optional
+        Maximum number of ROIs to display in a cluster (default: 25)
+    corrCutoff : float, optional
+        Minimum correlation threshold for including ROI pairs (default: 0.4)
+    maxCutoff : float, optional
+        Maximum correlation threshold (default: None)
+    distanceCutoff : float, optional
+        Maximum distance between ROI pairs in μm (default: 20)
+    minDistance : float, optional
+        Minimum distance between ROI pairs in μm (default: None)
+    keep_planes : list, optional
+        List of plane indices to analyze (default: [1, 2, 3, 4])
+    activity : str, optional
+        Name of activity measure to use (default: "mpci.roiActivityF")
+    """
+
     def __init__(
         self,
         scc,
@@ -745,6 +1053,7 @@ class clusterExplorer(sameCellCandidates):
     ):
         for att, val in vars(scc).items():
             setattr(self, att, val)
+
         self.maxCluster = maxCluster
         self.default_alpha = 0.8
         self.default_linewidth = 1
@@ -758,7 +1067,7 @@ class clusterExplorer(sameCellCandidates):
         self.roiPlaneIdx = self.vrexp.loadone("mpciROIs.stackPosition")[self.idxROI_inTargetPlane, 2].astype(np.int32)
 
         # Create look up table for plane colormap
-        if keep_planes is None:
+        if keep_planes is not None:
             assert set(keep_planes) <= set(self.keep_planes), "requested planes include some not stored in sameCellCandidate object"
         roiPlanes = np.unique(self.roiPlaneIdx) if keep_planes is None else copy(keep_planes)
         numPlanes = len(roiPlanes)
@@ -880,9 +1189,23 @@ class clusterExplorer(sameCellCandidates):
         plt.show()
 
     def changeSlider(self, event):
+        """Handle slider value change events.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The slider change event
+        """
         self.updatePlot(int(self.sSeed.val))
 
     def typeROI(self, event):
+        """Handle ROI number text input events.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The text input event
+        """
         valid = self.text_box.text.isnumeric()
         if valid:
             self.sSeed.set_val(int(self.text_box.text))
@@ -890,12 +1213,26 @@ class clusterExplorer(sameCellCandidates):
             self.text_box.set_val("not an int")
 
     def onkey(self, event):
+        """Handle keyboard events for navigation.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The keyboard event. Left/right arrows change ROI selection.
+        """
         if event.key == "right":
             self.sSeed.set_val(self.sSeed.val + 1)
         if event.key == "left":
             self.sSeed.set_val(self.sSeed.val - 1)
 
     def onclick(self, event):
+        """Handle mouse click events for ROI selection.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The mouse click event
+        """
         selected = False
         if event.inaxes == self.ax[2]:
             plotIndex = int(np.floor(event.ydata))
@@ -932,6 +1269,18 @@ class clusterExplorer(sameCellCandidates):
         self.title4.set_text(f"ROI Index: {inPlaneIndex} Plane: {roiPlane}")
 
     def getMinMaxHull(self, idxroi):
+        """Calculate the min-max hull of an ROI for visualization.
+
+        Parameters
+        ----------
+        idxroi : int
+            Index of the ROI
+
+        Returns
+        -------
+        tuple
+            (x_coordinates, y_coordinates, plane_index) of the hull
+        """
         ypix = self.stat[idxroi]["ypix"]
         xpix = self.stat[idxroi]["xpix"]
         allx, invx = np.unique(xpix, return_inverse=True)
@@ -942,6 +1291,18 @@ class clusterExplorer(sameCellCandidates):
         return xpoints, ypoints, planeIdx
 
     def getConvexHull(self, idxroi):
+        """Calculate the convex hull of an ROI for visualization.
+
+        Parameters
+        ----------
+        idxroi : int
+            Index of the ROI
+
+        Returns
+        -------
+        tuple
+            (x_coordinates, y_coordinates, plane_index) of the hull
+        """
         roipix = np.stack((self.stat[idxroi]["ypix"], self.stat[idxroi]["xpix"])).T
         hull = sp.spatial.ConvexHull(roipix)
         xpoints, ypoints = (
@@ -952,6 +1313,18 @@ class clusterExplorer(sameCellCandidates):
         return xpoints, ypoints, planeIdx
 
     def getCluster(self, iSeed):
+        """Get cluster of ROIs connected to the seed ROI.
+
+        Parameters
+        ----------
+        iSeed : int
+            Index of the seed ROI
+
+        Returns
+        -------
+        tuple
+            (activity_traces, neuropil_traces) for ROIs in the cluster
+        """
         includesSeed = (self.idxRoi1 == iSeed) | (self.idxRoi2 == iSeed)
         iCluster = np.nonzero(self.boolIdx & includesSeed)[0]
         self.idxROIs = list(set(self.idxRoi1[iCluster]).union(set(self.idxRoi2[iCluster])))
@@ -962,6 +1335,13 @@ class clusterExplorer(sameCellCandidates):
         return self.activity[:, self.idxToPlot].T, self.neuropil[:, self.idxToPlot].T
 
     def updatePlot(self, newIdx):
+        """Update all plot elements for a new ROI selection.
+
+        Parameters
+        ----------
+        newIdx : int
+            Index of the newly selected ROI
+        """
         dTraces, nTraces = self.getCluster(self.allROIs[newIdx])
         ydlim = np.min(dTraces), np.max(dTraces)
         ynlim = np.min(nTraces), np.max(nTraces)
@@ -999,11 +1379,50 @@ class clusterExplorer(sameCellCandidates):
         self.fig.canvas.draw_idle()
 
     def inPlaneIndex(self, roi):
+        """Convert global ROI index to within-plane index.
+
+        Parameters
+        ----------
+        roi : int
+            Global ROI index
+
+        Returns
+        -------
+        int
+            ROI index within its imaging plane
+        """
         idxToRoiPlane = self.keep_planes.index(self.roiPlaneIdx[roi])  # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])
 
 
 class clusterExplorerROICaT(sameCellCandidates):
+    """Interactive visualization tool for exploring ROI clusters identified by ROICaT.
+
+    Similar to clusterExplorer, but specifically designed to work with ROICaT cluster
+    labels. ROICaT is a tool for identifying putative same-cell ROIs across imaging planes.
+
+    Parameters
+    ----------
+    scc : sameCellCandidates
+        Parent sameCellCandidates object containing the analysis data
+    roicat_labels : array-like
+        ROICaT cluster labels for each ROI
+    maxCluster : int, optional
+        Maximum number of ROIs to display in a cluster (default: 25)
+    corrCutoff : float, optional
+        Minimum correlation threshold for including ROI pairs (default: 0.4)
+    maxCutoff : float, optional
+        Maximum correlation threshold (default: None)
+    distanceCutoff : float, optional
+        Maximum distance between ROI pairs in μm (default: 20)
+    minDistance : float, optional
+        Minimum distance between ROI pairs in μm (default: None)
+    keep_planes : list, optional
+        List of plane indices to analyze (default: [1, 2, 3, 4])
+    activity : str, optional
+        Name of activity measure to use (default: "mpci.roiActivityF")
+    """
+
     def __init__(
         self,
         scc,
@@ -1137,9 +1556,23 @@ class clusterExplorerROICaT(sameCellCandidates):
         plt.show()
 
     def changeSlider(self, event):
+        """Handle slider value change events.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The slider change event
+        """
         self.updatePlot(int(self.sSeed.val))
 
     def typeROI(self, event):
+        """Handle ROI number text input events.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The text input event
+        """
         valid = self.text_box.text.isnumeric()
         if valid:
             self.sSeed.set_val(int(self.text_box.text))
@@ -1147,12 +1580,26 @@ class clusterExplorerROICaT(sameCellCandidates):
             self.text_box.set_val("not an int")
 
     def onkey(self, event):
+        """Handle keyboard events for navigation.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The keyboard event. Left/right arrows change ROI selection.
+        """
         if event.key == "right":
             self.sSeed.set_val(self.sSeed.val + 1)
         if event.key == "left":
             self.sSeed.set_val(self.sSeed.val - 1)
 
     def onclick(self, event):
+        """Handle mouse click events for ROI selection.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.Event
+            The mouse click event
+        """
         selected = False
         if event.inaxes == self.ax[2]:
             plotIndex = int(np.floor(event.ydata))
@@ -1189,6 +1636,18 @@ class clusterExplorerROICaT(sameCellCandidates):
         self.title4.set_text(f"ROI Index: {inPlaneIndex} Plane: {roiPlane}")
 
     def getMinMaxHull(self, idxroi):
+        """Calculate the min-max hull of an ROI for visualization.
+
+        Parameters
+        ----------
+        idxroi : int
+            Index of the ROI
+
+        Returns
+        -------
+        tuple
+            (x_coordinates, y_coordinates, plane_index) of the hull
+        """
         ypix = self.stat[idxroi]["ypix"]
         xpix = self.stat[idxroi]["xpix"]
         allx, invx = np.unique(xpix, return_inverse=True)
@@ -1199,6 +1658,18 @@ class clusterExplorerROICaT(sameCellCandidates):
         return xpoints, ypoints, planeIdx
 
     def getConvexHull(self, idxroi):
+        """Calculate the convex hull of an ROI for visualization.
+
+        Parameters
+        ----------
+        idxroi : int
+            Index of the ROI
+
+        Returns
+        -------
+        tuple
+            (x_coordinates, y_coordinates, plane_index) of the hull
+        """
         roipix = np.stack((self.stat[idxroi]["ypix"], self.stat[idxroi]["xpix"])).T
         hull = sp.spatial.ConvexHull(roipix)
         xpoints, ypoints = (
@@ -1209,6 +1680,18 @@ class clusterExplorerROICaT(sameCellCandidates):
         return xpoints, ypoints, planeIdx
 
     def getCluster(self, iSeed):
+        """Get cluster of ROIs connected to the seed ROI.
+
+        Parameters
+        ----------
+        iSeed : int
+            Index of the seed ROI
+
+        Returns
+        -------
+        tuple
+            (activity_traces, neuropil_traces) for ROIs in the cluster
+        """
         iCluster = self.roicat_labels == iSeed
         self.idxROIs = np.where(iCluster)[0]
         self.numInCluster = np.sum(iCluster)
@@ -1219,6 +1702,13 @@ class clusterExplorerROICaT(sameCellCandidates):
         return self.activity[:, self.idxToPlot].T, self.neuropil[:, self.idxToPlot].T
 
     def updatePlot(self, newIdx):
+        """Update all plot elements for a new ROI selection.
+
+        Parameters
+        ----------
+        newIdx : int
+            Index of the newly selected ROI
+        """
         dTraces, nTraces = self.getCluster(newIdx)
         ydlim = np.min(dTraces), np.max(dTraces)
         ynlim = np.min(nTraces), np.max(nTraces)
@@ -1256,5 +1746,17 @@ class clusterExplorerROICaT(sameCellCandidates):
         self.fig.canvas.draw_idle()
 
     def inPlaneIndex(self, roi):
+        """Convert global ROI index to within-plane index.
+
+        Parameters
+        ----------
+        roi : int
+            Global ROI index
+
+        Returns
+        -------
+        int
+            ROI index within its imaging plane
+        """
         idxToRoiPlane = self.keep_planes.index(self.roiPlaneIdx[roi])  # if first keepPlane is 1 and roiPlane is 1, returns 0
         return roi - sum(self.roiPerPlane[:idxToRoiPlane])
