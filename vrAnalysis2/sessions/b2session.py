@@ -4,6 +4,7 @@ import joblib
 import numpy as np
 import json
 from numpyencoder import NumpyEncoder
+import speedystats as ss
 from ..files import local_data_path
 from .base import SessionData
 from roicat_support.classifier import load_classifier
@@ -48,6 +49,9 @@ class B2SessionParams:
     good_labels: list[str] = field(default_factory=lambda: ["c", "d"])
     fraction_filled_threshold: float | None = None
     footprint_size_threshold: int | None = None
+    exclude_silent_rois: bool = True
+    neuropil_coefficient: float | None = None
+    exclude_redundant_rois: bool = True
 
     @classmethod
     def from_dict(cls, params: Dict[str, Any]) -> "B2SessionParams":
@@ -106,6 +110,10 @@ class B2Session(SessionData):
     @property
     def recipe_transforms(self):
         return {"transpose": lambda x: x.T, "idx_column1": lambda x: x[:, 1]}
+
+    @classmethod
+    def spks_types(cls):
+        return ["oasis", "deconvolved", "raw", "neuropil", "significant", "corrected"]
 
     def _load_spks(self, spks_type: str = None):
         """Lookup the spks_type in the session"""
@@ -212,26 +220,29 @@ class B2Session(SessionData):
             idx_rois &= np.isin(plane_idx, self.params.keep_planes)
 
         # Filter ROIs by the results of the ROICaT classifier analysis
-        if (
+        if self.roicat_classifier is not None and (
             self.params.good_label_idx is not None
             or self.params.fraction_filled_threshold is not None
             or self.params.footprint_size_threshold is not None
         ):
-            results_path = get_classifier_results_path(self)
-            if results_path.exists():
-                classifier = joblib.load(results_path)
-                class_predictions = classifier["class_predictions"]
-                fill_fraction = classifier["fill_fraction"]
-                footprint_size = classifier["footprint_size"]
+            class_predictions = self.roicat_classifier["class_predictions"]
+            fill_fraction = self.roicat_classifier["fill_fraction"]
+            footprint_size = self.roicat_classifier["footprint_size"]
 
-                if self.params.good_label_idx is not None:
-                    idx_rois &= np.isin(class_predictions, self.params.good_label_idx)
+            if self.params.good_label_idx is not None:
+                idx_rois &= np.isin(class_predictions, self.params.good_label_idx)
 
-                if self.params.fraction_filled_threshold is not None:
-                    idx_rois &= fill_fraction > self.params.fraction_filled_threshold
+            if self.params.fraction_filled_threshold is not None:
+                idx_rois &= fill_fraction > self.params.fraction_filled_threshold
 
-                if self.params.footprint_size_threshold is not None:
-                    idx_rois &= footprint_size > self.params.footprint_size_threshold
+            if self.params.footprint_size_threshold is not None:
+                idx_rois &= footprint_size > self.params.footprint_size_threshold
+
+        if self.params.exclude_silent_rois:
+            idx_rois &= ss.var(self.spks, axis=0) != 0
+
+        if self.params.exclude_redundant_rois:
+            idx_rois &= ~self.loadone("mpciROIs.redundant")
 
         return idx_rois
 
@@ -268,6 +279,12 @@ class B2Session(SessionData):
         self.preprocessing = preprocessing
         for key, val in values.items():
             self.set_value(key, val)
+        # Also load ROICaT Classifier Results if they exist
+        results_path = get_classifier_results_path(self)
+        if results_path.exists():
+            self.roicat_classifier = joblib.load(results_path)
+        else:
+            self.roicat_classifier = None
 
     def save_session_prms(self):
         """Save registered session parameters"""
@@ -290,7 +307,8 @@ class B2Session(SessionData):
             F = self.load_s2p("F")
             Fneu = self.load_s2p("Fneu")
         meanFneu = np.mean(Fneu, axis=1, keepdims=True) if mean_adjusted else np.zeros((np.sum(self.get_value("roiPerPlane")), 1))
-        return F - self.opts["neuropilCoefficient"] * (Fneu - meanFneu)
+        neuropil_coefficient = self.params.neuropil_coefficient or self.opts["neuropilCoefficient"]
+        return F - neuropil_coefficient * (Fneu - meanFneu)
 
     def load_s2p(self, varName, concatenate=True):
         # load S2P variable from suite2p folders
