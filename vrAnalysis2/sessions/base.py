@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, Union, Dict, Any, List
+from typing import Optional, Union, Any, List
 from types import SimpleNamespace
 import numpy as np
 from scipy.sparse import csc_array, save_npz, load_npz
@@ -116,11 +116,11 @@ class SessionData(ABC):
         """Useful function for generating string of session name"""
         return joinby.join(self.session_name)
 
-    def get_value(self, key: str) -> object:
+    def get_value(self, key: str) -> Any:
         """Get values from the session stored in the values namespace"""
-        return getattr(self.values, key, None)
+        return getattr(self.values, key)
 
-    def set_value(self, key: str, value: object) -> None:
+    def set_value(self, key: str, value: Any) -> None:
         """Set values to the session stored in the values namespace"""
         setattr(self.values, key, value)
 
