@@ -1,3 +1,4 @@
+from .debug import *
 from .figures import *
 from .indexing import *
 from .linear_algebra import *
