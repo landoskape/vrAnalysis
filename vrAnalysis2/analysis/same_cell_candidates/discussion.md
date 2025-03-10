@@ -19,8 +19,9 @@ The pipeline begins with a B2Session object containing imaging data and ROI info
    - ROI positions in the imaging field (converted to μm using a scaling factor of 1.3 μm/pixel)
 
 2. Activity data processing:
-   - Loading spike data ("corrected" by default)
-   - Optional neuropil correction (coefficient = 1.0 by default)
+   - Loading spike data (configurable via `spks_type` parameter)
+   - Optional neuropil correction (coefficient configurable, defaults to 1.0)
+   - Option to exclude redundant ROIs using `mpciROIs.redundant` mask is present, but should always be set to False because this analysis is the very analysis that identifies redundant ROIs! The params handling implement this automatically.
 
 ## Pair-wise ROI Analysis
 
@@ -28,78 +29,112 @@ For each pair of ROIs, the pipeline computes:
 
 1. Activity correlation:
    - Pearson correlation coefficient between ROI time series
-   - Computed efficiently using GPU-accelerated operations when available
+   - Computed efficiently using GPU-accelerated operations when available (`torch_corrcoef`)
 
 2. Spatial metrics:
    - Euclidean distance \(d\) between ROI centers:
      \[ d = \sqrt{(x_1 - x_2)^2 + (y_1 - y_2)^2} \]
    where \((x_1, y_1)\) and \((x_2, y_2)\) are the coordinates of the ROI centers in μm
 
-## Cluster Identification
+## Cluster Parameters
 
-ROIs are grouped into clusters based on the following default parameters:
+ROIs are grouped into clusters based on the following configurable parameters (`SameCellClusterParameters`):
 
-1. Correlation threshold:
-   - Minimum correlation coefficient: 0.4
-   - ROI pairs must have correlation \(r > 0.4\) to be considered connected
+1. Activity correlation thresholds:
+   - Minimum correlation coefficient (`corr_cutoff`, default: 0.4)
+   - Optional maximum correlation threshold (`max_correlation`)
 
 2. Spatial constraints:
-   - Maximum distance: 20 μm
-   - ROI pairs must be within 20 μm of each other to be considered connected
-   - Optional minimum distance can be specified to exclude very close ROIs
+   - Maximum distance (`distance_cutoff`, default: 20 μm)
+   - Optional minimum distance (`min_distance`)
 
 3. Plane selection:
-   - Default analysis includes planes 1-4
+   - Default includes planes 0-4 (`keep_planes = [0, 1, 2, 3, 4]`)
    - Configurable to analyze specific subset of planes
+   - We include all planes for consistency and because plane 0 is the one that has the highest hit rate for tracked cells - which means that if plane 0 ROI is good quality and part of a cluster, we'll probably pick that one to serve as the clusters representative. 
 
 4. Additional filters:
-   - Minimum ROI size (optional)
-   - Maximum correlation threshold (optional)
+   - Minimum ROI size (`npix_cutoff`, default: 0)
+   - Optional good label filtering (`good_labels`)
 
-The pipeline uses these parameters to construct an adjacency matrix, where ROI pairs meeting all criteria are considered connected. Connected components analysis is then performed to identify clusters of ROIs that are likely to represent the same cell across different planes. Note that two ROIs can be considered part of the same cluster if they are connected via other cells - even if they themselves are not connected. 
+## Cluster Identification
+
+The pipeline uses these parameters to:
+
+1. Create pair filters based on:
+   - Correlation thresholds
+   - Distance constraints
+   - Plane selection
+   - ROI size requirements
+   - Additional custom filters
+
+2. Construct an adjacency matrix where ROI pairs meeting all criteria are considered connected
+
+3. Identify clusters using connected components analysis:
+   - ROIs can be in the same cluster even if not directly connected
+   - Connected through transitive relationships via other ROIs
+   - Option to filter out single-ROI "islands"
 
 ## Best ROI Selection
 
-For each identified cluster, the pipeline selects the best representative ROI using the "max_sum_significant" method by default. This method:
+For each identified cluster, the pipeline selects the best representative ROI using the "max_sum_significant" method:
 
 1. Calculates the sum of significant spike events for each ROI in the cluster
-2. Selects the ROI with the highest total significant activity
-3. Marks all other ROIs in the cluster as redundant
+2. Identifies the ROI with the highest total significant activity
+3. Special handling for plane 0:
+   - If the best ROI is not in plane 0, checks for good alternatives in plane 0
+   - If a plane 0 ROI has at least 50% of the best ROI's activity, selects the plane 0 ROI instead
+4. Marks all other ROIs in the cluster as redundant
 
-The redundant ROIs are stored in the session data as `mpciROIs.redundant` for downstream analysis.
-
-## Visualization and Quality Control
+## Visualization and Analysis Tools
 
 The pipeline includes several visualization tools for quality control and parameter optimization:
 
-1. Correlation vs. distance scatter plots
-2. Plane-pair histograms showing the distribution of connections across different imaging planes
-3. Cluster size distribution analysis
-4. **BEST TOOL!!!** Interactive cluster explorer for detailed examination of individual clusters
+1. Correlation Analysis:
+   - Correlation vs. distance scatter plots
+   - Plane-pair histograms
+   - Interactive parameter adjustment
+
+2. Cluster Explorer:
+   - Interactive visualization of ROI clusters
+   - Activity trace comparison
+   - Spatial relationship visualization
+   - ROI mask inspection
+   - Neuropil signal analysis
+   - Color coding by plane or ROI index
+   - Integration with ROI classification results
+
+3. Distribution Analysis:
+   - Cluster size distribution
+   - Distance distribution between correlated ROIs
+   - ROI removal analysis for different strategies
 
 ## Implementation Notes
 
 The implementation uses several optimizations for computational efficiency:
 
-1. Numba-accelerated functions for distance calculations and pair-wise operations
-2. GPU-accelerated correlation coefficient calculations when available
-3. Efficient storage of pair-wise data using condensed matrix format
-4. Parallel processing for computationally intensive operations
+1. GPU-accelerated correlation calculations using PyTorch
+2. Efficient pair-wise operations using vectorized NumPy functions
+3. Connected components analysis for cluster identification
+4. Interactive visualization tools using matplotlib and custom viewers
 
 ## Usage
 
 The pipeline is typically used as follows:
 
 1. Initialize a B2Session object with imaging data
-2. Create a SameCellProcessor instance with desired parameters
+2. Create a SameCellProcessor with desired parameters
 3. Process the data to identify clusters:
-   - Constructs adjacency matrix based on correlation and distance thresholds
-   - Identifies connected components as clusters
-   - Selects best ROI in each cluster
-   - Marks other ROIs as redundant
+   ```python
+   processor = SameCellProcessor(session, params).load_data()
+   results = identify_redundant_rois(session)
+   ```
 4. Save results:
-   - Cluster data is saved using joblib
-   - Redundant ROI boolean array is saved to `mpciROIs.redundant`
-5. Use the ClusterExplorer to examine and validate the results
+   - Cluster data saved using joblib
+   - Redundant ROI boolean array saved to `mpciROIs.redundant`
+5. Analyze results using visualization tools:
+   ```python
+   viewer = make_cluster_explorer(processor)
+   ```
 
 The parameters can be adjusted based on the specific requirements of the analysis and the characteristics of the imaging data.

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+from copy import copy
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -7,6 +8,7 @@ import matplotlib as mpl
 import speedystats as ss
 from syd import make_viewer, Viewer
 from .base import SameCellProcessor, get_connected_groups, SameCellClusterParameters
+from ...helpers.signals import compute_cross_correlations
 
 
 def plot_correlation_vs_distance(processor: SameCellProcessor) -> Viewer:
@@ -867,12 +869,14 @@ class ClusterExplorer(Viewer):
         self.add_boolean("zscore_traces", value=False)
         self.add_selection("activity_type", value=self.scp.params.spks_type, options=self.scp.session.spks_types())
         self.add_boolean("show_neuropil", value=False)
+        self.add_boolean("show_cross_correlations", value=False)
         self.add_integer("roi_idx", value=0, min_value=0, max_value=10)
         self.add_float_range("corr_cutoff", value=corr_cutoff, min_value=0.0, max_value=1.0, step=0.05)
         self.add_float_range("distance_cutoffs", value=distance_cutoff, min_value=0.0, max_value=100.0, step=1.0)
         self.add_multiple_selection("keep_planes", value=initial_keep_planes, options=keep_planes)
         self.add_float("npix_cutoff", value=npix_cutoff, min_value=0, max_value=10000)
         self.add_boolean("color_by_plane", value=False)
+        self.add_integer("max_rois", value=10, min_value=1, max_value=1000)
         self.add_button("print_rois", label="Print ROIs", callback=self.print_rois)
 
         self.on_change(["corr_cutoff", "distance_cutoffs", "keep_planes", "npix_cutoff"], self.change_cluster_params)
@@ -963,7 +967,15 @@ class ClusterExplorer(Viewer):
             significant = self.scp.session.get_spks("significant")[:, self.scp.idx_rois][:, cluster]
             cluster_sum_significant = np.sum(significant, axis=0)
             imax = np.argmax(cluster_sum_significant)
-            return imax
+
+            plane0_option = None
+            if 0 in self.state["keep_planes"]:
+                if self.roi_plane_idx[cluster[imax]] != 0:
+                    if any(self.roi_plane_idx[cluster] == 0):
+                        plane0_option = np.max(cluster_sum_significant[self.roi_plane_idx[cluster] == 0])
+
+            return imax, cluster_sum_significant[imax], plane0_option
+
         else:
             raise ValueError(f"Unknown best in cluster method: {self.cluster_params.best_in_cluster_method}")
 
@@ -984,7 +996,29 @@ class ClusterExplorer(Viewer):
         roi_neuropil = self.neuropil[:, cluster]
 
         # Choose the best ROI
-        best_in_cluster = self.choose_best_roi(cluster)
+        best_in_cluster, best_sum, plane0_option = self.choose_best_roi(cluster)
+        best_plane = self.roi_plane_idx[cluster[best_in_cluster]]
+
+        # Create best ROI message
+        if plane0_option is not None:
+            best_message = f"Best ROI={best_in_cluster}: (Plane {best_plane}); Plane 0 ratio: {plane0_option/best_sum:.1f}"
+        else:
+            best_message = f"Best ROI={best_in_cluster}: (Plane {best_plane})"
+
+        # Select ROIs if there are too many
+        if len(cluster) > state["max_rois"]:
+            _old_cluster = copy(cluster)
+            cluster = [cluster[best_in_cluster]]
+            num_to_add = state["max_rois"] - len(cluster)
+            _cluster_to_add = copy(_old_cluster)
+            _cluster_to_add.pop(best_in_cluster)
+            for ii in np.random.permutation(len(_cluster_to_add))[:num_to_add]:
+                cluster.append(_cluster_to_add[ii])
+            icluster = [_old_cluster.index(roi) for roi in cluster]
+            roi_activity = roi_activity[:, icluster]
+            roi_neuropil = roi_neuropil[:, icluster]
+            num_rois = len(cluster)
+            best_in_cluster = 0
 
         # Normalize the traces
         if state["zscore_traces"]:
@@ -999,7 +1033,7 @@ class ClusterExplorer(Viewer):
         plane_idx = self.roi_plane_idx[cluster]
 
         # Set up the figure and axes
-        num_cols = 2 + state["show_neuropil"]
+        num_cols = 2 + state["show_neuropil"] + state["show_cross_correlations"]
 
         # If the classifier is available -- add labels
         if self.classifier is not None:
@@ -1033,7 +1067,8 @@ class ClusterExplorer(Viewer):
 
         # Create the figure
         fig = plt.figure(figsize=(8, 5), layout="constrained")
-        gs = fig.add_gridspec(3, num_cols, height_ratios=[1, 1, 0.1], width_ratios=[1, 1, 0.4] if state["show_neuropil"] else [1, 0.4])
+        width_ratios = [1] * (num_cols - 1) + [0.4]
+        gs = fig.add_gridspec(3, num_cols, height_ratios=[1, 1, 0.1], width_ratios=width_ratios)
         ax_traces = fig.add_subplot(gs[0, 0])
         ax_imtraces = fig.add_subplot(gs[1, 0])
         ax_imtraces.sharex(ax_traces)
@@ -1042,6 +1077,8 @@ class ClusterExplorer(Viewer):
             ax_neuropil.sharex(ax_traces)
             ax_imneuropil = fig.add_subplot(gs[1, 1])
             ax_imneuropil.sharex(ax_traces)
+        if state["show_cross_correlations"]:
+            ax_cross_correlations = fig.add_subplot(gs[0:2, -2])
         ax_hulls = fig.add_subplot(gs[0, -1])
         ax_masks = fig.add_subplot(gs[1, -1])
         ax_cbar = fig.add_subplot(gs[2, :])
@@ -1052,7 +1089,7 @@ class ClusterExplorer(Viewer):
             linewidth = 0.8 if iroi == roi_idx else 0.5
             zorder = 10 if iroi == roi_idx else 1
             ax_traces.plot(self.times, roi_activity[:, iroi], color=color, linewidth=linewidth, zorder=zorder)
-        ax_traces.set_title(f"ROI Activity - Best: {best_in_cluster}")
+        ax_traces.set_title(f"ROI Activity\n{best_message}")
         ax_traces.set_xlabel("Time (s)")
         ax_traces.set_ylabel("Z-score")
 
@@ -1094,6 +1131,16 @@ class ClusterExplorer(Viewer):
             ax_imneuropil.set_ylabel("ROI Index")
             ax_imneuropil.set_yticks(np.arange(num_rois) + 0.5)
             ax_imneuropil.set_yticklabels(yticklabels)
+
+        if state["show_cross_correlations"]:
+            lags, cross_correlations = compute_cross_correlations(roi_activity.T, max_lag=50)
+            for iroi, cluster_id in enumerate(cluster):
+                color = "black" if iroi == roi_idx else colors[iroi]
+                linewidth = 0.8 if iroi == roi_idx else 0.5
+                zorder = 10 if iroi == roi_idx else 1
+                ax_cross_correlations.plot(lags, cross_correlations[roi_idx, iroi], color=color, linewidth=linewidth, zorder=zorder)
+            ax_cross_correlations.set_xlabel("Lag (s)")
+            ax_cross_correlations.set_ylabel("Cross-correlation")
 
         # Plot the ROI Contours
         min_x = np.inf

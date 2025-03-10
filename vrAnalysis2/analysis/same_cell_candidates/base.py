@@ -17,6 +17,8 @@ class SameCellParams:
     keep_planes : List[int] | None
         List of plane indices to analyze. When None, will use the keep_planes
         defined in the session parameters (default: None)
+    good_labels : List[str] | None
+        List of good labels to include. When None, will use all labels.
     npix_cutoff : Optional[int]
         Minimum number of pixels for ROI masks (default: None)
     pix_to_um : float
@@ -33,6 +35,7 @@ class SameCellParams:
 
     spks_type: str = "corrected"
     keep_planes: List[int] | None = None
+    good_labels: List[str] | None = None
     npix_cutoff: Optional[int] = None
     pix_to_um: float = 1.3
     neuropil_coefficient: float | None = 1.0
@@ -55,7 +58,10 @@ class SameCellClusterParameters:
     distance_cutoff : float
         Maximum distance between ROI pairs in μm
     keep_planes : List[int]
-        List of plane indices to include
+        List of plane indices to include default to all planes [0, 1, 2, 3, 4] to make sure
+        that the session objects won't filter out planes before clustering analysis!
+    good_labels : List[str] | None
+        List of good labels to include
     npix_cutoff : float
         Minimum number of pixels for ROI masks
     min_distance : float | None
@@ -69,7 +75,8 @@ class SameCellClusterParameters:
     spks_type: str = "corrected"
     corr_cutoff: float = 0.4
     distance_cutoff: float = 20.0
-    keep_planes: List[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    keep_planes: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])
+    good_labels: List[str] | None = None
     npix_cutoff: float = 0.0
     min_distance: float | None = None
     max_correlation: float | None = None
@@ -130,6 +137,7 @@ class SameCellProcessor:
         # Make sure the session uses the parameters requested by the processor
         updates = dict(
             keep_planes=self.params.keep_planes,
+            good_labels=self.params.good_labels,
             neuropil_coefficient=self.params.neuropil_coefficient,
             spks_type=self.params.spks_type,
             exclude_redundant_rois=self.params.exclude_redundant_rois,
