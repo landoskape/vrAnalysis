@@ -88,7 +88,8 @@ def get_significant_transients(dff, threshold_levels=np.arange(0.8, 4.2, 0.2), f
     progress = tqdm(threshold_levels, desc="Measuring transients at each threshold...", leave=True) if verbose else threshold_levels
     for ithreshold, threshold in enumerate(progress):
 
-        fpr_stats.append({})
+        if return_stats:
+            fpr_stats.append({})
 
         # For each ROI, compute the FPR for each transient duration
         roi_progress = tqdm(range(dff.shape[1]), desc="Measuring each ROI...", leave=False) if verbose else range(dff.shape[1])
