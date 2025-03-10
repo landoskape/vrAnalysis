@@ -150,7 +150,7 @@ class SessionData(ABC):
 
     def get_saved_one(self) -> list[Path]:
         """Get all saved onedata files"""
-        return list(self.one_path.glob("*.npy"))
+        return list(self.one_path.glob("*.npy")) + list(self.one_path.glob("*.npz"))
 
     def print_saved_one(self, include_path: bool = False, include_extension: bool = False) -> list[str]:
         """Print all saved onedata files"""
