@@ -40,8 +40,8 @@ def cache_env_maps(ises, params_type="default", force_recompute: bool = False, m
             break
 
 
-def cache_reliability(ises, params_type="default", force_recompute: bool = False):
-    params = get_spkmap_params(params_type, updates={"autosave": True})
+def cache_reliability(ises, params_type="default", reliability_method="leave_one_out", force_recompute: bool = False):
+    params = get_spkmap_params(params_type, updates={"reliability_method": reliability_method, "autosave": True})
     progress = tqdm(ises, desc="Processing sessions...", leave=True)
     for session in progress:
         spkmap_processor = SpkmapProcessor(session, params=params)
@@ -61,10 +61,14 @@ def clear_cache(ises):
 
 if __name__ == "__main__":
     # # # # # clear_cache(ises)
-    force_recompute = True
-    cache_processed_maps(ises, params_type="default", force_recompute=force_recompute)
-    cache_processed_maps(ises, params_type="smoothed", force_recompute=force_recompute)
-    cache_env_maps(ises, params_type="default", force_recompute=force_recompute)
-    cache_env_maps(ises, params_type="smoothed", force_recompute=force_recompute)
-    cache_reliability(ises, params_type="default", force_recompute=force_recompute)
-    cache_reliability(ises, params_type="smoothed", force_recompute=force_recompute)
+    force_recompute = False
+    # cache_processed_maps(ises, params_type="default", force_recompute=force_recompute)
+    # cache_processed_maps(ises, params_type="smoothed", force_recompute=force_recompute)
+    # cache_env_maps(ises, params_type="default", force_recompute=force_recompute)
+    # cache_env_maps(ises, params_type="smoothed", force_recompute=force_recompute)
+    # cache_reliability(ises, params_type="default", reliability_method="leave_one_out", force_recompute=force_recompute)
+    # cache_reliability(ises, params_type="smoothed", reliability_method="leave_one_out", force_recompute=force_recompute)
+    cache_reliability(ises, params_type="default", reliability_method="mse", force_recompute=force_recompute)
+    cache_reliability(ises, params_type="smoothed", reliability_method="mse", force_recompute=force_recompute)
+    cache_reliability(ises, params_type="default", reliability_method="correlation", force_recompute=force_recompute)
+    cache_reliability(ises, params_type="smoothed", reliability_method="correlation", force_recompute=force_recompute)
