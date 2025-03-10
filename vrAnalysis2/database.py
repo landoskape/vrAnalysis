@@ -1,25 +1,24 @@
 import traceback
 import pyodbc
-from IPython.display import Markdown, display
 from datetime import datetime, date
 from contextlib import contextmanager
 from pathlib import Path
 import pandas as pd
 from copy import copy
 from subprocess import run
+from typing import Union
 
-from . import session
-from . import registration
-from .helpers import readableBytes
-from . import fileManagement as fm
+# Back-compatibility imports
+from vrAnalysis import session as original_session
+from vrAnalysis import registration
+from vrAnalysis import fileManagement as fm
+
+# vrAnalysis2 imports
+from .helpers import readable_bytes, error_print, get_confirmation
+from .sessions import B2Session, create_b2session
 
 
-def errorPrint(text):
-    # supporting function for printing error messages but continuing
-    display(Markdown(f"<font color=red>{text}</font>"))
-
-
-def vrDatabaseMetadata(dbName):
+def get_database_metadata(db_name: str) -> dict:
     """
     Retrieve metadata for a specified database.
 
@@ -28,7 +27,7 @@ def vrDatabaseMetadata(dbName):
 
     Parameters
     ----------
-    dbName : str
+    db_name : str
         The name of the database for which to retrieve metadata.
 
     Returns
@@ -79,7 +78,7 @@ def vrDatabaseMetadata(dbName):
             "defaultConditions": {
                 "sessionQC": True,
             },
-            "constructor": session_database,
+            "constructor": SessionDatabase,
         },
         "vrMice": {
             "dbPath": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
@@ -90,12 +89,12 @@ def vrDatabaseMetadata(dbName):
             "backupPath": r"D:\localData\vrDatabaseManagement",
             "uniqueFields": [("mouseName", str)],
             "defaultConditions": {},
-            "constructor": base_database,
+            "constructor": BaseDatabase,
         },
     }
-    if dbName not in dbdict.keys():
-        raise ValueError(f"Did not recognize database={dbName}, valid database names are: {[key for key in dbdict.keys()]}")
-    return dbdict[dbName]
+    if db_name not in dbdict.keys():
+        raise ValueError(f"Did not recognize database={db_name}, valid database names are: {[key for key in dbdict.keys()]}")
+    return dbdict[db_name]
 
 
 # a dictionary of host types determining what driver string to use for database connections
@@ -105,39 +104,39 @@ host_types = {
 }
 
 
-def vrDatabase(dbName):
+def get_database(db_name: str) -> Union["BaseDatabase", "SessionDatabase"]:
     """
     Method for retrieving an appropriate database object.
     """
-    metadata = vrDatabaseMetadata(dbName)
+    metadata = get_database_metadata(db_name)
     if "constructor" in metadata:
-        if issubclass(metadata["constructor"], base_database):
+        if issubclass(metadata["constructor"], BaseDatabase):
             constructor = metadata["constructor"]  # get class constructor method for this database
         else:
-            raise ValueError(f"{metadata['constructor']} must be a subclass of the `base_database` class!")
+            raise ValueError(f"{metadata['constructor']} must be a subclass of the `BaseDatabase` class!")
     else:
-        constructor = base_database
-    return constructor(dbName)
+        constructor = BaseDatabase
+    return constructor(db_name)
 
 
-class base_database:
-    def __init__(self, dbName):
+class BaseDatabase:
+    def __init__(self, db_name: str):
         """
         Initialize a new database instance.
 
-        This constructor initializes a new instance of the base_database class. It sets the default
+        This constructor initializes a new instance of the BaseDatabase class. It sets the default
         values for the table name, database name, and database path. It is built to work with
         the Microsoft Access application; however, a few small changes can make it compatible with
         other SQL-based database systems.
 
         Parameters
         ----------
-        dbName : str, required
+        db_name : str, required
             The name of the database to access.
 
         Example
         -------
-        >>> db = base_database('vrSessions')
+        >>> db = BaseDatabase('vrSessions')
         >>> print(vrdb.tableName)
         'sessiondb'
         >>> print(vrdb.dbName)
@@ -149,7 +148,7 @@ class base_database:
         - If you are using this on a new system, then you should edit your path, database name, and default table in that function.
         """
 
-        metadata = vrDatabaseMetadata(dbName)
+        metadata = get_database_metadata(db_name)
         self.dbPath = metadata["dbPath"]
         self.dbName = metadata["dbName"]
         self.dbExt = metadata["dbExt"]
@@ -174,7 +173,19 @@ class base_database:
     def get_dbfile(self):
         return Path(self.dbPath) / (self.dbName + self.dbExt)
 
-    def save_backup(self, return_out=False):
+    def save_backup(self, return_out: bool = False) -> str | None:
+        """Save a backup of the database to the backup path specified in metadata.
+
+        Parameters
+        ----------
+        return_out : bool, optional
+            If True, return the output of the robocopy command.
+
+        Returns
+        -------
+        str | None
+            Output from the robocopy command (if return_out is True).
+        """
         source_path = self.dbPath
         target_path = self.backupPath
         source_file = self.dbName + self.dbExt
@@ -202,20 +213,20 @@ class base_database:
         string. If this isn't the case and you're not sure what to do, contact me so we can make
         a better system.
         """
-        driverString = {"access": r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + rf"DBQ={self.get_dbfile()};"}
+        driver_string = {"access": r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + rf"DBQ={self.get_dbfile()};"}
 
         # Make sure connections are possible for this hosttype
-        failureMessage = (
-            f"Requested hostType ({self.host_type}) is not available. The only ones that are coded are: {[k for k in driverString.keys()]}\n\n"
+        failure_message = (
+            f"Requested hostType ({self.host_type}) is not available. The only ones that are coded are: {[k for k in driver_string.keys()]}\n\n"
             f"For support with writing a driver string for a different host, use the fantastic website: https://www.connectionstrings.com/"
         )
-        assert self.host_type in driverString, failureMessage
+        assert self.host_type in driver_string, failure_message
 
         # Return a connection to the database
-        return pyodbc.connect(driverString[self.host_type])
+        return pyodbc.connect(driver_string[self.host_type])
 
     @contextmanager
-    def openCursor(self, commitChanges=False):
+    def open_cursor(self, commit_changes: bool = False):
         """
         Context manager to open a database cursor and manage connections.
 
@@ -225,7 +236,7 @@ class base_database:
 
         Parameters
         ----------
-        commitChanges : bool, optional
+        commit_changes : bool, optional
             Whether to commit changes to the database. Default is False.
 
         Yields
@@ -242,7 +253,7 @@ class base_database:
         -------
         Use the context manager to perform database operations:
 
-        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>> with self.open_cursor(commit_changes=True) as cursor:
         ...     cursor.execute("SELECT * FROM your_table")
 
         """
@@ -257,7 +268,7 @@ class base_database:
             raise ex
         else:
             # if no exception was raised, commit changes
-            if commitChanges:
+            if commit_changes:
                 conn.commit()
         finally:
             # Always close the cursor and connection
@@ -265,7 +276,7 @@ class base_database:
             conn.close()
 
     # == display meta data for database ==
-    def showMetadata(self):
+    def show_metadata(self):
         """convience method for showing the metadata associated with the open database"""
         print(f"{self.host_type} database located at {self.dbPath}")
         print(f"Database name: {self.dbName}{self.dbExt}, table name: {self.tableName}, with uid: {self.uid}")
@@ -281,12 +292,12 @@ class base_database:
             print(f"No default filters.")
 
     # == retrieve table data ==
-    def tableData(self):
+    def table_data(self):
         """
         Retrieve data and field names from the specified table.
 
         This method retrieves the field names and table elements from the table specified
-        in the `base_database` instance.
+        in the `BaseDatabase` instance.
 
         Returns
         -------
@@ -295,25 +306,25 @@ class base_database:
             - A list of strings representing the field names of the table.
             - A list of tuples representing the data rows of the table.
         """
-        with self.openCursor() as cursor:
+        with self.open_cursor() as cursor:
             fieldNames = [col.column_name for col in cursor.columns(table=self.tableName)]
             cursor.execute(f"SELECT * FROM {self.tableName}")
             tableElements = cursor.fetchall()
 
         return fieldNames, tableElements
 
-    def getTable(self, useDefault=True, **kwConditions):
+    def get_table(self, use_default: bool = True, **kwConditions):
         """
         Retrieve data from table in database and return as dataframe with optional filtering.
 
         This method retrieves all data from the primary table in the database specified in
-        base_database instance. It automatically filters the data using the defaultConditions
+        BaseDatabase instance. It automatically filters the data using the defaultConditions
         defined in the dbMetadata method. kwConditions overwrite defaultConditions if there is
         a conflict.
 
         Parameters
         ----------
-        useDefault : bool, default=True
+        use_default : bool, default=True
             Use default conditions if true, if False ignore them
         **kwConditions : dict
             Additional filtering conditions as keyword arguments.
@@ -321,7 +332,7 @@ class base_database:
             Value can either be a variable (e.g. 0 or 'ATL000'), or a (value, operation) pair.
             The operation defaults to '==', but you can use anything that works as a df query.
             Note: this is limited in the sense that empty data can't be identified with key:None.
-            (using the pd.isnull() is a valid work around, but needs to be coded outside of getTable())
+            (using the pd.isnull() is a valid work around, but needs to be coded outside of get_table())
 
         Returns
         -------
@@ -331,12 +342,12 @@ class base_database:
         Example
         -------
         >>> vrdb = YourDatabaseClass()
-        >>> df = vrdb.getTable(imaging=True)
+        >>> df = vrdb.get_table(imaging=True)
         """
 
-        fieldNames, tableData = self.tableData()
-        df = pd.DataFrame.from_records(tableData, columns=fieldNames)
-        conditions = copy(self.defaultConditions) if useDefault else {}
+        fieldNames, table_data = self.table_data()
+        df = pd.DataFrame.from_records(table_data, columns=fieldNames)
+        conditions = copy(self.defaultConditions) if use_default else {}
         conditions.update(kwConditions)
         if conditions:
             for key, val in conditions.items():
@@ -369,7 +380,7 @@ class base_database:
 
         Example
         -------
-        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>> with self.open_cursor(commit_changes=True) as cursor:
         >>>     cursor.execute(self.createUpdateManyStatement(<field>, <uid>), <val>)
         """
         return f"UPDATE {self.tableName} set {field} = ? WHERE {self.uid} = {uid}"
@@ -379,7 +390,7 @@ class base_database:
 
         Example
         -------
-        >>> with self.openCursor(commitChanges=True) as cursor:
+        >>> with self.open_cursor(commit_changes=True) as cursor:
         >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
         """
         return f"UPDATE {self.tableName} set {field} = ? where {self.uid} = ?"
@@ -388,19 +399,19 @@ class base_database:
         """
         Method for updating a database field in every record where conditions are true
 
-        The ignoreScratched and kwConditions arguments are fed into the self.getTable() method
+        The ignoreScratched and kwConditions arguments are fed into the self.get_table() method
         Then, every record that is returned gets <field> updated to <val>
         """
-        assert field in self.tableData()[0], f"Requested field ({field}) is not in table. Use 'self.tableData()[0]' to see available fields."
-        df = self.getTable(**kwConditions)
+        assert field in self.table_data()[0], f"Requested field ({field}) is not in table. Use 'self.table_data()[0]' to see available fields."
+        df = self.get_table(**kwConditions)
         updateStatement = self.createUpdateManyStatement(field)
         uids = df[self.uid].tolist()  # uids of all sessions requested
         val_as_list = [val] * len(uids)  #
         print(f"Setting {field}={val} for all requested records...")
-        with self.openCursor(commitChanges=True) as cursor:
+        with self.open_cursor(commit_changes=True) as cursor:
             cursor.executemany(updateStatement, zip(val_as_list, uids))
 
-    # == method for adding a record to the session_database ==
+    # == method for adding a record to the database ==
     def addRecord(self, insert_statement, columns, values):
         """
         Attempt to add a single record to the database
@@ -420,7 +431,7 @@ class base_database:
         if self.getRecord(*unique_values, verbose=False) is not None:
             print(f"Record already exists for {unique_combo}")
             return f"Record already exists for {unique_combo}"
-        with self.openCursor(commitChanges=True) as cursor:
+        with self.open_cursor(commit_changes=True) as cursor:
             cursor.execute(insert_statement, values)
             print(f"Successfully added new record for {unique_combo}")
         return "Successfully added new record"
@@ -451,7 +462,7 @@ class base_database:
         """
 
         # Check if correct values are provided (or if a session object is provided)
-        if len(unique_values) == 1 and isinstance(unique_values[0], session.vrSession):
+        if len(unique_values) == 1 and isinstance(unique_values[0], original_session.vrSession):
             unique_values = [unique_values[0].mouseName, unique_values[0].dateString, unique_values[0].sessionid]
 
         elif len(unique_values) != len(self.uniqueFields):
@@ -459,7 +470,7 @@ class base_database:
             raise ValueError(f"{len(unique_values)} values provided but *getRecord* is expecting values for: {expected_list}")
 
         # Get table and compare
-        df = self.getTable()
+        df = self.get_table()
         for uf, uv in zip(self.uniqueFields, unique_values):
             if uf[1] == str:
                 df = df[df[uf[0]] == uv]
@@ -482,8 +493,33 @@ class base_database:
 
 
 # ======== child database class definition for sessions ==========
-class session_database(base_database):
+class SessionDatabase(BaseDatabase):
     """child database for handling vrSessions"""
+
+    def iter_sessions(self, session_params: dict = {}, **kw_conditions) -> list[B2Session]:
+        """Iterate over sessions matching conditions.
+
+        Parameters
+        ----------
+        session_params : dict, default={}
+            Additional parameters to pass to the session constructor.
+        **kw_conditions : dict
+            Additional conditions to filter the sessions by.
+
+        Returns
+        -------
+        sessions : list[B2Session]
+            List of sessions matching the conditions.
+        """
+        df = self.get_table(**kw_conditions)
+        sessions = []
+        for _, row in df.iterrows():
+            sessions.append(create_b2session(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params))
+        return sessions
+
+    # == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==
+    # == It should be refactored to use the new vrAnalysis2 classes eventually, but I'm leaving it here for now ==
+    # == It should work as is as long as vrAnalysis stays on the path! ==
 
     # == vrExperiment related methods ==
     def sessionName(self, row):
@@ -496,12 +532,12 @@ class session_database(base_database):
     def vrSession(self, row):
         """create vrSession object from record in database"""
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return session.vrSession(mouseName, sessionDate, sessionID)
+        return original_session.vrSession(mouseName, sessionDate, sessionID)
 
     def vrExperiment(self, row):
         """create vrExperiment object from record in database"""
         mouseName, sessionDate, sessionID = self.sessionName(row)
-        return session.vrExperiment(mouseName, sessionDate, sessionID)
+        return original_session.vrExperiment(mouseName, sessionDate, sessionID)
 
     def vrRegistration(self, row, **opts):
         """create vrRegistration object from record in database"""
@@ -517,9 +553,9 @@ class session_database(base_database):
         """print list of unique mice names in session iterable"""
         print(self.miceInSessions(iterSession))
 
-    def iterSessions(self, **kwConditions) -> list[session.vrSession]:
+    def iterSessions(self, **kwConditions) -> list[original_session.vrSession]:
         """Creates list of sessions that can be iterated through"""
-        df = self.getTable(**kwConditions)
+        df = self.get_table(**kwConditions)
         return self.createSessionIterable(df)
 
     def createSessionIterable(self, df, session_constructor=None):
@@ -533,17 +569,17 @@ class session_database(base_database):
     # == visualization ==
     def printSessions(self, **kwConditions):
         """
-        Copy of getTable(), except instead of returning a df, will iterate through the rows and
-        session print each session that meets the given conditions. See getTable()'s documentation
+        Copy of get_table(), except instead of returning a df, will iterate through the rows and
+        session print each session that meets the given conditions. See get_table()'s documentation
         for info on how to use the optional inputs of this function
         """
-        df = self.getTable(**kwConditions)
+        df = self.get_table(**kwConditions)
         for _, row in df.iterrows():
             print(self.vrSession(row).sessionPrint())
 
     # == helper functions for figuring out what needs work ==
     def needsRegistration(self, skipErrors=True, as_iterable=False, **kwargs):
-        df = self.getTable(**kwargs)
+        df = self.get_table(**kwargs)
         if skipErrors:
             df = df[df["vrRegistrationError"] == False]
         df = df[df["vrRegistration"] == False]
@@ -553,7 +589,7 @@ class session_database(base_database):
             return df
 
     def updateSuite2pDateTime(self):
-        df = self.getTable()
+        df = self.get_table()
         s2pDone = df[(df["imaging"] == True) & (df["suite2p"] == True)]
         uids = s2pDone[self.uid].tolist()
         s2pCreationDate = []
@@ -567,11 +603,11 @@ class session_database(base_database):
             s2pCreationDate.append(cDateTime)  # get suite2p path creation date
 
         # return s2pCreationDate
-        with self.openCursor(commitChanges=True) as cursor:
+        with self.open_cursor(commit_changes=True) as cursor:
             cursor.executemany(self.createUpdateManyStatement("suite2pDate"), zip(s2pCreationDate, uids))
 
     def needsS2P(self, needsQC=False):
-        df = self.getTable()
+        df = self.get_table()
         if needsQC:
             return df[(df["imaging"] == True) & (df["suite2p"] == True) & (df["suite2pQC"] == False)]
         else:
@@ -590,7 +626,7 @@ class session_database(base_database):
                     print("")
 
     def checkS2P(self, withDatabaseUpdate=False, returnCheck=False):
-        df = self.getTable()
+        df = self.get_table()
 
         # return dataframe of sessions with imaging where suite2p wasn't done, even though the database thinks it was
         check_s2pDone = df[(df["imaging"] == True) & (df["suite2p"] == True)]
@@ -611,11 +647,11 @@ class session_database(base_database):
         # If withDatabaseUpdate==True, then correct the database
         if withDatabaseUpdate:
             for idx, row in notActuallyDone.iterrows():
-                with self.openCursor(commitChanges=True) as cursor:
+                with self.open_cursor(commit_changes=True) as cursor:
                     cursor.execute(self.createUpdateStatement("suite2p", row[self.uid]), False)
 
             for idx, row in notActuallyNeed.iterrows():
-                with self.openCursor(commitChanges=True) as cursor:
+                with self.open_cursor(commit_changes=True) as cursor:
                     cursor.execute(self.createUpdateStatement("suite2p", row[self.uid]), True)
 
         # If returnCheck is requested, return True if any records were invalid
@@ -630,7 +666,7 @@ class session_database(base_database):
             "parametersRed*",  # wild card because there are multiple possibilities
         ]
 
-        df = self.getTable()
+        df = self.get_table()
         redCellQC_done = df[(df["imaging"] == True) & (df["suite2p"] == True) & (df["redCellQC"] == True)]
         uids = redCellQC_done[self.uid].tolist()
         rcEditDate = []
@@ -643,11 +679,11 @@ class session_database(base_database):
             cDateTime = datetime.fromtimestamp(cLatestMod)
             rcEditDate.append(cDateTime)  # get suite2p path creation date
 
-        with self.openCursor(commitChanges=True) as cursor:
+        with self.open_cursor(commit_changes=True) as cursor:
             cursor.executemany(self.createUpdateManyStatement("redCellQCDate"), zip(rcEditDate, uids))
 
     def needsRedCellQC(self, **kwConditions):
-        df = self.getTable(**kwConditions)
+        df = self.get_table(**kwConditions)
         return df[(df["imaging"] == True) & (df["suite2p"] == True) & (df["vrRegistration"] == True) & (df["redCellQC"] == False)]
 
     def printRequiresRedCellQC(self, printTargets=True, needsQC=False, **kwConditions):
@@ -670,7 +706,7 @@ class session_database(base_database):
             return False
 
         try:
-            with self.openCursor(commitChanges=True) as cursor:
+            with self.open_cursor(commit_changes=True) as cursor:
                 # Tell the database that vrRegistration was performed and the time of processing
                 cursor.execute(self.createUpdateStatement("redCellQC", record[self.uid]), state)
                 if state == True:
@@ -719,7 +755,7 @@ class session_database(base_database):
             print(f"Saving params...")
             vrExpReg.saveParams()
         except Exception as ex:
-            with self.openCursor(commitChanges=True) as cursor:
+            with self.open_cursor(commit_changes=True) as cursor:
                 cursor.execute(self.createUpdateStatement("vrRegistrationError", record[self.uid]), True)
                 cursor.execute(
                     self.createUpdateStatement("vrRegistrationException", record[self.uid]),
@@ -729,12 +765,12 @@ class session_database(base_database):
                 raise ex
             print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}. Clearing all oneData.")
             vrExpReg.clearOneData(certainty=True)
-            errorPrint(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
-            errorPrint(f"Exception: {ex}")
+            error_print(f"Last traceback: {traceback.extract_tb(ex.__traceback__, limit=-1)}")
+            error_print(f"Exception: {ex}")
             # If failed, return (False, 0B)
             out = (False, 0)
         else:
-            with self.openCursor(commitChanges=True) as cursor:
+            with self.open_cursor(commit_changes=True) as cursor:
                 # Tell the database that vrRegistration was performed and the time of processing
                 cursor.execute(self.createUpdateStatement("vrRegistration", record[self.uid]), True)
                 cursor.execute(self.createUpdateStatement("vrRegistrationError", record[self.uid]), False)
@@ -748,7 +784,7 @@ class session_database(base_database):
                 True,
                 sum([oneFile.stat().st_size for oneFile in vrExpReg.getSavedOne()]),
             )  # accumulate oneData
-            print(f"Session {vrExpReg.sessionPrint()} registered with {readableBytes(out[1])} oneData.")
+            print(f"Session {vrExpReg.sessionPrint()} registered with {readable_bytes(out[1])} oneData.")
         finally:
             del vrExpReg
         return out
@@ -758,7 +794,7 @@ class session_database(base_database):
         opts = self.defaultRegistrationOpts(**userOpts)
         record = self.getRecord(mouseName, sessionDate, sessionID)
         if record is None:
-            print(f"Session {session.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
+            print(f"Session {original_session.vrSession(mouseName, sessionDate, sessionID).sessionPrint()} is not in the database")
             return
         out = self.registerRecord(record, raise_exception=raise_exception, **opts)
         return out[0]
@@ -773,7 +809,7 @@ class session_database(base_database):
 
         for idx, (_, row) in enumerate(dfToRegister.iterrows()):
             if totalOneData > maxData:
-                print(f"\nMax data limit reached. Total processed: {readableBytes(totalOneData)}. Limit: {readableBytes(maxData)}")
+                print(f"\nMax data limit reached. Total processed: {readable_bytes(totalOneData)}. Limit: {readable_bytes(maxData)}")
                 return
             print("")
             out = self.registerRecord(row, raise_exception=raise_exception, **opts)
@@ -782,13 +818,13 @@ class session_database(base_database):
                 totalOneData += out[1]  # accumulated oneData registered
                 estimateRemaining = len(dfToRegister) - idx - 1
                 print(
-                    f"Accumulated oneData registered: {readableBytes(totalOneData)}. "
-                    f"Averaging: {readableBytes(totalOneData/countSessions)} / session. "
-                    f"Estimate remaining: {readableBytes(totalOneData/countSessions*estimateRemaining)}"
+                    f"Accumulated oneData registered: {readable_bytes(totalOneData)}. "
+                    f"Averaging: {readable_bytes(totalOneData/countSessions)} / original_session. "
+                    f"Estimate remaining: {readable_bytes(totalOneData/countSessions*estimateRemaining)}"
                 )
 
     def printRegistrationErrors(self, **kwargs):
-        df = self.getTable(**kwargs)
+        df = self.get_table(**kwargs)
         for idx, row in df[df["vrRegistrationError"] == True].iterrows():
             print(f"Session {self.vrRegistration(row).sessionPrint()} had error: {row['vrRegistrationException']}")
 
@@ -797,7 +833,9 @@ class session_database(base_database):
         opts = {}
         opts["clearOne"] = True  # clear previous oneData.... yikes, big move dude!
 
-        raise ValueError("write in a user prompt to make sure they want to go through with this...")
+        confirmation = get_confirmation("Are you sure you want to clear oneData for all sessions?")
+        if not confirmation:
+            return
 
         assert userOpts.keys() <= opts.keys(), f"userOpts contains the following invalid keys: {set(userOpts.keys()).difference(opts.keys())}"
         opts.update(userOpts)  # Update default opts with user requests
@@ -817,7 +855,7 @@ class session_database(base_database):
                 print(f"The following exception was raised when trying to preprocess session: {vrExpReg.sessionPrint()}")
                 print(f"Exception: {ex}")
             else:
-                with self.openCursor(commitChanges=True) as cursor:
+                with self.open_cursor(commit_changes=True) as cursor:
                     # Tell the database that vrRegistration was performed and the time of processing
                     cursor.execute(self.createUpdateStatement("vrRegistration", row[self.uid]), None)
                     cursor.execute(self.createUpdateStatement("vrRegistrationDate", row[self.uid]), None)
@@ -825,12 +863,12 @@ class session_database(base_database):
                 del vrExpReg
 
 
-class vrDatabaseGrossUpdate(session_database):
+class vrDatabaseGrossUpdate(SessionDatabase):
     def __init__(self, dbName="vrDatabase"):
         super().__init__(dbName=dbName)
 
     def checkSessionScratch(self, withDatabaseUpdate=False):
-        df = self.getTable(ignoreScratched=False)
+        df = self.get_table(ignoreScratched=False)
         good_withJustification = df[(df["sessionQC"] == True) & (~pd.isnull(df["scratchJustification"]))]
         bad_noJustification = df[(df["sessionQC"] == False) & (pd.isnull(df["scratchJustification"]))]
 
@@ -842,7 +880,7 @@ class vrDatabaseGrossUpdate(session_database):
             print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
 
         if withDatabaseUpdate:
-            with self.openCursor(commitChanges=True) as cursor:
+            with self.open_cursor(commit_changes=True) as cursor:
                 cursor.executemany(
                     self.createUpdateManyStatement("sessionQC"),
                     zip([False] * len(goodToBad_UID), goodToBad_UID),
