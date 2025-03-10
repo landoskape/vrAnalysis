@@ -45,7 +45,7 @@ def create_b2session(mouse_name: str, date: str, session_id: str, params: "B2Ses
 @dataclass
 class B2SessionParams:
     spks_type: str = "significant"
-    keep_planes: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    keep_planes: list[int] | None = None
     good_labels: list[str] = field(default_factory=lambda: ["c", "d"])
     fraction_filled_threshold: float | None = None
     footprint_size_threshold: int | None = None
@@ -61,7 +61,7 @@ class B2SessionParams:
         classifier = load_classifier()
         self._label_to_id = classifier["label_to_id"]
 
-    def update_parameters(self, **kwargs):
+    def update(self, **kwargs):
         """Update the parameters for the session"""
         for key, val in kwargs.items():
             if key == "good_labels":
@@ -216,10 +216,42 @@ class B2Session(SessionData):
 
         # Filter ROIs by which plane they are in
         if self.params.keep_planes is not None:
-            plane_idx = self.get_plane_idx()
-            idx_rois &= np.isin(plane_idx, self.params.keep_planes)
+            idx_rois &= self.valid_plane_idx()
 
         # Filter ROIs by the results of the ROICaT classifier analysis
+        if self.roicat_classifier is not None and (
+            self.params.good_label_idx is not None
+            or self.params.fraction_filled_threshold is not None
+            or self.params.footprint_size_threshold is not None
+        ):
+            valid_label, valid_fill_fraction, valid_footprint_size = self.valid_mask_idx()
+
+            if valid_label is not None:
+                idx_rois &= valid_label
+
+            if valid_fill_fraction is not None:
+                idx_rois &= valid_fill_fraction
+
+            if valid_footprint_size is not None:
+                idx_rois &= valid_footprint_size
+
+        if self.params.exclude_silent_rois:
+            idx_rois &= self.valid_activity_idx()
+
+        if self.params.exclude_redundant_rois:
+            idx_rois &= self.valid_redundancy_idx()
+
+        return idx_rois
+
+    def valid_plane_idx(self):
+        if self.params.keep_planes is not None:
+            plane_idx = self.get_plane_idx()
+            return np.isin(plane_idx, self.params.keep_planes)
+        else:
+            return np.ones(self.get_value("numROIs"), dtype=bool)
+
+    def valid_mask_idx(self):
+        """Filter ROIs by the results of the ROICaT classifier analysis"""
         if self.roicat_classifier is not None and (
             self.params.good_label_idx is not None
             or self.params.fraction_filled_threshold is not None
@@ -230,21 +262,56 @@ class B2Session(SessionData):
             footprint_size = self.roicat_classifier["footprint_size"]
 
             if self.params.good_label_idx is not None:
-                idx_rois &= np.isin(class_predictions, self.params.good_label_idx)
+                valid_label = np.isin(class_predictions, self.params.good_label_idx)
+            else:
+                valid_label = np.ones(self.get_value("numROIs"), dtype=bool)
 
             if self.params.fraction_filled_threshold is not None:
-                idx_rois &= fill_fraction > self.params.fraction_filled_threshold
+                valid_fill_fraction = fill_fraction > self.params.fraction_filled_threshold
+            else:
+                valid_fill_fraction = np.ones(self.get_value("numROIs"), dtype=bool)
 
             if self.params.footprint_size_threshold is not None:
-                idx_rois &= footprint_size > self.params.footprint_size_threshold
+                valid_footprint_size = footprint_size > self.params.footprint_size_threshold
+            else:
+                valid_footprint_size = np.ones(self.get_value("numROIs"), dtype=bool)
+        else:
+            valid_label = np.ones(self.get_value("numROIs"), dtype=bool)
+            valid_fill_fraction = np.ones(self.get_value("numROIs"), dtype=bool)
+            valid_footprint_size = np.ones(self.get_value("numROIs"), dtype=bool)
 
+        return valid_label, valid_fill_fraction, valid_footprint_size
+
+    def valid_activity_idx(self):
+        """Filter ROIs by the activity of the ROIs"""
         if self.params.exclude_silent_rois:
-            idx_rois &= ss.var(self.spks, axis=0) != 0
+            valid_activity = ss.var(self.spks, axis=0) != 0
+        else:
+            valid_activity = np.ones(self.get_value("numROIs"), dtype=bool)
+        return valid_activity
 
+    def valid_redundancy_idx(self):
+        """Filter ROIs by the cluster of the ROIs"""
         if self.params.exclude_redundant_rois:
-            idx_rois &= ~self.loadone("mpciROIs.redundant")
+            valid_redundancy = ~self.loadone("mpciROIs.redundant")
+        else:
+            valid_redundancy = np.ones(self.get_value("numROIs"), dtype=bool)
+        return valid_redundancy
 
-        return idx_rois
+    def get_validity_indices(self):
+        """Get the indices of the ROIs that are valid for the session"""
+        valid_plane = self.valid_plane_idx()
+        valid_label, valid_fill_fraction, valid_footprint_size = self.valid_mask_idx()
+        valid_activity = self.valid_activity_idx()
+        valid_redundancy = self.valid_redundancy_idx()
+        return {
+            "plane_idx": valid_plane,
+            "mask_idx": valid_label,
+            "fill_fraction_idx": valid_fill_fraction,
+            "footprint_size_idx": valid_footprint_size,
+            "activity_idx": valid_activity,
+            "redundancy_idx": valid_redundancy,
+        }
 
     def update_params(self, **kwargs):
         """Update the parameters for the session
@@ -261,7 +328,7 @@ class B2Session(SessionData):
                 - fraction_filled_threshold: float
                 - footprint_size_threshold: int
         """
-        self.params.update_parameters(**kwargs)
+        self.params.update(**kwargs)
 
     def _init_data_path(self) -> str:
         """Set the data path for the session"""
