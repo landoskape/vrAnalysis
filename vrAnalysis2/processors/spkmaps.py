@@ -1,6 +1,7 @@
-from typing import Union, Tuple, NamedTuple, Iterable, List, Optional, Dict, Any
+from typing import Union, Tuple, Iterable, List, Optional, Dict, Any
 from typing import Protocol, runtime_checkable
-from dataclasses import dataclass, field, asdict
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, asdict, fields
 from functools import wraps
 from pathlib import Path
 from copy import copy
@@ -16,45 +17,80 @@ from .support import median_zscore, get_gauss_kernel, convolve_toeplitz, get_sum
 
 @dataclass
 class Maps:
-    """Container for occupancy, speed, and spike maps.
+    """Base class for occupancy, speed, and spike maps."""
 
-    Attributes
-    ----------
-    occmap : np.ndarray
-        Occupancy map showing time spent at each position on each trial
-    speedmap : np.ndarray | None
-        Speed map showing average speed at each position on each trial
-    spkmap : np.ndarray | None
-        Spike map showing neural activity at each position on each trial
-    by_environment : bool
-        Whether the maps are by environment or across environments
-    """
+    occmap: np.ndarray | list[np.ndarray]
+    speedmap: np.ndarray | list[np.ndarray]
+    spkmap: np.ndarray | list[np.ndarray]
+    by_environment: bool
+    rois_first: bool
+    environments: list[int] | None = None
 
-    occmap: np.ndarray
-    speedmap: Union[np.ndarray, None]
-    spkmap: Union[np.ndarray, None]
-    by_environment: bool = False
+    def __post_init__(self):
+        if self.occmap is None or self.speedmap is None or self.spkmap is None:
+            raise ValueError("occmap, speedmap, and spkmap must be provided")
+
+        if self.by_environment:
+            if self.environments is None:
+                raise ValueError("environments must be provided if by_environment is True")
+            if not isinstance(self.occmap, list) or not isinstance(self.speedmap, list) or not isinstance(self.spkmap, list):
+                raise ValueError("occmap, speedmap, and spkmap must be lists if by_environment is True")
+        else:
+            if isinstance(self.occmap, list) or isinstance(self.speedmap, list) or isinstance(self.spkmap, list):
+                raise ValueError("occmap, speedmap, and spkmap must be single arrays if by_environment is False")
+
+        if not self.by_environment:
+            spkmap_shape = self.spkmap.shape[1:] if self.rois_first else self.spkmap.shape[:2]
+            if not (self.occmap.shape == self.speedmap.shape == spkmap_shape):
+                raise ValueError("occmap, speedmap, and spkmap must have the same shape")
+        else:
+            if not (len(self.occmap) == len(self.speedmap) == len(self.spkmap) == len(self.environments)):
+                raise ValueError("occmap, speedmap, and spkmap must have the same number of environments")
+            for i in range(len(self.environments)):
+                spkmap_shape = self.spkmap[i].shape[1:] if self.rois_first else self.spkmap[i].shape[:2]
+                if not (self.occmap[i].shape == self.speedmap[i].shape == spkmap_shape):
+                    raise ValueError("occmap, speedmap, and spkmap must have the same shape for each environment")
+            roi_axis = 0 if self.rois_first else -1
+            rois_per_env = [spkmap.shape[roi_axis] for spkmap in self.spkmap]
+            if not all([rpe == rois_per_env[0] for rpe in rois_per_env]):
+                raise ValueError("All environments must have the same number of ROIs")
+
+    def __repr__(self) -> str:
+        if self.by_environment:
+            num_trials = [occmap.shape[0] for occmap in self.occmap]
+            num_trials = ":".join([str(nt) for nt in num_trials])
+            num_positions = self.occmap[0].shape[1]
+        else:
+            num_trials = self.occmap.shape[0]
+            num_positions = self.occmap.shape[1]
+        if self.by_environment:
+            num_rois = self.spkmap[0].shape[0] if self.rois_first else self.spkmap[0].shape[1]
+        else:
+            num_rois = self.spkmap.shape[0] if self.rois_first else self.spkmap.shape[1]
+        environments = f", environments={self.environments}" if self.by_environment else ""
+        return f"Maps(num_trials={num_trials}, num_positions={num_positions}, num_rois={num_rois}{environments}, rois_first={self.rois_first})"
+
+    @classmethod
+    def create_raw_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray) -> "Maps":
+        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, by_environment=False, rois_first=False)
+
+    @classmethod
+    def create_processed_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray) -> "Maps":
+        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, by_environment=False, rois_first=True)
+
+    @classmethod
+    def create_environment_maps(
+        cls,
+        occmap: list[np.ndarray],
+        speedmap: list[np.ndarray],
+        spkmap: list[np.ndarray],
+        environments: list[int],
+    ) -> "Maps":
+        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, environments=environments, by_environment=True, rois_first=True)
 
     @classmethod
     def map_types(self) -> List[str]:
         return ["occmap", "speedmap", "spkmap"]
-
-    def full_maps(self) -> bool:
-        return all([getattr(self, maptype) is not None for maptype in self.map_types])
-
-    def __repr__(self) -> str:
-        shapes = []
-        for name in self.map_types():
-            if getattr(self, name) is None:
-                shape = None
-            elif isinstance(getattr(self, name), np.ndarray):
-                shape = getattr(self, name).shape
-            elif isinstance(getattr(self, name), list) and all(isinstance(x, np.ndarray) for x in getattr(self, name)):
-                shape = [x.shape for x in getattr(self, name)]
-            else:
-                raise ValueError(f"Unknown map type: {type(getattr(self, name))}")
-            shapes.append(f"{name}: {shape}")
-        return f"Maps({', '.join(shapes)})"
 
     def __getitem__(self, key: str) -> np.ndarray:
         return getattr(self, key)
@@ -62,53 +98,105 @@ class Maps:
     def __setitem__(self, key: str, value: np.ndarray):
         setattr(self, key, value)
 
-    def nbytes(self) -> int:
-        num_bytes = 0
-        for name in self.map_types():
-            if getattr(self, name) is not None:
-                if isinstance(getattr(self, name), np.ndarray):
-                    num_bytes += getattr(self, name).nbytes
-                elif isinstance(getattr(self, name), list) and all(isinstance(x, np.ndarray) for x in getattr(self, name)):
-                    num_bytes += sum(x.nbytes for x in getattr(self, name))
-                else:
-                    raise ValueError(f"Unknown map type: {type(getattr(self, name))}")
-        return num_bytes
+    def _get_position_axis(self, mapname: str) -> int:
+        """The only time the position axis isn't the last one is for spkmap when rois_first is False"""
+        if mapname == "spkmap" and not self.rois_first:
+            return -2
+        else:
+            return -1
+
+    def filter_positions(self, idx_positions: np.ndarray) -> None:
+        for mapname in self.map_types():
+            axis = self._get_position_axis(mapname)
+            if self.by_environment:
+                self[mapname] = [np.take(x, idx_positions, axis=axis) for x in self[mapname]]
+            else:
+                self[mapname] = np.take(self[mapname], idx_positions, axis=axis)
+
+    def filter_rois(self, idx_rois: np.ndarray) -> None:
+        axis = 0 if self.rois_first else -1
+        if self.by_environment:
+            self.spkmap = [np.take(x, idx_rois, axis=axis) for x in self.spkmap]
+        else:
+            self.spkmap = np.take(self.spkmap, idx_rois, axis=0)
 
     def pop_nan_positions(self) -> None:
-        idx_nan_positions = np.where(~np.any(np.isnan(self.occmap), axis=0))[0]
-        for mapname in self.map_types():
-            if self[mapname] is not None:
-                if isinstance(self[mapname], np.ndarray):
-                    self[mapname] = np.take(self[mapname], idx_nan_positions, axis=-1)
-                elif isinstance(self[mapname], list) and all(isinstance(x, np.ndarray) for x in self[mapname]):
-                    self[mapname] = [np.take(x, idx_nan_positions, axis=-1) for x in self[mapname]]
-                else:
-                    raise ValueError(f"Unknown map type: {type(self[mapname])}")
+        """Remove positions with nans from the maps"""
+        if self.by_environment:
+            idx_valid_positions = np.where(~np.any(np.stack([np.any(np.isnan(occmap), axis=0) for occmap in self.occmap], axis=0), axis=0))[0]
+        else:
+            idx_valid_positions = np.where(~np.any(np.isnan(self.occmap), axis=0))[0]
+        self.filter_positions(idx_valid_positions)
 
     def smooth_maps(self, positions: np.ndarray, kernel_width: float) -> None:
         """Smooth the maps using a Gaussian kernel"""
-        # TODO: Consider stacking maps to do this convolution all at once?
         kernel = get_gauss_kernel(positions, kernel_width)
-        maps_to_process = [mapname for mapname in self.map_types() if self[mapname] is not None]
 
         # Replace nans with 0s
         if self.by_environment:
             idxnan = [np.isnan(occmap) for occmap in self.occmap]
         else:
-            idxnan = np.isnan(self.spkmap)
+            idxnan = np.isnan(self.occmap)
 
-        for mapname in maps_to_process:
+        if self.rois_first:
+            # Move the rois axis to the last axis
+            if self.by_environment:
+                self.spkmap = [np.moveaxis(map, 0, -1) for map in self.spkmap]
+            else:
+                self.spkmap = np.moveaxis(self.spkmap, 0, -1)
+
+        for mapname in self.map_types():
             if self.by_environment:
                 self[mapname] = [map[idx] for map, idx in zip(self[mapname], idxnan)]
             else:
                 self[mapname][idxnan] = 0
 
-        for mapname in maps_to_process:
+        for mapname in self.map_types():
+            # Since we moved ROIs to the last axis position will be axis=1 for all map types
             self[mapname] = convolve_toeplitz(self[mapname], kernel, axis=1)
 
         # Put nans back in place
-        for mapname in maps_to_process:
+        for mapname in self.map_types():
             self[mapname][idxnan] = np.nan
+
+        # Move the rois axis back to the first axis
+        if self.rois_first:
+            if self.by_environment:
+                self.spkmap = [np.moveaxis(map, -1, 0) for map in self.spkmap]
+            else:
+                self.spkmap = np.moveaxis(self.spkmap, -1, 0)
+
+    def average_trials(self, keepdims: bool = False) -> None:
+        """Average the trials within each environment"""
+        for mapname in self.map_types():
+            axis = 1 if mapname == "spkmap" and self.rois_first else 0
+            if self.by_environment:
+                self[mapname] = [ss.mean(map, axis=axis, keepdims=keepdims) for map in self[mapname]]
+            else:
+                self[mapname] = ss.mean(self[mapname], axis=axis, keepdims=keepdims)
+
+    def nbytes(self) -> int:
+        num_bytes = 0
+        for name in self.map_types():
+            if self.by_environment:
+                num_bytes += sum(x.nbytes for x in getattr(self, name))
+            else:
+                num_bytes += getattr(self, name).nbytes
+        return num_bytes
+
+    def raw_to_processed(self, positions: np.ndarray, smooth_width: float | None = None) -> "Maps":
+        """Convert raw maps to processed maps"""
+        if smooth_width is not None:
+            self.smooth_maps(positions, smooth_width)
+
+        self.speedmap = correct_map(self.occmap, self.speedmap)
+        self.spkmap = correct_map(self.occmap, self.spkmap)
+
+        # Change spkmap to be ROIs first
+        self.spkmap = np.moveaxis(self.spkmap, -1, 0)
+        self.rois_first = True
+
+        return self
 
 
 @dataclass
@@ -134,7 +222,7 @@ class Reliability:
             raise ValueError("values and environments must have the same number of environments")
 
     def __repr__(self) -> str:
-        return f"Reliability(method={self.method}, environments={self.environments})"
+        return f"Reliability(num_rois={self.values.shape[1]}, environments={self.environments}, method={self.method})"
 
 
 @runtime_checkable
@@ -288,6 +376,8 @@ class SpkmapParams:
         Whether to standardize spike counts by dividing by the standard deviation
     smooth_width : float | None, default=1
         Width of the Gaussian smoothing kernel to apply to the maps (width in spatial units)
+    reliability_method : str, default="leave_one_out"
+        Method to use for calculating reliability
     autosave : bool, default=True
         Whether to save the cache automatically
     """
@@ -298,7 +388,20 @@ class SpkmapParams:
     full_trial_flexibility: Union[float, None] = 3.0
     standardize_spks: bool = True
     smooth_width: Union[float, None] = 1.0
-    autosave: bool = True
+    reliability_method: str = "leave_one_out"
+    autosave: bool = False
+
+    def __repr__(self) -> str:
+        class_fields = fields(self)
+        lines = []
+        for field in class_fields:
+            field_name = field.name
+            field_value = getattr(self, field_name)
+            lines.append(f"{field_name}={repr(field_value)}")
+
+        class_name = self.__class__.__name__
+        joined_lines = ",\n    ".join(lines)
+        return f"{class_name}(\n    {joined_lines}\n)"
 
     @classmethod
     def from_dict(cls, params_dict: dict) -> "SpkmapParams":
@@ -363,6 +466,7 @@ def get_spkmap_params(param_type: str, updates: Optional[dict] = None) -> Spkmap
             full_trial_flexibility=3.0,
             standardize_spks=True,
             smooth_width=1.0,
+            reliability_method="leave_one_out",
             autosave=False,
         )
     elif param_type == "smoothed":
@@ -373,6 +477,7 @@ def get_spkmap_params(param_type: str, updates: Optional[dict] = None) -> Spkmap
             full_trial_flexibility=3.0,
             standardize_spks=True,
             smooth_width=5.0,
+            reliability_method="leave_one_out",
             autosave=False,
         )
     else:
@@ -467,28 +572,73 @@ def cached_processor(data_type: str, disable: bool = False):
         If True, the cache will not be used. Default is False.
     """
 
+    def maps_loader(self: "SpkmapProcessor", process_method: callable, *args, **kwargs):
+        # Attempt to load from cache
+        if not disable and not kwargs.get("force_recompute", False):
+            cached_data, valid_cache = self.load_from_cache(data_type)
+            if valid_cache:
+                return cached_data
+
+        # If forcing a recompute or not valid, process data with the pipeline method
+        result = process_method(self, *args, **kwargs)
+
+        # And cache if requested (only if all maps are loaded)
+        if not disable and self.params.autosave:
+            self.save_cache(data_type, result)
+
+        return result
+
+    def env_maps_loader(self: "SpkmapProcessor", process_method: callable, *args, **kwargs):
+        # Attempt to load from cache
+        if not disable and not kwargs.get("force_recompute", False):
+            cached_data, valid_cache = self.load_from_cache(data_type)
+            if valid_cache:
+                if kwargs.get("use_session_filters", False):
+                    # If we're using session filters, we need to filter ROIs
+                    cached_data.filter_rois(np.where(self.session.idx_rois)[0])
+                return cached_data
+
+        # If forcing a recompute or not valid, process data with the pipeline method
+        result = process_method(self, *args, **kwargs)
+
+        # And cache if requested
+        if not disable and self.params.autosave:
+            # Don't save the cache if we're using session filters!!!
+            if not kwargs.get("use_session_filters", True):
+                self.save_cache(data_type, result)
+
+        return result
+
+    def reliability_loader(self: "SpkmapProcessor", process_method: callable, *args, **kwargs):
+        if not disable and not kwargs.get("force_recompute", False):
+            cached_data, valid_cache = self.load_from_cache(data_type)
+            if valid_cache:
+                if kwargs.get("use_session_filters", False):
+                    # If we're using session filters, we need to filter ROIs
+                    cached_data.values = cached_data.values[:, self.session.idx_rois]
+                return cached_data
+
+        # If forcing a recompute or not valid, process data with the pipeline method
+        result = process_method(self, *args, **kwargs)
+
+        # And cache if requested
+        if not disable and self.params.autosave:
+            if not kwargs.get("use_session_filters", True):
+                self.save_cache("reliability", result)
+
+        return result
+
     def decorator(process_method):
         @wraps(process_method)
         def wrapper(self: "SpkmapProcessor", *args, **kwargs):
-            # Attempt to load from cache
-            maps_to_load = ["occmap"]
-            if kwargs.get("get_speedmap", True):
-                maps_to_load.append("speedmap")
-            if kwargs.get("get_spkmap", True):
-                maps_to_load.append("spkmap")
-
-            if not disable and not kwargs.get("force_recompute", False):
-                cached_data, valid_cache = self.load_from_cache(data_type, maps_to_load)
-                if valid_cache:
-                    return cached_data
-
-            # If forcing a recompute or not valid, process data with the pipeline method
-            result = process_method(self, *args, **kwargs)
-
-            # And cache if requested (only if all maps are loaded)
-            if not disable and self.params.autosave and maps_to_load == Maps.map_types():
-                self.save_cache(data_type, result)
-            return result
+            if data_type == "raw_maps" or data_type == "processed_maps":
+                return maps_loader(self, process_method, *args, **kwargs)
+            elif data_type == "env_maps":
+                return env_maps_loader(self, process_method, *args, **kwargs)
+            elif data_type == "reliability":
+                return reliability_loader(self, process_method, *args, **kwargs)
+            else:
+                raise ValueError(f"Invalid data type: {data_type}, doesn't have a cache loader yet!")
 
         return wrapper
 
@@ -534,17 +684,10 @@ class SpkmapProcessor:
         # Check if the session provided is compatible with SpkmapProcessing
         if not isinstance(self.session, SessionData):
             raise ValueError(f"session must be a SessionData instance, not {type(self.session)}")
-        # TODO: this loads one data because they are properties... consider removing the property decorator
-        # or alternatively just removing this check and duck typing (using the Protocol for instructions only)
-        # if not isinstance(self.session, SessionToSpkmapProtocol):
-        #     raise ValueError("session must meet the criteria of a SessionToSpkmapProtocol!")
+        # (Don't check if it's a SessionToSpkmapProtocol because hasattr() will call properties which loads data...)
 
         # We need to handle the case where params is a dictionary of partial updates to the default params
-        if isinstance(self.params, dict):
-            self.params = SpkmapParams.from_dict(self.params)
-        else:
-            if not isinstance(self.params, SpkmapParams):
-                raise ValueError(f"params must be a SpkmapParams instance or a dictionary, not {type(self.params)}")
+        self.params = helpers.resolve_dataclass(self.params, SpkmapParams)
 
     def cached_dependencies(self, data_type: str) -> List[str]:
         """Get the dependencies for a given data type"""
@@ -552,6 +695,18 @@ class SpkmapProcessor:
             return ["dist_step", "speed_threshold", "speed_max_allowed", "standardize_spks"]
         elif data_type == "processed_maps":
             return ["dist_step", "speed_threshold", "speed_max_allowed", "standardize_spks", "smooth_width"]
+        elif data_type == "env_maps":
+            return ["dist_step", "speed_threshold", "speed_max_allowed", "standardize_spks", "smooth_width", "full_trial_flexibility"]
+        elif data_type == "reliability":
+            return [
+                "dist_step",
+                "speed_threshold",
+                "speed_max_allowed",
+                "standardize_spks",
+                "smooth_width",
+                "full_trial_flexibility",
+                "reliability_method",
+            ]
         # Otherwise just return all params
         return list(self.params.__dict__.keys())
 
@@ -571,7 +726,7 @@ class SpkmapProcessor:
         """Get the hash of the dependent parameters for a given data type"""
         return hashlib.sha256(json.dumps(self.dependent_params(data_type), sort_keys=True).encode()).hexdigest()
 
-    def save_cache(self, data_type: str, data: Maps):
+    def save_cache(self, data_type: str, data: Union[Maps, Reliability]):
         """Save the cached params and data for a given data type"""
         cache_dir = self.cache_directory(data_type)
         params_hash = self._params_hash(data_type)
@@ -583,10 +738,23 @@ class SpkmapProcessor:
             for mapname in Maps.map_types():
                 cache_data_path = cache_dir / f"data_{mapname}_{params_hash}.npy"
                 np.save(cache_data_path, getattr(data, mapname))
+        elif data_type == "env_maps":
+            environments = data.environments
+            np.save(cache_dir / f"data_environments_{params_hash}.npy", environments)
+            for ienv, env in enumerate(environments):
+                for mapname in Maps.map_types():
+                    cache_data_path = cache_dir / f"data_{mapname}_{env}_{params_hash}.npy"
+                    np.save(cache_data_path, getattr(data, mapname)[ienv])
+        elif data_type == "reliability":
+            values = data.values
+            environments = data.environments
+            # don't need data.method because it's in params...
+            np.save(cache_dir / f"data_environments_{params_hash}.npy", environments)
+            np.save(cache_dir / f"data_reliability_{params_hash}.npy", values)
         else:
             raise ValueError(f"Unknown data type: {data_type}")
 
-    def load_from_cache(self, data_type: str, maps_to_load: Optional[List[str]] = None) -> Tuple[Union[Maps, Dict[str, np.ndarray]], bool]:
+    def load_from_cache(self, data_type: str) -> Tuple[Union[Maps, Reliability], bool]:
         """Get the cached params and data for a given data type"""
         cache_dir = self.cache_directory(data_type)
         if cache_dir.exists():
@@ -597,7 +765,7 @@ class SpkmapProcessor:
                 cached_params = dict(np.load(cached_params_path))
                 # Check if the cached params match the dependent params
                 if self.check_params_match(cached_params):
-                    return self._load_from_cache(data_type, params_hash, maps_to_load), True
+                    return self._load_from_cache(data_type, params_hash, params=cached_params), True
         return None, False
 
     def check_params_match(self, cached_params: dict) -> bool:
@@ -615,15 +783,30 @@ class SpkmapProcessor:
         """
         return cached_params and all(cached_params[k] == getattr(self.params, k) for k in cached_params)
 
-    def _load_from_cache(self, data_type: str, params_hash: str, maps_to_load: Optional[List[str]] = None) -> Dict[str, np.ndarray]:
+    def _load_from_cache(self, data_type: str, params_hash: str, params: Optional[Dict[str, Any]] | None = None) -> Union[Maps, Reliability]:
         """Load the cached data for a given data type"""
         cache_dir = self.cache_directory(data_type)
         if data_type == "raw_maps" or data_type == "processed_maps":
             cached_data = {}
             for name in Maps.map_types():
-                if maps_to_load is None or name in maps_to_load:
-                    cached_data[name] = np.load(cache_dir / f"data_{name}_{params_hash}.npy", mmap_mode="r")
-            return Maps(**cached_data)
+                cached_data[name] = np.load(cache_dir / f"data_{name}_{params_hash}.npy", mmap_mode="r")
+            if data_type == "raw_maps":
+                return Maps.create_raw_maps(**cached_data)
+            elif data_type == "processed_maps":
+                return Maps.create_processed_maps(**cached_data)
+        elif data_type == "env_maps":
+            environments = np.load(cache_dir / f"data_environments_{params_hash}.npy")
+            cached_data = dict(environments=environments)
+            for name in Maps.map_types():
+                cached_data[name] = []
+                for env in environments:
+                    cached_data[name].append(np.load(cache_dir / f"data_{name}_{env}_{params_hash}.npy", mmap_mode="r"))
+            return Maps.create_environment_maps(**cached_data)
+        elif data_type == "reliability":
+            environments = np.load(cache_dir / f"data_environments_{params_hash}.npy")
+            values = np.load(cache_dir / f"data_reliability_{params_hash}.npy")
+            method = params["reliability_method"]
+            return Reliability(values, environments, method)
         else:
             raise ValueError(f"Unknown data type: {data_type}")
 
@@ -631,8 +814,8 @@ class SpkmapProcessor:
     def _filter_environments(
         self,
         envnum: Union[int, Iterable[int], None] = None,
-        clear_one_cache: bool = False,
-    ) -> np.ndarray:
+        clear_one_cache: bool = True,
+    ) -> np.ndarray[bool]:
         """Filter the session data to only include trials from certain environments
 
         NOTE:
@@ -646,16 +829,8 @@ class SpkmapProcessor:
         envnum = helpers.check_iterable(envnum)
         return np.isin(self.session.trial_environment, envnum)
 
-    def maps_to_process(self, get_speedmap: bool = True, get_spkmap: bool = True) -> List[str]:
-        maps_to_process = ["occmap"]
-        if get_speedmap:
-            maps_to_process.append("speedmap")
-        if get_spkmap:
-            maps_to_process.append("spkmap")
-        return maps_to_process
-
     @property
-    def dist_edges(self):
+    def dist_edges(self) -> np.ndarray[float]:
         """Distance edges for the position bins"""
         if not hasattr(self, "_env_length"):
             env_length = self.session.env_length
@@ -670,12 +845,12 @@ class SpkmapProcessor:
         return np.linspace(0, self._env_length, num_positions + 1)
 
     @property
-    def dist_centers(self):
+    def dist_centers(self) -> np.ndarray[float]:
         """Distance centers for the position bins"""
         return helpers.edge2center(self.dist_edges)
 
     @manage_one_cache
-    def _idx_required_position_bins(self, clear_one_cache: bool = False) -> np.ndarray:
+    def _idx_required_position_bins(self, clear_one_cache: bool = True) -> np.ndarray:
         """Get the indices of the position bins that are required for a full trial
 
         Parameters
@@ -700,22 +875,16 @@ class SpkmapProcessor:
     @with_temp_params
     @manage_one_cache
     @cached_processor("raw_maps", disable=True)  # It's probably better to only cache processed maps
-    def raw_maps(
+    def get_raw_maps(
         self,
-        get_speedmap: bool = True,
-        get_spkmap: bool = True,
         force_recompute: bool = False,
-        clear_one_cache: bool = False,
+        clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
     ) -> Maps:
         """Get maps (occupancy, speed, spkmap) from session data by processing with provided parameters.
 
         Parameters
         ----------
-        get_speedmap : bool, default=True
-            Whether to get the speed map
-        get_spkmap : bool, default=True
-            Whether to get the spkmap
         force_recompute : bool, default=False
             Whether to force the recomputation of the maps even if they exist in the cache.
         clear_one_cache : bool, default=False
@@ -749,28 +918,20 @@ class SpkmapProcessor:
         dist_cutoff = sampling_period / 2
         delay_position_to_imaging = frame_time_stamps[idx_behave_to_frame] - timestamps
 
-        if get_spkmap:
-            # get spiking information
-            spks = self.session.spks
+        # get spiking information
+        spks = self.session.spks
 
-            # Do standardization
-            if self.params.standardize_spks:
-                spks = median_zscore(spks, median_subtract=not self.session.zero_baseline_spks)
+        # Do standardization
+        if self.params.standardize_spks:
+            spks = median_zscore(spks, median_subtract=not self.session.zero_baseline_spks)
 
         # Get high resolution occupancy and speed maps
         dtype = np.float32
         occmap = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
         counts = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
-        if get_speedmap:
-            speedmap = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
-        else:
-            speedmap = None
-        if get_spkmap:
-            spkmap = np.zeros((self.session.num_trials, num_positions, spks.shape[1]), dtype=dtype)
-        else:
-            spkmap = None
-        if get_speedmap or get_spkmap:
-            extra_counts = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
+        speedmap = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
+        spkmap = np.zeros((self.session.num_trials, num_positions, spks.shape[1]), dtype=dtype)
+        extra_counts = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
 
         # Get maps -- doing this independently for each map allows for more
         # flexibility in which data to load (basically the occmap & speedmap
@@ -789,36 +950,34 @@ class SpkmapProcessor:
             sample_duration,
             scale_by_sample_duration=False,
         )
-        if get_speedmap:
-            get_summation_map(
-                speeds,
-                trial_numbers,
-                position_bin,
-                speedmap,
-                counts,
-                speeds,
-                self.params.speed_threshold,
-                self.params.speed_max_allowed,
-                delay_position_to_imaging,
-                dist_cutoff,
-                sample_duration,
-                scale_by_sample_duration=True,
-            )
-        if get_spkmap:
-            get_summation_map(
-                spks,
-                trial_numbers,
-                position_bin,
-                spkmap,
-                extra_counts,
-                speeds,
-                self.params.speed_threshold,
-                self.params.speed_max_allowed,
-                delay_position_to_imaging,
-                dist_cutoff,
-                sample_duration,
-                scale_by_sample_duration=True,
-            )
+        get_summation_map(
+            speeds,
+            trial_numbers,
+            position_bin,
+            speedmap,
+            counts,
+            speeds,
+            self.params.speed_threshold,
+            self.params.speed_max_allowed,
+            delay_position_to_imaging,
+            dist_cutoff,
+            sample_duration,
+            scale_by_sample_duration=True,
+        )
+        get_summation_map(
+            spks,
+            trial_numbers,
+            position_bin,
+            spkmap,
+            extra_counts,
+            speeds,
+            self.params.speed_threshold,
+            self.params.speed_max_allowed,
+            delay_position_to_imaging,
+            dist_cutoff,
+            sample_duration,
+            scale_by_sample_duration=True,
+        )
 
         # Figure out the valid range (outside of this range, set the maps to nan, because their values are not meaningful)
         position_bin_per_trial = [position_bin[trial_numbers == tnum] for tnum in range(self.session.num_trials)]
@@ -832,82 +991,43 @@ class SpkmapProcessor:
 
         # set bins to nan when mouse didn't visit them
         occmap = replace_missing_data(occmap, first_valid_bin, last_valid_bin)
-        if get_speedmap:
-            speedmap = replace_missing_data(speedmap, first_valid_bin, last_valid_bin)
-        if get_spkmap:
-            spkmap = replace_missing_data(spkmap, first_valid_bin, last_valid_bin)
+        speedmap = replace_missing_data(speedmap, first_valid_bin, last_valid_bin)
+        spkmap = replace_missing_data(spkmap, first_valid_bin, last_valid_bin)
 
-        return Maps(occmap, speedmap, spkmap)
+        return Maps.create_raw_maps(occmap, speedmap, spkmap)
 
     @with_temp_params
     @manage_one_cache
     @cached_processor("processed_maps")
-    def maps(
+    def get_processed_maps(
         self,
-        get_speedmap: bool = True,
-        get_spkmap: bool = True,
         force_recompute: bool = False,
-        clear_one_cache: bool = False,
+        clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
-    ):
+    ) -> Maps:
         """Process the maps"""
-        maps_to_process = self.maps_to_process(get_speedmap, get_spkmap)
-
         # Get the raw maps first (don't need to specify params because they're already set by this method)
-        maps = self.raw_maps(
-            get_speedmap=get_speedmap,
-            get_spkmap=get_spkmap,
+        maps = self.get_raw_maps(
             force_recompute=force_recompute,
             clear_one_cache=clear_one_cache,
         )
 
-        if self.params.smooth_width is not None:
-            # TODO: Consider stacking maps to do this convolution all at once?
-            kernel = get_gauss_kernel(self.dist_centers, self.params.smooth_width)
-
-            # Replace nans with 0s
-            idxnan = np.isnan(maps.occmap)
-            for mapname in maps_to_process:
-                maps[mapname][idxnan] = 0
-
-            for mapname in maps_to_process:
-                maps[mapname] = convolve_toeplitz(maps[mapname], kernel, axis=1)
-
-            # Put nans back in place
-            for mapname in maps_to_process:
-                maps[mapname][idxnan] = np.nan
-
-        if get_speedmap:
-            maps.speedmap = correct_map(maps.occmap, maps.speedmap)
-        if get_spkmap:
-            maps.spkmap = correct_map(maps.occmap, maps.spkmap)
-
-        # Change spkmap to be ROIs first
-        if get_spkmap:
-            maps.spkmap = np.moveaxis(maps.spkmap, -1, 0)
-
-        return maps
+        # Process the maps (smooth, divide by occupancy, and change to ROIs first)
+        return maps.raw_to_processed(self.dist_centers, self.params.smooth_width)
 
     @with_temp_params
     @manage_one_cache
+    @cached_processor("env_maps", disable=False)
     def get_env_maps(
         self,
-        envnum: Union[int, List[int], None] = None,
-        average: bool = False,
-        popnan: bool = True,
-        get_speedmap: bool = True,
-        get_spkmap: bool = True,
+        use_session_filters: bool = True,
         force_recompute: bool = False,
-        clear_one_cache: bool = False,
+        clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
-    ):
+    ) -> Maps:
         """Get the map for a given environment number"""
-        # First get environments to process (all if not specified)
-        if envnum is None:
-            envnum = self.session.environments
-
         # Make sure it's an iterable -- the output will always be a list
-        envnum = helpers.check_iterable(envnum)
+        envnum = helpers.check_iterable(self.session.environments)
 
         # Get the indices of the trials to each environment
         idx_each_environment = [self._filter_environments(env) for env in envnum]
@@ -916,19 +1036,27 @@ class SpkmapProcessor:
         idx_required_position_bins = self._idx_required_position_bins(clear_one_cache)
 
         # Get the processed maps (don't need to specify params because they're already set by the decorator)
-        maps = self.maps(
-            get_speedmap=get_speedmap,
-            get_spkmap=get_spkmap,
+        maps = self.get_processed_maps(
             force_recompute=force_recompute,
             clear_one_cache=clear_one_cache,
         )
 
-        # Make a list of the maps we are processing
-        maps_to_process = self.maps_to_process(get_speedmap, get_spkmap)
+        # Add the list of environments to the maps
+        maps.environments = envnum
 
-        # Filter the maps to only include the ROIs we want and full trials
-        idx_rois = np.where(self.session.idx_rois)[0]
+        # Make a list of the maps we are processing
+        maps_to_process = Maps.map_types()
+
+        # Filter the maps to only include the ROIs we want
+        if use_session_filters:
+            idx_rois = np.where(self.session.idx_rois)[0]
+        else:
+            idx_rois = np.arange(self.session.get_value("numROIs"), dtype=int)
+
+        # Filter the maps to only include the full trials
         full_trials = np.where(np.all(~np.isnan(maps.occmap[:, idx_required_position_bins]), axis=1))[0]
+
+        # Implement trial & ROI filtering here
         for mapname in maps_to_process:
             if mapname == "spkmap":
                 maps[mapname] = np.take(np.take(maps[mapname], idx_rois, axis=0), full_trials, axis=1)
@@ -938,71 +1066,53 @@ class SpkmapProcessor:
         # Filter the trial indices to only include full trials
         idx_each_environment = [np.where(np.take(idx, full_trials, axis=0))[0] for idx in idx_each_environment]
 
-        # If popping nan positions, figure out which positions have a nan in any trial
-        # (it'll be the same for occmap and other maps) and remove them
-        if popnan:
-            maps.pop_nan_positions()
-
         # Then group each one by environment
         # -> this is now (trials_in_env, position_bins, ...(roi if spkmap)...)
+        maps.by_environment = True
         for mapname in maps_to_process:
             if mapname == "spkmap":
                 maps[mapname] = [np.take(maps[mapname], idx, axis=1) for idx in idx_each_environment]
             else:
                 maps[mapname] = [np.take(maps[mapname], idx, axis=0) for idx in idx_each_environment]
 
-        # Then average within environment if requested
-        if average:
-            for mapname in maps_to_process:
-                if mapname == "spkmap":
-                    maps[mapname] = [ss.mean(envmap, axis=1) for envmap in maps[mapname]]
-                else:
-                    maps[mapname] = [ss.mean(envmap, axis=0) for envmap in maps[mapname]]
-
         return maps
 
     @with_temp_params
     @manage_one_cache
-    def reliability(
+    @cached_processor("reliability", disable=False)
+    def get_reliability(
         self,
-        envnum: Union[int, List[int], None] = None,
-        method: str = "leave_one_out",
-        relkwargs: Dict[str, Any] = {},
+        use_session_filters: bool = True,
         force_recompute: bool = False,
-        clear_one_cache: bool = False,
+        clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
     ):
         """Get the reliability of the maps"""
-        if envnum is None:
-            envnum = self.session.environments
-
-        # Make sure it's an iterable -- the output will always be a list
-        envnum = helpers.check_iterable(envnum)
+        envnum = helpers.check_iterable(self.session.environments)
 
         # A list of the requested environments (all if not specified)
         maps = self.get_env_maps(
-            envnum=envnum,
-            average=False,
-            popnan=True,
-            get_speedmap=False,
-            get_spkmap=True,
+            use_session_filters=use_session_filters,
             force_recompute=force_recompute,
             clear_one_cache=clear_one_cache,
             params={"autosave": False},  # Prevent saving in the case of a recompute
         )
 
-        if method == "leave_one_out":
-            rel_values = [helpers.reliability_loo(spkmap, **relkwargs) for spkmap in maps.spkmap]
-        if method == "correlation" or method == "mse":
-            rel_mse, rel_cor = helpers.named_transpose([helpers.measureReliability(spkmap, **relkwargs) for spkmap in maps.spkmap])
-            rel_values = rel_mse if method == "mse" else rel_cor
+        # All reliability measures require no NaNs
+        maps.pop_nan_positions()
+
+        if self.params.reliability_method == "leave_one_out":
+            rel_values = [helpers.reliability_loo(spkmap) for spkmap in maps.spkmap]
+        elif self.params.reliability_method == "correlation" or self.params.reliability_method == "mse":
+            rel_mse, rel_cor = helpers.named_transpose([helpers.measureReliability(spkmap) for spkmap in maps.spkmap])
+            rel_values = rel_mse if self.params.reliability_method == "mse" else rel_cor
         else:
-            raise ValueError(f"Method {method} not supported")
+            raise ValueError(f"Method {self.params.reliability_method} not supported")
 
         return Reliability(
             np.stack(rel_values),
             environments=envnum,
-            method=method,
+            method=self.params.reliability_method,
         )
 
 
