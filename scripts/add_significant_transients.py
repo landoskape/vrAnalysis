@@ -1,36 +1,39 @@
 from tqdm import tqdm
 import numpy as np
-from vrAnalysis import helpers
-from vrAnalysis import database
+from vrAnalysis2 import helpers
+from vrAnalysis2.database import get_database
 from scipy.sparse import csc_array
 
-sessiondb = database.vrDatabase("vrSessions")
+sessiondb = get_database("vrSessions")
 
 # Go through all the sessions with imaging
-ises = sessiondb.iterSessions(imaging=True)
+ises = sessiondb.iter_sessions(imaging=True)
 
 
 if __name__ == "__main__":
 
-    for ses in tqdm(ises, desc="Processing sessions...", leave=True):
+    for session in tqdm(ises, desc="Processing sessions...", leave=True):
 
         # Check if npy version is present
-        if (ses.onePath() / "mpci.roiSignificantFluorescence.npy").exists():
+        if (session.one_path / "mpci.roiSignificantFluorescence.npy").exists():
             # Delete the npy version -- we're saving a sparse array now
-            (ses.onePath() / "mpci.roiSignificantFluorescence.npy").unlink()
+            (session.one_path / "mpci.roiSignificantFluorescence.npy").unlink()
 
-        if "mpci.roiSignificantFluorescence" in ses.printSavedOne():
-            print(f"Skipping {ses} because it already has significant fluorescence data")
+        if "mpci.roiSignificantFluorescence" in session.print_saved_one():
+            print(f"Skipping {session} because it already has significant fluorescence data")
             continue
 
+        else:
+            print(f"Processing {session}")
+
         # Load fluorescence data (num_frames, num_rois)
-        fcorr = ses.loadfcorr().T
-        ftimes = ses.loadone("mpci.times")
+        fcorr = session.loadfcorr().T
+        ftimes = session.loadone("mpci.times")
 
         # Get standardized dff
         percentile = 30
         window_duration = 60
-        dff_std = helpers.get_standardized_dff(fcorr, ses.opts["fs"], percentile, window_duration)
+        dff_std = helpers.get_standardized_dff(fcorr, session.opts["fs"], percentile, window_duration)
 
         # Measure significant transients
         # This is an array of shape (num_frames, num_rois, num_thresholds)
@@ -44,7 +47,7 @@ if __name__ == "__main__":
 
         # Save the significant fluorescence data
         significant_fluorescence = csc_array(significant_fluorescence)
-        ses.saveone(significant_fluorescence, "mpci.roiSignificantFluorescence", sparse=True)
-        print(f"Saved significant fluorescence data for session {ses}")
+        session.saveone(significant_fluorescence, "mpci.roiSignificantFluorescence", sparse=True)
+        print(f"Saved significant fluorescence data for session {session}")
 
-        ses.clearBuffer()
+        session.clear_cache()
