@@ -2,7 +2,7 @@ import numpy as np
 import scipy as sp
 import torch
 from numba import njit, prange
-
+from scipy.signal import correlate
 from .wrangling import transpose_list, named_transpose
 
 
@@ -97,6 +97,79 @@ def pairdist(XA, XB):
     """
     difference = XA - XB
     return np.sqrt(np.sum(difference**2, axis=1))
+
+
+def autocorrelation(x: np.ndarray, axis: int = -1, normalize: bool = True) -> np.ndarray:
+    """
+    Compute the autocorrelation of an N-dimensional NumPy array along a specified axis.
+
+    Parameters:
+    - arr: np.ndarray, the input array.
+    - axis: int, the axis along which to compute the autocorrelation.
+
+    Returns:
+    - np.ndarray, the autocorrelation along the given axis.
+    """
+    # Ensure array is float for FFT computation
+    arr = np.asarray(x, dtype=np.float64)
+
+    if normalize:
+        arr = sp.stats.zscore(arr, axis=axis)
+
+    # Compute the FFT along the specified axis
+    fft_vals = np.fft.fft(arr, n=2 * arr.shape[axis] - 1, axis=axis)
+
+    # Compute the power spectrum (FFT * conjugate(FFT))
+    power_spectrum = np.abs(fft_vals) ** 2
+
+    # Compute the inverse FFT to get the autocorrelation
+    autocorr = np.fft.ifft(power_spectrum, axis=axis).real
+
+    # Normalize by the first value (variance)
+    autocorr /= autocorr.take(0, axis=axis)
+
+    # Slice to keep only non-negative lags
+    return np.take(autocorr, np.arange(arr.shape[axis]), axis=axis)
+
+
+def compute_cross_correlations(activity_matrix, max_lag=None, normalize=True):
+    """
+    Compute cross-correlation for all pairs of neurons at different lags.
+
+    Parameters:
+    - activity_matrix: 2D numpy array of shape (n_neurons, n_timepoints),
+                       where each row is the activity of a neuron over time.
+    - max_lag: Maximum lag to compute cross-correlation for. If None, uses full length.
+    - normalize: Whether to normalize the cross-correlation by signal energy.
+
+    Returns:
+    - lags: 1D numpy array of lag values.
+    - cross_corrs: 3D numpy array of shape (n_neurons, n_neurons, num_lags),
+                   where cross_corrs[i, j, :] gives the cross-correlation
+                   between neuron i and neuron j at different lags.
+    """
+    n_neurons, n_timepoints = activity_matrix.shape
+    if max_lag is None:
+        max_lag = n_timepoints - 1  # Full range of possible lags
+
+    lags = np.arange(-max_lag, max_lag + 1)
+    cross_corrs = np.zeros((n_neurons, n_neurons, len(lags)))
+
+    for i in range(n_neurons):
+        for j in range(i, n_neurons):  # Compute only upper triangle, use symmetry
+            corr = correlate(activity_matrix[i], activity_matrix[j], mode="full", method="auto")
+            mid = len(corr) // 2
+            corr = corr[mid - max_lag : mid + max_lag + 1]  # Trim to desired lags
+
+            if normalize:
+                norm_factor = np.sqrt(np.sum(activity_matrix[i] ** 2) * np.sum(activity_matrix[j] ** 2))
+                if norm_factor > 0:
+                    corr /= norm_factor
+
+            cross_corrs[i, j, :] = corr
+            cross_corrs[j, i, :] = corr  # Exploit symmetry
+
+    return lags, cross_corrs
 
 
 def crossCorrelation(x, y):
