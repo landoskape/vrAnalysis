@@ -1,4 +1,6 @@
-from typing import Union
+from typing import Union, Any, Dict, Type, TypeVar, Union
+from typing import Any, Protocol, Type, runtime_checkable, get_type_hints
+from dataclasses import is_dataclass
 from argparse import ArgumentTypeError
 from datetime import datetime
 
@@ -87,3 +89,83 @@ class PrettyDatetime(datetime):
     def from_string(cls, date_string: str, format: str = "%Y-%m-%d") -> "PrettyDatetime":
         """Convert a string to PrettyDatetime using the specified format"""
         return cls.strptime(date_string, format)
+
+
+T = TypeVar("T")
+
+
+def resolve_dataclass(input_data: Union[Dict[str, Any], None, T], dataclass_type: Type[T]) -> T:
+    """
+    Resolve an input to the desired dataclass instance.
+
+    Parameters
+    ----------
+    input_data : Dict[str, Any] | None | T
+        The input data, which can be a dictionary of parameters, None, or
+        already an instance of the target dataclass type.
+    dataclass_type : Type[T]
+        The dataclass type to convert the input to.
+
+    Returns
+    -------
+    T
+        An instance of the specified dataclass type.
+
+    Raises
+    ------
+    ValueError
+        If the input is not a dict, None, or an instance of the target dataclass.
+    """
+    if not isinstance(dataclass_type, type):
+        raise ValueError(f"dataclass_type must be a type, got a {type(dataclass_type)}")
+
+    if input_data is None:
+        return dataclass_type()
+    elif isinstance(input_data, dict):
+        return dataclass_type(**input_data)
+    elif isinstance(input_data, dataclass_type):
+        return input_data
+    elif isinstance(input_data, make_protocol_from_dataclass(dataclass_type)):
+        return input_data
+    elif type(input_data).__name__ == dataclass_type.__name__:
+        # TODO: When reloading modules we need to do this
+        print(f"Types don't officially match, but names do: {dataclass_type.__name__} from {type(input_data).__name__}")
+        return input_data
+    else:
+        raise ValueError(f"Input must be a dict, None, or an instance of {dataclass_type.__name__}, " f"got {type(input_data).__name__}")
+
+
+def make_protocol_from_dataclass(dataclass_type: Type) -> Type:
+    """
+    Generate a runtime_checkable Protocol from a dataclass.
+
+    Parameters
+    ----------
+    dataclass_type : Type
+        The dataclass to create a Protocol from
+
+    Returns
+    -------
+    Type[Protocol]
+        A runtime_checkable Protocol class with the same interface
+    """
+    annotations = get_type_hints(dataclass_type)
+    method_names = [
+        name
+        for name in dir(dataclass_type)
+        if callable(getattr(dataclass_type, name)) and not name.startswith("__") and name not in ("from_dict", "from_path")
+    ]  # Exclude class methods
+
+    # Create protocol attribute annotations and stub methods
+    namespace = {"__annotations__": annotations}
+
+    # Add stub methods
+    for method_name in method_names:
+        namespace[method_name] = lambda *args, **kwargs: ...
+
+    # Create the Protocol class
+    protocol_name = f"{dataclass_type.__name__}Protocol"
+    protocol_class = type(protocol_name, (Protocol,), namespace)
+
+    # Make it runtime_checkable
+    return runtime_checkable(protocol_class)
