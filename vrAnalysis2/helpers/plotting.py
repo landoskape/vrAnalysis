@@ -1,3 +1,4 @@
+from pathlib import Path
 from contextlib import contextmanager
 import numpy as np
 import matplotlib as mpl
@@ -13,10 +14,12 @@ def batch_plot_context():
         plt.ion()
 
 
-def save_figure(fig, path, **kwargs):
+def save_figure(fig: plt.Figure, path: Path, **kwargs) -> None:
     """
     Save a figure with high resolution in png and svg formats
     """
+    # Add the .fig extension to the path so it will replace the right suffix.
+    path = path.parent / (path.name + ".fig")
     fig.savefig(path.with_suffix(".png"), dpi=300, **kwargs)
     fig.savefig(path.with_suffix(".svg"), **kwargs)
 
@@ -192,3 +195,15 @@ def refline(slope, intercept, ax=None, **kwargs):
     x_vals = np.array(ax.get_xlim())
     y_vals = intercept + slope * x_vals
     ax.plot(x_vals, y_vals, **kwargs)
+
+
+def color_violins(parts, facecolor=None, linecolor=None):
+    """Helper to color parts manually."""
+    if facecolor is not None:
+        for pc in parts["bodies"]:
+            pc.set_facecolor(facecolor)
+    if linecolor is not None:
+        for partname in ("cbars", "cmins", "cmaxes", "cmeans", "cmedians"):
+            if partname in parts:
+                lc = parts[partname]
+                lc.set_edgecolor(linecolor)
