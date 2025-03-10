@@ -16,6 +16,7 @@ class ReliabilityViewer:
         self.mouse_names = df["mouseName"].unique()
         if fast_mode:
             self.mouse_names = self.mouse_names[:2]
+
         print(self.mouse_names)
         self.track = {}
         self.env_selection = {}
@@ -55,13 +56,14 @@ class ReliabilityViewer:
         )
         relmse_first = list(map(lambda x: x[0], relmse_first))
         relcor_first = list(map(lambda x: x[0], relcor_first))
-        relloo_first = list(map(lambda x: x[2], relloo_first))
-        relmse_second, relcor_second, relloo_first = helpers.named_transpose(
+        relloo_first = list(map(lambda x: x[0], relloo_first))
+
+        relmse_second, relcor_second, relloo_second = helpers.named_transpose(
             [pcm.pcss[i].get_reliability_values(envnum=envnum_second) for i in idx_ses_second]
         )
         relmse_second = list(map(lambda x: x[0], relmse_second))
         relcor_second = list(map(lambda x: x[0], relcor_second))
-        relloo_second = list(map(lambda x: x[2], relloo_second))
+        relloo_second = list(map(lambda x: x[0], relloo_second))
         idx_tracked = track.get_tracked_idx(idx_ses=idx_ses, keep_planes=self.keep_planes)
 
         self.track[mouse_name] = track
