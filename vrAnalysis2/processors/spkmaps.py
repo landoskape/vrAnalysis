@@ -1,6 +1,5 @@
 from typing import Union, Tuple, Iterable, List, Optional, Dict, Any
 from typing import Protocol, runtime_checkable
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict, fields
 from functools import wraps
 from pathlib import Path
@@ -25,6 +24,7 @@ class Maps:
     by_environment: bool
     rois_first: bool
     environments: list[int] | None = None
+    _averaged: bool = field(default=False, init=False)
 
     def __post_init__(self):
         if self.occmap is None or self.speedmap is None or self.spkmap is None:
@@ -100,8 +100,9 @@ class Maps:
 
     def _get_position_axis(self, mapname: str) -> int:
         """The only time the position axis isn't the last one is for spkmap when rois_first is False"""
+        average_offset = -1 if self._averaged else 0
         if mapname == "spkmap" and not self.rois_first:
-            return -2
+            return -2 + average_offset
         else:
             return -1
 
@@ -168,12 +169,15 @@ class Maps:
 
     def average_trials(self, keepdims: bool = False) -> None:
         """Average the trials within each environment"""
+        if self._averaged:
+            return
         for mapname in self.map_types():
             axis = 1 if mapname == "spkmap" and self.rois_first else 0
             if self.by_environment:
                 self[mapname] = [ss.mean(map, axis=axis, keepdims=keepdims) for map in self[mapname]]
             else:
                 self[mapname] = ss.mean(self[mapname], axis=axis, keepdims=keepdims)
+        self._averaged = True
 
     def nbytes(self) -> int:
         num_bytes = 0
@@ -223,6 +227,12 @@ class Reliability:
 
     def __repr__(self) -> str:
         return f"Reliability(num_rois={self.values.shape[1]}, environments={self.environments}, method={self.method})"
+
+    def filter_rois(self, idx_rois: np.ndarray) -> "Reliability":
+        return Reliability(self.values[:, idx_rois], self.environments, self.method)
+
+    def filter_environments(self, idx_environments: np.ndarray) -> "Reliability":
+        return Reliability(self.values[idx_environments], self.environments[idx_environments], self.method)
 
 
 @runtime_checkable
@@ -593,7 +603,7 @@ def cached_processor(data_type: str, disable: bool = False):
         if not disable and not kwargs.get("force_recompute", False):
             cached_data, valid_cache = self.load_from_cache(data_type)
             if valid_cache:
-                if kwargs.get("use_session_filters", False):
+                if kwargs.get("use_session_filters", True):
                     # If we're using session filters, we need to filter ROIs
                     cached_data.filter_rois(np.where(self.session.idx_rois)[0])
                 return cached_data
@@ -613,7 +623,7 @@ def cached_processor(data_type: str, disable: bool = False):
         if not disable and not kwargs.get("force_recompute", False):
             cached_data, valid_cache = self.load_from_cache(data_type)
             if valid_cache:
-                if kwargs.get("use_session_filters", False):
+                if kwargs.get("use_session_filters", True):
                     # If we're using session filters, we need to filter ROIs
                     cached_data.values = cached_data.values[:, self.session.idx_rois]
                 return cached_data
