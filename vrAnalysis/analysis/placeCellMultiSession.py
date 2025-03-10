@@ -12,6 +12,7 @@ import seaborn as sns
 from .. import helpers
 from .standardAnalysis import multipleAnalysis
 from . import placeCellSingleSession
+from ..tracking import tracker
 
 
 # ---- decorators for pcm class methods ----
@@ -54,7 +55,7 @@ class placeCellMultiSession(multipleAnalysis):
 
     def __init__(
         self,
-        track,
+        track: tracker,
         onefile="mpci.roiActivityDeconvolvedOasis",
         autoload=False,
         keep_planes=[1, 2, 3, 4],
@@ -64,16 +65,16 @@ class placeCellMultiSession(multipleAnalysis):
         numcv=2,
         standardizeSpks=True,
     ):
-        self.name = "placeCellMultiSession"
-        self.onefile = onefile
-        self.track = track
-        self.autoload = autoload
-        self.distStep = distStep
-        self.smoothFilter = smoothFilter
-        self.speedThreshold = speedThreshold
-        self.numcv = numcv
-        self.standardizeSpks = standardizeSpks
-        self.keep_planes = keep_planes if keep_planes is not None else [i for i in range(len(track.sessions[0].value["roiPerPlane"]))]
+        self.name: str = "placeCellMultiSession"
+        self.onefile: str = onefile
+        self.track: tracker = track
+        self.autoload: bool = autoload
+        self.distStep: int = distStep
+        self.smoothFilter: int = smoothFilter
+        self.speedThreshold: int = speedThreshold
+        self.numcv: int = numcv
+        self.standardizeSpks: bool = standardizeSpks
+        self.keep_planes: list[int] = keep_planes if keep_planes is not None else [i for i in range(len(track.sessions[0].value["roiPerPlane"]))]
 
         self.create_pcss()
 
