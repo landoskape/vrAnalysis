@@ -34,6 +34,7 @@ def identify_redundant_rois(session: B2Session):
     processor_params = SameCellParams(
         spks_type=cluster_params.spks_type,
         keep_planes=cluster_params.keep_planes,
+        good_labels=cluster_params.good_labels,
         npix_cutoff=cluster_params.npix_cutoff,
     )
     scp = SameCellProcessor(session, processor_params).load_data()
@@ -75,9 +76,27 @@ def identify_redundant_rois(session: B2Session):
 
 
 def get_best_roi(scp: SameCellProcessor, cluster: List[int], method: str):
+    """This picks which ROI to keep in a cluster. It uses a funny algorithm explained here:
+
+    If method == "max_sum_significant", it picks the ROI with the highest sum of significant activity.
+    The point of this is to pick an ROI that has the highest SNR. However, because it's much easier to
+    track ROIs in plane 0 (due to the better spatial sampling in the flyback, weird), we also check if
+    there's a good enough ROI in plane 0 to keep when the best ROI isn't in plane 0. If there is (defined
+    by it having a sum of significant activity that is at least 50% of the best ROI), then we keep the
+    plane 0 ROI. Otherwise, we just pick the best ROI.
+    """
     if method == "max_sum_significant":
         activity = scp.session.get_spks("significant")[:, scp.idx_rois[cluster]]
-        return np.argmax(ss.sum(activity, axis=0))
+        sum_activity = ss.sum(activity, axis=0)
+        imax = np.argmax(sum_activity)
+        if scp.roi_plane_idx[cluster[imax]] != 0:
+            if any(scp.roi_plane_idx[cluster] == 0):
+                idx_to_plane0 = np.where(scp.roi_plane_idx[cluster] == 0)[0]
+                plane0_option = np.max(sum_activity[idx_to_plane0])
+                plane0_ratio = plane0_option / sum_activity[imax]
+                if plane0_ratio >= 0.5:
+                    return idx_to_plane0[np.argmax(sum_activity[idx_to_plane0])]
+        return imax
     else:
         raise ValueError(f"Invalid best in cluster method: {method}")
 
