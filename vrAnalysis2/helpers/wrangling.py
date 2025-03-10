@@ -3,6 +3,12 @@ import inspect
 import math
 
 
+def get_confirmation(message: str = ""):
+    message = message + " Are you sure you want to proceed? (type 'proceed' to continue):"
+    confirmation = input(message)
+    return confirmation == "proceed"
+
+
 class AttributeDict(dict):
     """
     helper class for accessing dictionary values as attributes
@@ -55,7 +61,7 @@ def check_iterable(val):
 
 
 # ---------------------------------- workspace management ----------------------------------
-def readableBytes(numBytes):
+def readable_bytes(numBytes):
     if numBytes == 0:
         return "0B"
     sizeUnits = ("B", "KB", "MB", "GB", "TB")
@@ -65,7 +71,7 @@ def readableBytes(numBytes):
     return f"{readableSize} {sizeUnits[sizeIndex]}"
 
 
-def printWorkspace(maxToPrint=12):
+def print_workspace(maxToPrint=12):
     """
     Original author: https://stackoverflow.com/users/1870254/jan-glx
     Reference: https://stackoverflow.com/questions/24455615/python-how-to-display-size-of-all-variables
@@ -75,10 +81,10 @@ def printWorkspace(maxToPrint=12):
     variables = sorted(variables, key=lambda x: -x[1])  # Sort by variable size
     # variables = [(name, sys.getsizeof(value)) for name, value in callerLocals.items()]
     totalMemory = sum([v[1] for v in variables])
-    print(f"Workspace Size: {readableBytes(totalMemory)}")
+    print(f"Workspace Size: {readable_bytes(totalMemory)}")
     print("Note: this method is not equipped to handle complicated variables, it is possible underestimating the workspace size!\n")
     for name, size in variables[: min(maxToPrint, len(variables))]:
-        print(f"{name:>30}: {readableBytes(size):>8}")
+        print(f"{name:>30}: {readable_bytes(size):>8}")
 
 
 # ------------------------------------ sparse handling -----------------------------------
