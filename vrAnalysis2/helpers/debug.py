@@ -11,6 +11,28 @@ class TimerMethods(Enum):
     PERF_COUNTER = perf_counter
 
 
+class TICTOC:
+    def __init__(self, timer_method: str = "perf_counter"):
+        self.timer_method = TimerMethods[timer_method.upper()].value
+
+    def tic(self):
+        self.t0 = self.timer_method()
+
+    def toc(self):
+        return self.timer_method() - self.t0
+
+
+tictoc = TICTOC()
+
+
+def tic():
+    tictoc.tic()
+
+
+def toc():
+    return tictoc.toc()
+
+
 class Timer:
     """A flexible timer utility that supports context manager usage.
 
