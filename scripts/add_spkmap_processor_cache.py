@@ -1,13 +1,8 @@
 import shutil
 from tqdm import tqdm
-import numpy as np
 from vrAnalysis2.database import get_database
 from vrAnalysis2.processors.spkmaps import SpkmapProcessor, get_spkmap_params
-from vrAnalysis2.sessions import create_b2session
-
-# Go through all the sessions with imaging
-sessiondb = get_database("vrSessions")
-ises = sessiondb.iter_sessions(imaging=True)
+from vrAnalysis2.helpers import get_confirmation
 
 
 def cache_processed_maps(ises, params_type="default", force_recompute: bool = False, max_gb=1000):
@@ -50,25 +45,34 @@ def cache_reliability(ises, params_type="default", reliability_method="leave_one
 
 
 def clear_cache(ises):
-    for session in tqdm(ises, desc="Clearing cache...", leave=True):
-        spkmap_processor = SpkmapProcessor(session)
-        cache_dir = spkmap_processor.cache_directory()
-        if cache_dir.exists():
-            print("Removing: ", cache_dir)
-            print("rmtree commented out, be sure you want to do this!!!!")
-            # shutil.rmtree(cache_dir)
+    confirmation = get_confirmation("Are you really really sure you want to clear the cache?")
+    if confirmation:
+        for session in tqdm(ises, desc="Clearing cache...", leave=True):
+            spkmap_processor = SpkmapProcessor(session)
+            cache_dir = spkmap_processor.cache_directory()
+            if cache_dir.exists():
+                print("Removing: ", cache_dir)
+                shutil.rmtree(cache_dir)
 
 
 if __name__ == "__main__":
-    # # # # # clear_cache(ises)
+    sessiondb = get_database("vrSessions")
+    ises = sessiondb.iter_sessions(imaging=True)
+
+    # For clearing everything that's been cached
+    clear_the_whole_cache = False
+    if clear_the_whole_cache:
+        confirmation = get_confirmation("Are you sure you want to clear the whole cache?")
+        if confirmation:
+            clear_cache(ises)
+
+    # For computing all the relevant cache
     force_recompute = False
-    # cache_processed_maps(ises, params_type="default", force_recompute=force_recompute)
-    # cache_processed_maps(ises, params_type="smoothed", force_recompute=force_recompute)
-    # cache_env_maps(ises, params_type="default", force_recompute=force_recompute)
-    # cache_env_maps(ises, params_type="smoothed", force_recompute=force_recompute)
-    # cache_reliability(ises, params_type="default", reliability_method="leave_one_out", force_recompute=force_recompute)
-    # cache_reliability(ises, params_type="smoothed", reliability_method="leave_one_out", force_recompute=force_recompute)
-    cache_reliability(ises, params_type="default", reliability_method="mse", force_recompute=force_recompute)
-    cache_reliability(ises, params_type="smoothed", reliability_method="mse", force_recompute=force_recompute)
-    cache_reliability(ises, params_type="default", reliability_method="correlation", force_recompute=force_recompute)
-    cache_reliability(ises, params_type="smoothed", reliability_method="correlation", force_recompute=force_recompute)
+    for spks_type in ["significant", "oasis", "raw"]:
+        for session in ises:
+            session.update_params(spks_type=spks_type)
+        for params_type in ["default", "smoothed"]:
+            cache_processed_maps(ises, params_type=params_type, force_recompute=force_recompute)
+            cache_env_maps(ises, params_type=params_type, force_recompute=force_recompute)
+            for reliability_method in ["leave_one_out", "mse", "correlation"]:
+                cache_reliability(ises, params_type=params_type, reliability_method=reliability_method, force_recompute=force_recompute)
