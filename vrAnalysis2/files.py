@@ -2,6 +2,10 @@ from pathlib import Path
 from tkinter import Tk
 
 
+def repo_path() -> Path:
+    return Path("C:/Users/Andrew/Documents/GitHub/vrAnalysis")
+
+
 def local_data_path() -> Path:
     # return Path("C:/Users/andrew/Documents/localData")
     return storage_path()
