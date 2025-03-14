@@ -7,14 +7,14 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 # GUI-related modules
-import napari
-from napari.utils.colormaps import label_colormap, direct_colormap
-import pyqtgraph as pg
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import (
     QGraphicsProxyWidget,
     QPushButton,
 )
+import napari
+from napari.utils.colormaps import label_colormap, direct_colormap
+import pyqtgraph as pg
 
 # Special vrAnalysis modules
 from .. import session
