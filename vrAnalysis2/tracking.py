@@ -2,6 +2,7 @@ from typing import List
 import re
 from tqdm import tqdm
 import pickle
+import joblib
 from pathlib import Path
 from functools import wraps
 import numpy as np
@@ -51,6 +52,24 @@ def handle_idx_ses(func):
     return wrapper
 
 
+def get_tracker(mouse_name: str, tracking_string: str = "ROICaT.tracking", try_cache: bool = True) -> "Tracker":
+    """get tracker object for a particular mouse"""
+    cache_path = Path(data_path) / "trackers" / f"{mouse_name}.joblib"
+    if try_cache and cache_path.exists():
+        return joblib.load(cache_path)
+
+    tracker = Tracker(mouse_name, tracking_string)
+    return tracker
+
+
+def save_tracker(tracker: "Tracker"):
+    """save tracker object to cache"""
+    cache_path = Path(data_path) / "trackers" / f"{tracker.mouse_name}.joblib"
+    if not cache_path.parent.exists():
+        cache_path.parent.mkdir(parents=True)
+    joblib.dump(tracker, cache_path)
+
+
 class Tracker:
     def __init__(self, mouse_name, tracking_string="ROICaT.tracking"):
         """create tracker object for a particular mouse"""
@@ -59,12 +78,12 @@ class Tracker:
         self.results_string: str = ".results"
         self.rundata_string: str = ".rundata"
         self.num_parts_data_path: int = len(self.data_path().parts)
+        self._rundata_loaded: bool = False
 
         # identify tracking files
         self.identify_tracking_files()
         self.num_planes: int = len(self.results_files)
         assert len(self.results_files) > 0, "no tracking files found"
-        assert len(self.results_files) == len(self.rundata_files), "results and rundata have different numbers of files"
 
         # load tracking data
         self.load_tracking_files()
@@ -76,6 +95,19 @@ class Tracker:
 
         # check that number of ROIs is as expected
         self.check_num_rois_per_plane()
+
+    def _load_rundata(self):
+        if self._rundata_loaded:
+            return
+
+        # identify tracking files
+        self.identify_tracking_files(include_rundata=True)
+        assert len(self.results_files) == len(self.rundata_files), "results and rundata have different numbers of files"
+
+        # load tracking data
+        self.load_tracking_files(include_rundata=True)
+
+        self._rundata_loaded = True
 
     def __repr__(self):
         return f"Tracker(mouse_name={self.mouse_name}, num_planes={self.num_planes}, num_sessions={self.num_sessions})"
@@ -125,32 +157,38 @@ class Tracker:
     def list_tracking_files(self, filetype: str) -> list[Path]:
         return list(self.mouse_path().glob(f"*{self.tracking_string+filetype}*"))
 
-    def identify_tracking_files(self) -> None:
+    def identify_tracking_files(self, include_rundata: bool = False) -> None:
         """identify files where tracking data is stored"""
         self.results_files = [p.stem for p in self.list_tracking_files(self.results_string)]
-        self.rundata_files = [p.stem for p in self.list_tracking_files(self.rundata_string)]
+        if include_rundata:
+            self.rundata_files = [p.stem for p in self.list_tracking_files(self.rundata_string)]
         self.plane_names = [self.process_file_name(f, "results") for f in self.results_files]
-        assert all(
-            [pn == self.process_file_name(f, "rundata") for pn, f in zip(self.plane_names, self.rundata_files)]
-        ), "plane names don't match in results and rundata"
+        if include_rundata:
+            assert all(
+                [pn == self.process_file_name(f, "rundata") for pn, f in zip(self.plane_names, self.rundata_files)]
+            ), "plane names don't match in results and rundata"
         assert self.plane_names == sorted(self.plane_names), f"plane_names are not sorted properly.. ({self.plane_names})"
 
-        suffices = np.unique(
-            [p.suffix for p in self.list_tracking_files(self.results_string)] + [p.suffix for p in self.list_tracking_files(self.rundata_string)]
-        )
-        assert len(suffices) == 1, f"suffices are multifarious... rename files so there's only 1! suffices found: {suffices}"
-        self.suffix = suffices[0]
+        suffixes = [p.suffix for p in self.list_tracking_files(self.results_string)]
+        if include_rundata:
+            rundata_suffixes = [p.suffix for p in self.list_tracking_files(self.rundata_string)]
+            suffixes += rundata_suffixes
 
-    def load_tracking_files(self):
+        assert len(np.unique(suffixes)) == 1, f"suffixes are multifarious... rename files so there's only 1! suffices found: {suffixes}"
+        self.suffix = suffixes[0]
+
+    def load_tracking_files(self, include_rundata: bool = False):
         """load files where tracking data is stored"""
         self.results = []
-        self.rundata = []
+        if include_rundata:
+            self.rundata = []
         for file in self.results_files:
             with open(self.mouse_path() / (file + self.suffix), "rb") as f:
                 self.results.append(pickle.load(f))
-        for file in self.rundata_files:
-            with open(self.mouse_path() / (file + self.suffix), "rb") as f:
-                self.rundata.append(pickle.load(f))
+        if include_rundata:
+            for file in self.rundata_files:
+                with open(self.mouse_path() / (file + self.suffix), "rb") as f:
+                    self.rundata.append(pickle.load(f))
 
     def identify_tracked_sessions(self):
         """identify which sessions were tracked by filename"""
@@ -577,6 +615,8 @@ class Tracker:
 
         defaults to coo array, but if as_coo=False then will return a csr_array
         """
+        if not self._rundata_loaded:
+            self._load_rundata()
         csr_data = self.rundata[idx_plane]["aligner"]["ROIs_aligned"][idx_session]
         csr_array = sp.sparse.csr_array((csr_data["data"], csr_data["indices"], csr_data["indptr"]), shape=csr_data["_shape"])
         if as_coo:
@@ -591,6 +631,8 @@ class Tracker:
 
         see dictionary of lookup methods for explanation and possible names inside of function
         """
+        if not self._rundata_loaded:
+            self._load_rundata()
         lookup = {
             "sConj": lambda rundata: rundata["clusterer"]["sConj"],
             "s_NN": lambda rundata: rundata["sim"]["s_NN"],
