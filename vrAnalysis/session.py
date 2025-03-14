@@ -785,7 +785,8 @@ class redCellProcessing(vrExperiment):
 
         # check validity of each cutoff and identify whether it should be used
         for name, use, cutoff in zip(self.featureNames, usecutoff, cutoffs):
-            assert isinstance(cutoff, np.ndarray), f"{name} cutoff is an numpy ndarray"
+            if not isinstance(cutoff, np.ndarray) and not isinstance(cutoff, list):
+                raise ValueError(f"Expecting a numpy array or a list for {name} cutoff, got {type(cutoff)}")
             assert len(cutoff) == 2, f"{name} cutoff does not have 2 elements"
             if not (np.isnan(cutoff[0])):
                 use[0] = True

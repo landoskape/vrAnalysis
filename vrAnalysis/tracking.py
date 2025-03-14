@@ -29,7 +29,7 @@ def handle_keep_planes(func):
     """decorator to handle the keep_planes argument in a standard way for the tracker class"""
 
     @wraps(func)
-    def wrapper(tracker_instance, *args, keep_planes=None, **kwargs):
+    def wrapper(tracker_instance: "tracker", *args, keep_planes=None, **kwargs):
         keep_planes = tracker_instance.get_keep_planes(keep_planes=keep_planes)
         return func(tracker_instance, *args, keep_planes=keep_planes, **kwargs)
 
@@ -83,7 +83,7 @@ class tracker:
         return self.data_path() / self.mouse_name
 
     # basic utilities
-    def get_keep_planes(self, keep_planes=None):
+    def get_keep_planes(self, keep_planes: list[int] | None = None) -> list[int]:
         return keep_planes if keep_planes is not None else np.arange(self.num_planes)
 
     def get_idx_session(self, idx_ses=None):
