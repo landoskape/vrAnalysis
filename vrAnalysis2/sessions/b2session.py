@@ -159,6 +159,10 @@ class B2Session(SessionData):
         return self.get_spks(self.params.spks_type)
 
     @property
+    def spks_type(self):
+        return self.params.spks_type
+
+    @property
     def zero_baseline_spks(self) -> bool:
         return self._are_spks_zero_baseline(self.params.spks_type)
 
