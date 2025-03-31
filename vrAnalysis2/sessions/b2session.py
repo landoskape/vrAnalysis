@@ -317,6 +317,19 @@ class B2Session(SessionData):
             "redundancy_idx": valid_redundancy,
         }
 
+    def get_red_idx(self):
+        """Get the indices of the red ROIs.
+
+        redCellIdxCoherent is a consolidated red cell index array that uses tracking information
+        to determine which cells are red in a coherent manner. The roicat_support.tracking module
+        builds this array. When not available, we just use the standard redCellIdx array because
+        it means the session wasn't tracked.
+        """
+        if "mpciROIs.redCellIdxCoherent" in self.print_saved_one():
+            return self.loadone("mpciROIs.redCellIdxCoherent")
+        else:
+            return self.loadone("mpciROIs.redCellIdx")
+
     def update_params(self, **kwargs):
         """Update the parameters for the session
 
@@ -435,3 +448,16 @@ class B2Session(SessionData):
             xc = np.array([np.median(x) for x in xpix])
         stackPosition = np.stack((xc, yc, planeIdx)).T
         return stackPosition
+
+    def __eq__(self, other: Any) -> bool:
+        """Check if two sessions are equal"""
+        if not isinstance(other, B2Session):
+            return False
+        if hash(self) == hash(other):
+            return True
+        else:
+            return False
+
+    def __hash__(self) -> int:
+        """Hash the session"""
+        return hash(self.session_name)
