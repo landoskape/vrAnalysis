@@ -103,7 +103,9 @@ def get_summation_map(
     dist_behave_to_frame,
     dist_cutoff,
     sample_duration,
-    scale_by_sample_duration: bool = False,
+    scale_by_sample_duration: bool,
+    use_sample_to_value_idx: bool,
+    sample_to_value_idx: np.ndarray,
 ):
     """
     this is the fastest way to get a single summation map
@@ -124,12 +126,18 @@ def get_summation_map(
     for current trial and position, add full list of spikes to spkmap
     every single time, add 1 to count for that position
     """
-    for sample in nb.prange(len(value_to_sum)):
+    for sample in nb.prange(len(trial_idx)):
         if (speed[sample] > speed_threshold) and (speed[sample] < speed_max_threshold) and (dist_behave_to_frame[sample] < dist_cutoff):
-            if scale_by_sample_duration:
-                map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample] * sample_duration[sample]
+            if use_sample_to_value_idx:
+                if scale_by_sample_duration:
+                    map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample_to_value_idx[sample]] * sample_duration[sample]
+                else:
+                    map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample_to_value_idx[sample]]
             else:
-                map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample]
+                if scale_by_sample_duration:
+                    map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample] * sample_duration[sample]
+                else:
+                    map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample]
             counts[trial_idx[sample]][position_bin[sample]] += 1
 
 
