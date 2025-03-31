@@ -2,107 +2,157 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from syd import Viewer
-from .. import tracking, helpers
+from ..tracking import Tracker
 from ..metrics import FractionActive, KernelDensityEstimator, plot_contours
+from ..multisession import MultiSessionSpkmaps
 
 
-class PlaceFieldLoader:
-    def __init__(self, mouse_name, sesmethod="all", onefile=None, summary_only=False):
-        self.mouse_name = mouse_name
-        self.env_selection = {}
-        self.idx_ses_selection = {}
-        self.spkmaps = {}
-        self.extras = {}
-        self.all_trial_reliability = {}
-        self.session_average_reliability = {}
-        self.fraction_active = {}
-        self.kde_ctl = {}
-        self.kde_red = {}
-        self.onefile = onefile
-        self.summary_only = summary_only
+class TrackedSpkmapViewer(Viewer):
+    def __init__(self, tracked_mice: list[str]):
+        self.tracked_mice = list(tracked_mice)
+        self.multisessions = {mouse: None for mouse in self.tracked_mice}
 
-        self.sesmethod = sesmethod
+        # Set up syd parameters
+        self.add_selection("mouse", value=self.tracked_mice[0], options=self.tracked_mice)
+        self.add_selection("environment", value=1, options=[1])
+        self.add_multiple_selection("sessions", value=[0], options=[0])
+        self.add_selection("reference_session", value=0, options=[0])
+        self.add_float_range("reliability_range", value=(0.6, 1.0), min=-1.0, max=1.0)
+        self.add_selection("reliability_method", value="leave_one_out", options=["leave_one_out", "mse", "correlation"])
+        self.add_selection("smooth_width", value=5, options=[1, 5])
+        self.add_float_range("fraction_range", value=(0.0, 1.0), min=0.0, max=1.0)
+        self.add_selection("activity_method", value="max", options=FractionActive.activity_methods)
+        self.add_selection("fraction_method", value="participation", options=FractionActive.fraction_methods)
+        self.add_boolean("red_only", value=False)
+        self.add_selection("spks_type", value="significant", options=["significant", "oasis"])
+        self.add_boolean("use_session_filters", value=True)
+        self.add_integer("roi_idx", value=0, min=0, max=100)
+        self.add_float("vmax_spkmap", value=1.0, min=0.1, max=15.0)
+        self.add_float("vmax_reference", value=1.0, min=0.01, max=2.0)
+        self.add_float("image_size", value=1.5, min=1.0, max=5.0)
+        self.add_float("red_scale", value=0.5, min=0.0, max=1.0)
+        self.add_boolean("crop_roi", value=True)
 
-        self.reliability_range = (-1.0, 1.0)
-        self.fraction_range = (0.0, 1.0)
-        self.nbins = 101
+        # Set up callbacks
+        self.on_change("mouse", self.reset_mouse)
+        self.on_change("environment", self.reset_environment)
+        self.on_change("sessions", self.update_sessions)
+        self.on_change(
+            [
+                "sessions",
+                "reference_session",
+                "reliability_range",
+                "reliability_method",
+                "smooth_width",
+                "fraction_range",
+                "activity_method",
+                "fraction_method",
+                "red_only",
+                "spks_type",
+                "use_session_filters",
+            ],
+            self.reset_roi_options,
+        )
+        self.reset_mouse(self.state)
 
-        self._prepare_mouse_data(mouse_name, onefile=onefile)
+    def reset_mouse(self, state):
+        msm = self.get_multisession(state["mouse"])
+        environments = self.get_environments(state["mouse"])
+        start_envnum = msm.env_selector(envmethod="first")
+        self.update_selection("environment", value=start_envnum, options=list(environments))
+        self.reset_environment(self.state)
+
+    def reset_environment(self, state):
+        msm = self.get_multisession(state["mouse"])
+        idx_ses = msm.idx_ses_with_env(state["environment"])
+        num_sessions = len(idx_ses)
+        self.update_multiple_selection("sessions", value=idx_ses[: min(3, num_sessions)], options=list(idx_ses))
+        self.update_sessions(self.state)
+        self.reset_roi_options(self.state)
+
+    def update_sessions(self, state):
+        idx_ses = state["sessions"]
+        self.update_selection("reference_session", options=list(idx_ses))
+
+    def reset_roi_options(self, state):
+        msm = self.get_multisession(state["mouse"])
+        spkmaps, extras = msm.get_spkmaps(
+            state["environment"],
+            average=False,
+            reliability_method=state["reliability_method"],
+            smooth=float(state["smooth_width"]),
+            spks_type=state["spks_type"],
+            idx_ses=state["sessions"],
+            tracked=True,
+            use_session_filters=state["use_session_filters"],
+            pop_nan=False,
+        )
+        fraction_active = [
+            FractionActive.compute(
+                spkmap,
+                activity_axis=2,
+                fraction_axis=1,
+                activity_method=state["activity_method"],
+                fraction_method=state["fraction_method"],
+            )
+            for spkmap in spkmaps
+        ]
+        idx_to_reference = state["sessions"].index(state["reference_session"])
+        reference_fraction_active = fraction_active[idx_to_reference]
+        reference_reliability = extras["reliability"][idx_to_reference]
+        reference_red_idx = extras["idx_red"][idx_to_reference]
+        idx_reliable_keeps = (reference_reliability >= state["reliability_range"][0]) & (reference_reliability <= state["reliability_range"][1])
+        idx_active_keeps = (reference_fraction_active >= state["fraction_range"][0]) & (reference_fraction_active <= state["fraction_range"][1])
+        idx_red_keeps = reference_red_idx if state["red_only"] else ~reference_red_idx
+        idx_keeps = np.where(idx_reliable_keeps & idx_active_keeps & idx_red_keeps)[0]
+        self.update_integer("roi_idx", max=len(idx_keeps) - 1)
+
+        idx_original_red = [msm.processors[isession].session.loadone("mpciROIs.redCellIdx") for isession in state["sessions"]]
+        idx_original_red = [ired[it] for ired, it in zip(idx_original_red, extras["idx_tracked"])]
+
+        idx_red_assignment = [msm.processors[isession].session.loadone("mpciROIs.redCellManualAssignments") for isession in state["sessions"]]
+        idx_red_man_label = [ired[0] for ired in idx_red_assignment]
+        idx_red_man_active = [ired[1] for ired in idx_red_assignment]
+        idx_red_man_label = [ired[it] for ired, it in zip(idx_red_man_label, extras["idx_tracked"])]
+        idx_red_man_active = [ired[it] for ired, it in zip(idx_red_man_active, extras["idx_tracked"])]
+
+        self._spkmaps = spkmaps
+        self._reliability = extras["reliability"]
+        self._idx_tracked = extras["idx_tracked"]
+        self._idx_red = extras["idx_red"]
+        self._idx_original_red = idx_original_red
+        self._idx_red_man_label = idx_red_man_label
+        self._idx_red_man_active = idx_red_man_active
+        self._fraction_active = fraction_active
+        self._idx_keeps = idx_keeps
+        self._idx_to_reference = idx_to_reference
+        self._sample_silhouettes = extras["sample_silhouettes"]
+        self._cluster_silhouettes = extras["cluster_silhouettes"]
+        self._cluster_ids = extras["cluster_ids"]
+
+        # Get roimask info
+        self._stat = [
+            msm.processors[isession].session.load_s2p("stat")[itracked] for isession, itracked in zip(state["sessions"], extras["idx_tracked"])
+        ]
+        self._ops = [msm.processors[isession].session.load_s2p("ops") for isession in state["sessions"]]
+        self._planes = [
+            msm.processors[isession].session.get_plane_idx()[itracked] for isession, itracked in zip(state["sessions"], extras["idx_tracked"])
+        ]
+
+    def get_multisession(self, mouse: str) -> MultiSessionSpkmaps:
+        if self.multisessions[mouse] is None:
+            tracker = Tracker(mouse)
+            self.multisessions[mouse] = MultiSessionSpkmaps(tracker)
+        return self.multisessions[mouse]
+
+    def get_environments(self, mouse: str) -> np.ndarray:
+        """Get all environments represented in tracked sessions"""
+        msm = self.get_multisession(mouse)
+        environments = np.unique(np.concatenate([session.environments for session in msm.tracker.sessions]))
+        return environments
 
     def _fraction_active_name(self, activity_method: str, fraction_method: str) -> str:
         return "_".join([activity_method, fraction_method])
-
-    def _prepare_mouse_data(self, mouse_name, onefile=None):
-        tracked = False if self.summary_only else True
-
-        track = tracking.Tracker(mouse_name)  # get tracker object for mouse
-        pcm = analysis.placeCellMultiSession(track, autoload=False, onefile=onefile)
-
-        for envoption in ["first", "second"]:
-            envnum = pcm.env_selector(envmethod=envoption)
-            idx_ses = pcm.idx_ses_selector(envnum=envnum, sesmethod=self.sesmethod)
-            spkmaps, extras = pcm.get_spkmaps(envnum=envnum, idx_ses=idx_ses, trials="full", average=False, tracked=tracked, onefile=onefile)
-            self.env_selection[envoption] = (envoption, idx_ses)
-            self.idx_ses_selection[envoption] = idx_ses
-            self.spkmaps[envoption] = spkmaps
-            self.extras[envoption] = extras
-            self.fraction_active[envoption] = {}
-            self.kde_ctl[envoption] = {}
-            self.kde_red[envoption] = {}
-            for amethod, fmethod in FractionActive.get_combinations():
-
-                # Get the fraction active data for each spkmap
-                cdata = []
-                for spkmap in spkmaps:
-                    cdata.append(FractionActive.compute(spkmap, activity_axis=2, fraction_axis=1, activity_method=amethod, fraction_method=fmethod))
-
-                # Stack it
-                if tracked:
-                    cdata = np.stack(cdata, axis=0)
-                self.fraction_active[envoption][self._fraction_active_name(amethod, fmethod)] = cdata
-
-                fraction_active_data = cdata
-                reliability_data = extras["relloo"]
-                if tracked:
-                    reliability_data = np.stack(reliability_data, axis=0)
-
-                if tracked:
-                    idx_red = np.any(np.stack([ired for ired in extras["idx_red"]]), axis=0)
-                    idx_red = np.tile(np.expand_dims(idx_red, axis=0), (fraction_active_data.shape[0], 1))
-                else:
-                    idx_red = [ired for ired in extras["idx_red"]]
-
-                kde_ctl = []
-                kde_red = []
-                for i in range(len(spkmaps)):
-                    kde_ctl.append(
-                        KernelDensityEstimator(
-                            reliability_data[i][~idx_red[i]],
-                            fraction_active_data[i][~idx_red[i]],
-                            xrange=self.reliability_range,
-                            yrange=self.fraction_range,
-                            nbins=self.nbins,
-                        ).fit()
-                    )
-                    kde_red.append(
-                        KernelDensityEstimator(
-                            reliability_data[i][idx_red[i]],
-                            fraction_active_data[i][idx_red[i]],
-                            xrange=self.reliability_range,
-                            yrange=self.fraction_range,
-                            nbins=self.nbins,
-                        ).fit()
-                    )
-                self.kde_ctl[envoption][self._fraction_active_name(amethod, fmethod)] = kde_ctl
-                self.kde_red[envoption][self._fraction_active_name(amethod, fmethod)] = kde_red
-
-            if not self.summary_only:
-                all_trial_reliability = helpers.reliability_loo(np.concatenate(spkmaps, axis=1), weighted=True)
-                session_average_reliability = helpers.reliability_loo(
-                    np.stack([np.nanmean(spkmap, axis=1) for spkmap in spkmaps], axis=1), weighted=True
-                )
-                self.all_trial_reliability[envoption] = all_trial_reliability
-                self.session_average_reliability[envoption] = session_average_reliability
 
     def _make_roi_trajectory(self, spkmaps, roi_idx):
         dead_trials = 1
@@ -117,333 +167,111 @@ class PlaceFieldLoader:
         env_trialnum = [item for pair in zip(trial_env, dead_trial_env) for item in pair if item is not None]
         return np.concatenate(interleaved, axis=0), np.concatenate(env_trialnum)
 
-    def _gather_idxs(self, envoption, min_percentile=90, max_percentile=100, red_cells=False, reliability_type="all_trials"):
-        if reliability_type == "all_trials":
-            reliability_values = self.all_trial_reliability[envoption]
-        elif reliability_type == "session_average":
-            reliability_values = self.session_average_reliability[envoption]
-        else:
-            raise ValueError("reliability_type must be 'all_trials' or 'session_average'")
-
-        min_threshold = np.percentile(reliability_values, min_percentile)
-        max_threshold = np.percentile(reliability_values, max_percentile)
-        idx_in_percentile = (reliability_values > min_threshold) & (reliability_values < max_threshold)
-
-        idx_red = np.any(np.stack([ired for ired in self.extras[envoption]["idx_red"]]), axis=0)
-        if not red_cells:
-            idx_red = ~idx_red
-
-        idx_keepers = np.where(np.logical_and(idx_in_percentile, idx_red))[0]
-
-        idx_keepers_reliability = reliability_values[idx_keepers]
-        idx_to_ordered_reliability = np.argsort(-idx_keepers_reliability)
-        idx_keepers = idx_keepers[idx_to_ordered_reliability]
-
-        return idx_keepers
-
-    def _com(self, data, axis=-1):
-        x = np.arange(data.shape[axis])
-        com = np.sum(data * x, axis=axis) / (np.sum(data, axis=axis) + 1e-10)
-        com[np.any(data < 0, axis=axis)] = np.nan
-        return com
-
-    def plot_cell_activity(self, state):
-        envoption = state["envoption"]
-        min_percentile = state["percentile_range"][0]
-        max_percentile = state["percentile_range"][1]
-        red_cells = state["red_cells"]
+    def plot(self, state):
+        msm = self.get_multisession(state["mouse"])
+        spkmaps = self._spkmaps
+        reliability = self._reliability
+        idx_tracked = self._idx_tracked
+        idx_red = self._idx_red
+        idx_original_red = self._idx_original_red
+        idx_red_man_label = self._idx_red_man_label
+        idx_red_man_active = self._idx_red_man_active
+        fraction_active = self._fraction_active
+        idx_keeps = self._idx_keeps
+        idx_to_reference = self._idx_to_reference
+        sample_silhouettes = self._sample_silhouettes
+        cluster_silhouettes = self._cluster_silhouettes
         roi_idx = state["roi_idx"]
-        reliability_type = state["reliability_type"]
-        spkmaps = self.spkmaps[envoption]
-        idxs = self._gather_idxs(envoption, min_percentile, max_percentile, red_cells, reliability_type)
 
-        if len(idxs) == 0:
-            # Create an empty figure with a message
-            fig = plt.figure(figsize=(12, 8))
-            plt.text(
-                0.5,
-                0.5,
-                f"No ROIs found between {min_percentile}th and {max_percentile}th percentiles",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=fig.transFigure,
-                fontsize=14,
-            )
-            return fig
+        roi_idx_tracked = idx_tracked[:, idx_keeps[roi_idx]]
+        roi_spkmaps, snums = self._make_roi_trajectory(spkmaps, idx_keeps[roi_idx])
+        roi_session_highlight = np.full((roi_spkmaps.shape[0], 20), 0.0)
+        roi_session_highlight[snums == idx_to_reference] = np.nan
+        roi_spkmaps = np.concatenate([roi_session_highlight, roi_spkmaps, roi_session_highlight], axis=1)
+        roi_reliability = [r[idx_keeps[roi_idx]] for r in reliability]
+        roi_idx_red = [ired[idx_keeps[roi_idx]] for ired in idx_red]
+        roi_idx_original_red = [ired[idx_keeps[roi_idx]] for ired in idx_original_red]
+        roi_idx_red_man_label = [ired[idx_keeps[roi_idx]] for ired in idx_red_man_label]
+        roi_idx_red_man_active = [ired[idx_keeps[roi_idx]] for ired in idx_red_man_active]
+        roi_fraction_active = [fa[idx_keeps[roi_idx]] for fa in fraction_active]
+        roi_sample_silhouettes = sample_silhouettes[:, idx_keeps[roi_idx]]
+        roi_cluster_silhouette = cluster_silhouettes[idx_keeps[roi_idx]]
 
-        relcor = ",".join([f"{ses[roi_idx]:.2f}" for ses in self.extras[envoption]["relcor"]])
-        relloo = ",".join([f"{ses[roi_idx]:.2f}" for ses in self.extras[envoption]["relloo"]])
+        # Get roimask info
+        """
+        meanImg(512, 512)
+        meanImg_chan2(512, 512)
+        refImg(512, 512)
+        meanImgE(512, 512)
+        Vcorr(478, 442)
+        meanImg_chan2_corrected(512, 512)
+        """
+        xpix = [stat[idx_keeps[roi_idx]]["xpix"] for stat in self._stat]
+        ypix = [stat[idx_keeps[roi_idx]]["ypix"] for stat in self._stat]
+        lam = [stat[idx_keeps[roi_idx]]["lam"] for stat in self._stat]
+        plane = [planes[idx_keeps[roi_idx]] for planes in self._planes]
+        ref_image = [ops[pnum]["meanImg"] for pnum, ops in zip(plane, self._ops)]
+        imch2 = [ops[pnum]["meanImg_chan2"] for pnum, ops in zip(plane, self._ops)]
+        xcenter = [int(np.mean(xp)) for xp in xpix]
+        ycenter = [int(np.mean(yp)) for yp in ypix]
+        xrange = [np.max(xp) - np.min(xp) for xp in xpix]
+        yrange = [np.max(yp) - np.min(yp) for yp in ypix]
+        image_size = int(np.ceil(max(np.max(xrange), np.max(yrange)) * state["image_size"]))
+        mask_images = [np.zeros_like(ref_image[0]) for _ in range(len(xpix))]
+        red_images = [None for _ in range(len(xpix))]
+        for i, (xp, yp, lp) in enumerate(zip(xpix, ypix, lam)):
+            mask_images[i][yp, xp] = lp
+            red_images[i] = (1 - state["red_scale"]) * np.array(np.tile(ref_image[i][:, :, None], (1, 1, 3)), dtype=float) / np.max(ref_image[i])
+            red_images[i][:, :, 0] += state["red_scale"] * np.array(imch2[i], dtype=float) / np.max(imch2[i])
+        if state["crop_roi"]:
+            for i, (xc, yc) in enumerate(zip(xcenter, ycenter)):
+                x_slice = slice(xc - image_size // 2, xc + image_size // 2)
+                y_slice = slice(yc - image_size // 2, yc + image_size // 2)
+                mask_images[i] = mask_images[i][y_slice][:, x_slice]
+                red_images[i] = red_images[i][y_slice][:, x_slice]
 
-        roi_trajectory = self._make_roi_trajectory(spkmaps, roi_idx)[0]
+        mask_images = np.concatenate(mask_images, axis=1)
+        mask_images = mask_images / np.max(mask_images)
+        red_images = np.concatenate(red_images, axis=1)
 
-        idx_not_nan = ~np.any(np.isnan(roi_trajectory), axis=1)
-        pfmax = np.where(idx_not_nan, np.max(roi_trajectory, axis=1), np.nan)
-        pfloc = np.where(idx_not_nan, np.argmax(roi_trajectory, axis=1), np.nan)
+        structural = np.concatenate([np.tile(mask_images[:, :, None], (1, 1, 3)), red_images], axis=0)
 
-        cmap = mpl.colormaps["gray_r"]
-        cmap.set_bad((1, 0.8, 0.8))  # Light red color
-
-        fig = plt.figure(figsize=(7.5, 7.5), layout="constrained")
+        fig = plt.figure(figsize=(9, 7), layout="constrained")
         gs = fig.add_gridspec(4, 3)
+        ax_spkmaps = fig.add_subplot(gs[:, 0])
+        ax_stats = fig.add_subplot(gs[0:2, 1])
+        ax_roi_stats = fig.add_subplot(gs[0:2, 2])
+        ax_roi_structural = fig.add_subplot(gs[2:, 1:])
 
-        ax = fig.add_subplot(gs[:3, 0])
-        ax.imshow(roi_trajectory, aspect="auto", interpolation="none", cmap=cmap, vmin=0, vmax=state["vmax"])
+        spkmap_cmap = mpl.colormaps["gray_r"]
+        spkmap_cmap.set_bad(("orange", 0.3))
+        ax_spkmaps.imshow(roi_spkmaps, aspect="auto", cmap=spkmap_cmap, interpolation="none", vmin=0, vmax=state["vmax_spkmap"])
+        ax_spkmaps.set_title("Place Field Activity")
 
-        ax.set_xlim(0, roi_trajectory.shape[1])
-        ax.set_ylim(roi_trajectory.shape[0], 0)
-        ax.set_ylabel("Trial")
-        ax.set_yticks([])
-        ax.set_xlabel("Virtual Position")
-        ax.set_title("PF Activity")
+        ax_stats.scatter(reliability[idx_to_reference], fraction_active[idx_to_reference], s=8, color="black", alpha=0.1)
+        ax_stats.scatter(reliability[idx_to_reference][idx_keeps], fraction_active[idx_to_reference][idx_keeps], s=8, color="red", alpha=0.3)
+        ax_stats.scatter(roi_reliability[idx_to_reference], roi_fraction_active[idx_to_reference], s=8, color="blue", alpha=1.0)
+        ax_stats.set_xlabel("Reliability")
+        ax_stats.set_ylabel("Fraction Active")
 
-        alpha_values = np.where(~np.isnan(pfmax), pfmax / np.nanmax(pfmax), 0)
-        ax = fig.add_subplot(gs[:3, 1])
-        ax.scatter(pfloc, range(len(pfloc)), s=10, color="k", alpha=alpha_values, linewidth=2)
-        ax.set_xlim(0, roi_trajectory.shape[1])
-        ax.set_ylim(roi_trajectory.shape[0], 0)
-        ax.set_yticks([])
-        ax.set_title("PF Location")
-        ax.set_xlabel("Virtual Position")
+        ax_roi_stats.plot(state["sessions"], roi_reliability, color="k", label="Reliability")
+        ax_roi_stats.plot(state["sessions"], roi_fraction_active, color="b", label="Fraction Active")
+        ax_roi_stats.set_xlabel("Session")
+        ax_roi_stats.set_ylabel("Rel / FracAct")
+        ax_roi_stats.legend(loc="best", fontsize=8)
 
-        ax = fig.add_subplot(gs[:3, 2])
-        ax.scatter(pfmax, range(len(pfmax)), color="k", s=10, alpha=alpha_values)
-        ax.set_xlim(0, np.nanmax(pfmax))
-        ax.set_ylim(roi_trajectory.shape[0], 0)
-        ax.set_title("PF Amplitude")
-        ax.set_yticks([])
-        ax.set_xlabel("Activity (sigma)")
-
-        ax = fig.add_subplot(gs[3:, :-1])
-        ax.scatter(
-            self.all_trial_reliability[envoption],
-            self.session_average_reliability[envoption],
-            s=10,
-            color="lightgray",
-            alpha=0.3,
-            label="All Tracked",
+        title = "ROI Masks\nReference+Red Channel\n"
+        title += f"Cluster Silhouette: {roi_cluster_silhouette:.2f}\n"
+        title += "Original Red Assignment:" + "".join(["R" if ired else "X" for ired in roi_idx_original_red]) + "\n"
+        title += (
+            "Manual Red Assignment:"
+            + "".join(["?" if not iactive else "R" if ired else "X" for ired, iactive in zip(roi_idx_red_man_label, roi_idx_red_man_active)])
+            + "\n"
         )
-        ax.scatter(
-            self.all_trial_reliability[envoption][idxs],
-            self.session_average_reliability[envoption][idxs],
-            s=10,
-            color="k",
-            alpha=0.5,
-            label="Selected",
-        )
-        ax.scatter(
-            self.all_trial_reliability[envoption][roi_idx],
-            self.session_average_reliability[envoption][roi_idx],
-            s=40,
-            color="r",
-            alpha=1,
-            label="Selected ROI",
-        )
-        ax.set_title("Across-Session\nReliability Metrics")
-        ax.set_xlabel("On All Trials")
-        ax.set_ylabel("On Session Average")
-        # ax.legend(loc="upper left")
+        title += "Sample Silhouettes:\n" + ", ".join([f"{s:.2f}" for s in roi_sample_silhouettes]) + "\n"
+        structural = np.clip(structural / state["vmax_reference"], 0, 1)
+        ax_roi_structural.imshow(structural, aspect="equal", cmap="gray_r", interpolation="none")
+        ax_roi_structural.set_title(title)
+        ax_roi_structural.set_axis_off()
 
-        fraction_active_name = self._fraction_active_name(state["fraction_active_method"], state["fraction_active_type"])
-        fraction_active_data = self.fraction_active[envoption][fraction_active_name].T
-        compare_with_reliability = state["compare_with_reliability"]
-
-        ax = fig.add_subplot(gs[3:, -1])
-        if compare_with_reliability:
-
-            colors = plt.cm.coolwarm(np.linspace(0, 1, fraction_active_data.shape[1]))
-            colors = colors[:, :3]
-
-            reliability_data = np.stack(self.extras[envoption]["relloo"], axis=1)
-            # ax.scatter(reliability_data, fraction_active_data, s=10, color="lightgray", alpha=0.3)
-            # ax.scatter(reliability_data[idxs], fraction_active_data[idxs], s=10, color="k", alpha=0.3)
-            # ax.scatter(reliability_data[roi_idx], fraction_active_data[roi_idx], s=40, color="r", alpha=1)
-            # ax.scatter(reliability_data[idxs, 0], fraction_active_data[idxs, 0], s=10, color="k", alpha=1, label="First Session")
-
-            # ax.plot(reliability_data[idxs].T, fraction_active_data[idxs].T, s=10, color="k", alpha=0.3)
-            if state["show_all_comparison"]:
-                for i in range(fraction_active_data.shape[1]):
-                    ax.plot(
-                        reliability_data[idxs, i].T,
-                        fraction_active_data[idxs, i].T,
-                        color=colors[i],
-                        marker=".",
-                        markersize=5,
-                        alpha=0.3,
-                        linestyle="none",
-                    )
-            ax.plot(reliability_data[roi_idx], fraction_active_data[roi_idx], linewidth=1.5, color="k", zorder=1000)
-            for i in range(fraction_active_data.shape[1]):
-                ax.plot(
-                    reliability_data[roi_idx, i].T,
-                    fraction_active_data[roi_idx, i].T,
-                    color=colors[i],
-                    marker=".",
-                    markersize=10,
-                    alpha=1,
-                    zorder=2000,
-                )
-            ax.plot(
-                reliability_data[roi_idx, 0].T,
-                fraction_active_data[roi_idx, 0].T,
-                color="k",
-                marker=".",
-                markersize=10,
-                alpha=1,
-                label="First Session",
-                zorder=3000,
-            )
-            # ax.legend(loc="best")
-            ax.set_xlabel("Reliability Each Session")
-            ax.set_ylabel("Fraction Active Each Session")
-            ax.set_xlim(-1.0, 1.0)  # Relloo, so it's an average correlation coefficient
-            ax.set_ylim(0, 1.0)  # Fractional measures so always between 0 and 1
-
-        else:
-            # ax.plot(range(fraction_active_data.shape[1]), fraction_active_data.T, color="lightgray", alpha=0.3, marker="o", markersize=2)
-            ax.plot(range(fraction_active_data.shape[1]), fraction_active_data[idxs].T, color="k", alpha=0.5, marker="o", markersize=2)
-            ax.plot(range(fraction_active_data.shape[1]), fraction_active_data[roi_idx].T, color="r", alpha=1, marker="o", markersize=5)
-            ax.set_xlabel("Session")
-            ax.set_ylabel("Fraction Active")
-            ax.set_xlim(-0.5, fraction_active_data.shape[1] - 0.5)
-
-        ax.set_title("Fraction Trials Active")
-
-        fig.suptitle(f"Mouse: {self.mouse_name}, Env: {envoption}, ROI: {roi_idx}\nRelCor: {relcor}\nRelLoo: {relloo}")
         return fig
-
-    def plot_summary(self, state):
-        envoption = state["envoption"]
-        fraction_active_name = self._fraction_active_name(state["fraction_active_method"], state["fraction_active_type"])
-        idx_ses = state["idx_ses"]
-        min_level, max_level = state["level_range"]
-        num_levels = state["num_levels"]
-
-        levels = np.linspace(min_level, max_level, num_levels) if num_levels > 1 else [(max_level + min_level) / 2]
-        kde_ctl = self.kde_ctl[envoption][fraction_active_name][idx_ses]
-        kde_red = self.kde_red[envoption][fraction_active_name][idx_ses]
-
-        if state["show_contours"]:
-            contours_ctl = kde_ctl.contours(levels)
-            contours_red = kde_red.contours(levels)
-            contour_cmap = plt.cm.coolwarm
-            colors = contour_cmap(np.linspace(0, 1, num_levels))
-
-        fig, ax = plt.subplots(1, 3, figsize=(9, 3.5), layout="constrained")
-
-        # Plot the kde estimates
-        ctl_plot_data = kde_ctl.plot_data
-        red_plot_data = kde_red.plot_data
-        max_pdf = np.max([np.max(ctl_plot_data), np.max(red_plot_data)])
-        ax[0].imshow(ctl_plot_data, cmap="gray_r", extent=kde_ctl.extent, aspect="auto", vmin=0, vmax=max_pdf)
-        ax[1].imshow(red_plot_data, cmap="gray_r", extent=kde_red.extent, aspect="auto", vmin=0, vmax=max_pdf)
-
-        # Plot the contours
-        if state["show_contours"]:
-            for ctl, red, color in zip(contours_ctl, contours_red, colors):
-                plot_contours(ctl, ax=ax[0], color=color, linewidth=1.0, alpha=1.0)
-                plot_contours(red, ax=ax[1], color=color, linewidth=1.0, alpha=1.0)
-
-        # Plot the difference in the distributions
-        difference = kde_red.plot_data - kde_ctl.plot_data
-        max_diff = np.max(np.abs(difference))
-        ax[2].imshow(difference, cmap="bwr", extent=kde_red.extent, aspect="auto", vmin=-max_diff, vmax=max_diff)
-
-        for a in ax:
-            a.set_xlabel("Reliability")
-            a.set_ylabel("Fraction Active")
-            a.set_xlim(self.reliability_range)
-            a.set_ylim(self.fraction_range)
-
-        ax[0].set_title(f"Control Cells N={self.kde_ctl[envoption][fraction_active_name][idx_ses].x.size}")
-        ax[1].set_title(f"Red Cells N={self.kde_red[envoption][fraction_active_name][idx_ses].x.size}")
-        ax[2].set_title("Difference (Red - Control)")
-
-        if state["show_contours"]:
-            # Boundaries for the colorbar
-            inset = ax[0].inset_axes([0.05, 0.57, 0.1, 0.4])
-            step_size = levels[1] - levels[0]
-            color_lims = [min_level - step_size / 2, max_level + step_size / 2]
-            yticks = levels
-            max_ticks = 5
-            if num_levels > max_ticks:
-                from math import ceil
-
-                step = ceil((num_levels - 1) / (max_ticks - 1))  # -1s ensure first/last included
-                indices = list(range(0, num_levels - 1, step)) + [num_levels - 1]
-                yticks = yticks[indices]
-            inset.imshow(np.flipud(np.reshape(colors, (num_levels, 1, 4))), aspect="auto", extent=[0, 1, color_lims[0], color_lims[1]])
-            inset.set_xticks([])
-            inset.set_yticks(yticks)
-            inset.set_yticklabels([f"{level:.2f}" for level in yticks])
-            inset.yaxis.tick_right()
-
-        fig.suptitle(
-            f"Mouse: {self.mouse_name}, Env: {envoption}, ActivityMethod: {state['fraction_active_method']}, FractionMethod: {state['fraction_active_type']}"
-        )
-        return fig
-
-
-class PlaceFieldViewer(Viewer):
-    def __init__(self, placefield_loader: PlaceFieldLoader):
-        self.placefield_loader = placefield_loader
-
-        # Add interactive parameters
-        self.add_selection("envoption", options=["first", "second"], value="second")
-        self.add_float_range("percentile_range", value=(90, 100), min_value=0, max_value=100)
-        self.add_boolean("red_cells", value=False)
-        self.add_selection("reliability_type", options=["all_trials", "session_average"], value="all_trials")
-        self.add_selection("fraction_active_method", options=FractionActive.activity_methods, value="rms")
-        self.add_selection("fraction_active_type", options=FractionActive.fraction_methods, value="participation")
-        self.add_boolean("compare_with_reliability", value=False)
-        self.add_boolean("show_all_comparison", value=False)
-        self.add_float("vmax", value=5.0, min_value=1.0, max_value=20.0)
-
-        self.set_roi_options(self.state)
-        self.on_change(["envoption", "percentile_range", "red_cells"], self.set_roi_options)
-
-    def set_roi_options(self, state):
-        envoption = state["envoption"]
-        min_percentile = state["percentile_range"][0]
-        max_percentile = state["percentile_range"][1]
-        red_cells = state["red_cells"]
-        reliability_type = state["reliability_type"]
-
-        idx_roi_options = self.placefield_loader._gather_idxs(envoption, min_percentile, max_percentile, red_cells, reliability_type)
-        if "roi_idx" in self.parameters:
-            self.update_selection("roi_idx", options=list(idx_roi_options))
-        else:
-            self.add_selection("roi_idx", options=list(idx_roi_options), value=idx_roi_options[0])
-
-
-class SummaryViewer(Viewer):
-    def __init__(self, placefield_loader: PlaceFieldLoader):
-        self.placefield_loader = placefield_loader
-
-        # Add interactive parameters
-        self.add_selection("envoption", options=["first", "second"], value="second")
-        self.add_integer("idx_ses", value=0, min_value=0, max_value=1)
-        self.add_float_range("level_range", value=(0.5, 0.9), min_value=0.0, max_value=1.0, step=0.01)
-        self.add_integer("num_levels", value=10, min_value=1, max_value=100)
-        self.add_boolean("show_contours", value=True)
-        self.add_selection("fraction_active_method", options=FractionActive.activity_methods, value="rms")
-        self.add_selection("fraction_active_type", options=FractionActive.fraction_methods, value="participation")
-
-        self.set_idx_ses(self.state)
-        self.on_change("envoption", self.set_idx_ses)
-
-    def set_idx_ses(self, state):
-        envoption = state["envoption"]
-        num_ses = len(self.placefield_loader.spkmaps[envoption])
-        self.update_integer("idx_ses", max_value=num_ses - 1)
-
-
-def get_cell_viewer(placefield_loader: PlaceFieldLoader):
-    viewer = PlaceFieldViewer(placefield_loader)
-    viewer.set_plot(placefield_loader.plot_cell_activity)
-    return viewer
-
-
-def get_summary_viewer(placefield_loader: PlaceFieldLoader):
-    viewer = SummaryViewer(placefield_loader)
-    viewer.set_plot(placefield_loader.plot_summary)
-    return viewer
