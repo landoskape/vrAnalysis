@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import speedystats as ss
 from syd import make_viewer, Viewer
-from .base import SameCellProcessor, get_connected_groups, SameCellClusterParameters
+from .base import SameCellProcessor, get_connected_groups, SameCellClusterParameters, get_best_roi
 from ...helpers.signals import compute_cross_correlations
 
 
@@ -67,7 +67,7 @@ def plot_correlation_vs_distance(processor: SameCellProcessor) -> Viewer:
 
     viewer = make_viewer(plot)
     viewer.add_multiple_selection("keep_planes", value=planes, options=planes)
-    viewer.add_float("distance_cutoff", value=max_distance, min_value=0, max_value=max_distance, step=1.0)
+    viewer.add_float("distance_cutoff", value=max_distance, min=0, max=max_distance, step=1.0)
     viewer.add_selection("plane_category", value="all", options=["all", "same plane", "neighbor", "far plane"])
     return viewer
 
@@ -818,7 +818,7 @@ def make_cluster_explorer(
     viewer = make_viewer(plot)
 
     # Add controls
-    viewer.add_integer("seed_roi", value=0, min_value=0, max_value=n_rois - 1)
+    viewer.add_integer("seed_roi", value=0, min=0, max=n_rois - 1)
     viewer.add_boolean("normalize_traces", value=True)
     viewer.add_boolean("show_neuropil", value=neuropil is not None)
 
@@ -865,18 +865,18 @@ class ClusterExplorer(Viewer):
         npix_cutoff = self.cluster_params.npix_cutoff
         keep_planes = self.cluster_params.keep_planes
 
-        self.add_integer("cluster_idx", value=0, min_value=0, max_value=0)
+        self.add_integer("cluster_idx", value=0, min=0, max=0)
         self.add_boolean("zscore_traces", value=False)
         self.add_selection("activity_type", value=self.scp.params.spks_type, options=self.scp.session.spks_types())
         self.add_boolean("show_neuropil", value=False)
         self.add_boolean("show_cross_correlations", value=False)
-        self.add_integer("roi_idx", value=0, min_value=0, max_value=10)
-        self.add_float_range("corr_cutoff", value=corr_cutoff, min_value=0.0, max_value=1.0, step=0.05)
-        self.add_float_range("distance_cutoffs", value=distance_cutoff, min_value=0.0, max_value=100.0, step=1.0)
+        self.add_integer("roi_idx", value=0, min=0, max=10)
+        self.add_float_range("corr_cutoff", value=corr_cutoff, min=0.0, max=1.0, step=0.05)
+        self.add_float_range("distance_cutoffs", value=distance_cutoff, min=0.0, max=100.0, step=1.0)
         self.add_multiple_selection("keep_planes", value=initial_keep_planes, options=keep_planes)
-        self.add_float("npix_cutoff", value=npix_cutoff, min_value=0, max_value=10000)
+        self.add_float("npix_cutoff", value=npix_cutoff, min=0, max=10000)
         self.add_boolean("color_by_plane", value=False)
-        self.add_integer("max_rois", value=10, min_value=1, max_value=1000)
+        self.add_integer("max_rois", value=10, min=1, max=1000)
         self.add_button("print_rois", label="Print ROIs", callback=self.print_rois)
 
         self.on_change(["corr_cutoff", "distance_cutoffs", "keep_planes", "npix_cutoff"], self.change_cluster_params)
@@ -949,35 +949,18 @@ class ClusterExplorer(Viewer):
         npix_cutoff = state["npix_cutoff"]
         self.set_clusters(corr_cutoff, distance_cutoff, keep_planes, npix_cutoff, min_distance, max_correlation)
         num_clusters = len(self.clusters)
-        self.update_integer("cluster_idx", max_value=num_clusters - 1)
+        self.update_integer("cluster_idx", max=num_clusters - 1)
         self.change_cluster(self.state)
 
     def change_cluster(self, state):
         num_rois = len(self.clusters[state["cluster_idx"]])
-        self.update_integer("roi_idx", value=0, max_value=num_rois - 1)
+        self.update_integer("roi_idx", value=0, max=num_rois - 1)
 
     def print_rois(self, state):
         cluster = self.clusters[state["cluster_idx"]]
         true_idx = self.scp.idx_rois[cluster]
         selected = true_idx[state["roi_idx"]]
         print("Current Cluster:", true_idx, "Selected ROI:", selected)
-
-    def choose_best_roi(self, cluster):
-        if self.cluster_params.best_in_cluster_method == "max_sum_significant":
-            significant = self.scp.session.get_spks("significant")[:, self.scp.idx_rois][:, cluster]
-            cluster_sum_significant = np.sum(significant, axis=0)
-            imax = np.argmax(cluster_sum_significant)
-
-            plane0_option = None
-            if 0 in self.state["keep_planes"]:
-                if self.roi_plane_idx[cluster[imax]] != 0:
-                    if any(self.roi_plane_idx[cluster] == 0):
-                        plane0_option = np.max(cluster_sum_significant[self.roi_plane_idx[cluster] == 0])
-
-            return imax, cluster_sum_significant[imax], plane0_option
-
-        else:
-            raise ValueError(f"Unknown best in cluster method: {self.cluster_params.best_in_cluster_method}")
 
     def plot(self, state: dict):
         # Get clusters (should have been update already by on_change)
@@ -996,7 +979,7 @@ class ClusterExplorer(Viewer):
         roi_neuropil = self.neuropil[:, cluster]
 
         # Choose the best ROI
-        best_in_cluster, best_sum, plane0_option = self.choose_best_roi(cluster)
+        best_in_cluster, best_sum, plane0_option = get_best_roi(self.scp, cluster)
         best_plane = self.roi_plane_idx[cluster[best_in_cluster]]
 
         # Create best ROI message

@@ -2,8 +2,10 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 import numpy as np
 from scipy.spatial.distance import squareform
+import speedystats as ss
 from ...sessions.b2session import B2Session
 from .support import pair_val_from_vec, dist_between_points, torch_corrcoef
+from ...tracking import Tracker
 
 
 @dataclass
@@ -143,6 +145,9 @@ class SameCellProcessor:
             exclude_redundant_rois=self.params.exclude_redundant_rois,
         )
         self.session.update_params(**updates)
+
+        # Load the tracker for choosing best ROIs if this session was tracked (if not will be None)
+        self.tracker = Tracker.from_session(self.session, verbose=True)
 
     @property
     def keep_planes(self) -> List[int]:
@@ -338,3 +343,177 @@ def get_connected_groups(adjacency_matrix: np.ndarray, filter_islands: bool = Tr
         components = [c for c in components if len(c) > 1]
 
     return components
+
+
+def get_best_roi(scp: SameCellProcessor, cluster: List[int]):
+    """This picks which ROI to keep in a cluster. It uses a funny algorithm explained here:
+
+    We want to pick an ROI that has:
+    1. Good SNR (defined by sum of significant activity which is a good proxy for SNR)
+    2. Is in the preferred mask type (cells or dendrites, not long dendrites or bad masks)
+    3. Is tracked in many sessions
+    4. Has a high tracking cluster silhouette score (indicating a good quality cluster)
+
+    This is challenging to implement because they might not agree!
+
+    The algorithm uses an attritional and thresholding strategy:
+    0. First, if there's a tracker available and one of the ROIs was already chosen as best in
+       another session, then we pick that ROI!
+    0.1. If there are multiple ROIs that were chosen as best in another session, then we use the
+         chosen_as_best array to be our first candidate filter (this is a weird scenario but I
+         guess it's possible so the code accounts for it).
+    1. Filter candidates that are ROIs in the good mask classes (cells or dendrites)
+    2. Filter candidates with top X% SNR (defined relative to max value of sum(significant))
+     -- the following two criteria sometimes only subselect candidates based on the above criteria --
+    3. Filter candidates with top X% tracked sessions (defined relative to max number of sessions tracked)
+    4. Filter candidates with highest silhouette score (defined relative to max value of silhouette score)
+    5. If any ROIs pass the above criteria, then we pick the one with the highest SNR.
+
+    If this filtration process doesn't find any ROIs, then we start lowering the thresholds to make it
+    easier to find an ROI.
+    This annealing algorithm works as follows:
+    1. First we reduce the silhouette score threshold until it reaches a minimum (this is the least important criterion).
+    2. Then we reduce the SNR threshold until it reaches a minimum.
+    3. Then we reduce the number of sessions tracked threshold until it reaches a first minimum (we want to keep this high!).
+    4. Next, we start subselecting based on SNR / Label clusters to look for the relatively best candidate instead the absolute
+       best in terms of number of sessions tracked and silhouette score.
+    5. Then we simply ignore the silhouette score.
+    6. Next we reduce the number of sessions tracked threshold until it reaches a second minimum.
+    7. Then, we ignore SNR entirely.
+    8. Next, we ignore the mask labels entirely.
+    9. Finally, we ignore the tracked sessions entirely so the SNR is the only remaining criterion.
+    """
+    # Define valid mask classes
+    # {0: "C", 1: "L", 2: "B", 3: "D"}
+    good_classes = [0, 3]  # Cells and dendrites
+
+    # Define SNR threshold
+    snr_threshold = 0.9  # relative to max value of sum(significant)
+    snr_threshold_dropoff = 0.1  # relative to max value of sum(significant)
+    snr_threshold_minimum = 0.4  # after this point, we extend the ignore threshold to include all ROIs
+
+    # Define silhouette score threshold
+    silhouette_threshold = 0.9
+    silhouette_threshold_dropoff = 0.1
+    silhouette_threshold_minimum = 0.3
+
+    # Define sessions_tracked_thresholds
+    num_sessions_threshold = 0.9
+    num_sessions_threshold_dropoff = 0.1
+    num_sessions_threshold_first_minimum = 0.6
+    num_sessions_threshold_second_minimum = 0.3
+
+    # Define which criteria to use
+    roi_found = False
+    using_labels = True  # consider the mask class
+    using_snr = True  # consider the SNR
+    using_tracked = True  # consider the number of sessions tracked
+    using_silhouette = True  # consider the silhouette score
+    subselect_tracking = False  # subselect ROIs based on mask label and SNR (if false, will include potential excluded candidates)
+
+    # Get mask classes of ROI type
+    mask_classes = scp.session.roicat_classifier["class_predictions"][scp.idx_rois[cluster]]
+
+    # Identify which ROIs are tracked and how much etc
+    if scp.tracker is not None:
+        index_to_tracked = scp.tracker.sessions.index(scp.session)
+        tracked_clusters = scp.tracker.labels[index_to_tracked][scp.idx_rois[cluster]]
+        cluster_silhouettes = scp.tracker.cluster_silhouettes[tracked_clusters]
+        cluster_silhouettes[tracked_clusters == -1] = -np.inf
+        index_to_clusters = [scp.tracker.get_cluster_idx(cluster_id) if cluster_id != -1 else [] for cluster_id in tracked_clusters]
+        num_sessions_tracked = np.array([np.sum(itc != -1) for itc in index_to_clusters])
+
+        # Check if any ROIs have already been identified as a best ROI in another session
+        chosen_as_best = np.zeros(len(cluster), dtype=bool)
+        for icluster, itc in enumerate(index_to_clusters):
+            if len(itc) > 0:
+                c_chosen = []
+                for isession, idx in enumerate(itc):
+                    if "mpciROIs.bestInCluster" in scp.tracker.sessions[isession].get_saved_one():
+                        c_chosen.append(scp.tracker.sessions[isession].loadone("mpciROIs.bestInCluster")[idx])
+                chosen_as_best[icluster] = np.any(c_chosen)
+
+        # If any ROIs have already been identified as a best ROI in another session, then pick that one!
+        if np.any(chosen_as_best):
+            if np.sum(chosen_as_best) == 1:
+                idx_choice = np.where(chosen_as_best)[0][0]
+                return idx_choice
+            # Else:
+            # This means multiple were chosen as best, so we need to pick one of them -- we use
+            # the chosen_as_best array to be our first candidate filter
+        else:
+            # We use chosen as best as the first candidate filter, so when none were chosen
+            # just pretend they all were to pick from any of them
+            chosen_as_best = np.ones(len(cluster), dtype=bool)
+
+        # If we have a tracker, use an average of the SNR of the ROIs in the tracked clusters
+        roi_snr = []
+        for itc in index_to_clusters:
+            if len(itc) > 0:
+                c_sum_sig = []
+                for isession, idx in enumerate(itc):
+                    c_sum_sig.append(ss.sum(scp.tracker.sessions[isession].get_spks("significant")[:, idx], axis=0))
+                roi_snr.append(np.mean(c_sum_sig))
+            else:
+                roi_snr.append(-np.inf)
+
+        roi_snr = np.array(roi_snr)
+
+    else:
+        # Don't use these criteria if there is no tracker
+        using_tracked = False
+        using_silhouette = False
+
+        # Get sum of significant activity for each ROI (good measure of SNR)
+        # We only consider SNR in this session only because it's not tracked
+        activity = scp.session.get_spks("significant")[:, scp.idx_rois[cluster]]
+        roi_snr = ss.sum(activity, axis=0)
+
+        # We need this as a first filter for when there is no tracker, see comment above for explanation
+        chosen_as_best = np.ones(len(cluster), dtype=bool)
+
+    while not roi_found:
+        idx_candidates = np.ones(len(cluster), dtype=bool) & chosen_as_best
+        if using_labels:
+            idx_candidates &= (mask_classes == good_classes[0]) | (mask_classes == good_classes[1])
+        if using_snr and np.any(idx_candidates):
+            idx_candidates &= roi_snr > (snr_threshold * np.max(roi_snr))
+        if using_tracked and np.any(idx_candidates):
+            # Get max number of sessions tracked (potentially of current candidates)
+            max_tracked = np.max(num_sessions_tracked[idx_candidates]) if subselect_tracking else np.max(num_sessions_tracked)
+
+            # Consider only ROIs that are tracked in most sessions
+            idx_candidates &= num_sessions_tracked >= (max_tracked * num_sessions_threshold)
+
+            if using_silhouette and np.any(idx_candidates):
+                max_silhouette = np.max(cluster_silhouettes[idx_candidates]) if subselect_tracking else np.max(cluster_silhouettes)
+                idx_candidates &= cluster_silhouettes >= max_silhouette
+
+        if np.any(idx_candidates):
+            # Get the best ROI
+            best_of_candidates = np.argmax(roi_snr[idx_candidates])
+            idx_choice = np.where(idx_candidates)[0][best_of_candidates]
+            roi_found = True
+        else:
+            if using_silhouette and silhouette_threshold > silhouette_threshold_minimum:
+                silhouette_threshold -= silhouette_threshold_dropoff
+            elif using_snr and snr_threshold > snr_threshold_minimum:
+                snr_threshold -= snr_threshold_dropoff
+            elif using_tracked and num_sessions_threshold > num_sessions_threshold_first_minimum:
+                num_sessions_threshold -= num_sessions_threshold_dropoff
+            elif not subselect_tracking:
+                subselect_tracking = True
+            elif using_silhouette:
+                using_silhouette = False
+            elif using_tracked and num_sessions_threshold > num_sessions_threshold_second_minimum:
+                num_sessions_threshold -= num_sessions_threshold_dropoff
+            elif using_snr:
+                using_snr = False
+            elif using_labels:
+                using_labels = False
+            elif using_tracked:
+                using_tracked = False
+            else:
+                raise ValueError("No criteria to use, this means that the code logic is broken!")
+
+    return idx_choice

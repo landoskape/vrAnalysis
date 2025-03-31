@@ -75,16 +75,37 @@ The pipeline uses these parameters to:
    - Connected through transitive relationships via other ROIs
    - Option to filter out single-ROI "islands"
 
-## Best ROI Selection
+## Best ROI Selection Algorithm
 
-For each identified cluster, the pipeline selects the best representative ROI using the "max_sum_significant" method:
+### **Selection Criteria (Ranked by Priority)**
+1. **Tracking Continuity:** If an ROI was chosen in another session, prioritize it.
+2. **Mask Class Preference:** Prefer "cells" or "dendrites" over other types.
+3. **SNR (Signal-to-Noise Ratio):** Favor ROIs with high summed significant activity.
+4. **Session Tracking Count:** Prefer ROIs tracked in many sessions.
+5. **Silhouette Score:** Choose ROIs with high tracking cluster silhouette scores.
 
-1. Calculates the sum of significant spike events for each ROI in the cluster
-2. Identifies the ROI with the highest total significant activity
-3. Special handling for plane 0:
-   - If the best ROI is not in plane 0, checks for good alternatives in plane 0
-   - If a plane 0 ROI has at least 50% of the best ROI's activity, selects the plane 0 ROI instead
-4. Marks all other ROIs in the cluster as redundant
+### **Selection Process**
+1. **First-Pass Selection**
+   - If an ROI was **previously selected** as the best in another session, pick it.
+   - Otherwise, apply the filtering criteria above in order.
+   - If multiple candidates remain, select the ROI with the **highest SNR**.
+
+2. **Adaptive Threshold Adjustment (Annealing Strategy)**
+   - If no ROI passes the criteria, progressively relax thresholds:
+     1. Lower **silhouette score** threshold.
+     2. Lower **SNR** threshold.
+     3. Lower **tracking count** threshold (first minimum).
+     4. Allow sub-selection within clusters.
+     5. Ignore **silhouette score**.
+     6. Lower **tracking count** threshold (second minimum).
+     7. Ignore **SNR**.
+     8. Ignore **mask class labels**.
+     9. Ignore **tracking count** (SNR becomes the only factor).
+
+### **Key Features**
+- **Ensures tracking consistency** across sessions.
+- **Balances multiple quality metrics** dynamically.
+- **Adaptive relaxation** prevents selection failure.
 
 ## Visualization and Analysis Tools
 

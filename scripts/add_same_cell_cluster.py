@@ -1,11 +1,15 @@
-from typing import List
 import joblib
 import numpy as np
-import speedystats as ss
 from vrAnalysis import database
 from vrAnalysis.session import vrExperiment
 from vrAnalysis2.sessions import create_b2session, B2Session
-from vrAnalysis2.analysis.same_cell_candidates import SameCellProcessor, SameCellParams, SameCellClusterParameters, get_connected_groups
+from vrAnalysis2.analysis.same_cell_candidates import (
+    SameCellProcessor,
+    SameCellParams,
+    SameCellClusterParameters,
+    get_connected_groups,
+    get_best_roi,
+)
 
 
 # File path for storing clustering data
@@ -21,7 +25,7 @@ cluster_params = SameCellClusterParameters()
 
 
 def convert_to_b2session(session: vrExperiment, spks_type: str):
-    return create_b2session(session.mouseName, session.dateString, session.sessionid, dict(spks_type=cluster_params.spks_type))
+    return create_b2session(session.mouseName, session.dateString, session.sessionid, dict(spks_type=spks_type))
 
 
 def iterate_through_sessions():
@@ -62,50 +66,44 @@ def identify_redundant_rois(session: B2Session):
 
     clusters = get_connected_groups(adj_matrix)
     redundant_rois = np.zeros(session.get_value("numROIs"), dtype=bool)
+    best_in_cluster_rois = np.zeros(session.get_value("numROIs"), dtype=bool)
     for cluster in clusters:
-        idx_best_roi = get_best_roi(scp, cluster, method=cluster_params.best_in_cluster_method)
+        idx_best_roi = get_best_roi(scp, cluster)
         for iroi, roi in enumerate(cluster):
             if iroi != idx_best_roi:
                 redundant_rois[scp.idx_rois[roi]] = True
+            else:
+                best_in_cluster_rois[scp.idx_rois[roi]] = True
 
     results = dict(
         clusters=clusters,
         redundant_rois=redundant_rois,
+        best_in_cluster_rois=best_in_cluster_rois,
     )
     return results
 
 
-def get_best_roi(scp: SameCellProcessor, cluster: List[int], method: str):
-    """This picks which ROI to keep in a cluster. It uses a funny algorithm explained here:
-
-    If method == "max_sum_significant", it picks the ROI with the highest sum of significant activity.
-    The point of this is to pick an ROI that has the highest SNR. However, because it's much easier to
-    track ROIs in plane 0 (due to the better spatial sampling in the flyback, weird), we also check if
-    there's a good enough ROI in plane 0 to keep when the best ROI isn't in plane 0. If there is (defined
-    by it having a sum of significant activity that is at least 50% of the best ROI), then we keep the
-    plane 0 ROI. Otherwise, we just pick the best ROI.
-    """
-    if method == "max_sum_significant":
-        activity = scp.session.get_spks("significant")[:, scp.idx_rois[cluster]]
-        sum_activity = ss.sum(activity, axis=0)
-        imax = np.argmax(sum_activity)
-        if scp.roi_plane_idx[cluster[imax]] != 0:
-            if any(scp.roi_plane_idx[cluster] == 0):
-                idx_to_plane0 = np.where(scp.roi_plane_idx[cluster] == 0)[0]
-                plane0_option = np.max(sum_activity[idx_to_plane0])
-                plane0_ratio = plane0_option / sum_activity[imax]
-                if plane0_ratio >= 0.5:
-                    return idx_to_plane0[np.argmax(sum_activity[idx_to_plane0])]
-        return imax
-    else:
-        raise ValueError(f"Invalid best in cluster method: {method}")
-
-
 if __name__ == "__main__":
-    for session in iterate_through_sessions():
-        print("Clustering session", session)
-        cluster_path = get_results_path(session) / "clusters.joblib"
-        results = identify_redundant_rois(session)
+    clear_previous_redundant = False
+    identify_and_save_redundant = True
+    skip_completed = True
 
-        joblib.dump(results, cluster_path)
-        session.saveone(results["redundant_rois"], "mpciROIs.redundant")
+    if clear_previous_redundant:
+        for session in iterate_through_sessions():
+            session.clear_one_data(one_file_names=["mpciROIs.redundant"], certainty=clear_previous_redundant)
+            session.clear_one_data(one_file_names=["mpciROIs.bestInCluster"], certainty=clear_previous_redundant)
+
+    if identify_and_save_redundant:
+        for session in iterate_through_sessions():
+            if skip_completed:
+                if "mpciROIs.redundant" in session.print_saved_one() and "mpciROIs.bestInCluster" in session.print_saved_one():
+                    print("Skipping session", session, "because it is already completed")
+                    continue
+
+            print("Clustering session", session)
+            cluster_path = get_results_path(session) / "clusters.joblib"
+            results = identify_redundant_rois(session)
+
+            joblib.dump(results, cluster_path)
+            session.saveone(results["redundant_rois"], "mpciROIs.redundant")
+            session.saveone(results["best_in_cluster_rois"], "mpciROIs.bestInCluster")
