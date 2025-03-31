@@ -23,6 +23,7 @@ deps_core = [
     "numpyencoder",
     "speedystats",
     "joblib",
+    "syd",
 ]
 
 # Extra code for performing registration (these things are extras specifically for oasis)
