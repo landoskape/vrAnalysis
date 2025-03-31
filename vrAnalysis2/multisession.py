@@ -40,7 +40,7 @@ class MultiSessionSpkmaps:
     but using the modern architecture with SpkmapProcessor.
 
     This class holds a collection of session processors and provides methods to:
-    1. Get spikmaps across multiple sessions
+    1. Get spkmaps across multiple sessions
     2. Get reliability values
     3. Handle tracked ROIs across sessions
     4. Get red cell indices
@@ -227,12 +227,9 @@ class MultiSessionSpkmaps:
         pop_nan: bool = True,
         idx_ses: list[int] = None,
         include_latents: bool = False,
-        use_saved_spkmap: bool = False,
-        force_reload_pcss: bool = False,
-        **kwargs,
     ) -> tuple[list[np.ndarray], dict]:
         """
-        Get spikmaps for the specified environment and sessions.
+        Get spkmaps for the specified environment and sessions.
 
         Parameters
         ----------
@@ -255,23 +252,19 @@ class MultiSessionSpkmaps:
         idx_ses : list[int] or int or None, default=None
             Indices of sessions to process
         include_latents : bool, default=False
-            Whether to include latent variables
-        use_saved_spkmap : bool, default=False
-            Whether to use saved spikmaps
-        force_reload_pcss : bool, default=False
-            Whether to force reload of data
-        **kwargs : dict
-            Additional arguments for SpkmapProcessor
+            Whether to include latent variables (not implemented yet)
 
         Returns
         -------
-        list[Maps]
-            list of Maps objects, one for each selected session
+        list[np.ndarray]
+            list of spkmaps, one for each selected session
+        extras : dict
+            Dictionary containing additional information about the spkmaps
         """
         # For updating SpkmapParams if requested
         params = {}
         if smooth is not None:
-            params["smooth_width"] = smooth
+            params["smooth_width"] = float(smooth)
         if reliability_method is not None:
             params["reliability_method"] = reliability_method
         if spks_type is not None:
@@ -283,7 +276,7 @@ class MultiSessionSpkmaps:
             # If using tracked cells, then these indices will determine which cells are included based
             # on the session filters, so we should turn _off_ use_session_filters for the remaining
             # processing steps!!!
-            idx_tracked = self.tracker.get_tracked_idx(idx_ses=idx_ses, use_session_filters=use_session_filters)
+            idx_tracked, tracking_extras = self.tracker.get_tracked_idx(idx_ses=idx_ses, use_session_filters=use_session_filters)
             _use_session_filters = False
         else:
             _use_session_filters = use_session_filters
@@ -302,7 +295,7 @@ class MultiSessionSpkmaps:
             spkmaps.append(c_env_maps.spkmap[0])
 
         # Retrieve red cell idx
-        idx_red = [self.processors[i].session.loadone("mpciROIs.redCellIdx") for i in idx_ses]
+        idx_red = [self.processors[i].session.get_red_idx() for i in idx_ses]
         if _use_session_filters:
             idx_red = [ired[iroi] for ired, iroi in zip(idx_red, idx_rois)]
 
@@ -338,12 +331,16 @@ class MultiSessionSpkmaps:
         pfloc, pfidx = named_transpose([self.get_place_field(spkmap, method="max", positions=positions) for spkmap in spkmaps])
 
         extras = dict(
+            idx_tracked=idx_tracked,
             idx_red=idx_red,
             reliability=reliability,
             pfloc=pfloc,
             pfidx=pfidx,
             positions=positions,
         )
+        if tracking_extras is not None:
+            extras.update(tracking_extras)
+
         return spkmaps, extras
 
     @handle_idx_ses
@@ -384,7 +381,7 @@ class MultiSessionSpkmaps:
         include_latents : bool, default=False
             Whether to include latent variables
         use_saved_spkmap : bool, default=False
-            Whether to use saved spikmaps
+            Whether to use saved spkmaps
         force_reload_pcss : bool, default=False
             Whether to force reload of data
         **kwargs : dict
@@ -410,7 +407,7 @@ class MultiSessionSpkmaps:
             # If using tracked cells, then these indices will determine which cells are included based
             # on the session filters, so we should turn _off_ use_session_filters for the remaining
             # processing steps!!!
-            idx_tracked = self.tracker.get_tracked_idx(idx_ses=idx_ses, use_session_filters=use_session_filters)
+            idx_tracked, extras = self.tracker.get_tracked_idx(idx_ses=idx_ses, use_session_filters=use_session_filters)
             _use_session_filters = False
         else:
             _use_session_filters = use_session_filters
@@ -420,7 +417,7 @@ class MultiSessionSpkmaps:
             idx_rois = [self.processors[i].session.idx_rois for i in idx_ses]
 
         # Retrieve red cell idx
-        idx_red = [self.processors[i].session.loadone("mpciROIs.redCellIdx") for i in idx_ses]
+        idx_red = [self.processors[i].session.get_red_idx() for i in idx_ses]
         if _use_session_filters:
             idx_red = [ired[iroi] for ired, iroi in zip(idx_red, idx_rois)]
 
