@@ -551,15 +551,18 @@ class vrExperiment(vrSession):
         assert (
             "mpciROIs.redCellIdx" in self.printSavedOne()
         ), "mpciROIs.redCellIdx is not a saved one variable, this is required for loading the red index!"
-        redidx = self.loadone("mpciROIs.redCellIdx")
-        if include_manual:
-            assert (
-                "mpciROIs.redCellManualAssignments" in self.printSavedOne()
-            ), "mpciROIs.redCellManualAssignments is not a saved one variable, this is required for loading the red index and including manual assignments!"
-            redmanual = self.loadone("mpciROIs.redCellManualAssignments")
-            redmanual_assignment = redmanual[0]
-            redmanual_active = redmanual[1]
-            redidx[redmanual_active] = redmanual_assignment[redmanual_active]
+        if "mpciROIs.redCellIdxCoherent" in self.printSavedOne():
+            redidx = self.loadone("mpciROIs.redCellIdxCoherent")
+        else:
+            redidx = self.loadone("mpciROIs.redCellIdx")
+            if include_manual:
+                assert (
+                    "mpciROIs.redCellManualAssignments" in self.printSavedOne()
+                ), "mpciROIs.redCellManualAssignments is not a saved one variable, this is required for loading the red index and including manual assignments!"
+                redmanual = self.loadone("mpciROIs.redCellManualAssignments")
+                redmanual_assignment = redmanual[0]
+                redmanual_active = redmanual[1]
+                redidx[redmanual_active] = redmanual_assignment[redmanual_active]
         in_plane_idx = self.idxToPlanes(keep_planes=keep_planes)
         return redidx[in_plane_idx]
 
