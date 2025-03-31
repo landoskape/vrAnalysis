@@ -114,3 +114,17 @@ class Timer:
 def error_print(text):
     # supporting function for printing error messages but continuing
     display(Markdown(f"<font color=red>{text}</font>"))
+
+
+def print_all_keys(ddd, level=0, ignore_keys=[]):
+    keys = ""
+    spacer = "    " * level
+    for k, v in ddd.items():
+        if k in ignore_keys:
+            continue
+        if isinstance(v, dict):
+            keys += f"{spacer}{k} : {type(v).__name__}\n"
+            keys += print_all_keys(v, level + 1, ignore_keys=ignore_keys)
+        else:
+            keys += f"{spacer}{k} : {type(v).__name__}\n"
+    return keys
