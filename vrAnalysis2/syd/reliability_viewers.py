@@ -68,7 +68,7 @@ class ReliabilityTrajectory(Viewer):
         for isession, session in enumerate(tqdm(track.sessions)):
             envs = session.environments
             idx_rois = session.idx_rois
-            idx_red_all = session.loadone("mpciROIs.redCellIdx")
+            idx_red_all = session.get_red_idx()
             idx_red = idx_red_all[idx_rois]
 
             smp = SpkmapProcessor(session)
@@ -253,7 +253,7 @@ class ReliabilitySingleSession(Viewer):
         for isession, session in enumerate(tqdm(track.sessions)):
             envs = session.environments
             idx_rois = session.idx_rois
-            idx_red_all = session.loadone("mpciROIs.redCellIdx")
+            idx_red_all = session.get_red_idx()
             idx_red = idx_red_all[idx_rois]
 
             smp = SpkmapProcessor(session)
