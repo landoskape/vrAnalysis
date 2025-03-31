@@ -1,9 +1,9 @@
-from vrAnalysis import fileManagement as fm
+from vrAnalysis2 import files
 
 
 def get_classification_dir():
     """A central directory for storing ROICaT classification data and results."""
-    roicat_classification_dir = fm.analysisPath() / "roicat_classification"
+    roicat_classification_dir = files.analysis_path() / "roicat_classification"
     if not roicat_classification_dir.exists():
         roicat_classification_dir.mkdir(parents=True)
     return roicat_classification_dir
