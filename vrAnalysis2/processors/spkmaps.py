@@ -121,6 +121,16 @@ class Maps:
         else:
             self.spkmap = np.take(self.spkmap, idx_rois, axis=0)
 
+    def filter_environments(self, environments: list[int]) -> None:
+        if self.by_environment:
+            idx_to_requested_env = [i for i, env in enumerate(self.environments) if env in environments]
+            self.occmap = [self.occmap[i] for i in idx_to_requested_env]
+            self.speedmap = [self.speedmap[i] for i in idx_to_requested_env]
+            self.spkmap = [self.spkmap[i] for i in idx_to_requested_env]
+            self.environments = [self.environments[i] for i in idx_to_requested_env]
+        else:
+            raise ValueError("Cannot filter environments when maps aren't separated by environment!")
+
     def pop_nan_positions(self) -> None:
         """Remove positions with nans from the maps"""
         if self.by_environment:
@@ -233,6 +243,10 @@ class Reliability:
 
     def filter_environments(self, idx_environments: np.ndarray) -> "Reliability":
         return Reliability(self.values[idx_environments], self.environments[idx_environments], self.method)
+
+    def filter_by_environment(self, environments: list[int]) -> "Reliability":
+        idx_to_requested_env = [i for i, env in enumerate(self.environments) if env in environments]
+        return Reliability(self.values[idx_to_requested_env], self.environments[idx_to_requested_env], self.method)
 
 
 @runtime_checkable
@@ -679,11 +693,6 @@ class SpkmapProcessor:
        the neurons... but then we'd also need an independent params saving system for them.
     4. Re: the point above, I wonder if the one.data loading system is ideal or if I should
        use a more explicit and dedicated SpkmapProcessor saving / loading system.
-
-    NOTES:
-    It would be nice to define a decorator around bound methods that would automatically
-    detect which onefiles are loaded and clear them when the method is called if the user
-    requests...
     """
 
     session: Union[SessionData, SessionToSpkmapProtocol]
@@ -725,7 +734,7 @@ class SpkmapProcessor:
         if data_type is None:
             return self.session.data_path / "spkmaps"
         else:
-            folder_name = f"{data_type}_{self.session.params.spks_type}"
+            folder_name = f"{data_type}_{self.session.spks_type}"
             return self.session.data_path / "spkmaps" / folder_name
 
     def dependent_params(self, data_type: str) -> dict:
@@ -930,6 +939,7 @@ class SpkmapProcessor:
 
         # get spiking information
         spks = self.session.spks
+        num_rois = self.session.get_value("numROIs")
 
         # Do standardization
         if self.params.standardize_spks:
@@ -940,7 +950,7 @@ class SpkmapProcessor:
         occmap = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
         counts = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
         speedmap = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
-        spkmap = np.zeros((self.session.num_trials, num_positions, spks.shape[1]), dtype=dtype)
+        spkmap = np.zeros((self.session.num_trials, num_positions, num_rois), dtype=dtype)
         extra_counts = np.zeros((self.session.num_trials, num_positions), dtype=dtype)
 
         # Get maps -- doing this independently for each map allows for more
@@ -959,6 +969,8 @@ class SpkmapProcessor:
             dist_cutoff,
             sample_duration,
             scale_by_sample_duration=False,
+            use_sample_to_value_idx=False,
+            sample_to_value_idx=idx_behave_to_frame,
         )
         get_summation_map(
             speeds,
@@ -973,6 +985,8 @@ class SpkmapProcessor:
             dist_cutoff,
             sample_duration,
             scale_by_sample_duration=True,
+            use_sample_to_value_idx=False,
+            sample_to_value_idx=idx_behave_to_frame,
         )
         get_summation_map(
             spks,
@@ -987,6 +1001,8 @@ class SpkmapProcessor:
             dist_cutoff,
             sample_duration,
             scale_by_sample_duration=True,
+            use_sample_to_value_idx=True,
+            sample_to_value_idx=idx_behave_to_frame,
         )
 
         # Figure out the valid range (outside of this range, set the maps to nan, because their values are not meaningful)
