@@ -69,7 +69,7 @@ class MultiSessionSpkmaps:
             session.update_params(**asdict(self.session_params))
         self.processors = [SpkmapProcessor(session, self.spkmap_params) for session in self.tracker.sessions]
 
-    def env_stats(self) -> dict[int, int]:
+    def env_stats(self) -> dict[int, list[int]]:
         """
         helper for getting environment stats in sessions
 
@@ -279,6 +279,8 @@ class MultiSessionSpkmaps:
             idx_tracked, tracking_extras = self.tracker.get_tracked_idx(idx_ses=idx_ses, use_session_filters=use_session_filters)
             _use_session_filters = False
         else:
+            idx_tracked = None
+            tracking_extras = None
             _use_session_filters = use_session_filters
 
         # If we need to filter the remaining variables by session filters, get them
