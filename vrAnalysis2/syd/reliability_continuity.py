@@ -1,3 +1,4 @@
+from tqdm import tqdm
 import numpy as np
 from matplotlib import pyplot as plt
 import matplotlib as mpl
@@ -7,7 +8,8 @@ from ..tracking import Tracker
 from ..helpers import vectorCorrelation
 from ..multisession import MultiSessionSpkmaps
 from ..helpers import errorPlot
-from vrAnalysis2.files import analysis_path
+from ..metrics import FractionActive
+from ..files import analysis_path
 
 
 class ReliabilityStabilitySummary(Viewer):
@@ -45,6 +47,17 @@ class ReliabilityStabilitySummary(Viewer):
 
     @classmethod
     def get_results_name(cls, state: dict) -> str:
+        """
+        This is the name of the file that will be saved to the cache directory.
+
+        State is a dictionary with the following keys:
+        - mouse: str
+        - reliability_method: str
+        - reliability_threshold: float
+        - smooth_width: int
+        - continuous: bool
+        - use_session_filters: bool
+        """
         return f"{state['mouse']}-{state['reliability_method']}-Threshold{state['reliability_threshold']}-SmoothWidth{state['smooth_width']}-Continuous{state['continuous']}-GoodROIOnly{state['use_session_filters']}-results.joblib"
 
     def get_multisession(self, mouse: str) -> MultiSessionSpkmaps:
@@ -64,8 +77,8 @@ class ReliabilityStabilitySummary(Viewer):
             idx_ses=idx_ses,
             use_session_filters=state["use_session_filters"],
             tracked=True,
-            average=True,
-            pop_nan=True,
+            average=False,
+            pop_nan=False,
             reliability_method=state["reliability_method"],
             smooth=float(state["smooth_width"]),
         )
@@ -84,8 +97,24 @@ class ReliabilityStabilitySummary(Viewer):
             raise ValueError("c_idx_ref is not 0 -- it should be for both forward and backward analyses!")
         spkmaps, extras = msm.get_spkmaps(envnum, **self.spkmap_kwargs(idx_ses_subset, state))
         reliability = np.stack(extras["reliability"])
-        spkmaps = np.stack(spkmaps)
         pflocs = np.stack(extras["pfloc"])
+        fraction_active = np.stack(
+            [
+                FractionActive.compute(
+                    spkmap,
+                    activity_axis=2,
+                    fraction_axis=1,
+                    activity_method="rms",
+                    fraction_method="participation",
+                )
+                for spkmap in spkmaps
+            ]
+        )
+        # Pop nan positions post averaging because it's faster
+        spkmaps = np.stack([np.nanmean(spkmap, axis=1) for spkmap in spkmaps])
+        idx_nan_positions = np.any(np.isnan(spkmaps), axis=(0, 1))
+        spkmaps = spkmaps[..., ~idx_nan_positions]
+
         target_rois = reliability[c_idx_ref] > state["reliability_threshold"]
         idx_red = np.any(np.stack(extras["idx_red"]), axis=0)
         num_ctl = np.sum(~idx_red & target_rois)
@@ -94,6 +123,8 @@ class ReliabilityStabilitySummary(Viewer):
         red_reliable = reliability[:, target_rois & idx_red]
         ctl_pflocs = pflocs[:, target_rois & ~idx_red]
         red_pflocs = pflocs[:, target_rois & idx_red]
+        ctl_fraction_active = fraction_active[:, target_rois & ~idx_red]
+        red_fraction_active = fraction_active[:, target_rois & idx_red]
         ctl_spkmaps = spkmaps[:, target_rois & ~idx_red]
         red_spkmaps = spkmaps[:, target_rois & idx_red]
         ctl_stability = np.full(ctl_reliable.shape, False, dtype=bool)
@@ -111,18 +142,36 @@ class ReliabilityStabilitySummary(Viewer):
         fraction_stable_red = num_stable_red / num_red
         stable_reliability_ctl = np.sum(ctl_stability * ctl_reliable, axis=1) / np.sum(ctl_stability, axis=1)
         stable_reliability_red = np.sum(red_stability * red_reliable, axis=1) / np.sum(red_stability, axis=1)
-        pfloc_changes_ctl = np.abs(ctl_pflocs - ctl_pflocs[c_idx_ref])
-        pfloc_changes_red = np.abs(red_pflocs - red_pflocs[c_idx_ref])
-        pfloc_changes_ctl = np.sum(pfloc_changes_ctl * ctl_stability, axis=1) / np.sum(ctl_stability, axis=1)
-        pfloc_changes_red = np.sum(pfloc_changes_red * red_stability, axis=1) / np.sum(red_stability, axis=1)
-        spkmap_correlations_ctl = np.full(ctl_spkmaps.shape[:2], np.nan)
-        spkmap_correlations_red = np.full(red_spkmaps.shape[:2], np.nan)
+        all_reliability_ctl = np.mean(ctl_reliable, axis=1)
+        all_reliability_red = np.mean(red_reliable, axis=1)
+        stable_fraction_active_ctl = np.sum(ctl_stability * ctl_fraction_active, axis=1) / np.sum(ctl_stability, axis=1)
+        stable_fraction_active_red = np.sum(red_stability * red_fraction_active, axis=1) / np.sum(red_stability, axis=1)
+        all_fraction_active_ctl = np.mean(ctl_fraction_active, axis=1)
+        all_fraction_active_red = np.mean(red_fraction_active, axis=1)
+        pfloc_delta_ctl = np.abs(ctl_pflocs - ctl_pflocs[c_idx_ref])
+        pfloc_delta_red = np.abs(red_pflocs - red_pflocs[c_idx_ref])
+        pfloc_changes_ctl = np.sum(pfloc_delta_ctl * ctl_stability, axis=1) / np.sum(ctl_stability, axis=1)
+        pfloc_changes_red = np.sum(pfloc_delta_red * red_stability, axis=1) / np.sum(red_stability, axis=1)
+        spkmap_corrs_ctl = np.full(ctl_spkmaps.shape[:2], np.nan)
+        spkmap_corrs_red = np.full(red_spkmaps.shape[:2], np.nan)
         for ii in range(len(idx_ses_subset)):
-            spkmap_correlations_ctl[ii] = vectorCorrelation(ctl_spkmaps[ii], ctl_spkmaps[c_idx_ref], axis=1)
-            spkmap_correlations_red[ii] = vectorCorrelation(red_spkmaps[ii], red_spkmaps[c_idx_ref], axis=1)
-        spkmap_correlations_ctl = np.sum(spkmap_correlations_ctl * ctl_stability, axis=1) / np.sum(ctl_stability, axis=1)
-        spkmap_correlations_red = np.sum(spkmap_correlations_red * red_stability, axis=1) / np.sum(red_stability, axis=1)
+            spkmap_corrs_ctl[ii] = vectorCorrelation(ctl_spkmaps[ii], ctl_spkmaps[c_idx_ref], axis=1)
+            spkmap_corrs_red[ii] = vectorCorrelation(red_spkmaps[ii], red_spkmaps[c_idx_ref], axis=1)
+        spkmap_correlations_ctl = np.sum(spkmap_corrs_ctl * ctl_stability, axis=1) / np.sum(ctl_stability, axis=1)
+        spkmap_correlations_red = np.sum(spkmap_corrs_red * red_stability, axis=1) / np.sum(red_stability, axis=1)
 
+        raw_data = dict(
+            ctl_reliable=ctl_reliable,
+            red_reliable=red_reliable,
+            ctl_fraction_active=ctl_fraction_active,
+            red_fraction_active=red_fraction_active,
+            pfloc_changes_ctl=pfloc_delta_ctl,
+            pfloc_changes_red=pfloc_delta_red,
+            spkmap_correlations_ctl=spkmap_corrs_ctl,
+            spkmap_correlations_red=spkmap_corrs_red,
+            ctl_stability=ctl_stability,
+            red_stability=red_stability,
+        )
         inputs = dict(
             num_stable_ctl=num_stable_ctl,
             num_stable_red=num_stable_red,
@@ -130,6 +179,12 @@ class ReliabilityStabilitySummary(Viewer):
             fraction_stable_red=fraction_stable_red,
             stable_reliability_ctl=stable_reliability_ctl,
             stable_reliability_red=stable_reliability_red,
+            all_reliability_ctl=all_reliability_ctl,
+            all_reliability_red=all_reliability_red,
+            stable_fraction_active_ctl=stable_fraction_active_ctl,
+            stable_fraction_active_red=stable_fraction_active_red,
+            all_fraction_active_ctl=all_fraction_active_ctl,
+            all_fraction_active_red=all_fraction_active_red,
             pfloc_changes_ctl=pfloc_changes_ctl,
             pfloc_changes_red=pfloc_changes_red,
             spkmap_correlations_ctl=spkmap_correlations_ctl,
@@ -145,7 +200,7 @@ class ReliabilityStabilitySummary(Viewer):
                 # Ignore direction --- if forward or backward we only care about the number of sessions between the two!
                 session_difference = abs(all_idx_ses.index(cidxses) - all_idx_ses.index(idx_ref))
                 outputs[ikey][session_difference - 1] = input[cidx]
-        return outputs
+        return outputs, raw_data
 
     def gather_data(self, state: dict, try_cache: bool = True):
         if try_cache:
@@ -163,7 +218,7 @@ class ReliabilityStabilitySummary(Viewer):
         continuous = state["continuous"]
 
         results = {env: {} for env in environments}
-        for envnum in environments:
+        for envnum in tqdm(environments, desc="Gathering data from each environment"):
             all_idx_ses = msm.idx_ses_with_env(envnum)
             num_sessions = len(all_idx_ses)
             if num_sessions == 1:
@@ -174,7 +229,9 @@ class ReliabilityStabilitySummary(Viewer):
             backward_results = []
             forward_combos = []
             backward_combos = []
-            for idx, idx_ref in enumerate(all_idx_ses):
+            forward_raw_data = []
+            backward_raw_data = []
+            for idx, idx_ref in enumerate(tqdm(all_idx_ses, desc="Gathering data from each reference session", leave=False)):
                 # Forward analysis
                 last_forward_compare = min(num_sessions, idx + state["max_session_diff"] + 1)
                 for idx_compare in range(idx + 1, last_forward_compare):
@@ -182,8 +239,10 @@ class ReliabilityStabilitySummary(Viewer):
                         idx_ses_subset = [all_idx_ses[i] for i in range(idx, idx_compare + 1)]
                     else:
                         idx_ses_subset = [all_idx_ses[i] for i in [idx, idx_compare]]
-                    forward_results.append(self._gather_combo_data(state, envnum, msm, all_idx_ses, idx_ses_subset, idx_ref))
+                    c_combo_data, c_combo_raw_data = self._gather_combo_data(state, envnum, msm, all_idx_ses, idx_ses_subset, idx_ref)
+                    forward_results.append(c_combo_data)
                     forward_combos.append(idx_ses_subset)
+                    forward_raw_data.append(c_combo_raw_data)
 
                 # Backward analysis
                 first_backward_compare = max(-1, idx - state["max_session_diff"] - 1)
@@ -192,17 +251,24 @@ class ReliabilityStabilitySummary(Viewer):
                         idx_ses_subset = [all_idx_ses[i] for i in range(idx, idx_compare - 1, -1)]
                     else:
                         idx_ses_subset = [all_idx_ses[i] for i in [idx, idx_compare]]
-                    backward_results.append(self._gather_combo_data(state, envnum, msm, all_idx_ses, idx_ses_subset, idx_ref))
+                    c_combo_data, c_combo_raw_data = self._gather_combo_data(state, envnum, msm, all_idx_ses, idx_ses_subset, idx_ref)
+                    backward_results.append(c_combo_data)
                     backward_combos.append(idx_ses_subset)
+                    backward_raw_data.append(c_combo_raw_data)
 
             output_keys = list(forward_results[0].keys())
             stacked_forward = {k: np.stack([d[k] for d in forward_results]) for k in output_keys}
             stacked_backward = {k: np.stack([d[k] for d in backward_results]) for k in output_keys}
+            raw_keys = list(forward_raw_data[0].keys())
+            stacked_forward_raw = {k: [d[k] for d in forward_raw_data] for k in raw_keys}
+            stacked_backward_raw = {k: [d[k] for d in backward_raw_data] for k in raw_keys}
             results[envnum] = dict(
                 forward=stacked_forward,
                 backward=stacked_backward,
                 forward_combos=forward_combos,
                 backward_combos=backward_combos,
+                forward_raw=stacked_forward_raw,
+                backward_raw=stacked_backward_raw,
             )
 
         return results
