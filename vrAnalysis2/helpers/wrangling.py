@@ -1,6 +1,7 @@
 import sys
 import inspect
 import math
+import numpy as np
 
 
 def get_confirmation(message: str = ""):
@@ -110,3 +111,31 @@ def sparse_filter_by_idx(csr, idx):
     returns a sliced csr array
     """
     return csr[idx][:, idx]
+
+
+# --------------------------------- difference handling ---------------------------------
+def get_all_pairwise_stats(data: np.ndarray, axis: int = 0, method: str = "difference"):
+    """
+    helper method for getting the difference between two keys in a dictionary
+    """
+    if data.ndim != 2:
+        raise ValueError("data must be a 2D array")
+    data = np.swapaxes(data, axis, 0)
+
+    N = data.shape[0]  # number of elements
+    S = data.shape[1]  # number of samples
+    if method == "difference":
+        stat = data[None] - data[:, None]
+    elif method == "correlation":
+        raise NotImplementedError("Correlation not implemented yet")
+    else:
+        raise ValueError(f"Invalid method: {method}")
+
+    num_comparisons = N - 1
+    pwstats = np.full((num_comparisons, S), np.nan)
+    for i in range(1, num_comparisons + 1):
+        idx0 = np.arange(0, N - i)
+        idx1 = np.arange(i, N)
+        pwstats[i - 1] = np.mean(stat[idx0, idx1], axis=0)
+
+    return pwstats
