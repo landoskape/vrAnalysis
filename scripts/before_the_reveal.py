@@ -11,6 +11,7 @@ from vrAnalysis2.database import get_database
 from vrAnalysis2.helpers import Timer, save_figure, edge2center, fractional_histogram
 from vrAnalysis2.processors.spkmaps import SpkmapProcessor
 from vrAnalysis2.tracking import Tracker
+from vrAnalysis2.metrics import FractionActive
 from vrAnalysis2.multisession import MultiSessionSpkmaps
 from vrAnalysis2.syd.reliability_continuity import ReliabilityStabilitySummary
 
@@ -33,13 +34,22 @@ def get_environments(track: Tracker) -> np.ndarray:
     return environments
 
 
-def get_reliability(track: Tracker, exclude_environments: Optional[list[int] | int] = None, reliability_method: str = "leave_one_out") -> dict:
+def get_reliability(
+    track: Tracker,
+    exclude_environments: Optional[list[int] | int] = None,
+    reliability_method: str = "leave_one_out",
+    clear_one: bool = False,
+) -> dict:
     """Get reliability data for all tracked sessions"""
     environments = list(get_environments(track))
     reliability_ctl = {env: [] for env in environments}
     reliability_red = {env: [] for env in environments}
     reliability_ctl_all = {env: [] for env in environments}
     reliability_red_all = {env: [] for env in environments}
+    fraction_active_ctl = {env: [] for env in environments}
+    fraction_active_red = {env: [] for env in environments}
+    fraction_active_ctl_all = {env: [] for env in environments}
+    fraction_active_red_all = {env: [] for env in environments}
     sessions = {env: [] for env in environments}
 
     for isession, session in enumerate(tqdm(track.sessions)):
@@ -49,15 +59,31 @@ def get_reliability(track: Tracker, exclude_environments: Optional[list[int] | i
         idx_red = idx_red_all[idx_rois]
 
         smp = SpkmapProcessor(session)
+        env_maps = smp.get_env_maps(use_session_filters=False)
         reliability_all = smp.get_reliability(use_session_filters=False, params=dict(smooth_width=5.0, reliability_method=reliability_method))
         reliability_selected = reliability_all.filter_rois(idx_rois)
 
         for ienv, env in enumerate(envs):
+            c_fraction_active = FractionActive.compute(
+                env_maps.spkmap[ienv],
+                activity_axis=2,
+                fraction_axis=1,
+                activity_method="rms",
+                fraction_method="participation",
+            )
+            c_fraction_active_selected = c_fraction_active[idx_rois]
             reliability_red_all[env].append(reliability_all.values[ienv, idx_red_all])
             reliability_ctl_all[env].append(reliability_all.values[ienv, ~idx_red_all])
             reliability_red[env].append(reliability_selected.values[ienv, idx_red])
             reliability_ctl[env].append(reliability_selected.values[ienv, ~idx_red])
+            fraction_active_red_all[env].append(c_fraction_active[idx_red_all])
+            fraction_active_ctl_all[env].append(c_fraction_active[~idx_red_all])
+            fraction_active_red[env].append(c_fraction_active_selected[idx_red])
+            fraction_active_ctl[env].append(c_fraction_active_selected[~idx_red])
             sessions[env].append(isession)
+
+        if clear_one:
+            session.clear_cache()
 
     results = dict(
         environments=environments,
@@ -65,6 +91,10 @@ def get_reliability(track: Tracker, exclude_environments: Optional[list[int] | i
         reliability_red=reliability_red,
         reliability_ctl_all=reliability_ctl_all,
         reliability_red_all=reliability_red_all,
+        fraction_active_ctl=fraction_active_ctl,
+        fraction_active_red=fraction_active_red,
+        fraction_active_ctl_all=fraction_active_ctl_all,
+        fraction_active_red_all=fraction_active_red_all,
         sessions=sessions,
     )
 
@@ -438,7 +468,7 @@ def plot_quantile_histogram(
 def plot_tracking_summary(show: bool = False, save: bool = False, save_results: bool = False):
     # Get this for it's data producing code, not to use the viewer!
     max_session_diff = 6
-    summary_viewer = ReliabilityStabilitySummary(tracked_mice)
+    summary_viewer = ReliabilityStabilitySummary(tracked_mice, use_cache=False)
     for mouse in tracked_mice:
         print(f"Working on {mouse}")
         for reliability_threshold in [0.3, 0.5, 0.7, 0.9]:
@@ -457,7 +487,7 @@ def plot_tracking_summary(show: bool = False, save: bool = False, save_results: 
                                 max_session_diff=max_session_diff,
                             )
                             figure_path_name = f"reliability-summary-{reliability_method}-Threshold{reliability_threshold}-SmoothWidth{smooth_width}-Continuous{continuous}-GoodROIOnly{use_session_filters}"
-                            results = summary_viewer.gather_data(state)
+                            results = summary_viewer.gather_data(state, try_cache=False)
                             if save_results:
                                 results_name = ReliabilityStabilitySummary.get_results_name(state)
                                 results_path = analysis_path() / "before_the_reveal_temp_data" / results_name
@@ -712,13 +742,22 @@ def reliability_quantile_summary(
     plt.close(fig)
 
 
-start_at_mouse = None
+start_at_mouse = "ATL027"
 if __name__ == "__main__":
+    """
+    The following plotting methods depend heavily on cached results in the analysis/before_the_reveal_temp_data directory!
+
+    If any changes are made to processing methods, these should be recomputed. To do so, set do_tracking_summary=True and set save_results=True.
+    Within the plot_tracking_summary method, make sure to set try_cache=False. In addition, we need use ReliabilityQuantileSummary with
+    try_cache=False, save_cache=True!
+
+    There's also a cache saving in placecell_reliability.py
+    """
     do_reliability = False
-    do_tracking_summary = False
-    do_tracking_full_summary = True
+    do_tracking_summary = True
+    do_tracking_full_summary = False
     show = False
-    save = True
+    save = False
 
     print(tracked_mice)
     if start_at_mouse:
@@ -726,41 +765,41 @@ if __name__ == "__main__":
         tracked_mice = tracked_mice[start_index:]
 
     if do_tracking_summary:
+        # Save intermediate results to cache
         save_results = True
         plot_tracking_summary(show=show, save=save, save_results=save_results)
 
-    if do_tracking_full_summary:
-        for reliability_threshold in [0.3, 0.5, 0.7, 0.9]:
-            for continuous in [True, False]:
-                for forward_backward in ["forward", "backward", "both"]:
-                    for split_environments in [True, False]:
-                        plot_tracking_full_summary(
-                            tracked_mice=tracked_mice,
-                            reliability_threshold=reliability_threshold,
-                            continuous=continuous,
-                            forward_backward=forward_backward,
-                            split_environments=split_environments,
-                            show=show,
-                            save=save,
-                        )
+    # if do_tracking_full_summary:
+    #     for reliability_threshold in [0.3, 0.5, 0.7, 0.9]:
+    #         for continuous in [True, False]:
+    #             for forward_backward in ["forward", "backward", "both"]:
+    #                 for split_environments in [True, False]:
+    #                     plot_tracking_full_summary(
+    #                         tracked_mice=tracked_mice,
+    #                         reliability_threshold=reliability_threshold,
+    #                         continuous=continuous,
+    #                         forward_backward=forward_backward,
+    #                         split_environments=split_environments,
+    #                         show=show,
+    #                         save=save,
+    #                     )
 
-    if do_reliability:
-        reliability_data = {}
-        for mouse in tracked_mice:
-            track = Tracker(mouse)
-            print(f"Working on {track}")
-            reliability = get_reliability(track)
-            reliability_data[mouse] = reliability
-            for selected in [True, False]:
-                # plot_reliability_distribution(track, reliability, selected=selected, show=show, save=save)
-                # plot_number_of_rois(track, reliability, selected=selected, show=show, save=save)
-                # for threshold in [0.5, 0.7, 0.9, 0.95]:
-                #     plot_reliability_extreme(track, reliability, threshold=threshold, selected=selected, show=show, save=save)
-                # plot_quantile_histogram(track, reliability, selected=selected, show=show, save=save)
-                # plot_reliability_histogram(track, reliability, selected=selected, show=show, save=save)
-                pass
+    # if do_reliability:
+    #     reliability_data = {}
+    #     for mouse in tracked_mice:
+    #         track = Tracker(mouse)
+    #         print(f"Working on {track}")
+    #         reliability = get_reliability(track)
+    #         reliability_data[mouse] = reliability
+    #         for selected in [True, False]:
+    #             plot_reliability_distribution(track, reliability, selected=selected, show=show, save=save)
+    #             plot_number_of_rois(track, reliability, selected=selected, show=show, save=save)
+    #             for threshold in [0.5, 0.7, 0.9, 0.95]:
+    #                 plot_reliability_extreme(track, reliability, threshold=threshold, selected=selected, show=show, save=save)
+    #             plot_quantile_histogram(track, reliability, selected=selected, show=show, save=save)
+    #             plot_reliability_histogram(track, reliability, selected=selected, show=show, save=save)
 
-        for selected in [True, False]:
-            num_bins = 9
-            quantile_focus = [-1, 0]
-            reliability_quantile_summary(reliability_data, selected=selected, num_bins=num_bins, quantile_focus=quantile_focus, show=show, save=save)
+    #     for selected in [True, False]:
+    #         num_bins = 7
+    #         quantile_focus = [-1, 0]
+    #         reliability_quantile_summary(reliability_data, selected=selected, num_bins=num_bins, quantile_focus=quantile_focus, show=show, save=save)
