@@ -1638,7 +1638,7 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         blinded_study_legend(
             ax_summary_novel,
             xpos=(self.max_sessions - 1) * 1.0,
-            ypos=ylim_max * 0.6,
+            ypos=ylim_max * 0.55,
             pilot_colors=pilot_colors,
             blinded_colors=blinded_colors,
             blinded=state["blinded"],
