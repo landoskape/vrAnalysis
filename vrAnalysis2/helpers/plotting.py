@@ -1,8 +1,11 @@
 from pathlib import Path
 from contextlib import contextmanager
+from copy import copy
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.typing import ColorType
+from typing import Literal
 
 
 @contextmanager
@@ -39,7 +42,10 @@ def short_mouse_names(mouse_names):
 def fractional_histogram(*args, **kwargs):
     """wrapper of np.histogram() with relative counts instead of total or density"""
     counts, bins = np.histogram(*args, **kwargs)
-    counts = counts / np.sum(counts)
+    if counts.sum() > 0:
+        counts = counts / counts.sum()
+    else:
+        counts = np.full_like(counts, np.nan, dtype=float)
     return counts, bins
 
 
@@ -207,3 +213,284 @@ def color_violins(parts, facecolor=None, linecolor=None):
             if partname in parts:
                 lc = parts[partname]
                 lc.set_edgecolor(linecolor)
+
+
+def format_spines(
+    ax,
+    x_pos,
+    y_pos,
+    xbounds=None,
+    ybounds=None,
+    xticks=None,
+    yticks=None,
+    xlabels=None,
+    ylabels=None,
+    spine_linewidth=1,
+    tick_length=4,
+    tick_width=1,
+    tick_fontsize=None,
+    spines_visible: list[str] = ["bottom", "left"],
+):
+    """
+    Format a matplotlib axis to have separated spines with data offset from axes.
+
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axis to format
+    x_pos : int or float, optional
+        The fractional value of the y-axis to offset the x-axis
+    y_pos : int or float, optional
+        The fractional value of the x-axis to offset the y-axis
+    xbounds : tuple, optional
+        The x-axis bounds as (min, max)
+    ybounds : tuple, optional
+        The y-axis bounds as (min, max)
+    xticks : list or array, optional
+        Custom x-axis tick positions
+    yticks : list or array, optional
+        Custom y-axis tick positions
+    xlabels : list or array, optional
+        Custom x-axis tick labels
+    ylabels : list or array, optional
+        Custom y-axis tick labels
+    spine_linewidth : int or float, optional
+        Width of the axis spines
+    tick_length : int or float, optional
+        Length of the tick marks
+    tick_width : int or float, optional
+        Width of the tick marks
+    tick_fontsize : int or float, optional
+        Font size of the tick labels
+    spines_visible : list[str], optional
+        List of spines to keep visible
+
+    Returns:
+    --------
+    ax : matplotlib.axes.Axes
+        The formatted axis
+    """
+    # Move bottom spine down and left spine left
+    x_lims = ax.get_xlim()
+    y_lims = ax.get_ylim()
+    x_range = x_lims[1] - x_lims[0]
+    y_range = y_lims[1] - y_lims[0]
+    x_pos = x_pos * x_range + x_lims[0]
+    y_pos = y_pos * y_range + y_lims[0]
+    ax.spines["bottom"].set_position(("data", y_pos))
+    ax.spines["left"].set_position(("data", x_pos))
+
+    # Set axis limits if provided
+    if xbounds is not None:
+        ax.spines["bottom"].set_bounds(xbounds[0], xbounds[1])
+
+    if ybounds is not None:
+        ax.spines["left"].set_bounds(ybounds[0], ybounds[1])
+
+    # Set custom ticks if provided
+    if xticks is not None:
+        ax.set_xticks(xticks)
+    if xlabels is not None:
+        ax.set_xticklabels(xlabels)
+
+    if yticks is not None:
+        ax.set_yticks(yticks)
+    if ylabels is not None:
+        ax.set_yticklabels(ylabels)
+
+    # Adjust tick appearance
+    ax.tick_params(
+        axis="both",
+        which="major",
+        direction="out",
+        length=tick_length,
+        width=tick_width,
+        labelsize=tick_fontsize,
+    )
+
+    # Hide spines that are not in the spines_visible list
+    for spine_name, spine in ax.spines.items():
+        if spine_name not in spines_visible:
+            spine.set_visible(False)
+        else:
+            spine.set_visible(True)
+            spine.set_linewidth(spine_linewidth)
+
+    return ax
+
+
+def blinded_study_legend(
+    ax: plt.Axes,
+    xpos: float,
+    ypos: float,
+    pilot_colors: list[ColorType] | ColorType,
+    blinded_colors: list[ColorType] | ColorType,
+    blinded: bool = True,
+    fontsize: float = 12,
+    y_offset: float = 0.05,
+    origin: Literal["upper_left", "upper_right", "lower_left", "lower_right"] = "upper_right",
+):
+    """Create a custom legend for blinded study plots with colored text.
+
+    This function creates a special legend that displays "Pilot Mice" and "Blinded Study"
+    with different colors for each character in "Blinded Study".
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes object to add the legend to
+    xpos : float
+        X-coordinate position for the legend text
+    ypos : float
+        Y-coordinate position for the legend text
+    pilot_colors : list of ColorType
+        List of two colors for "Pilot" and "Mice" text. First color is for "Pilot",
+        second color is for "Mice"
+    blinded_colors : list of ColorType
+        List of colors to cycle through for each character in "Blinded Study"
+    blinded : bool, optional
+        Whether to use the blinded color scheme or unblinded color scheme. Default True.
+        If False, will use Red for knockout and Black for control.
+    fontsize : float, optional
+        Font size for all text elements, by default 12
+    y_offset : float, optional
+        Vertical offset between text elements, by default 0.05
+    origin : Literal["upper_left", "upper_right", "lower_left", "lower_right"], optional
+        Whether to start from top left ("upper_left"), top right ("upper_right"),
+        bottom left ("lower_left"), or bottom right ("lower_right"), by default "upper_right".
+    """
+    if blinded:
+        first_word = "Pilot"
+        full_text = "Blinded Study"
+    else:
+        first_word = "Knockout"
+        full_text = "Control Mice"
+        pilot_colors = ["red", "red"]
+        blinded_colors = ["black"]
+
+    if origin.lower() == "upper_right":
+        text = ax.text(xpos, ypos, "Mice", ha="right", va="top", fontsize=fontsize, color=pilot_colors[1])
+        ax.annotate(first_word + " ", xycoords=text, xy=(0, 0), fontsize=fontsize, color=pilot_colors[0], va="bottom", ha="right")
+        for i, cstr in enumerate(full_text[::-1]):
+            ccolor = blinded_colors[i % len(blinded_colors)]
+            if i == 0:
+                text = ax.annotate(cstr, xycoords=text, xy=(1, -y_offset), fontsize=fontsize, color=ccolor, va="top", ha="right")
+            else:
+                text = ax.annotate(cstr, xycoords=text, xy=(0, 0), fontsize=fontsize, color=ccolor, va="bottom", ha="right")
+
+    elif origin.lower() == "lower_right":
+        initial_text = ax.text(xpos, ypos, full_text[-1], ha="right", va="bottom", fontsize=fontsize, color=blinded_colors[-1])
+        text = copy(initial_text)
+        for i, cstr in enumerate(full_text[:-1][::-1], start=1):
+            ccolor = blinded_colors[i % len(blinded_colors)]
+            text = ax.annotate(cstr, xycoords=text, xy=(0, 0), fontsize=fontsize, color=ccolor, va="bottom", ha="right")
+        text = ax.annotate("Mice", xycoords=initial_text, xy=(1, 1 + y_offset), fontsize=fontsize, color=pilot_colors[1], va="bottom", ha="right")
+        ax.annotate(first_word + " ", xycoords=text, xy=(0, 0), fontsize=fontsize, color=pilot_colors[0], va="bottom", ha="right")
+
+    elif origin.lower() == "upper_left":
+        text = ax.text(xpos, ypos, first_word, ha="left", va="top", fontsize=fontsize, color=pilot_colors[0])
+        ax.annotate(" Mice", xycoords=text, xy=(1, 0), fontsize=fontsize, color=pilot_colors[1], va="bottom", ha="left")
+        for i, cstr in enumerate(full_text):
+            ccolor = blinded_colors[i % len(blinded_colors)]
+            if i == 0:
+                text = ax.annotate(cstr, xycoords=text, xy=(0, -y_offset), fontsize=fontsize, color=ccolor, va="top", ha="left")
+            else:
+                text = ax.annotate(cstr, xycoords=text, xy=(1, 0), fontsize=fontsize, color=ccolor, va="bottom", ha="left")
+
+    elif origin.lower() == "lower_left":
+        initial_text = ax.text(xpos, ypos, full_text[0], ha="left", va="bottom", fontsize=fontsize, color=blinded_colors[0])
+        text = copy(initial_text)
+        for i, cstr in enumerate(full_text[1:], start=1):
+            ccolor = blinded_colors[i % len(blinded_colors)]
+            text = ax.annotate(cstr, xycoords=text, xy=(1, 0), fontsize=fontsize, color=ccolor, va="bottom", ha="left")
+        text = ax.annotate("Pilot", xycoords=initial_text, xy=(0, 1 + y_offset), fontsize=fontsize, color=pilot_colors[0], va="bottom", ha="left")
+        ax.annotate(" Mice", xycoords=text, xy=(1, 0), fontsize=fontsize, color=pilot_colors[1], va="bottom", ha="left")
+
+    else:
+        raise ValueError(f"Invalid origin: {origin}, permitted values are 'upper_left', 'upper_right', 'lower_left', 'lower_right'")
+
+
+def get_mouse_colors(
+    mouse_names: list[str],
+    blinded: bool = True,
+    asdict: bool = False,
+    mousedb=None,
+) -> tuple[list] | tuple[dict]:
+    """Generate consistent colors, line widths, and z-orders for mouse plotting.
+
+    This function assigns colors to mice in a blinded study, with special handling for pilot mice.
+    Pilot mice are assigned specific colors (black and dimgrey) while blinded mice get colors
+    from a rainbow colormap. Pilot mice also get thicker lines and higher z-order for emphasis.
+
+    Note: This could be slightly improved by using a fixed color for each mouse (based on mousedb <- tracked), but the
+    choice of mouse names is pretty consistent so should almost always give the same results.
+
+    Parameters
+    ----------
+    mouse_names : list of str
+        List of mouse identifiers to generate colors for
+    blinded : bool, optional
+        Whether this is a blinded study, by default True. Non-blinded studies
+        are not yet implemented
+    asdict : bool, optional
+        Whether to return colors, linewidths, and zorders as a dictionary, by default False.
+    mousedb : MouseDB, optional
+        The mousedb object to use for color mapping when blinded=False.
+
+    Returns
+    -------
+    colors, linewidth, zorders, either as lists or dictionaries
+        tuple[list[ColorType], list[float], list[int]]
+            A tuple containing three lists:
+            - colors: List of colors for each mouse
+            - linewidth: List of line widths (2 for pilot mice, 1 for others)
+            - zorder: List of z-orders (1 for pilot mice, 0 for others)
+        tuple[dict[str, ColorType], dict[str, float], dict[str, float]]
+            A tuple containing three dictionaries:
+            - colors: Dictionary of colors for each mouse
+            - linewidth: Dictionary of line widths (2 for pilot mice, 1 for others)
+            - zorder: Dictionary of z-orders (1 for pilot mice, 0 for others)
+
+    Notes
+    -----
+    Pilot mice (CR_Hippocannula6 and CR_Hippocannula7) are assigned fixed colors,
+    while other mice get colors from a rainbow colormap distributed evenly across
+    the spectrum.
+
+    Raises
+    ------
+    NotImplementedError
+        If blinded=False, as the unblinding has not been performed!!!!
+    """
+    if blinded:
+        pilot_mice = dict(
+            CR_Hippocannula6="black",
+            CR_Hippocannula7="dimgrey",
+        )
+        blinded_mice = [mouse for mouse in mouse_names if mouse not in pilot_mice]
+        num_blinded = len(blinded_mice)
+        cmap = mpl.colormaps["rainbow"]
+        color_options = cmap(np.linspace(0, 1, num_blinded))
+        colors_blinded = {mouse: color_options[imouse] for imouse, mouse in enumerate(blinded_mice)}
+        colors = {**pilot_mice, **colors_blinded}
+        if asdict:
+            linewidth = {mouse: 2 if mouse in pilot_mice else 1 for mouse in mouse_names}
+            zorder = {mouse: 1 if mouse in pilot_mice else 0 for mouse in mouse_names}
+        else:
+            colors = [colors[mouse] for mouse in mouse_names]
+            linewidth = [2.5 if mouse in pilot_mice else 1 for mouse in mouse_names]
+            zorder = [1 if mouse in pilot_mice else 0 for mouse in mouse_names]
+        return colors, linewidth, zorder
+    else:
+        if mousedb is None:
+            raise ValueError("mousedb must be provided when blinded=False")
+        ko = dict(zip(mousedb.get_table()["mouseName"], mousedb.get_table()["KO"]))
+        if asdict:
+            colors = {mouse: "r" if ko[mouse] else "k" for mouse in mouse_names}
+            linewidth = {mouse: 1 for mouse in mouse_names}
+            zorder = {mouse: 2 if ko[mouse] else 1 for mouse in mouse_names}
+        else:
+            colors = ["r" if ko[mouse] else "k" for mouse in mouse_names]
+            linewidth = [1 for _ in mouse_names]
+            zorder = [2 if ko[mouse] else 1 for mouse in mouse_names]
+        return colors, linewidth, zorder
