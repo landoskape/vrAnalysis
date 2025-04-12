@@ -6,13 +6,14 @@ from matplotlib import pyplot as plt
 import matplotlib as mpl
 
 from vrAnalysis import fileManagement as files
-from vrAnalysis.helpers import errorPlot, argbool, save_figure, batch_plot_context
-from photometry.loaders import get_doric_files, process_data_parallel
+from vrAnalysis.helpers import errorPlot, argbool, save_figure, batch_plot_context, beeswarm
+from photometry.loaders import get_files, process_data_parallel
 
 
-mice_list = ["ATL061", "ATL062", "ATL063", "ATL064", "ATL065", "ATL066"]
+mice_list = ["ATL061", "ATL063", "ATL064", "ATL065", "ATL066", "ATL068", "ATL069", "ATL070", "ATL071", "ATL072", "ATL073"]
+colors = ["k", "k", "k", "r", "r", "g", "g", "g", "g", "g", "g"]
 preperiod = 0.2
-postperiod = 1.0
+postperiod = 2.0
 
 
 def parse_args():
@@ -44,11 +45,11 @@ def get_figure_path(mouse_name, figure_name):
 
 
 def process_mouse_data(mouse_name, preperiod, postperiod):
-    dirs, findex, data = get_doric_files(mouse_name)
+    dirs, findex, data = get_files(mouse_name)
     print(f"Found {len(data)} files for {mouse_name}.")
 
     # Get the results from all sessions of the data files
-    results, opto_responses = process_data_parallel(data, preperiod=preperiod, postperiod=postperiod)
+    results, opto_responses = process_data_parallel(data, preperiod=preperiod, postperiod=postperiod, parallel=False)
 
     return results, opto_responses
 
@@ -171,14 +172,14 @@ def plot_single_session_data(mouse_name, session_analysis, session_idx):
     return fig
 
 
-def compare_mice_deltas(mice_list, session_analysis, deltas):
+def compare_mice_deltas(mice_list, session_analysis, deltas, colors=None):
     cmap = plt.get_cmap("tab20")
-    colors = np.array([cmap(i / len(mice_list)) for i in range(len(mice_list))])
+    colors = colors or np.array([cmap(i / len(mice_list)) for i in range(len(mice_list))])
     ttest_star_offset = 0.008
     ttest_start_delta = 0.001
 
     fig = plt.figure(figsize=(8, 4), layout="constrained")
-    ax = fig.add_subplot(1, 1, 1)
+    ax = fig.add_subplot(1, 2, 1)
     for i, mouse_name in enumerate(mice_list):
         errorPlot(np.arange(deltas[i].shape[0]), deltas[i], axis=1, ax=ax, color=colors[i], alpha=0.2, se=True, label=mouse_name)
 
@@ -201,6 +202,17 @@ def compare_mice_deltas(mice_list, session_analysis, deltas):
     ax.set_xlabel("Session #")
     ax.set_ylabel(r"$\Delta$ Fluorescence (a.u.)")
     ax.set_title("Delta Trajectory")
+
+    ax = fig.add_subplot(1, 2, 2)
+    for i, mouse_name in enumerate(mice_list):
+        c_means = np.nanmean(deltas[i], axis=1)
+        if len(c_means) <= 1:
+            continue
+        c_xx = beeswarm(c_means)
+        ax.scatter(i + c_xx / 2, c_means, color=colors[i], s=10, alpha=0.5)
+
+    ax.set_xlabel("Mouse #")
+    ax.set_ylabel(r"$\Delta$ Fluorescence (a.u.)")
 
     return fig
 
@@ -228,11 +240,11 @@ if __name__ == "__main__":
     opto_responses = []
     if args.process:
         for mouse_name in tqdm(mice_list, desc="Processing raw data for each mouse."):
-            dirs, findex, data = get_doric_files(mouse_name)
+            dirs, findex, data = get_files(mouse_name)
             print(f"Found {len(data)} files for {mouse_name}.")
 
             # Get the results from all sessions of the data files
-            output = process_data_parallel(data, preperiod=preperiod, postperiod=postperiod)
+            output = process_data_parallel(data, preperiod=preperiod, postperiod=postperiod, parallel=False)
             results.append(output[0])
             opto_responses.append(output[1])
 
@@ -272,6 +284,6 @@ if __name__ == "__main__":
             deltas = []
             for i, mouse_name in enumerate(tqdm(mice_list, desc="Gathering summary data (deltas) from each mouse")):
                 deltas.append(get_single_mouse_delta_trajectory(session_analysis[mouse_name]))
-            fig = compare_mice_deltas(mice_list, session_analysis, deltas)
+            fig = compare_mice_deltas(mice_list, session_analysis, deltas, colors=colors)
             save_figure(fig, photometry_dir() / "compare_mice_deltas")
             plt.close("all")
