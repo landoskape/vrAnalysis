@@ -115,9 +115,9 @@ def get_cycles(data, cycle_period_tolerance=0.1):
     period2_deviation = period2 / np.mean(period2)
     bad_period1 = np.abs(period1_deviation - 1) > cycle_period_tolerance
     bad_period2 = np.abs(period2_deviation - 1) > cycle_period_tolerance
-    if np.sum(np.diff(np.where(bad_period1)[0]) < 2) > 2:
+    if np.sum(np.diff(np.where(bad_period1)[0]) < 2) > 3:
         raise ValueError("Too many consecutive bad periods in channel 1")
-    if np.sum(np.diff(np.where(bad_period2)[0]) < 2) > 2:
+    if np.sum(np.diff(np.where(bad_period2)[0]) < 2) > 3:
         raise ValueError("Too many consecutive bad periods in channel 2")
 
     # Remove bad periods and filter stop / start signals
@@ -209,6 +209,8 @@ def analyze_data(
     signal_cv_tolerance=0.05,
     sampling_rate=1000,
     filter_func=None,
+    prctile_filter_size=2000,
+    include_debug_outputs=False,
 ):
     """Process a data file, return results and filtered signals."""
     # First check if the data is valid and meets criteria for processing.
@@ -240,8 +242,9 @@ def analyze_data(
     data_in2, in2_time_rs = resample_with_antialiasing(in2, cycle_timestamps, sampling_rate)
 
     # Do a 50% percentile filter over 1 second to capture the drift in baseline fluorescence
-    data_in1 = data_in1 - ndimage.percentile_filter(data_in1, 50, size=1000)
-    data_in2 = data_in2 - ndimage.percentile_filter(data_in2, 50, size=1000)
+    if prctile_filter_size is not None:
+        data_in1 = data_in1 - ndimage.percentile_filter(data_in1, 50, size=prctile_filter_size)
+        data_in2 = data_in2 - ndimage.percentile_filter(data_in2, 50, size=prctile_filter_size)
 
     if filter_func is not None:
         data_in1 = filter_func(data_in1)
@@ -251,8 +254,8 @@ def analyze_data(
         raise ValueError("Inconsistent time stamps for in1 and in2")
 
     # Get start indices and times for opto cycles
-    start3, stop3, _ = get_opto_cycles(data, min_period=1.0, cycle_period_tolerance=cycle_period_tolerance)
-    opto_start_time = data["out_time"][start3]
+    init_start3, init_stop3, _ = get_opto_cycles(data, min_period=1.0, cycle_period_tolerance=cycle_period_tolerance)
+    opto_start_time = data["out_time"][init_start3]
 
     # And also get the time of opto start / stops in the new sampling rate
     # returns index of y closest to each point in x and distance between points
@@ -292,5 +295,16 @@ def analyze_data(
         data_opto=opto_data,
         time_data=time_data - time_data[0],
     )
+
+    if include_debug_outputs:
+        results["cycle_timestamps"] = cycle_timestamps
+        results["in1"] = in1
+        results["in2"] = in2
+        results["start1"] = start1
+        results["stop1"] = stop1
+        results["start2"] = start2
+        results["stop2"] = stop2
+        results["init_start3"] = init_start3
+        results["start3"] = start3
 
     return results
