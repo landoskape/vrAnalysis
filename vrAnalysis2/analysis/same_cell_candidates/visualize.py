@@ -979,14 +979,11 @@ class ClusterExplorer(Viewer):
         roi_neuropil = self.neuropil[:, cluster]
 
         # Choose the best ROI
-        best_in_cluster, best_sum, plane0_option = get_best_roi(self.scp, cluster)
+        best_in_cluster = get_best_roi(self.scp, cluster)
         best_plane = self.roi_plane_idx[cluster[best_in_cluster]]
 
         # Create best ROI message
-        if plane0_option is not None:
-            best_message = f"Best ROI={best_in_cluster}: (Plane {best_plane}); Plane 0 ratio: {plane0_option/best_sum:.1f}"
-        else:
-            best_message = f"Best ROI={best_in_cluster}: (Plane {best_plane})"
+        best_message = f"Best ROI={best_in_cluster}: (Plane {best_plane})"
 
         # Select ROIs if there are too many
         if len(cluster) > state["max_rois"]:

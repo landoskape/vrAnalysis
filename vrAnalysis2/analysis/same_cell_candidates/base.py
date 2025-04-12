@@ -70,8 +70,6 @@ class SameCellClusterParameters:
         Minimum distance between ROI pairs in μm
     max_correlation : float | None
         Maximum correlation between ROI pairs
-    best_in_cluster_method : str
-        Method for choosing the best ROI in a cluster
     """
 
     spks_type: str = "corrected"
@@ -82,7 +80,6 @@ class SameCellClusterParameters:
     npix_cutoff: float = 0.0
     min_distance: float | None = None
     max_correlation: float | None = None
-    best_in_cluster_method: str = "max_sum_significant"
 
 
 @dataclass
