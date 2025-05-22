@@ -742,7 +742,7 @@ def reliability_quantile_summary(
     plt.close(fig)
 
 
-start_at_mouse = "ATL027"
+start_at_mouse = None
 if __name__ == "__main__":
     """
     The following plotting methods depend heavily on cached results in the analysis/before_the_reveal_temp_data directory!
