@@ -58,7 +58,7 @@ class Maps:
     def __repr__(self) -> str:
         if self.by_environment:
             num_trials = [occmap.shape[0] for occmap in self.occmap]
-            num_trials = ":".join([str(nt) for nt in num_trials])
+            num_trials = "{" + ", ".join([str(nt) for nt in num_trials]) + "}"
             num_positions = self.occmap[0].shape[1]
         else:
             num_trials = self.occmap.shape[0]
@@ -67,7 +67,7 @@ class Maps:
             num_rois = self.spkmap[0].shape[0] if self.rois_first else self.spkmap[0].shape[1]
         else:
             num_rois = self.spkmap.shape[0] if self.rois_first else self.spkmap.shape[1]
-        environments = f", environments={self.environments}" if self.by_environment else ""
+        environments = f", environments={{{', '.join([str(env) for env in self.environments])}}}" if self.by_environment else ""
         return f"Maps(num_trials={num_trials}, num_positions={num_positions}, num_rois={num_rois}{environments}, rois_first={self.rois_first})"
 
     @classmethod
@@ -672,7 +672,6 @@ def cached_processor(data_type: str, disable: bool = False):
 @dataclass
 class SpkmapProcessor:
     """Class for processing and caching spike maps from session data
-
 
     NOTES ON ENGINEERING:
     I want the variables required for processing spkmaps to be properties (@property)
