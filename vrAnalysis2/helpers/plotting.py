@@ -365,8 +365,8 @@ def blinded_study_legend(
     else:
         first_word = "Knockout"
         full_text = "Control Mice"
-        pilot_colors = ["red", "red"]
-        blinded_colors = ["black"]
+        pilot_colors = ["purple", "purple"]
+        blinded_colors = ["gray"]
 
     if origin.lower() == "upper_right":
         text = ax.text(xpos, ypos, "Mice", ha="right", va="top", fontsize=fontsize, color=pilot_colors[1])
@@ -486,11 +486,11 @@ def get_mouse_colors(
             raise ValueError("mousedb must be provided when blinded=False")
         ko = dict(zip(mousedb.get_table()["mouseName"], mousedb.get_table()["KO"]))
         if asdict:
-            colors = {mouse: "r" if ko[mouse] else "k" for mouse in mouse_names}
+            colors = {mouse: "purple" if ko[mouse] else "gray" for mouse in mouse_names}
             linewidth = {mouse: 1 for mouse in mouse_names}
             zorder = {mouse: 2 if ko[mouse] else 1 for mouse in mouse_names}
         else:
-            colors = ["r" if ko[mouse] else "k" for mouse in mouse_names]
+            colors = ["purple" if ko[mouse] else "gray" for mouse in mouse_names]
             linewidth = [1 for _ in mouse_names]
             zorder = [2 if ko[mouse] else 1 for mouse in mouse_names]
         return colors, linewidth, zorder
