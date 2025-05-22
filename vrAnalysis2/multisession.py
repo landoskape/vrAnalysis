@@ -8,7 +8,6 @@ from vrAnalysis2.sessions.b2session import B2SessionParams
 from vrAnalysis2.processors.spkmaps import SpkmapProcessor, SpkmapParams, Maps
 from vrAnalysis2.tracking import Tracker
 from vrAnalysis2.helpers import resolve_dataclass, argsort, named_transpose
-from vrAnalysis2.helpers.debug import tic, toc, Timer
 
 
 def handle_idx_ses(func):
@@ -68,6 +67,16 @@ class MultiSessionSpkmaps:
         for session in self.tracker.sessions:
             session.update_params(**asdict(self.session_params))
         self.processors = [SpkmapProcessor(session, self.spkmap_params) for session in self.tracker.sessions]
+
+    def update_session_params(self, **params):
+        new_session_params = resolve_dataclass(params, B2SessionParams)
+        for processor in self.processors:
+            processor.session.update_params(**asdict(new_session_params))
+
+    def update_spkmap_params(self, **params):
+        new_spkmap_params = resolve_dataclass(params, SpkmapParams)
+        for processor in self.processors:
+            processor.params = new_spkmap_params
 
     def env_stats(self) -> dict[int, list[int]]:
         """
