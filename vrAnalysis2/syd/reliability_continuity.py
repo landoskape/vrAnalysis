@@ -98,6 +98,7 @@ class ReliabilityStabilitySummary(Viewer):
         spkmaps, extras = msm.get_spkmaps(envnum, **self.spkmap_kwargs(idx_ses_subset, state))
         reliability = np.stack(extras["reliability"])
         pflocs = np.stack(extras["pfloc"])
+        cluster_ids = extras["cluster_ids"]
         fraction_active = np.stack(
             [
                 FractionActive.compute(
@@ -121,6 +122,8 @@ class ReliabilityStabilitySummary(Viewer):
         num_red = np.sum(idx_red & target_rois)
         ctl_reliable = reliability[:, target_rois & ~idx_red]
         red_reliable = reliability[:, target_rois & idx_red]
+        ctl_cluster_ids = cluster_ids[target_rois & ~idx_red]
+        red_cluster_ids = cluster_ids[target_rois & idx_red]
         ctl_pflocs = pflocs[:, target_rois & ~idx_red]
         red_pflocs = pflocs[:, target_rois & idx_red]
         ctl_fraction_active = fraction_active[:, target_rois & ~idx_red]
@@ -171,6 +174,8 @@ class ReliabilityStabilitySummary(Viewer):
             spkmap_correlations_red=spkmap_corrs_red,
             ctl_stability=ctl_stability,
             red_stability=red_stability,
+            ctl_cluster_ids=ctl_cluster_ids,
+            red_cluster_ids=red_cluster_ids,
         )
         inputs = dict(
             num_stable_ctl=num_stable_ctl,

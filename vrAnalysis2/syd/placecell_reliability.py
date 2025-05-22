@@ -23,6 +23,7 @@ from ..helpers import (
 )
 from ..database import get_database
 from .reliability_continuity import ReliabilityStabilitySummary
+from ..analysis.tracked_plasticity.utils import all_combos
 
 
 def figure_dir(folder: str) -> Path:
@@ -761,7 +762,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
         self.add_selection("mouse", value=self.tracked_mice[0], options=self.tracked_mice)
         self.add_integer("environment", value=1, min=0, max=3)
         self.add_integer_range("sessions", value=(0, 1), min=0, max=1)
-        self.add_integer("reference_session", value=0, min=0, max=1)
+        self.add_integer("reference_session", value=1, min=0, max=1)
         self.add_selection("reliability_threshold", value=0.5, options=[0.3, 0.5, 0.7, 0.9])
         self.add_float_range("reliability_range", value=(0.5, 1.0), min=-1.0, max=1.0)
         self.add_selection("reliability_method", value="leave_one_out", options=["leave_one_out"])
@@ -771,13 +772,14 @@ class ConsistentReliabilityFigureMaker(Viewer):
         self.add_selection("fraction_method", value="participation", options=FractionActive.fraction_methods)
         self.add_selection("spks_type", value="significant", options=["significant", "oasis"])
         self.add_boolean("use_session_filters", value=True)
-        self.add_integer("ctl_roi_idx", value=0, min=0, max=100)
-        self.add_integer("red_roi_idx", value=0, min=0, max=100)
-        self.add_float("vmax_spkmap", value=5.0, min=0.1, max=15.0)
+        self.add_integer("ctl_roi_idx", value=5, min=0, max=100)
+        self.add_integer("red_roi_idx", value=7, min=0, max=100)
+        self.add_float("vmax_spkmap", value=7.0, min=0.1, max=15.0)
         self.add_boolean("continuous", value=False)
         self.add_selection("forward_backward", value="both", options=["forward", "backward", "both"])
         self.add_boolean("group_novel", value=True)
         self.add_boolean("blinded", value=True)
+        self.add_boolean("indicate_example", value=False)
         self.add_button("save_example", label="Save Example", callback=self.save_example)
 
         # Set up callbacks
@@ -905,7 +907,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
     def _fraction_active_name(self, activity_method: str, fraction_method: str) -> str:
         return "_".join([activity_method, fraction_method])
 
-    def _make_roi_trajectory(self, spkmaps, roi_idx, dead_trials: int = 1):
+    def _make_roi_trajectory(self, spkmaps, roi_idx, dead_trials: int = 2):
         roi_activity = [s[roi_idx] for s in spkmaps]
         dead_space = [np.full((dead_trials, roi_activity[0].shape[1]), np.nan) for _ in range(len(roi_activity) - 1)]
         dead_space.append(None)
@@ -1109,8 +1111,8 @@ class ConsistentReliabilityFigureMaker(Viewer):
         colors, linewidths, zorder = get_mouse_colors(use_mice, blinded=state["blinded"], asdict=True, mousedb=self.mousedb)
 
         # Make the plots!!!
-        fig = plt.figure(figsize=(7, 9), layout="constrained")
-        main_gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.3])
+        fig = plt.figure(figsize=(12, 5.5), layout="constrained")
+        main_gs = fig.add_gridspec(1, 2, width_ratios=[1, 1])
         gs_top = main_gs[0].subgridspec(1, 3, width_ratios=[1, 1, 2])
         gs_right = gs_top[2].subgridspec(2, 1, height_ratios=[1, 1])
         gs_bottom = main_gs[1].subgridspec(2, 2)
@@ -1161,7 +1163,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
         ax_ctl_spkmap.set_xlabel("Position (cm)")
         ax_ctl_spkmap.set_ylabel("Session #")
         ax_red_spkmap.set_xlabel("Position (cm)")
-        ax_red_spkmap.set_ylabel("Session #")
+        # ax_red_spkmap.set_ylabel("Session #")
 
         ctl_violins = ax_reliability_stats.violinplot(
             list(ctl_reliability),
@@ -1286,9 +1288,10 @@ class ConsistentReliabilityFigureMaker(Viewer):
         ax_mouse_familiar.set_xlabel("$\Delta$Session")
         ax_mouse_familiar.set_ylabel("Reliability")
         ax_mouse_familiar.set_title(f"Familiar Environment")
-        y_legend_position = ax_mouse_familiar.get_ylim()[0] + 0.05 * np.diff(ax_mouse_familiar.get_ylim())
-        ax_mouse_familiar.plot([xmin, xmin + 0.8], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
-        ax_mouse_familiar.text(xmin + 0.95, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
+        if state["indicate_example"]:
+            y_legend_position = ax_mouse_familiar.get_ylim()[0] + 0.05 * np.diff(ax_mouse_familiar.get_ylim())
+            ax_mouse_familiar.plot([xmin, xmin + 0.8], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
+            ax_mouse_familiar.text(xmin + 0.95, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
         format_spines(
             ax_mouse_familiar,
             x_pos=-0.01,
@@ -1347,11 +1350,12 @@ class ConsistentReliabilityFigureMaker(Viewer):
         xmax = -min(deltas_novel_backward) if state["forward_backward"] == "backward" else max(deltas_novel_forward)
         xticks = [xmin, 0, xmax] if state["forward_backward"] == "both" else [xmin, xmax]
         ax_mouse_novel.set_xlabel("$\Delta$Session")
-        ax_mouse_novel.set_ylabel("Reliability")
+        # ax_mouse_novel.set_ylabel("Reliability")
         ax_mouse_novel.set_title(f"Novel Environment")
-        y_legend_position = ax_mouse_novel.get_ylim()[0] + 0.05 * np.diff(ax_mouse_novel.get_ylim())
-        ax_mouse_novel.plot([xmin, xmin + 0.8], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
-        ax_mouse_novel.text(xmin + 0.95, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
+        if state["indicate_example"]:
+            y_legend_position = ax_mouse_novel.get_ylim()[0] + 0.05 * np.diff(ax_mouse_novel.get_ylim())
+            ax_mouse_novel.plot([xmin, xmin + 0.8], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
+            ax_mouse_novel.text(xmin + 0.95, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
         format_spines(
             ax_mouse_novel,
             x_pos=-0.01,
@@ -1359,6 +1363,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             xbounds=(xmin, xmax),
             ybounds=ax_mouse_novel.get_ylim(),
             xticks=xticks,
+            ylabels=[],
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
@@ -1380,7 +1385,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             ax_summary_familiar.plot(
                 difference_xpos,
                 diff_familiar_ko,
-                color="r",
+                color="purple",
                 linewidth=2,
                 zorder=3,
                 marker=".",
@@ -1389,7 +1394,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             ax_summary_familiar.plot(
                 difference_xpos,
                 diff_familiar_wt,
-                color="k",
+                color="gray",
                 linewidth=2,
                 zorder=2.5,
                 marker=".",
@@ -1424,7 +1429,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             ax_summary_novel.plot(
                 difference_xpos,
                 diff_novel_ko,
-                color="r",
+                color="purple",
                 linewidth=2,
                 zorder=3,
                 marker=".",
@@ -1433,7 +1438,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             ax_summary_novel.plot(
                 difference_xpos,
                 diff_novel_wt,
-                color="k",
+                color="gray",
                 linewidth=2,
                 zorder=2.5,
                 marker=".",
@@ -1448,9 +1453,10 @@ class ConsistentReliabilityFigureMaker(Viewer):
             ybounds=ax_summary_novel.get_ylim(),
             spines_visible=["bottom", "left"],
             tick_length=4,
+            ylabels=[],
         )
         ax_summary_novel.set_xlabel("$\Delta$Session")
-        ax_summary_novel.set_ylabel(f"Reliability (red - ctl)")
+        # ax_summary_novel.set_ylabel(f"Reliability (red - ctl)")
 
         ax_summary_familiar.axvline(0, color="k", linestyle="--", linewidth=1)
         ax_summary_novel.axvline(0, color="k", linestyle="--", linewidth=1)
@@ -1493,14 +1499,14 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         self.add_selection("fraction_method", value="participation", options=FractionActive.fraction_methods)
         self.add_selection("spks_type", value="significant", options=["significant", "oasis"])
         self.add_boolean("use_session_filters", value=True)
-        self.add_integer("ctl_roi_idx", value=0, min=0, max=100)
-        self.add_integer("red_roi_idx", value=0, min=0, max=100)
-        self.add_float("vmax_spkmap", value=1.0, min=0.1, max=15.0)
+        self.add_integer("ctl_roi_idx", value=15, min=0, max=100)
+        self.add_integer("red_roi_idx", value=1, min=0, max=100)
         self.add_boolean("continuous", value=True)
         self.add_selection("forward_backward", value="both", options=["forward", "backward", "both"])
         self.add_selection("summary_type", value="pfcorr", options=["pfdelta", "pfcorr"])
         self.add_boolean("group_novel", value=True)
         self.add_boolean("blinded", value=True)
+        self.add_boolean("indicate_example", value=False)
         self.add_button("save_example", label="Save Example", callback=self.save_example)
 
         # Set up callbacks
@@ -1891,18 +1897,18 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         # Prepare some figure aesthetics
         colors, linewidths, zorder = get_mouse_colors(use_mice, blinded=state["blinded"], asdict=True, mousedb=self.mousedb)
 
-        fig = plt.figure(figsize=(7, 7), layout="constrained")
-        main_gs = fig.add_gridspec(3, 1, height_ratios=[0.75, 1, 1])
-        gs_top = main_gs[0].subgridspec(1, 3, width_ratios=[1, 1, 1.5])
-        gs_middle = main_gs[1].subgridspec(1, 2)
-        gs_bottom = main_gs[2].subgridspec(1, 2)
-        ax_ctl_placefield = fig.add_subplot(gs_top[0])
-        ax_red_placefield = fig.add_subplot(gs_top[1])
-        ax_roi_summary = fig.add_subplot(gs_top[2])
-        ax_example_familiar = fig.add_subplot(gs_middle[0])
-        ax_example_novel = fig.add_subplot(gs_middle[1])
-        ax_summary_familiar = fig.add_subplot(gs_bottom[0])
-        ax_summary_novel = fig.add_subplot(gs_bottom[1])
+        fig = plt.figure(figsize=(12, 5.5), layout="constrained")
+        main_gs = fig.add_gridspec(1, 2, width_ratios=[1, 2])
+        gs_example = main_gs[0].subgridspec(3, 1)
+        ax_ctl_placefield = fig.add_subplot(gs_example[0])
+        ax_red_placefield = fig.add_subplot(gs_example[1])
+        ax_roi_summary = fig.add_subplot(gs_example[2])
+
+        gs_summary = main_gs[1].subgridspec(2, 2)
+        ax_example_familiar = fig.add_subplot(gs_summary[0, 0])
+        ax_example_novel = fig.add_subplot(gs_summary[0, 1])
+        ax_summary_familiar = fig.add_subplot(gs_summary[1, 0])
+        ax_summary_novel = fig.add_subplot(gs_summary[1, 1])
 
         placefield_ctl_cmap = mpl.colormaps["Greys"]
         placefield_red_cmap = mpl.colormaps["Reds"]
@@ -1961,6 +1967,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             tick_length=4,
         )
 
+        example_ylim = (-0.25, 1)
         ctl_violins = ax_example_familiar.violinplot(
             ctl_data_familiar,
             positions=1 + np.arange(len(ctl_data_familiar)),
@@ -1982,13 +1989,15 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         ax_example_familiar.set_xlabel("$\Delta$Session")
         ax_example_familiar.set_ylabel(summary_ylabel)
         ax_example_familiar.set_title("Familiar Environment")
+        ax_example_familiar.set_ylim(example_ylim)
         ylim = ax_example_familiar.get_ylim()
-        if state["summary_type"] == "pfdelta":
-            y_legend_position = ylim[1] - 0.15 * (ylim[1] - ylim[0])
-        else:
-            y_legend_position = ylim[0] + 0.15 * (ylim[1] - ylim[0])
-        ax_example_familiar.plot([1, 1.4], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
-        ax_example_familiar.text(1.5, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
+        if state["indicate_example"]:
+            if state["summary_type"] == "pfdelta":
+                y_legend_position = ylim[1] - 0.15 * (ylim[1] - ylim[0])
+            else:
+                y_legend_position = ylim[0] + 0.15 * (ylim[1] - ylim[0])
+            ax_example_familiar.plot([1, 1.4], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
+            ax_example_familiar.text(1.5, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
         format_spines(
             ax_example_familiar,
             x_pos=-0.01,
@@ -2019,15 +2028,17 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         color_violins(ctl_violins, facecolor="k", linecolor="k")
         color_violins(red_violins, facecolor="r", linecolor="r")
         ax_example_novel.set_xlabel("$\Delta$Session")
-        ax_example_novel.set_ylabel(summary_ylabel)
+        # ax_example_novel.set_ylabel(summary_ylabel)
         ax_example_novel.set_title("Novel Environment")
+        ax_example_novel.set_ylim(example_ylim)
         ylim = ax_example_novel.get_ylim()
-        if state["summary_type"] == "pfdelta":
-            y_legend_position = ylim[1] - 0.15 * (ylim[1] - ylim[0])
-        else:
-            y_legend_position = ylim[0] + 0.15 * (ylim[1] - ylim[0])
-        ax_example_novel.plot([1, 1.4], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
-        ax_example_novel.text(1.5, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
+        if state["indicate_example"]:
+            if state["summary_type"] == "pfdelta":
+                y_legend_position = ylim[1] - 0.15 * (ylim[1] - ylim[0])
+            else:
+                y_legend_position = ylim[0] + 0.15 * (ylim[1] - ylim[0])
+            ax_example_novel.plot([1, 1.4], [y_legend_position, y_legend_position], color=colors[state["mouse"]], marker=".", markersize=7)
+            ax_example_novel.text(1.5, y_legend_position, state["mouse"], color=colors[state["mouse"]], ha="left", va="center")
         format_spines(
             ax_example_novel,
             x_pos=-0.01,
@@ -2035,6 +2046,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             xbounds=(1, len(ctl_data_novel)),
             ybounds=ax_example_novel.get_ylim(),
             xticks=np.arange(1, len(ctl_data_novel) + 1),
+            ylabels=[],
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
@@ -2056,7 +2068,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             ax_summary_familiar.plot(
                 range(1, differences_familiar.shape[1] + 1),
                 diff_familiar_ko,
-                color="r",
+                color="purple",
                 linewidth=2,
                 zorder=3,
                 marker=".",
@@ -2065,7 +2077,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             ax_summary_familiar.plot(
                 range(1, differences_familiar.shape[1] + 1),
                 diff_familiar_wt,
-                color="k",
+                color="gray",
                 linewidth=2,
                 zorder=2.5,
                 marker=".",
@@ -2100,7 +2112,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             ax_summary_novel.plot(
                 range(1, differences_novel.shape[1] + 1),
                 diff_novel_ko,
-                color="r",
+                color="purple",
                 linewidth=2,
                 zorder=3,
                 marker=".",
@@ -2109,7 +2121,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             ax_summary_novel.plot(
                 range(1, differences_novel.shape[1] + 1),
                 diff_novel_wt,
-                color="k",
+                color="gray",
                 linewidth=2,
                 zorder=2.5,
                 marker=".",
@@ -2120,13 +2132,14 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             ax_summary_novel,
             x_pos=-0.01,
             y_pos=-0.05,
+            ylabels=[],
             xbounds=(1, differences_novel.shape[1]),
             ybounds=ax_summary_novel.get_ylim(),
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
         ax_summary_novel.set_xlabel("$\Delta$Session")
-        ax_summary_novel.set_ylabel(f"{summary_ylabel} (red - ctl)")
+        # ax_summary_novel.set_ylabel(f"{summary_ylabel} (red - ctl)")
 
         blinded_study_legend(
             ax_summary_familiar,

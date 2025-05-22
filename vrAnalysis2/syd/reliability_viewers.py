@@ -1342,6 +1342,8 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         self.add_float_range("fraction_active_threshold", value=(0, 1), min=0, max=1)
         self.add_boolean("blinded", value=True)
         self.add_boolean("group_novel", value=True)
+        self.add_boolean("hide_quantiles", value=False)
+        self.add_boolean("hide_red", value=False)
         self.add_button("save_example", label="Save Example", callback=self.save_example)
         self.on_change("example_mouse", self.update_example_mouse)
         self.on_change("example_environment", self.update_example_environment)
@@ -1376,6 +1378,10 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
             f"FractionActiveBW{state['fraction_active_threshold'][0]}-{state['fraction_active_threshold'][1]}",
         ]
         fig_name = "_".join(name_elements)
+        if state["hide_red"]:
+            fig_name += "_hide_red"
+        if state["hide_quantiles"]:
+            fig_name += "_hide_quantiles"
         if not state["blinded"]:
             fig_name += "_unblinded"
         if not fig_dir.exists():
@@ -1464,8 +1470,10 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         # Get colorscheme for mouse data
         colors_mice, linewidth, zorder = get_mouse_colors(reliability, blinded=state["blinded"], asdict=True, mousedb=self.mousedb)
 
-        fig = plt.figure(figsize=(7, 5), layout="constrained")
-        gs = fig.add_gridspec(1, 2)
+        fontsize = 12
+
+        fig = plt.figure(figsize=(9, 5), layout="constrained")
+        gs = fig.add_gridspec(1, 2, width_ratios=(1, 1.5))
         gs_example = gs[0].subgridspec(2, 1)
         gs_summary = gs[1].subgridspec(2, 1)
         ax_ctl_example = fig.add_subplot(gs_example[0])
@@ -1479,66 +1487,66 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
             color="k",
             linewidth=1.5,
         )
-        for cq in ctl_quantiles:
-            ax_ctl_example.axvline(cq, color="k", linewidth=0.5, zorder=-1)
-        ax_ctl_example.plot(
-            relcenters,
-            red_reliability[state["example_environment"]][imouse_example, state["example_session"]],
-            color="r",
-            linewidth=1.5,
-        )
-        ax_ctl_example.fill_between(
-            relcenters,
-            ctl_reliability[state["example_environment"]][imouse_example, state["example_session"]],
-            red_reliability[state["example_environment"]][imouse_example, state["example_session"]],
-            color="r",
-            alpha=0.2,
+        if not state["hide_quantiles"]:
+            for cq in ctl_quantiles:
+                ax_ctl_example.axvline(cq, color="k", linewidth=0.5, zorder=-1)
+        if not state["hide_red"]:
+            ax_ctl_example.plot(
+                relcenters,
+                red_reliability[state["example_environment"]][imouse_example, state["example_session"]],
+                color="r",
+                linewidth=1.5,
+            )
+            ax_ctl_example.fill_between(
+                relcenters,
+                ctl_reliability[state["example_environment"]][imouse_example, state["example_session"]],
+                red_reliability[state["example_environment"]][imouse_example, state["example_session"]],
+                color="r",
+                alpha=0.2,
+            )
+        max_yval = max(
+            np.max(ctl_reliability[state["example_environment"]][imouse_example, state["example_session"]]),
+            np.max(red_reliability[state["example_environment"]][imouse_example, state["example_session"]]),
         )
 
-        ylim = ax_ctl_example.get_ylim()
-        ax_ctl_example.set_ylim(0, ylim[1])
+        ylim = (0, max_yval * 1.1)
+        ax_ctl_example.set_ylim(ylim)
         format_spines(
             ax_ctl_example,
             x_pos=-0.05,
             y_pos=-0.05,
             xbounds=(-1, 1),
             xticks=[-1, 0, 1],
-            ybounds=(0, ylim[1]),
+            ybounds=ylim,
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
-        ax_ctl_example.set_xlabel("Reliability Values")
-        ax_ctl_example.set_ylabel("Control Reliability")
+        ax_ctl_example.set_xlabel("Reliability Values", fontsize=fontsize)
+        ax_ctl_example.set_ylabel("Relative Counts", fontsize=fontsize)
 
-        ax_red_example.plot(
-            centers,
+        ax_red_example.bar(
+            range(1, len(centers) + 1),
             red_deviation[state["example_environment"]][imouse_example, state["example_session"]],
-            color="r",
+            facecolor=("r", 0.2),
+            edgecolor="r",
+            width=1,
             linewidth=1.5,
         )
-        ax_red_example.fill_between(
-            centers,
-            0,
-            red_deviation[state["example_environment"]][imouse_example, state["example_session"]],
-            color="r",
-            alpha=0.2,
-        )
-        ax_red_example.axhline(y=0, color="k", linewidth=0.5, zorder=-1)
-        ax_red_example.set_xlim(0, 1)
+        ax_red_example.axhline(y=0, color="k", linewidth=2.5, zorder=100)
+        ax_red_example.set_xlim(0.3, len(centers) + 0.7)
         ylim = ax_red_example.get_ylim()
         format_spines(
             ax_red_example,
             x_pos=-0.05,
             y_pos=-0.05,
-            xbounds=(0, 1),
-            xticks=bins,
-            xlabels=["0", *["" for _ in range(len(bins) - 2)], "1"],
+            xbounds=(1, len(centers)),
+            xticks=range(1, len(centers) + 1),
             ybounds=(ylim[0], ylim[1]),
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
-        ax_red_example.set_xlabel("Reliability Quantiles")
-        ax_red_example.set_ylabel("$\Delta$Red Reliability")
+        ax_red_example.set_xlabel("Ctl Reliability Quantiles", fontsize=fontsize)
+        ax_red_example.set_ylabel("$\Delta$Red Reliability", fontsize=fontsize)
 
         alpha = 1.0 if state["blinded"] else 0.3
         if not state["blinded"]:
@@ -1554,43 +1562,29 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
                 linewidth=linewidth[mouse],
                 zorder=zorder[mouse],
             )
-            ax_summary_familiar.plot(
-                range(self.max_sessions),
-                red_deviation_familiar[imouse][:, quantile_focus],
-                color=(colors_mice[mouse], alpha),
-                linewidth=linewidth[mouse],
-                zorder=zorder[mouse],
-            )
         if not state["blinded"]:
             ax_summary_familiar.plot(
                 range(self.max_sessions),
                 np.nanmean(red_deviation_familiar[ko_array, :, quantile_focus], axis=0),
-                color="r",
+                color="purple",
                 linewidth=2,
                 zorder=3,
             )
             ax_summary_familiar.plot(
                 range(self.max_sessions),
                 np.nanmean(red_deviation_familiar[~ko_array, :, quantile_focus], axis=0),
-                color="k",
+                color="gray",
                 linewidth=2,
-                zorder=2,
+                zorder=2.5,
             )
         ax_summary_familiar.axhline(y=0, color="k", linewidth=0.5, zorder=-1)
         ax_summary_familiar.set_xlim(-0.5, self.max_sessions - 0.5)
         ylim = ax_summary_familiar.get_ylim()
         ylim_min = min(ylim_min, ylim[0])
         ylim_max = max(ylim_max, ylim[1])
-        ax_summary_familiar.set_ylabel(f"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}")
+        ax_summary_familiar.set_ylabel(f"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}", fontsize=fontsize)
 
         for imouse, mouse in enumerate(reliability):
-            ax_summary_novel.plot(
-                range(self.max_sessions),
-                red_deviation_novel[imouse][:, quantile_focus],
-                color=(colors_mice[mouse], alpha),
-                linewidth=linewidth[mouse],
-                zorder=zorder[mouse],
-            )
             ax_summary_novel.plot(
                 range(self.max_sessions),
                 red_deviation_novel[imouse][:, quantile_focus],
@@ -1602,14 +1596,14 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
             ax_summary_novel.plot(
                 range(self.max_sessions),
                 np.nanmean(red_deviation_novel[ko_array, :, quantile_focus], axis=0),
-                color="r",
+                color="purple",
                 linewidth=2,
                 zorder=3,
             )
             ax_summary_novel.plot(
                 range(self.max_sessions),
                 np.nanmean(red_deviation_novel[~ko_array, :, quantile_focus], axis=0),
-                color="k",
+                color="gray",
                 linewidth=2,
                 zorder=2,
             )
@@ -1618,7 +1612,7 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         ylim = ax_summary_novel.get_ylim()
         ylim_min = min(ylim_min, ylim[0])
         ylim_max = max(ylim_max, ylim[1])
-        ax_summary_novel.set_ylabel(f"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}")
+        ax_summary_novel.set_ylabel(f"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}", fontsize=fontsize)
 
         ylim_min = np.ceil(ylim_min * 100) / 100
         ylim_max = np.floor(ylim_max * 100) / 100
@@ -1626,12 +1620,12 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         names = ["Familiar Environment", "Novel Environment"]
         for ienv, ax in enumerate([ax_summary_familiar, ax_summary_novel]):
             ax.set_ylim(ylim_min, ylim_max)
-            ax.text(self.max_sessions - 1, ylim_max, names[ienv], ha="right", va="top", fontsize=12, color="k")
+            ax.text(self.max_sessions - 1, ylim_max, names[ienv], ha="right", va="top", fontsize=fontsize, color="k")
 
         format_spine_kwargs = dict(x_pos=-0.05, y_pos=0, ybounds=(ylim_min, ylim_max), yticks=[ylim_min, 0, ylim_max], tick_length=4)
         format_spines(ax_summary_familiar, xticks=[], spines_visible=["left"], **format_spine_kwargs)
         format_spines(ax_summary_novel, xbounds=(0, self.max_sessions - 1), spines_visible=["left", "bottom"], **format_spine_kwargs)
-        ax_summary_novel.set_xlabel("Session #")
+        ax_summary_novel.set_xlabel("Session #", fontsize=fontsize)
 
         pilot_colors = [colors_mice[mouse] for mouse in ["CR_Hippocannula6", "CR_Hippocannula7"]]
         blinded_colors = [colors_mice[mouse] for mouse in reliability if "CR_" not in mouse]
@@ -1643,6 +1637,7 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
             blinded_colors=blinded_colors,
             blinded=state["blinded"],
             origin="lower_right",
+            fontsize=fontsize,
         )
 
         return fig
