@@ -443,9 +443,7 @@ class MultiSessionSpkmaps:
             idx_red = [ired[it] for ired, it in zip(idx_red, idx_tracked)]
             reliability = [rel[it] for rel, it in zip(reliability, idx_tracked)]
 
-        extras = dict(
-            idx_red=idx_red,
-        )
+        extras = dict(idx_red=idx_red)
         return reliability, extras
 
     def get_place_field(self, spkmap: np.ndarray, method: str = "max", positions: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:

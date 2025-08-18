@@ -9,8 +9,6 @@ import matplotlib as mpl
 from matplotlib import pyplot as plt
 
 # GUI-related modules
-import napari
-import pyqtgraph as pg
 from PyQt5 import QtGui, QtCore, QtWidgets
 from PyQt5.QtWidgets import (
     QGraphicsProxyWidget,
@@ -22,6 +20,8 @@ from PyQt5.QtWidgets import (
     QShortcut,
 )
 from PyQt5.QtGui import QKeySequence
+import napari
+import pyqtgraph as pg
 
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
 sys.path.append(mainPath)
@@ -648,12 +648,6 @@ def plot_pair_example_interactive(
     # return window
 
 
-if __name__ == "__main__":
-    args = handle_inputs()
-    example_data = prepare_pair_example_data(args.mouse_name)
-    window = plot_pair_example_figure(*example_data)
-
-
 # converting uiPlottingFunctions.scrollMatchedImages into a redSelection GUI made to be similar to the same named function in Matlab
 def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=True, preserveScale=True):
     # supporting class for storing and updating the ROI displayed in redCellViewer()
@@ -880,3 +874,9 @@ def redCellViewer(stacks, features, enableMouse=False, lockAspect=1, infLines=Tr
     # show GUI and return window for programmatic interaction
     window.show()
     return window
+
+
+if __name__ == "__main__":
+    args = handle_inputs()
+    example_data = prepare_pair_example_data(args.mouse_name)
+    window = plot_pair_example_figure(*example_data)
