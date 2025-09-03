@@ -31,6 +31,100 @@ class AttributeDict(dict):
 
 
 # ------------------------------------ data wrangling ------------------------------------
+def compare_nested_objects(reference, comparison, path="root"):
+    """
+    Deep comparison of nested dictionaries and lists with detailed error reporting.
+
+    Parameters
+    ----------
+    reference : dict or list
+        The reference object to compare against
+    comparison : dict or list
+        The object to compare with the reference
+    path : str
+        Current path in the nested structure (for error reporting)
+
+    Returns
+    -------
+    bool
+        True if objects are deeply equal, False otherwise
+    """
+    # Handle different types
+    if type(reference) != type(comparison):
+        print(f"Type mismatch at {path}: {type(reference).__name__} vs {type(comparison).__name__}")
+        return False
+
+    if isinstance(reference, dict):
+        # Check if all keys in reference exist in comparison
+        ref_keys = set(reference.keys())
+        comp_keys = set(comparison.keys())
+        if ref_keys != comp_keys:
+            missing_in_comp = ref_keys - comp_keys
+            extra_in_comp = comp_keys - ref_keys
+            if missing_in_comp:
+                print(f"Missing keys in comparison at {path}: {missing_in_comp}")
+            if extra_in_comp:
+                print(f"Extra keys in comparison at {path}: {extra_in_comp}")
+            return False
+
+        # Recursively compare each value
+        for key in reference:
+            if not compare_nested_objects(reference[key], comparison[key], f"{path}.{key}"):
+                return False
+        return True
+
+    elif isinstance(reference, list):
+        # Check if lists have same length
+        if len(reference) != len(comparison):
+            print(f"List length mismatch at {path}: {len(reference)} vs {len(comparison)}")
+            return False
+
+        # Compare each element
+        for i in range(len(reference)):
+            if not compare_nested_objects(reference[i], comparison[i], f"{path}[{i}]"):
+                return False
+        return True
+
+    elif isinstance(reference, np.ndarray):
+        # Handle numpy arrays
+        if not isinstance(comparison, np.ndarray):
+            print(f"Array type mismatch at {path}: numpy array vs {type(comparison).__name__}")
+            return False
+
+        # Check shapes first
+        if reference.shape != comparison.shape:
+            print(f"Array shape mismatch at {path}: {reference.shape} vs {comparison.shape}")
+            return False
+
+        # Handle object arrays (containing Python objects)
+        if reference.dtype == object:
+            for i in range(reference.size):
+                if not compare_nested_objects(reference.flat[i], comparison.flat[i], f"{path}[{i}]"):
+                    return False
+            return True
+
+        # Handle numerical arrays
+        try:
+            if not np.allclose(reference, comparison):
+                print(f"Array values differ at {path}: shapes {reference.shape} vs {comparison.shape}")
+                return False
+            return True
+        except Exception as e:
+            print(f"Array comparison error at {path}: {e}")
+            return False
+
+    else:
+        # For primitive types, use direct comparison
+        try:
+            if reference != comparison:
+                print(f"Value mismatch at {path}: {reference} vs {comparison}")
+                return False
+            return True
+        except Exception as e:
+            print(f"Comparison error at {path}: {e}")
+            return False
+
+
 def transpose_list(list_of_lists):
     """helper function for transposing the order of a list of lists"""
     return list(map(list, zip(*list_of_lists)))
