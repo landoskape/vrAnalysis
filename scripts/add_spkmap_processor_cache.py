@@ -5,6 +5,21 @@ from vrAnalysis2.processors.spkmaps import SpkmapProcessor, get_spkmap_params
 from vrAnalysis2.helpers import get_confirmation
 
 
+def cache_raw_maps(ises, params_type="default", force_recompute: bool = False, max_gb=1000):
+    params = get_spkmap_params(params_type, updates={"autosave": True})
+    total_gb = 0
+    progress = tqdm(ises, desc="Processing sessions...", leave=True)
+    for session in progress:
+        spkmap_processor = SpkmapProcessor(session, params=params)
+        # Use this to get the maps (which will save them if they don't exist with the current params)
+        maps = spkmap_processor.get_raw_maps(clear_one_cache=True, force_recompute=force_recompute)
+        total_gb += maps.nbytes() / 1024**3
+        progress.set_postfix(total_gb=total_gb)
+        if total_gb > max_gb:
+            print("Reached max GB, stopping.")
+            break
+
+
 def cache_processed_maps(ises, params_type="default", force_recompute: bool = False, max_gb=1000):
     params = get_spkmap_params(params_type, updates={"autosave": True})
     total_gb = 0
@@ -68,9 +83,10 @@ if __name__ == "__main__":
 
     # For computing all the relevant cache
     force_recompute = False
-    for spks_type in ["significant", "oasis", "raw"]:
+    for spks_type in ["significant", "oasis"]:
         for session in ises:
             session.update_params(spks_type=spks_type)
+        cache_raw_maps(ises, params_type="default", force_recompute=force_recompute)
         for params_type in ["default", "smoothed"]:
             cache_processed_maps(ises, params_type=params_type, force_recompute=force_recompute)
             cache_env_maps(ises, params_type=params_type, force_recompute=force_recompute)
