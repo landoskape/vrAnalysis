@@ -31,7 +31,7 @@ def figure_dir(folder: str) -> Path:
     return repo_path() / "figures" / "before_the_reveal" / folder
 
 
-temp_data_dir = analysis_path() / "before_the_reveal_temp_data"
+temp_data_dir = analysis_path() / "before_the_reveal_temp_data_new251024"
 
 
 def gather_combo_data(mice: list[str], state: dict):
@@ -557,12 +557,13 @@ class DistributionViewer(Viewer):
         self.add_integer("min_rois", value=2, min=1, max=10)
         self.add_integer("num_bins", value=7, min=3, max=15)
         self.add_integer("environment", value=0, min=0, max=2)
+        self.add_selection("spks_type", value="significant", options=["significant", "oasis"])
         self.add_integer("session_difference", value=1, min=1, max=max_session_difference)
 
         self.on_change("reliability_threshold", self.update_combo_data)
         self.update_combo_data(self.state)
 
-        self.on_change(["max_session_included", "forward_backward", "num_bins", "environment", "min_rois"], self.process_combo_data)
+        self.on_change(["max_session_included", "forward_backward", "num_bins", "environment", "min_rois", "spks_type"], self.process_combo_data)
         self.process_combo_data(self.state)
 
     def define_state(self, state: dict):
@@ -572,6 +573,7 @@ class DistributionViewer(Viewer):
             smooth_width=5,
             continuous=state["continuous"],
             use_session_filters=True,
+            spks_type=state["spks_type"],
         )
         return state
 
@@ -596,6 +598,7 @@ class DistributionViewer(Viewer):
         ctl_num_cells = [[] for _ in range(self.max_session_difference)]
         red_num_cells = [[] for _ in range(self.max_session_difference)]
 
+        mouse_lookup = dict(enumerate(self.tracked_mice))
         for imouse, mouse in enumerate(self.combo_data):
             env_in_order = self.combo_data[mouse]["env_in_order"]
             if state["environment"] >= len(env_in_order):
@@ -644,6 +647,7 @@ class DistributionViewer(Viewer):
         red_num_cells = [np.stack(nc) for i, nc in enumerate(red_num_cells) if i in valid_difference]
 
         self._processed_data = dict(
+            mouse_lookup=mouse_lookup,
             mouse_ids=mouse_ids,
             mouse_kos=mouse_kos,
             ctl_distributions=ctl_distributions,
@@ -661,6 +665,7 @@ class DistributionViewer(Viewer):
             self.update_integer("session_difference", value=1)
             return self.plot(self.state)
 
+        mouse_lookup = self._processed_data["mouse_lookup"]
         mouse_ids = self._processed_data["mouse_ids"][idx_session_difference]
         mouse_kos = self._processed_data["mouse_kos"][idx_session_difference]
         ctl_data = self._processed_data["ctl_distributions"][idx_session_difference]
@@ -756,6 +761,7 @@ class DistributionViewer(Viewer):
 class DistributionFigureMaker(DistributionViewer):
     def __init__(self, tracked_mice: list[str], max_session_difference: int = 6):
         super().__init__(tracked_mice, max_session_difference)
+        self.add_selection("highlight_mouse", value="none", options=["none"] + list(self.tracked_mice))
         self.add_button("save_figure", label="Save Figure", callback=self.save_figure)
 
     def save_figure(self, state):
@@ -766,6 +772,7 @@ class DistributionFigureMaker(DistributionViewer):
             f"environment_{state['environment']}",
             f"reliability_threshold_{state['reliability_threshold']}",
             f"continuous_{state['continuous']}",
+            f"highlight_mouse_{state['highlight_mouse']}",
         ]
         fig_name = "_".join(name_components)
         fig = self.plot(state)
@@ -781,6 +788,7 @@ class DistributionFigureMaker(DistributionViewer):
             self.update_integer("session_difference", value=1)
             return self.plot(self.state)
 
+        mouse_lookup = self._processed_data["mouse_lookup"]
         mouse_ids = self._processed_data["mouse_ids"][idx_session_difference]
         mouse_kos = self._processed_data["mouse_kos"][idx_session_difference]
         ctl_data = self._processed_data["ctl_distributions"][idx_session_difference]
@@ -848,6 +856,13 @@ class DistributionFigureMaker(DistributionViewer):
             rect = mpl.patches.Rectangle((ii - 0.49, ylim_means[0]), 0.98, ylim_means[1] - ylim_means[0], facecolor=color, alpha=0.2, zorder=-10)
             ax_combo_means.add_patch(rect)
 
+            if state["highlight_mouse"] != "none" and mouse_lookup[imouse] == state["highlight_mouse"]:
+                highlight_color = "b"
+                rect = mpl.patches.Rectangle(
+                    (ii - 0.49, ylim_means[0]), 0.98, 0.1 * (ylim_means[1] - ylim_means[0]), facecolor=highlight_color, alpha=0.2, zorder=-9
+                )
+                ax_combo_means.add_patch(rect)
+
         format_spines(
             ax_combo_means,
             x_pos=-0.01,
@@ -871,7 +886,7 @@ class DistributionFigureMaker(DistributionViewer):
         ax_combo_means.text(0, ylim_means[1] * 0.1, "knockout mice", ha="left", va="top")
         ax_combo_means.text(num_mice_ko, ylim_means[1] * 0.1, "control mice", ha="left", va="top")
 
-        ax_combo_diffs.set_xlabel("Mouse")
+        ax_combo_diffs.set_xlabel("mouse")
         ax_combo_means.set_ylabel("Correlation Coefficient")
         ax_combo_diffs.set_ylabel(r"$\Delta$ CC (red - ctl)")
 
@@ -892,7 +907,9 @@ class NumROIsInCombosViewer(Viewer):
         self.add_integer("environment", value=0, min=0, max=2)
         self.add_selection("ctl_or_red", value="red", options=["ctl", "red"])
         self.add_boolean("include_unique_clusters", value=False)
+        self.add_selection("spks_type", value="significant", options=["significant", "oasis"])
         self.add_integer("session_difference", value=1, min=1, max=self.max_session_difference)
+        self.add_selection("highlight_mouse", value="none", options=["none"] + list(self.tracked_mice))
 
         self.on_change("reliability_threshold", self.update_combo_data)
         self.on_change(["forward_backward", "environment"], self.process_combo_data)
@@ -905,6 +922,7 @@ class NumROIsInCombosViewer(Viewer):
             smooth_width=5,
             continuous=state["continuous"],
             use_session_filters=True,
+            spks_type=state["spks_type"],
         )
         return state
 
@@ -1037,6 +1055,8 @@ class NumROIsInCombosViewer(Viewer):
             ko = self.ko[mouse]
             axx = ax[0, 0] if ko else ax[1, 0]
             color = "purple" if ko else "gray"
+            if state["highlight_mouse"] != "none" and mouse == state["highlight_mouse"]:
+                color = "b"
             data = np.mean(np.stack(mouse_data[mouse]), axis=1)
             axx.plot(range(len(data)), data, color=color, marker=".", alpha=0.5)
 

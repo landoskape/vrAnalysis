@@ -27,6 +27,7 @@ class ReliabilityStabilitySummary(Viewer):
             self.add_selection("smooth_width", value=5, options=[5])
             self.add_selection("use_session_filters", value=True, options=[True])
             self.add_boolean("continuous", value=False)
+            self.add_selection("spks_type", options=["significant", "oasis"])
         else:
             self.add_selection("mouse", value=self.tracked_mice[0], options=self.tracked_mice)
             self.add_selection("environment", value=1, options=[1])
@@ -35,7 +36,8 @@ class ReliabilityStabilitySummary(Viewer):
             self.add_selection("smooth_width", value=5, options=[1, 5])
             self.add_boolean("use_session_filters", value=True)
             self.add_boolean("continuous", value=True)
-            self.add_boolean("max_session_diff", value=6)
+            self.add_selection("spks_type", options=["significant", "oasis"])
+            self.add_integer("max_session_diff", value=5, min=1, max=12)
 
         self.on_change("mouse", self.update_mouse)
         self.update_mouse(self.state)
@@ -58,7 +60,7 @@ class ReliabilityStabilitySummary(Viewer):
         - continuous: bool
         - use_session_filters: bool
         """
-        return f"{state['mouse']}-{state['reliability_method']}-Threshold{state['reliability_threshold']}-SmoothWidth{state['smooth_width']}-Continuous{state['continuous']}-GoodROIOnly{state['use_session_filters']}-results.joblib"
+        return f"{state['mouse']}-{state['reliability_method']}-Threshold{state['reliability_threshold']}-SmoothWidth{state['smooth_width']}-Continuous{state['continuous']}-GoodROIOnly{state['use_session_filters']}-{state['spks_type']}-results.joblib"
 
     def get_multisession(self, mouse: str) -> MultiSessionSpkmaps:
         if self.multisessions[mouse] is None:
@@ -79,6 +81,7 @@ class ReliabilityStabilitySummary(Viewer):
             tracked=True,
             average=False,
             pop_nan=False,
+            spks_type=state["spks_type"],
             reliability_method=state["reliability_method"],
             smooth=float(state["smooth_width"]),
         )
@@ -210,7 +213,7 @@ class ReliabilityStabilitySummary(Viewer):
     def gather_data(self, state: dict, try_cache: bool = True):
         if try_cache:
             results_name = self.get_results_name(state)
-            results_path = analysis_path() / "before_the_reveal_temp_data" / results_name
+            results_path = analysis_path() / "before_the_reveal_temp_data_new251024" / results_name
             if results_path.exists():
                 return joblib.load(results_path)
 
@@ -287,6 +290,7 @@ class ReliabilityStabilitySummary(Viewer):
         smooth_width: int = 5,
         use_session_filters: bool = True,
         continuous: bool = True,
+        spks_type: str = "oasis",
         max_session_diff: int = 6,
     ):
         """For use from independent of the viewer method to create a state for plotting!"""
@@ -298,6 +302,7 @@ class ReliabilityStabilitySummary(Viewer):
             smooth_width=smooth_width,
             use_session_filters=use_session_filters,
             continuous=continuous,
+            spks_type=spks_type,
             max_session_diff=max_session_diff,
         )
         return state

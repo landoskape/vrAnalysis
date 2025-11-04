@@ -1507,6 +1507,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         self.add_boolean("group_novel", value=True)
         self.add_boolean("blinded", value=True)
         self.add_boolean("indicate_example", value=False)
+        self.add_selection("highlight_mouse", value="none", options=["none"] + list(self.tracked_mice))
         self.add_button("save_example", label="Save Example", callback=self.save_example)
 
         # Set up callbacks
@@ -1727,6 +1728,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
                 smooth_width=int(state["smooth_width"]),
                 use_session_filters=state["use_session_filters"],
                 continuous=state["continuous"],
+                spks_type=state["spks_type"],
                 max_session_diff=6,
             )
             results[mouse] = self.summary_viewer.gather_data(results_state, try_cache=True)
@@ -1896,6 +1898,10 @@ class ChangingPlaceFieldFigureMaker(Viewer):
 
         # Prepare some figure aesthetics
         colors, linewidths, zorder = get_mouse_colors(use_mice, blinded=state["blinded"], asdict=True, mousedb=self.mousedb)
+        if state["highlight_mouse"] != "none" and state["highlight_mouse"] in use_mice:
+            colors[state["highlight_mouse"]] = "b"
+            linewidths[state["highlight_mouse"]] = 3
+            zorder[state["highlight_mouse"]] = 4
 
         fig = plt.figure(figsize=(12, 5.5), layout="constrained")
         main_gs = fig.add_gridspec(1, 2, width_ratios=[1, 2])
