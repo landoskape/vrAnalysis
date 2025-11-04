@@ -11,7 +11,9 @@ import numba as nb
 import speedystats as ss
 from .. import helpers
 from ..sessions.base import SessionData
-from .support import median_zscore, get_gauss_kernel, convolve_toeplitz, get_summation_map, correct_map, replace_missing_data
+from ..sessions.b2session import B2Session
+from .support import median_zscore, get_gauss_kernel, convolve_toeplitz
+from .support import get_summation_map, correct_map, replace_missing_data
 
 
 @dataclass
@@ -24,6 +26,7 @@ class Maps:
     by_environment: bool
     rois_first: bool
     environments: list[int] | None = None
+    distcenters: np.ndarray | None = None
     _averaged: bool = field(default=False, init=False)
 
     def __post_init__(self):
@@ -56,13 +59,21 @@ class Maps:
                 raise ValueError("All environments must have the same number of ROIs")
 
     def __repr__(self) -> str:
+        # Get number of positions
         if self.by_environment:
-            num_trials = [occmap.shape[0] for occmap in self.occmap]
-            num_trials = "{" + ", ".join([str(nt) for nt in num_trials]) + "}"
-            num_positions = self.occmap[0].shape[1]
+            num_positions = self.occmap[0].shape[-1]
         else:
-            num_trials = self.occmap.shape[0]
-            num_positions = self.occmap.shape[1]
+            num_positions = self.occmap.shape[-1]
+        # Get number of trials
+        if self._averaged:
+            num_trials = "averaged"
+        else:
+            if self.by_environment:
+                num_trials = [occmap.shape[0] for occmap in self.occmap]
+                num_trials = "{" + ", ".join([str(nt) for nt in num_trials]) + "}"
+            else:
+                num_trials = self.occmap.shape[0]
+        # Get number of ROIs
         if self.by_environment:
             num_rois = self.spkmap[0].shape[0] if self.rois_first else self.spkmap[0].shape[1]
         else:
@@ -71,22 +82,26 @@ class Maps:
         return f"Maps(num_trials={num_trials}, num_positions={num_positions}, num_rois={num_rois}{environments}, rois_first={self.rois_first})"
 
     @classmethod
-    def create_raw_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray) -> "Maps":
-        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, by_environment=False, rois_first=False)
+    def create_raw_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray, distcenters: np.ndarray = None) -> "Maps":
+        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, distcenters=distcenters, by_environment=False, rois_first=False)
 
     @classmethod
-    def create_processed_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray) -> "Maps":
-        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, by_environment=False, rois_first=True)
+    def create_processed_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray, distcenters: np.ndarray = None) -> "Maps":
+        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, distcenters=distcenters, by_environment=False, rois_first=True)
 
     @classmethod
     def create_environment_maps(
-        cls,
-        occmap: list[np.ndarray],
-        speedmap: list[np.ndarray],
-        spkmap: list[np.ndarray],
-        environments: list[int],
+        cls, occmap: list[np.ndarray], speedmap: list[np.ndarray], spkmap: list[np.ndarray], environments: list[int], distcenters: np.ndarray = None
     ) -> "Maps":
-        return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, environments=environments, by_environment=True, rois_first=True)
+        return cls(
+            occmap=occmap,
+            speedmap=speedmap,
+            spkmap=spkmap,
+            distcenters=distcenters,
+            environments=environments,
+            by_environment=True,
+            rois_first=True,
+        )
 
     @classmethod
     def map_types(self) -> List[str]:
@@ -107,6 +122,8 @@ class Maps:
             return -1
 
     def filter_positions(self, idx_positions: np.ndarray) -> None:
+        if self.distcenters is not None:
+            self.distcenters = self.distcenters[idx_positions]
         for mapname in self.map_types():
             axis = self._get_position_axis(mapname)
             if self.by_environment:
@@ -119,7 +136,7 @@ class Maps:
         if self.by_environment:
             self.spkmap = [np.take(x, idx_rois, axis=axis) for x in self.spkmap]
         else:
-            self.spkmap = np.take(self.spkmap, idx_rois, axis=0)
+            self.spkmap = np.take(self.spkmap, idx_rois, axis=axis)
 
     def filter_environments(self, environments: list[int]) -> None:
         if self.by_environment:
@@ -158,17 +175,25 @@ class Maps:
 
         for mapname in self.map_types():
             if self.by_environment:
-                self[mapname] = [map[idx] for map, idx in zip(self[mapname], idxnan)]
+                for ienv, inanenv in enumerate(idxnan):
+                    self[mapname][ienv][inanenv] = 0
             else:
                 self[mapname][idxnan] = 0
 
         for mapname in self.map_types():
             # Since we moved ROIs to the last axis position will be axis=1 for all map types
-            self[mapname] = convolve_toeplitz(self[mapname], kernel, axis=1)
+            if self.by_environment:
+                self[mapname] = [convolve_toeplitz(map, kernel, axis=1) for map in self[mapname]]
+            else:
+                self[mapname] = convolve_toeplitz(self[mapname], kernel, axis=1)
 
         # Put nans back in place
         for mapname in self.map_types():
-            self[mapname][idxnan] = np.nan
+            if self.by_environment:
+                for ienv, inanenv in enumerate(idxnan):
+                    self[mapname][ienv][inanenv] = np.nan
+            else:
+                self[mapname][idxnan] = np.nan
 
         # Move the rois axis back to the first axis
         if self.rois_first:
@@ -520,7 +545,7 @@ def get_spkmap_params(param_type: str, updates: Optional[dict] = None) -> Spkmap
 def manage_one_cache(func):
     """Decorator to manage the onefile cache for the SpkmapProcessor
 
-    Used on bound methods of SpkmapProcessor. When no_cache is True, this
+    Used on bound methods of SpkmapProcessor. When clear_one_cache is True, this
     decorator will detect which onefiles have been cached by the decorated
     method and clear them from the cache after running. This is useful for
     large batch processing where memory might be a concern.
@@ -653,6 +678,12 @@ def cached_processor(data_type: str, disable: bool = False):
         return result
 
     def decorator(process_method):
+        """
+        Reminder to myself: The process_method is the method that is decorated!
+        It is opaque like this because we need to pass arguments to the decorator (data_type & disable).
+        So process_method will be "get_raw_maps" or whatever else below.
+        """
+
         @wraps(process_method)
         def wrapper(self: "SpkmapProcessor", *args, **kwargs):
             if data_type == "raw_maps" or data_type == "processed_maps":
@@ -694,7 +725,7 @@ class SpkmapProcessor:
        use a more explicit and dedicated SpkmapProcessor saving / loading system.
     """
 
-    session: Union[SessionData, SessionToSpkmapProtocol]
+    session: Union[SessionData, B2Session, SessionToSpkmapProtocol]
     params: SpkmapParams = field(default_factory=SpkmapParams, repr=False)
     data_cache: dict = field(default_factory=dict, repr=False, init=False)
 
@@ -727,6 +758,140 @@ class SpkmapProcessor:
             ]
         # Otherwise just return all params
         return list(self.params.__dict__.keys())
+
+    def show_cache(self, data_type: Optional[str] = None) -> str:
+        """Helper function that scrapes the cache directory and shows cached files
+
+        Parameters
+        ----------
+        data_type: Optional[str] = None
+            Indicate a data type to filter which parts of the cache to show
+
+        Returns
+        -------
+        str
+            Formatted string showing cache information including data_type, size, parameters, and date
+        """
+        import os
+        from datetime import datetime
+
+        # Get the base cache directory
+        base_cache_dir = self.cache_directory()
+
+        if not base_cache_dir.exists():
+            return f"No cache directory found at: {base_cache_dir}"
+
+        # Collect information about all cache files
+        cache_info = []
+
+        # Define the data types to check
+        if data_type is not None:
+            data_types_to_check = [data_type]
+        else:
+            data_types_to_check = ["raw_maps", "processed_maps", "env_maps", "reliability"]
+
+        for dt in data_types_to_check:
+            cache_dir = self.cache_directory(dt)
+            if not cache_dir.exists():
+                continue
+
+            # Find all parameter files (they define what caches exist)
+            param_files = list(cache_dir.glob("params_*.npz"))
+
+            for param_file in param_files:
+                # Extract the hash from the filename
+                params_hash = param_file.stem.replace("params_", "")
+
+                # Load the parameters
+                try:
+                    cached_params = dict(np.load(param_file))
+                    param_str = ", ".join([f"{k}={v}" for k, v in cached_params.items()])
+                except Exception as e:
+                    param_str = f"Error loading params: {e}"
+
+                # Get file modification time
+                mod_time = datetime.fromtimestamp(param_file.stat().st_mtime)
+                date_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                # Calculate total size of all related cache files
+                total_size = param_file.stat().st_size
+
+                if dt in ["raw_maps", "processed_maps"]:
+                    # For maps, look for data files for each map type
+                    for mapname in ["occmap", "speedmap", "spkmap"]:
+                        data_file = cache_dir / f"data_{mapname}_{params_hash}.npy"
+                        if data_file.exists():
+                            total_size += data_file.stat().st_size
+
+                elif dt == "env_maps":
+                    # For env_maps, look for environment file and individual environment data files
+                    env_file = cache_dir / f"data_environments_{params_hash}.npy"
+                    if env_file.exists():
+                        total_size += env_file.stat().st_size
+                        # Load environments to find all data files
+                        try:
+                            environments = np.load(env_file)
+                            for env in environments:
+                                for mapname in ["occmap", "speedmap", "spkmap"]:
+                                    data_file = cache_dir / f"data_{mapname}_{env}_{params_hash}.npy"
+                                    if data_file.exists():
+                                        total_size += data_file.stat().st_size
+                        except Exception:
+                            pass  # Continue even if we can't load environments
+
+                elif dt == "reliability":
+                    # For reliability, look for environments and reliability data files
+                    env_file = cache_dir / f"data_environments_{params_hash}.npy"
+                    rel_file = cache_dir / f"data_reliability_{params_hash}.npy"
+                    if env_file.exists():
+                        total_size += env_file.stat().st_size
+                    if rel_file.exists():
+                        total_size += rel_file.stat().st_size
+
+                # Convert size to human readable format
+                size_str = self._format_file_size(total_size)
+
+                cache_info.append(
+                    {
+                        "data_type": dt,
+                        "size": size_str,
+                        "parameters": param_str,
+                        "date": date_str,
+                        "hash": params_hash[:8],  # Show first 8 chars of hash
+                    }
+                )
+
+        if not cache_info:
+            return "No cache files found."
+
+        # Format the output as a table
+        output_lines = []
+        output_lines.append("Cache Files Summary")
+        output_lines.append("=" * 80)
+        output_lines.append(f"{'Data Type':<15} {'Size':<10} {'Date':<20} {'Hash':<10} {'Parameters'}")
+        output_lines.append("-" * 80)
+
+        for info in cache_info:
+            output_lines.append(f"{info['data_type']:<15} {info['size']:<10} {info['date']:<20} " f"{info['hash']:<10} {info['parameters']}")
+
+        output_lines.append("-" * 80)
+        output_lines.append(f"Total cache entries: {len(cache_info)}")
+
+        result = "\n".join(output_lines)
+        print(result)
+
+    def _format_file_size(self, size_bytes: int) -> str:
+        """Convert bytes to human readable format"""
+        if size_bytes == 0:
+            return "0 B"
+
+        size_names = ["B", "KB", "MB", "GB", "TB"]
+        import math
+
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 2)
+        return f"{s} {size_names[i]}"
 
     def cache_directory(self, data_type: Optional[str] = None) -> Path:
         """Get the cache directory for a given data type and spks_type"""
@@ -892,7 +1057,7 @@ class SpkmapProcessor:
 
     @with_temp_params
     @manage_one_cache
-    @cached_processor("raw_maps", disable=True)  # It's probably better to only cache processed maps
+    @cached_processor("raw_maps", disable=False)
     def get_raw_maps(
         self,
         force_recompute: bool = False,
@@ -1023,7 +1188,7 @@ class SpkmapProcessor:
 
     @with_temp_params
     @manage_one_cache
-    @cached_processor("processed_maps")
+    @cached_processor("processed_maps", disable=False)
     def get_processed_maps(
         self,
         force_recompute: bool = False,
@@ -1140,24 +1305,194 @@ class SpkmapProcessor:
             method=self.params.reliability_method,
         )
 
+    # ------------------- convert between imaging and behavioral time -------------------
+    @with_temp_params
+    @manage_one_cache
+    def get_frame_behavior(self, clear_one_cache: bool = True, params: Union[SpkmapParams, Dict[str, Any], None] = None):
+        """
+        get position and environment data for each frame in imaging data
+        nan if no position data is available for that frame (e.g. if the closest
+        behavioral sample is further away in time than the sampling period)
+        """
+        timestamps = self.session.loadone("positionTracking.times")
+        position = self.session.loadone("positionTracking.position")
+        idx_behave_to_frame = self.session.loadone("positionTracking.mpci")
+        trial_start_index = self.session.loadone("trials.positionTracking")
+        num_samples = len(position)
+        trial_numbers = np.arange(len(trial_start_index))
+        trial_lengths = np.append(np.diff(trial_start_index), num_samples - trial_start_index[-1])
+        trial_numbers = np.repeat(trial_numbers, trial_lengths)
+        trial_environment = self.session.loadone("trials.environmentIndex")
+        trial_environment = np.repeat(trial_environment, trial_lengths)
 
-@nb.njit(parallel=True, cache=True)
-def getAverageFramePosition(behavePosition, behaveSpeed, speedThreshold, idxBehaveToFrame, distBehaveToFrame, distCutoff, frame_position, count):
-    """
-    get the position of each frame by averaging across positions within a sample
-    """
-    for sample in nb.prange(len(behavePosition)):
-        if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
-            frame_position[idxBehaveToFrame[sample]] += behavePosition[sample]
-            count[idxBehaveToFrame[sample]] += 1
+        within_trial = np.append(np.diff(trial_numbers) == 0, True)
+        sample_duration = np.append(np.diff(timestamps), 0)
+        speed = np.append(np.diff(position) / sample_duration[:-1], 0)
+        sample_duration = sample_duration * within_trial
+        speed = speed * within_trial
+
+        frame_timestamps = self.session.loadone("mpci.times")
+        difference_timestamps = np.abs(timestamps - frame_timestamps[idx_behave_to_frame])
+        sampling_period = np.median(np.diff(frame_timestamps))
+        dist_cutoff = sampling_period / 2
+
+        frame_position = np.zeros_like(frame_timestamps)
+        count = np.zeros_like(frame_timestamps)
+        helpers.get_average_frame_position(position, idx_behave_to_frame, difference_timestamps, dist_cutoff, frame_position, count)
+        frame_position[count > 0] /= count[count > 0]
+        frame_position[count == 0] = np.nan
+        frame_speed = np.diff(frame_position) / np.diff(frame_timestamps)
+        frame_speed = np.append(frame_speed, 0)
+
+        # Let the last frame of each trial have a speed equal to previous frame
+        idx_first_nan = np.where(np.diff(1.0 * np.isnan(frame_position)) == 1.0)[0]
+        frame_speed[idx_first_nan] = frame_speed[idx_first_nan - 1]
+
+        idx_frame_to_behave, dist_frame_to_behave = helpers.nearestpoint(frame_timestamps, timestamps)
+        idx_get_position = dist_frame_to_behave < dist_cutoff
+
+        frame_environment = np.full(len(frame_timestamps), np.nan)
+        frame_environment[idx_get_position] = trial_environment[idx_frame_to_behave[idx_get_position]]
+        frame_environment[count == 0] = np.nan
+
+        frame_trial = np.full(len(frame_timestamps), np.nan)
+        frame_trial[idx_get_position] = trial_numbers[idx_frame_to_behave[idx_get_position]]
+        frame_trial[count == 0] = np.nan
+
+        return frame_position, frame_speed, frame_environment, frame_trial
+
+    @with_temp_params
+    @manage_one_cache
+    def get_placefield_prediction(
+        self,
+        use_session_filters: bool = True,
+        spks_type: Union[str, None] = None,
+        use_speed_threshold: bool = True,
+        clear_one_cache: bool = True,
+        params: Union[SpkmapParams, Dict[str, Any], None] = None,
+    ):
+        """
+        get placefield prediction of session spks data from spkmaps
+        """
+        if spks_type is not None:
+            _spks_type = self.session.spks_type
+            self.session.params.spks_type = spks_type
+
+        frame_position, frame_speed, frame_environment, _ = self.get_frame_behavior(clear_one_cache, params)
+        idx_valid = ~np.isnan(frame_position)
+        if use_speed_threshold:
+            idx_valid = idx_valid & (frame_speed > self.params.speed_threshold)
+
+        # Convert frame position to bins indices
+        frame_position_index = np.searchsorted(self.dist_edges, frame_position, side="right") - 1
+
+        # Get the place field for each neuron
+        env_maps = self.get_env_maps(use_session_filters=use_session_filters)
+        env_maps.average_trials()
+
+        # Convert frame environment to indices
+        env_to_idx = {env: i for i, env in enumerate(env_maps.environments)}
+        frame_environment_index = np.array([env_to_idx[env] if not np.isnan(env) else -1000 for env in frame_environment], dtype=int)
+
+        # Get the original spks data
+        spks = self.session.spks
+        if use_session_filters:
+            spks = spks[:, self.session.idx_rois]
+
+        # Use a numba speed up to get the placefield prediction (single pass simple algorithm)
+        placefield_prediction = np.full(spks.shape, np.nan)
+        placefield_prediction = _placefield_prediction_numba(
+            placefield_prediction,
+            env_maps.spkmap,
+            frame_environment_index,
+            frame_position_index,
+            idx_valid,
+        )
+
+        # This will add samples for which a place field was not estimable (at the edges of the environment)
+        idx_valid = np.all(~np.isnan(placefield_prediction), axis=1)
+
+        # Reset spks_type
+        if spks_type is not None:
+            self.session.params.spks_type = _spks_type
+
+        # Include extra details in a dictionary for forward compatibility
+        extras = dict(
+            frame_position_index=frame_position_index,
+            frame_environment_index=frame_environment_index,
+            idx_valid=idx_valid,
+        )
+
+        return placefield_prediction, extras
+
+    def get_traversals(
+        self,
+        idx_roi: int,
+        idx_env: int,
+        width: int = 10,
+        placefield_threshold: float = 5.0,  # in cm (or whatever units the frame_position is in)
+        fill_nan: bool = False,
+        spks: np.ndarray = None,
+        spks_prediction: np.ndarray = None,
+    ):
+        frame_position, _, frame_environment, frame_trial = self.get_frame_behavior()
+        if spks_prediction is None:
+            spks_prediction = self.get_placefield_prediction(use_session_filters=True)[0]
+        if spks is None:
+            spks = self.session.spks[:, self.session.idx_rois]
+
+        if spks.shape != spks_prediction.shape:
+            raise ValueError("spks and spks_prediction must have the same shape")
+
+        env_maps = self.get_env_maps()
+        pos_peak = self.dist_centers[np.nanargmax(np.nanmean(env_maps.spkmap[idx_env][idx_roi], axis=0))]
+        envnum = env_maps.environments[idx_env]
+
+        env_trials = np.unique(frame_trial[frame_environment == envnum])
+
+        num_trials = len(env_trials)
+        idx_traversal = -1 * np.ones(num_trials, dtype=int)
+        for itrial, trialnum in enumerate(env_trials):
+            idx_trial = frame_trial == trialnum
+            idx_closest_pos = np.nanargmin(np.abs(frame_position - pos_peak) + 10000 * ~idx_trial)
+
+            # Only include the trial if the closest position is within placefield threshold of the peak
+            if np.abs(frame_position[idx_closest_pos] - pos_peak) < placefield_threshold:
+                idx_traversal[itrial] = idx_closest_pos
+
+        # Filter out trials that don't have a traversal
+        idx_traversal = idx_traversal[idx_traversal != -1]
+
+        # Get traversals through place field in requested environment
+        traversals = np.zeros((len(idx_traversal), width * 2 + 1))
+        pred_travs = np.zeros((len(idx_traversal), width * 2 + 1))
+        for ii, it in enumerate(idx_traversal):
+            istart = it - width
+            iend = it + width + 1
+            istartoffset = max(0, -istart)
+            iendoffset = max(0, iend - spks.shape[0])
+            traversals[ii, istartoffset : width * 2 + 1 - iendoffset] = spks[istart + istartoffset : iend - iendoffset, idx_roi]
+            pred_travs[ii, istartoffset : width * 2 + 1 - iendoffset] = spks_prediction[istart + istartoffset : iend - iendoffset, idx_roi]
+
+        if fill_nan:
+            traversals[np.isnan(traversals)] = 0.0
+            pred_travs[np.isnan(pred_travs)] = 0.0
+
+        return traversals, pred_travs
 
 
-@nb.njit(parallel=True, cache=True)
-def getAverageFrameSpeed(behaveSpeed, speedThreshold, idxBehaveToFrame, distBehaveToFrame, distCutoff, frame_speed, count):
+@nb.njit(parallel=True)
+def _placefield_prediction_numba(
+    placefield_prediction: np.ndarray,
+    spkmaps: list[np.ndarray],
+    frame_environment_index: np.ndarray,
+    frame_position_index: np.ndarray,
+    idx_valid: np.ndarray,
+) -> np.ndarray:
     """
-    get the speed of each frame by averaging across speeds within a sample
+    Placefield prediction using numba
     """
-    for sample in nb.prange(len(behaveSpeed)):
-        if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
-            frame_speed[idxBehaveToFrame[sample]] += behaveSpeed[sample]
-            count[idxBehaveToFrame[sample]] += 1
+    for isample in nb.prange(placefield_prediction.shape[0]):
+        if idx_valid[isample]:
+            placefield_prediction[isample] = spkmaps[frame_environment_index[isample]][:, frame_position_index[isample]]
+    return placefield_prediction

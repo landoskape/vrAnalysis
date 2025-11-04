@@ -141,6 +141,30 @@ def get_summation_map(
             counts[trial_idx[sample]][position_bin[sample]] += 1
 
 
+@nb.njit(parallel=True, cache=True)
+def get_aligned_summation_map(
+    value_to_sum,
+    trial_idx,
+    position_bin,
+    map_data,
+    counts,
+    speed,
+    speed_threshold,
+    speed_max_threshold,
+    idx_valid,
+):
+    """
+    this is the fastest way to get a single aligned summation map
+    -- accepts 1d arrays value, trialidx, positionbin of the same size --
+    -- shape determines the number of trials and position bins (they might not all be represented in trialidx or positionbin, or we could just do np.max()) --
+    -- each value represents some number to be summed as a function of which trial it was in and which positionbin it was in --
+    """
+    for sample in nb.prange(len(trial_idx)):
+        if idx_valid[sample] and (speed[sample] > speed_threshold) and (speed[sample] < speed_max_threshold):
+            map_data[trial_idx[sample]][position_bin[sample]] += value_to_sum[sample]
+            counts[trial_idx[sample]][position_bin[sample]] += 1
+
+
 def correct_map(smap, amap, raise_error=False):
     """
     divide amap by smap with broadcasting where smap isn't 0 (with some handling of other cases)
