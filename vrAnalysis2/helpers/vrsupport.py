@@ -11,6 +11,56 @@ def get_env_order(mousedb, mouse_name):
 
 
 # ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
+def get_place_field(spkmap: np.ndarray, method: str = "max", positions: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Get place field location and sorting index
+
+    Makes an assumption about spkmap based on ndims --
+    assumes either (numROIs, numPositions) or (numROIs, numTrials, numPositions)
+
+    Note that if method is "com", then the spkmap must be nonnegative! (Will clip any negative values
+    and continue, so will potentially generate buggy behavior if spkmap isn't based on mostly positive signals!)
+
+    Parameters
+    ----------
+    spkmap : np.ndarray
+        Spkmap to get place field for
+    method : str, default="max"
+        Method to use to get place field location
+    positions : np.ndarray or None, default=None
+        Positions to use for place field location when method is "com"
+
+    Returns
+    -------
+    pfloc : np.ndarray
+        Place field location for each ROI
+    pfidx : np.ndarray
+        Sorting index for each ROI
+    """
+    if spkmap.ndim == 3:
+        spkmap = np.nanmean(spkmap, axis=1)
+
+    if positions is None:
+        positions = np.arange(spkmap.shape[1])
+
+    # if method is 'com' (=center of mass), use weighted mean to get place field location
+    if method == "com":
+        nonnegative_profile = np.maximum(spkmap, 0)
+        pfloc = np.nansum(nonnegative_profile * positions.reshape(1, -1), axis=1) / np.nansum(nonnegative_profile, axis=1)
+
+    # if method is 'max' (=maximum rate), use maximum to get place field location
+    elif method == "max":
+        pfloc = positions[np.nanargmax(spkmap, axis=1)]
+
+    else:
+        raise ValueError("method must be set to either 'max' or 'com'")
+
+    # Then sort...
+    pfidx = np.argsort(pfloc)
+
+    return pfloc, pfidx
+
+
+# ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
 def environmentRewardZone(vrexp):
     """get a list of reward locations for each environment"""
     environmentIndex = vrexp.loadone("trials.environmentIndex")
@@ -388,25 +438,21 @@ def getAllMaps(
 
 
 @nb.njit(parallel=True)
-def getAverageFramePosition(behavePosition, behaveSpeed, speedThreshold, idxBehaveToFrame, distBehaveToFrame, distCutoff, frame_position, count):
+def get_average_frame_position(
+    position,
+    idx_behave_to_frame,
+    difference_timestamps,
+    diff_cutoff,
+    frame_position,
+    count,
+):
     """
     get the position of each frame by averaging across positions within a sample
     """
-    for sample in nb.prange(len(behavePosition)):
-        if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
-            frame_position[idxBehaveToFrame[sample]] += behavePosition[sample]
-            count[idxBehaveToFrame[sample]] += 1
-
-
-@nb.njit(parallel=True)
-def getAverageFrameSpeed(behaveSpeed, speedThreshold, idxBehaveToFrame, distBehaveToFrame, distCutoff, frame_speed, count):
-    """
-    get the speed of each frame by averaging across speeds within a sample
-    """
-    for sample in nb.prange(len(behaveSpeed)):
-        if (distBehaveToFrame[sample] < distCutoff) and (behaveSpeed[sample] > speedThreshold):
-            frame_speed[idxBehaveToFrame[sample]] += behaveSpeed[sample]
-            count[idxBehaveToFrame[sample]] += 1
+    for sample in nb.prange(len(position)):
+        if difference_timestamps[sample] < diff_cutoff:
+            frame_position[idx_behave_to_frame[sample]] += position[sample]
+            count[idx_behave_to_frame[sample]] += 1
 
 
 @nb.njit(parallel=True)
@@ -474,4 +520,4 @@ def _numba_correctMap(smap, amap):
                 amap[t, p] /= smap[t, p]
 
 
-# ============================================================================================================================================
+# ------------------------------------------------- place field prediction helpers --------------------------------------------------------

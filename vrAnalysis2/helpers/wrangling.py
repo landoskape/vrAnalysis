@@ -2,6 +2,7 @@ import sys
 import inspect
 import math
 import numpy as np
+from itertools import chain
 
 
 def get_confirmation(message: str = ""):
@@ -233,3 +234,11 @@ def get_all_pairwise_stats(data: np.ndarray, axis: int = 0, method: str = "diffe
         pwstats[i - 1] = np.mean(stat[idx0, idx1], axis=0)
 
     return pwstats
+
+
+def concat_with_spacer(listN, x, axis=1):
+    if len(listN) == 1:
+        return listN[0]
+    # chain.from_iterable avoids making intermediate Python lists
+    interleaved = chain.from_iterable(zip(listN[:-1], [x] * (len(listN) - 1)))
+    return np.concatenate((*interleaved, listN[-1]), axis=axis)

@@ -473,24 +473,48 @@ def get_mouse_colors(
         color_options = cmap(np.linspace(0, 1, num_blinded))
         colors_blinded = {mouse: color_options[imouse] for imouse, mouse in enumerate(blinded_mice)}
         colors = {**pilot_mice, **colors_blinded}
+        if "ATL076" in mouse_names:
+            colors["ATL076"] = "rosybrown"
         if asdict:
             linewidth = {mouse: 2 if mouse in pilot_mice else 1 for mouse in mouse_names}
             zorder = {mouse: 1 if mouse in pilot_mice else 0 for mouse in mouse_names}
         else:
             colors = [colors[mouse] for mouse in mouse_names]
-            linewidth = [2.5 if mouse in pilot_mice else 1 for mouse in mouse_names]
+            linewidth = [2 if mouse in pilot_mice else 1 for mouse in mouse_names]
             zorder = [1 if mouse in pilot_mice else 0 for mouse in mouse_names]
         return colors, linewidth, zorder
+
     else:
         if mousedb is None:
             raise ValueError("mousedb must be provided when blinded=False")
+
+        # Get the KO and blinded status for each mouse
         ko = dict(zip(mousedb.get_table()["mouseName"], mousedb.get_table()["KO"]))
+        blinded_mice = dict(zip(mousedb.get_table()["mouseName"], mousedb.get_table()["Blinded"]))
+
+        # For each mouse, if it is not blinded, overwrite the color with the desired color based on genotype
+        colors = []
+        linewidth = []
+        zorder = []
+        for mouse in mouse_names:
+            # Set the color, linewidth, and zorder for the mouse
+            if not blinded_mice[mouse]:
+                _color = "purple" if ko[mouse] else "gray"
+                _linewidth = 1
+                _zorder = 2 if ko[mouse] else 1
+            else:
+                _color = "red"
+                _linewidth = 1
+                _zorder = 1
+
+            colors.append(_color)
+            linewidth.append(_linewidth)
+            zorder.append(_zorder)
+
+        # Convert to dictionary if requested
         if asdict:
-            colors = {mouse: "purple" if ko[mouse] else "gray" for mouse in mouse_names}
-            linewidth = {mouse: 1 for mouse in mouse_names}
-            zorder = {mouse: 2 if ko[mouse] else 1 for mouse in mouse_names}
-        else:
-            colors = ["purple" if ko[mouse] else "gray" for mouse in mouse_names]
-            linewidth = [1 for _ in mouse_names]
-            zorder = [2 if ko[mouse] else 1 for mouse in mouse_names]
+            colors = dict(zip(mouse_names, colors))
+            linewidth = dict(zip(mouse_names, linewidth))
+            zorder = dict(zip(mouse_names, zorder))
+
         return colors, linewidth, zorder
