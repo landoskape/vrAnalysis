@@ -92,9 +92,6 @@ class vrSession:
     def spkmapsPath(self):
         return self.sessionPath() / "spkmaps"
 
-    def rawDataPath(self):
-        return self.sessionPath() / "rawDataPath"
-
     def suite2pPath(self):
         return self.sessionPath() / "suite2p"
 
@@ -937,7 +934,6 @@ class redCellProcessing(vrExperiment):
         corrCoef = []
         for plane in planeIdx:
             numROIs = self.value["roiPerPlane"][plane]
-            cRoiIdx = np.where(self.roiPlaneIdx == plane)[0]  # index of ROIs in this plane
             cRefStack = np.reshape(
                 self.centeredReferenceStack(planeIdx=plane, width=width, fill=np.nan, filtPrms=(lowcut, highcut, order, fs)),
                 (numROIs, -1),

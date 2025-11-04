@@ -1,5 +1,5 @@
 # inclusions
-import time
+from typing import Union
 from datetime import datetime
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
@@ -64,10 +64,10 @@ oasis = OasisProcessor()
 # ---------------------------------------------------------------------------------------------------
 # ------------------------------------- behavior processing methods ---------------------------------
 # ---------------------------------------------------------------------------------------------------
-def standard_behavior(self):
+def standard_behavior(self: "vrRegistration") -> "vrRegistration":
     expInfo = self.vrFile["expInfo"]
     trialInfo = self.vrFile["trialInfo"]
-    num_values_per_trial = trialInfo.time.tocsr().getnnz(axis=1)
+    num_values_per_trial = np.diff(trialInfo.time.tocsr().indptr)
     valid_trials = np.where(num_values_per_trial > 0)[0]
     numTrials = len(valid_trials)
     assert np.array_equal(valid_trials, np.arange(numTrials)), "valid_trials is not a range from 0 to numTrials"
@@ -374,8 +374,6 @@ class vrRegistration(vrExperiment):
 
             if not self.onePath().exists():
                 self.onePath().mkdir(parents=True)
-            if not self.rawDataPath().exists():
-                self.rawDataPath().mkdir(parents=True)
 
         else:
             raise TypeError("input must be either a vrExperiment object or 3 strings indicating the mouseName, date, and session")
@@ -715,10 +713,12 @@ class vrRegistration(vrExperiment):
         if not (hasattr(self.vrFile["rigInfo"], "rotaryRange")):
             self.vrFile["rigInfo"].rotaryRange = 32
 
-    def convertDense(self, data):
+    def convertDense(self, data: Union[np.ndarray, sp.sparse.spmatrix]) -> np.ndarray:
         data = data[: self.value["numTrials"]]
-        if isinstance(data, sp.sparse._csc.csc_matrix):
-            data = np.array(data.todense()).squeeze()
+        if sp.sparse.issparse(data):
+            data = data.toarray().squeeze()
+        else:
+            data = np.asarray(data).squeeze()
         return data
 
     def createIndex(self, timeStamps):
