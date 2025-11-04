@@ -465,55 +465,55 @@ def plot_quantile_histogram(
     plt.close(fig)
 
 
-def plot_tracking_summary(show: bool = False, save: bool = False, save_results: bool = False):
+def plot_tracking_summary(tracked_mice: list[str], show: bool = False, save: bool = False, save_results: bool = False):
     # Get this for it's data producing code, not to use the viewer!
     max_session_diff = 6
     summary_viewer = ReliabilityStabilitySummary(tracked_mice, use_cache=False)
-    for mouse in tracked_mice:
+    for mouse in tqdm(tracked_mice):
         print(f"Working on {mouse}")
         for reliability_threshold in [0.3, 0.5, 0.7, 0.9]:
             for reliability_method in ["leave_one_out"]:
                 for smooth_width in [5]:
                     for use_session_filters in [True]:
                         for continuous in [True, False]:
-                            state = summary_viewer.define_state(
-                                mouse_name=mouse,
-                                envnum=1,
-                                reliability_threshold=reliability_threshold,
-                                reliability_method=reliability_method,
-                                smooth_width=smooth_width,
-                                use_session_filters=use_session_filters,
-                                continuous=continuous,
-                                max_session_diff=max_session_diff,
-                            )
-                            figure_path_name = f"reliability-summary-{reliability_method}-Threshold{reliability_threshold}-SmoothWidth{smooth_width}-Continuous{continuous}-GoodROIOnly{use_session_filters}"
-                            results = summary_viewer.gather_data(state, try_cache=False)
-                            if save_results:
-                                results_name = ReliabilityStabilitySummary.get_results_name(state)
-                                results_path = analysis_path() / "before_the_reveal_temp_data" / results_name
-                                if not results_path.parent.exists():
-                                    results_path.parent.mkdir(parents=True, exist_ok=True)
-                                joblib.dump(results, results_path)
-
-                            if not show and not save:
-                                continue
-
-                            environments = [envnum for envnum in results if results[envnum] is not None]
-                            for envnum in environments:
-                                state["environment"] = envnum
-                                fig = summary_viewer.plot(state, results=results)
-                                title = (
-                                    f"{mouse}-{envnum}-{reliability_threshold}-{reliability_method}-{smooth_width}-{use_session_filters}-{continuous}"
+                            for spks_type in ["oasis", "significant"]:
+                                state = summary_viewer.define_state(
+                                    mouse_name=mouse,
+                                    envnum=1,
+                                    reliability_threshold=reliability_threshold,
+                                    reliability_method=reliability_method,
+                                    smooth_width=smooth_width,
+                                    use_session_filters=use_session_filters,
+                                    continuous=continuous,
+                                    spks_type=spks_type,
+                                    max_session_diff=max_session_diff,
                                 )
-                                fig.suptitle(title)
+                                figure_path_name = f"reliability-summary-{reliability_method}-Threshold{reliability_threshold}-SmoothWidth{smooth_width}-Continuous{continuous}-GoodROIOnly{use_session_filters}"
+                                results = summary_viewer.gather_data(state, try_cache=False)
+                                if save_results:
+                                    results_name = ReliabilityStabilitySummary.get_results_name(state)
+                                    results_path = analysis_path() / "before_the_reveal_temp_data_new251024" / results_name
+                                    if not results_path.parent.exists():
+                                        results_path.parent.mkdir(parents=True, exist_ok=True)
+                                    joblib.dump(results, results_path)
 
-                                if show:
-                                    plt.show(block=True)
+                                if not show and not save:
+                                    continue
 
-                                if save:
-                                    fig_path = figure_path(figure_path_name, title)
-                                    save_figure(fig, fig_path)
-                                    print(f"Saved {fig_path}")
+                                environments = [envnum for envnum in results if results[envnum] is not None]
+                                for envnum in environments:
+                                    state["environment"] = envnum
+                                    fig = summary_viewer.plot(state, results=results)
+                                    title = f"{mouse}-{envnum}-{reliability_threshold}-{reliability_method}-{smooth_width}-{use_session_filters}-{continuous}"
+                                    fig.suptitle(title)
+
+                                    if show:
+                                        plt.show(block=True)
+
+                                    if save:
+                                        fig_path = figure_path(figure_path_name, title)
+                                        save_figure(fig, fig_path)
+                                        print(f"Saved {fig_path}")
 
 
 def plot_tracking_full_summary(
@@ -759,15 +759,15 @@ if __name__ == "__main__":
     show = False
     save = False
 
-    print(tracked_mice)
     if start_at_mouse:
         start_index = np.where(tracked_mice == start_at_mouse)[0][0]
         tracked_mice = tracked_mice[start_index:]
+        print("Starting at mouse:", start_at_mouse, "using these mice -->", tracked_mice[0])
 
     if do_tracking_summary:
         # Save intermediate results to cache
         save_results = True
-        plot_tracking_summary(show=show, save=save, save_results=save_results)
+        plot_tracking_summary(tracked_mice=tracked_mice, show=show, save=save, save_results=save_results)
 
     # if do_tracking_full_summary:
     #     for reliability_threshold in [0.3, 0.5, 0.7, 0.9]:
