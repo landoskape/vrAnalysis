@@ -7,7 +7,7 @@ from math import floor, ceil
 from vrAnalysis2.sessions.b2session import B2SessionParams
 from vrAnalysis2.processors.spkmaps import SpkmapProcessor, SpkmapParams, Maps
 from vrAnalysis2.tracking import Tracker
-from vrAnalysis2.helpers import resolve_dataclass, argsort, named_transpose
+from vrAnalysis2.helpers import resolve_dataclass, argsort, named_transpose, get_place_field
 
 
 def handle_idx_ses(func):
@@ -339,7 +339,7 @@ class MultiSessionSpkmaps:
             spkmaps = [s[..., ~idx_nan_positions] for s in spkmaps]
             positions = positions[~idx_nan_positions]
 
-        pfloc, pfidx = named_transpose([self.get_place_field(spkmap, method="max", positions=positions) for spkmap in spkmaps])
+        pfloc, pfidx = named_transpose([get_place_field(spkmap, method="max", positions=positions) for spkmap in spkmaps])
 
         extras = dict(
             idx_tracked=idx_tracked,
@@ -445,48 +445,3 @@ class MultiSessionSpkmaps:
 
         extras = dict(idx_red=idx_red)
         return reliability, extras
-
-    def get_place_field(self, spkmap: np.ndarray, method: str = "max", positions: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
-        """Get place field location and sorting index
-
-        Makes an assumption about spkmap based on ndims --
-        assumes either (numROIs, numPositions) or (numROIs, numTrials, numPositions)
-
-        Note that if method is "com", then the spkmap must be nonnegative! (Will clip any negative values
-        and continue, so will potentially generate buggy behavior if spkmap isn't based on mostly positive signals!)
-
-        Parameters
-        ----------
-        spkmap : np.ndarray
-            Spikmap to get place field for
-        method : str, default="max"
-            Method to use to get place field location
-        positions : np.ndarray or None, default=None
-            Positions to use for place field location when method is "com"
-
-        Returns
-        -------
-        pfloc : np.ndarray
-            Place field location for each ROI
-        pfidx : np.ndarray
-            Sorting index for each ROI
-        """
-        if spkmap.ndim == 3:
-            spkmap = np.nanmean(spkmap, axis=1)
-
-        if positions is None:
-            positions = np.arange(spkmap.shape[1])
-
-        # if method is 'com' (=center of mass), use weighted mean to get place field location
-        if method == "com":
-            nonnegative_profile = np.maximum(spkmap, 0)
-            pfloc = np.nansum(nonnegative_profile * positions.reshape(1, -1), axis=1) / np.nansum(nonnegative_profile, axis=1)
-
-        # if method is 'max' (=maximum rate), use maximum to get place field location
-        if method == "max":
-            pfloc = positions[np.nanargmax(spkmap, axis=1)]
-
-        # Then sort...
-        pfidx = np.argsort(pfloc)
-
-        return pfloc, pfidx
