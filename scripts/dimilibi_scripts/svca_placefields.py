@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
-from scripts.dimilibi.helpers import make_position_basis, filter_timepoints, figure_folder
+from scripts.dimilibi_scripts.helpers import make_position_basis, filter_timepoints, figure_folder
 
 from vrAnalysis import analysis
 from vrAnalysis import helpers
@@ -393,7 +393,9 @@ def add_results_per_session(ses):
 
     # Get place fields from ROIs
     envnum = pcss.environments[0]
-    train_spkmap = pcss.get_spkmap(envnum=envnum, average=True, trials="train")[0]  # only one environment here, but it's output as a list
+    train_spkmap = pcss.get_spkmap(envnum=envnum, average=True, pop_nan=False, trials="train")[
+        0
+    ]  # only one environment here, but it's output as a list
     source_spkmap = train_spkmap[npop.cell_split_indices[0]]
     target_spkmap = train_spkmap[npop.cell_split_indices[1]]
 
@@ -401,12 +403,14 @@ def add_results_per_session(ses):
     target_relcor = pcss.get_reliability_values(envnum=envnum)[1][0][npop.cell_split_indices[1]]
 
     # Get test place fields from ROIs for a comparison across timepoints...
-    test_spkmap = pcss.get_spkmap(envnum=envnum, average=True, trials="test")[0]  # only one environment here, but it's output as a list
+    test_spkmap = pcss.get_spkmap(envnum=envnum, average=True, pop_nan=False, trials="test")[
+        0
+    ]  # only one environment here, but it's output as a list
     source_spkmap_test = test_spkmap[npop.cell_split_indices[0]]
     target_spkmap_test = test_spkmap[npop.cell_split_indices[1]]
 
     # Get full place fields
-    full_spkmap = pcss.get_spkmap(envnum=envnum, average=True, trials="full")[0]
+    full_spkmap = pcss.get_spkmap(envnum=envnum, average=True, pop_nan=False, trials="full")[0]
     source_spkmap_full = full_spkmap[npop.cell_split_indices[0]]
     target_spkmap_full = full_spkmap[npop.cell_split_indices[1]]
 
@@ -697,8 +701,8 @@ def compare_figures(results):
     im = ax.imshow(show_map.T, extent=extent, interpolation="none", cmap="gray_r", vmin=0, vmax=vmax, aspect="equal")
     ax.set_xlim(0, show_dims)
     ax.set_ylim(show_dims, 0)
-    ax.set_xlabel("SVC-Time  Dimension", labelpad=-15)
-    ax.set_ylabel("SVC-Pos  Dimension", labelpad=-15)
+    ax.set_xlabel("SVC-Time Dimension", labelpad=-15)
+    ax.set_ylabel("SVC-Pos Dimension", labelpad=-15)
     ax.set_xticks([0, show_dims])
     ax.set_yticks([0, show_dims])
     ticks = np.round(1000 * np.linspace(0, vmax, 3)) / 1000
