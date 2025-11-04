@@ -1,7 +1,6 @@
 import sys
 from copy import copy
 import math
-import importlib
 from functools import partial
 from PyQt5.QtWidgets import (
     QApplication,
@@ -12,13 +11,10 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QHBoxLayout,
-    QCheckBox,
     QFormLayout,
-    QDateEdit,
 )
-from PyQt5.QtCore import Qt, QRegExp, QDate
+from PyQt5.QtCore import Qt
 
-import random
 from datetime import datetime
 
 # prepare GUI
@@ -121,9 +117,21 @@ def get_column_descriptions(vrdb):
 
 class newEntryGUI(QWidget):
     def __init__(self, vrdb, ses=None, **kwargs):
+        # Ensure QApplication exists before creating widgets
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+
         super().__init__()
-        column_descriptions = get_column_descriptions(vrdb)
-        column_name, data_type, size, _, _, _, nullable = map(list, zip(*column_descriptions))
+
+        try:
+            column_descriptions = get_column_descriptions(vrdb)
+            column_name, data_type, size, _, _, _, nullable = map(list, zip(*column_descriptions))
+        except Exception as e:
+            print(f"Error getting column descriptions: {e}")
+            print("Cannot create GUI without database schema information.")
+            return
+
         self.vrdb = vrdb
         self.ses = ses
         self.column_name = column_name
@@ -140,6 +148,8 @@ class newEntryGUI(QWidget):
         self.num_columns = len(column_name)  # this is the number of columns in the database
 
         # Create GUI
+        print(f"Creating GUI for database table: {self.vrdb.tableName}")
+        print(f"Found {len(column_name)} columns in database")
         self.init_ui()
 
         # If session object is provided, fill in details
@@ -148,8 +158,17 @@ class newEntryGUI(QWidget):
         # If kwargs provided, add them to GUI
         self.populate_from_kwargs(**kwargs)
 
-        # And open it
+        # And open it - with special handling for Jupyter notebooks
+        print("Showing GUI window...")
         self.show()
+        self.raise_()  # Bring window to front
+        self.activateWindow()  # Activate the window
+
+        # For Jupyter notebooks, we might need to process events
+        if app:
+            app.processEvents()
+
+        print(f"GUI window created and shown. Window visible: {self.isVisible()}")
 
     def populate_from_kwargs(self, **kwargs):
         for idx, entry in enumerate(self.entryIndex):
@@ -213,6 +232,12 @@ class newEntryGUI(QWidget):
             field.editingFinished.connect(partial(self.validate_input, idx=idx, entry=entry))
             field.setMinimumWidth(self.params["min_width"])
 
+        # Create output text area for status messages
+        self.outputEntry = QTextEdit()
+        self.outputEntry.setReadOnly(True)
+        self.outputEntry.setMaximumHeight(80)
+        self.outputEntry.setPlainText("Ready to input values...")
+
         # Create a button for submitting the new entry to a table
         self.checkEntry = QPushButton("Check Values")
         self.checkEntry.clicked.connect(self.checkValues)
@@ -239,6 +264,7 @@ class newEntryGUI(QWidget):
 
         # Then put everything together in rows,
         full_layout.addLayout(col_layout)
+        full_layout.addWidget(self.outputEntry)
         full_layout.addLayout(button_layout)
 
         # Set the main layout for the window
@@ -278,11 +304,11 @@ class newEntryGUI(QWidget):
 
         # if int and data is not digits, then not valid
         if self.data_type[entry] == int and not (ignore_checks):
-            if not ctext.isdigit():
+            try:
+                value = int(ctext)
+            except ValueError:
                 valid = False
                 value = None
-            else:
-                value = int(ctext)
 
         if self.data_type[entry] == float and not (ignore_checks):
             try:
@@ -370,6 +396,13 @@ class newEntryGUI(QWidget):
         insert_statement = self.get_insert_statement(columns, values)
 
         if validData:
-            output = self.vrdb.addRecord(insert_statement, columns, values)
+            try:
+                output = self.vrdb.addRecord(insert_statement, columns, values)
+                self.outputEntry.setPlainText("Successfully added new entry to database!")
+            except Exception as e:
+                self.outputEntry.setPlainText(f"Error adding entry to database: {e}")
+                print(f"Database error: {e}")
         else:
-            print("Some fields do not have valid input data, submission failed!")
+            error_msg = "Some fields do not have valid input data, submission failed!"
+            self.outputEntry.setPlainText(error_msg)
+            print(error_msg)
