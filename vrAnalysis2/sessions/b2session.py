@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any
 import joblib
 import numpy as np
@@ -7,6 +7,7 @@ from numpyencoder import NumpyEncoder
 import speedystats as ss
 from ..files import local_data_path
 from .base import SessionData
+from ..registration.defaults import B2RegistrationOpts
 from roicat_support.classifier import load_classifier
 from roicat_support.classifier import get_results_path as get_classifier_results_path
 
@@ -89,7 +90,7 @@ class B2SessionParams:
 
 @dataclass
 class B2Session(SessionData):
-    opts: dict = field(default_factory=dict, repr=False, init=False)
+    opts: B2RegistrationOpts = field(default_factory=B2RegistrationOpts, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
     params: B2SessionParams = field(default_factory=B2SessionParams, repr=False)
 
@@ -356,11 +357,13 @@ class B2Session(SessionData):
         super()._additional_loading()
         if not (self.data_path / "vrExperimentOptions.json").exists():
             raise ValueError("session json files were not found! you need to register the session first.")
-        opts = json.load(open(self.data_path / "vrExperimentOptions.json"))
-        preprocessing = json.load(open(self.data_path / "vrExperimentPreprocessing.json"))
+
+        # Load options and preprocessing steps
+        self.opts = B2RegistrationOpts(**json.load(open(self.data_path / "vrExperimentOptions.json")))
+        self.preprocessing = json.load(open(self.data_path / "vrExperimentPreprocessing.json"))
+
+        # Load stored values
         values = json.load(open(self.data_path / "vrExperimentValues.json"))
-        self.opts = opts
-        self.preprocessing = preprocessing
         for key, val in values.items():
             self.set_value(key, val)
         # Also load ROICaT Classifier Results if they exist
@@ -373,11 +376,11 @@ class B2Session(SessionData):
     def save_session_prms(self):
         """Save registered session parameters"""
         with open(self.data_path / "vrExperimentOptions.json", "w") as file:
-            json.dump(self.opts, file, ensure_ascii=False)
+            json.dump(vars(self.opts), file, ensure_ascii=False)
         with open(self.data_path / "vrExperimentPreprocessing.json", "w") as file:
             json.dump(self.preprocessing, file, ensure_ascii=False)
         with open(self.data_path / "vrExperimentValues.json", "w") as file:
-            json.dump(self.values, file, ensure_ascii=False, cls=NumpyEncoder)
+            json.dump(vars(self.values), file, ensure_ascii=False, cls=NumpyEncoder)
 
     # =============================================================================
     # Suite2p loading functions
@@ -391,7 +394,7 @@ class B2Session(SessionData):
             F = self.load_s2p("F")
             Fneu = self.load_s2p("Fneu")
         meanFneu = np.mean(Fneu, axis=1, keepdims=True) if mean_adjusted else np.zeros((np.sum(self.get_value("roiPerPlane")), 1))
-        neuropil_coefficient = self.params.neuropil_coefficient or self.opts["neuropilCoefficient"]
+        neuropil_coefficient = self.params.neuropil_coefficient or self.opts.neuropilCoefficient
         return F - neuropil_coefficient * (Fneu - meanFneu)
 
     def load_s2p(self, varName, concatenate=True):
@@ -446,9 +449,25 @@ class B2Session(SessionData):
         elif mode == "median":
             yc = np.array([np.median(y) for y in ypix])
             xc = np.array([np.median(x) for x in xpix])
-        stackPosition = np.stack((xc, yc, planeIdx)).T
-        return stackPosition
+        stack_position = np.stack((xc, yc, planeIdx)).T
+        return stack_position
 
+    #
+    # =============================================================================
+    # Behavior processing functions
+    # =============================================================================
+    def get_behave_trial_idx(self, trial_start_frame):
+        """Get the trial index for each behavioral sample"""
+        nspt = np.array([*np.diff(trial_start_frame), self.get_value("numBehaveTimestamps") - trial_start_frame[-1]])
+        return np.concatenate([tidx * np.ones(ns) for (tidx, ns) in enumerate(nspt)]).astype(np.uint64)
+
+    def group_behave_by_trial(self, data, trial_start_frame):
+        trial_index = self.get_behave_trial_idx(trial_start_frame)
+        return [data[trial_index == tidx] for tidx in range(len(trial_start_frame))]
+
+    # =============================================================================
+    # Equality and Hashing
+    # =============================================================================
     def __eq__(self, other: Any) -> bool:
         """Check if two sessions are equal"""
         if not isinstance(other, B2Session):
