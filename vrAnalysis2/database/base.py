@@ -14,8 +14,8 @@ from vrAnalysis import registration
 from vrAnalysis import fileManagement as fm
 
 # vrAnalysis2 imports
-from .helpers import readable_bytes, error_print, get_confirmation
-from .sessions import B2Session, create_b2session
+from ..helpers import readable_bytes, error_print, get_confirmation
+from ..sessions import B2Session, create_b2session
 
 
 def get_database_metadata(db_name: str) -> dict:
@@ -35,16 +35,16 @@ def get_database_metadata(db_name: str) -> dict:
     dict
         A dictionary containing metadata for the specified database.
         It requires the following keys:
-            'dbPath': path to the database file
-            'dbName': name of the database file
-            'dbExt': extension of the database file
-            'tableName': name of the table to use
+            'db_path': path to the database file
+            'db_name': name of the database file
+            'db_ext': extension of the database file
+            'table_name': name of the table to use
             'uid': name of the field defining a unique ID for each row in the table
-            'backupPath': path to the database backup (None if there isn't one)
-            'uniqueFields': list of names of fields for which there should only be one
-                            database row per combination of the values in uniqueFields
+            'backup_path': path to the database backup (None if there isn't one)
+            'unique_fields': list of names of fields for which there should only be one
+                            database row per combination of the values in unique_fields
                             note: assumes string, but make it a tuple for different types
-            'defaultConditions': dictionary containing key-value pairs of any default
+            'default_conditions': dictionary containing key-value pairs of any default
                                  conditions to filter by when retrieving table data
 
     Raises
@@ -55,9 +55,9 @@ def get_database_metadata(db_name: str) -> dict:
     Example
     -------
     >>> metadata = vrDatabaseMetadata('vrSessions')
-    >>> print(metadata['dbPath'])
+    >>> print(metadata['db_path'])
     'C:\\Users\\andrew\\Documents\\localData\\vrDatabaseManagement'
-    >>> print(metadata['dbName'])
+    >>> print(metadata['db_name'])
     'vrDatabase'
 
     Notes
@@ -68,40 +68,33 @@ def get_database_metadata(db_name: str) -> dict:
 
     dbdict = {
         "vrSessions": {
-            "dbPath": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
-            "dbName": "vrDatabase",
-            "dbExt": ".accdb",
-            "tableName": "sessiondb",
+            "db_path": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
+            "db_name": "vrDatabase",
+            "db_ext": ".accdb",
+            "table_name": "sessiondb",
             "uid": "uSessionID",
-            "backupPath": r"D:\localData\vrDatabaseManagement",
-            "uniqueFields": [("mouseName", str), ("sessionDate", datetime), ("sessionID", int)],
-            "defaultConditions": {
+            "backup_path": r"D:\localData\vrDatabaseManagement",
+            "unique_fields": [("mouseName", str), ("sessionDate", datetime), ("sessionID", int)],
+            "default_conditions": {
                 "sessionQC": True,
             },
             "constructor": SessionDatabase,
         },
         "vrMice": {
-            "dbPath": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
-            "dbName": "vrDatabase",
-            "dbExt": ".accdb",
-            "tableName": "mousedb",
+            "db_path": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
+            "db_name": "vrDatabase",
+            "db_ext": ".accdb",
+            "table_name": "mousedb",
             "uid": "uMouseID",
-            "backupPath": r"D:\localData\vrDatabaseManagement",
-            "uniqueFields": [("mouseName", str)],
-            "defaultConditions": {},
+            "backup_path": r"D:\localData\vrDatabaseManagement",
+            "unique_fields": [("mouseName", str)],
+            "default_conditions": {},
             "constructor": BaseDatabase,
         },
     }
     if db_name not in dbdict.keys():
         raise ValueError(f"Did not recognize database={db_name}, valid database names are: {[key for key in dbdict.keys()]}")
     return dbdict[db_name]
-
-
-# a dictionary of host types determining what driver string to use for database connections
-host_types = {
-    ".accdb": "access",
-    ".mdb": "access",
-}
 
 
 def get_database(db_name: str) -> Union["BaseDatabase", "SessionDatabase"]:
@@ -117,6 +110,13 @@ def get_database(db_name: str) -> Union["BaseDatabase", "SessionDatabase"]:
     else:
         constructor = BaseDatabase
     return constructor(db_name)
+
+
+# a dictionary of host types determining what driver string to use for database connections
+host_types = {
+    ".accdb": "access",
+    ".mdb": "access",
+}
 
 
 class BaseDatabase:
@@ -137,9 +137,9 @@ class BaseDatabase:
         Example
         -------
         >>> db = BaseDatabase('vrSessions')
-        >>> print(vrdb.tableName)
+        >>> print(vrdb.table_name)
         'sessiondb'
-        >>> print(vrdb.dbName)
+        >>> print(vrdb.db_name)
         'vrDatabase'
 
         Notes
@@ -149,15 +149,15 @@ class BaseDatabase:
         """
 
         metadata = get_database_metadata(db_name)
-        self.dbPath = metadata["dbPath"]
-        self.dbName = metadata["dbName"]
-        self.dbExt = metadata["dbExt"]
-        self.tableName = metadata["tableName"]
+        self.db_path = metadata["db_path"]
+        self.db_name = metadata["db_name"]
+        self.db_ext = metadata["db_ext"]
+        self.table_name = metadata["table_name"]
         self.uid = metadata["uid"]
-        self.backupPath = metadata["backupPath"]
-        self.host_type = host_types[self.dbExt]
-        self.uniqueFields = self.process_unique_fields(metadata["uniqueFields"])
-        self.defaultConditions = metadata["defaultConditions"]
+        self.backup_path = metadata["backup_path"]
+        self.host_type = host_types[self.db_ext]
+        self.unique_fields = self.process_unique_fields(metadata["unique_fields"])
+        self.default_conditions = metadata["default_conditions"]
 
     def process_unique_fields(self, fields):
         ufields = []
@@ -171,7 +171,7 @@ class BaseDatabase:
         return ufields
 
     def get_dbfile(self):
-        return Path(self.dbPath) / (self.dbName + self.dbExt)
+        return Path(self.db_path) / (self.db_name + self.db_ext)
 
     def save_backup(self, return_out: bool = False) -> str | None:
         """Save a backup of the database to the backup path specified in metadata.
@@ -186,9 +186,9 @@ class BaseDatabase:
         str | None
             Output from the robocopy command (if return_out is True).
         """
-        source_path = self.dbPath
-        target_path = self.backupPath
-        source_file = self.dbName + self.dbExt
+        source_path = self.db_path
+        target_path = self.backup_path
+        source_file = self.db_name + self.db_ext
         robocopy_arguments = f"robocopy {source_path} {target_path} {source_file}"
         outs = run(robocopy_arguments, capture_output=True, text=True)
         if return_out:
@@ -217,7 +217,7 @@ class BaseDatabase:
 
         # Make sure connections are possible for this hosttype
         failure_message = (
-            f"Requested hostType ({self.host_type}) is not available. The only ones that are coded are: {[k for k in driver_string.keys()]}\n\n"
+            f"Requested host_type ({self.host_type}) is not available. The only ones that are coded are: {[k for k in driver_string.keys()]}\n\n"
             f"For support with writing a driver string for a different host, use the fantastic website: https://www.connectionstrings.com/"
         )
         assert self.host_type in driver_string, failure_message
@@ -278,15 +278,15 @@ class BaseDatabase:
     # == display meta data for database ==
     def show_metadata(self):
         """convience method for showing the metadata associated with the open database"""
-        print(f"{self.host_type} database located at {self.dbPath}")
-        print(f"Database name: {self.dbName}{self.dbExt}, table name: {self.tableName}, with uid: {self.uid}")
-        if self.backupPath is not None:
-            print(f"Backup path located at: {self.backupPath}")
+        print(f"{self.host_type} database located at {self.db_path}")
+        print(f"Database name: {self.db_name}{self.db_ext}, table name: {self.table_name}, with uid: {self.uid}")
+        if self.backup_path is not None:
+            print(f"Backup path located at: {self.backup_path}")
         else:
             print(f"No backup path specified...")
-        if self.defaultConditions:
+        if self.default_conditions:
             print(f"Default database filters:")
-            for key, val in self.defaultConditions.items():
+            for key, val in self.default_conditions.items():
                 print("  ", self.construct_filter_string(key, self.process_filter_value(val)))
         else:
             print(f"No default filters.")
@@ -307,11 +307,11 @@ class BaseDatabase:
             - A list of tuples representing the data rows of the table.
         """
         with self.open_cursor() as cursor:
-            fieldNames = [col.column_name for col in cursor.columns(table=self.tableName)]
-            cursor.execute(f"SELECT * FROM {self.tableName}")
-            tableElements = cursor.fetchall()
+            field_names = [col.column_name for col in cursor.columns(table=self.table_name)]
+            cursor.execute(f"SELECT * FROM {self.table_name}")
+            table_elements = cursor.fetchall()
 
-        return fieldNames, tableElements
+        return field_names, table_elements
 
     def get_table(self, use_default: bool = True, **kwConditions):
         """
@@ -345,13 +345,13 @@ class BaseDatabase:
         >>> df = vrdb.get_table(imaging=True)
         """
 
-        fieldNames, table_data = self.table_data()
-        df = pd.DataFrame.from_records(table_data, columns=fieldNames)
-        conditions = copy(self.defaultConditions) if use_default else {}
+        field_names, table_data = self.table_data()
+        df = pd.DataFrame.from_records(table_data, columns=field_names)
+        conditions = copy(self.default_conditions) if use_default else {}
         conditions.update(kwConditions)
         if conditions:
             for key, val in conditions.items():
-                assert key in fieldNames, f"{key} is not a column name in {self.tableName}"
+                assert key in field_names, f"{key} is not a column name in {self.table_name}"
                 conditions[key] = self.process_filter_value(val)  # make sure it's a value/operation pair
             query = " & ".join([self.construct_filter_string(key, val_op_tuple) for key, val_op_tuple in conditions.items()])
             df = df.query(query)
@@ -375,25 +375,25 @@ class BaseDatabase:
         return f"`{key}`{op}{val!r}"
 
     # == methods for adding records and updating information to the database ==
-    def createUpdateStatement(self, field, uid):
+    def create_update_statement(self, field, uid):
         """to update a single field with a value for a particular session defined by the uid
 
         Example
         -------
         >>> with self.open_cursor(commit_changes=True) as cursor:
-        >>>     cursor.execute(self.createUpdateManyStatement(<field>, <uid>), <val>)
+        >>>     cursor.execute(self.create_update_many_statement(<field>, <uid>), <val>)
         """
-        return f"UPDATE {self.tableName} set {field} = ? WHERE {self.uid} = {uid}"
+        return f"UPDATE {self.table_name} set {field} = ? WHERE {self.uid} = {uid}"
 
-    def createUpdateManyStatement(self, field):
+    def create_update_many_statement(self, field):
         """to update a single field many times where the value for each uid is provided as a list to cursor.executemany()
 
         Example
         -------
         >>> with self.open_cursor(commit_changes=True) as cursor:
-        >>>     cursor.executemany(self.createUpdateManyStatement(<field>, [(val,uid),(val,uid),...]))
+        >>>     cursor.executemany(self.create_update_many_statement(<field>, [(val,uid),(val,uid),...]))
         """
-        return f"UPDATE {self.tableName} set {field} = ? where {self.uid} = ?"
+        return f"UPDATE {self.table_name} set {field} = ? where {self.uid} = ?"
 
     def updateDatabaseField(self, field, val, **kwConditions):
         """
@@ -404,15 +404,15 @@ class BaseDatabase:
         """
         assert field in self.table_data()[0], f"Requested field ({field}) is not in table. Use 'self.table_data()[0]' to see available fields."
         df = self.get_table(**kwConditions)
-        updateStatement = self.createUpdateManyStatement(field)
+        update_statement = self.create_update_many_statement(field)
         uids = df[self.uid].tolist()  # uids of all sessions requested
         val_as_list = [val] * len(uids)  #
         print(f"Setting {field}={val} for all requested records...")
         with self.open_cursor(commit_changes=True) as cursor:
-            cursor.executemany(updateStatement, zip(val_as_list, uids))
+            cursor.executemany(update_statement, zip(val_as_list, uids))
 
     # == method for adding a record to the database ==
-    def addRecord(self, insert_statement, columns, values):
+    def add_record(self, insert_statement, columns, values):
         """
         Attempt to add a single record to the database
 
@@ -422,13 +422,13 @@ class BaseDatabase:
         Otherwise, adds the record to the database.
         """
         d = dict(zip(columns, values))
-        unique_values = [d[uf[0]] for uf in self.uniqueFields]  # get values associated with unique fields
+        unique_values = [d[uf[0]] for uf in self.unique_fields]  # get values associated with unique fields
         for ii, uv in enumerate(unique_values):
             if isinstance(uv, date) or isinstance(uv, datetime):
                 # this is required for communicating with Access
                 unique_values[ii] = uv.strftime("%Y-%m-%d")
-        unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
-        if self.getRecord(*unique_values, verbose=False) is not None:
+        unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.unique_fields, unique_values)])
+        if self.get_record(*unique_values, verbose=False) is not None:
             print(f"Record already exists for {unique_combo}")
             return f"Record already exists for {unique_combo}"
         with self.open_cursor(commit_changes=True) as cursor:
@@ -436,7 +436,7 @@ class BaseDatabase:
             print(f"Successfully added new record for {unique_combo}")
         return "Successfully added new record"
 
-    def getRecord(self, *unique_values, verbose=True):
+    def get_record(self, *unique_values, verbose=True):
         """
         Retrieve single record from table in database and return as dataframe.
 
@@ -458,20 +458,20 @@ class BaseDatabase:
         Example
         -------
         >>> vrdb = YourDatabaseClass()
-        >>> record = vrdb.getRecord(*uniqueConditions)
+        >>> record = vrdb.get_record(*unique_conditions)
         """
 
         # Check if correct values are provided (or if a session object is provided)
         if len(unique_values) == 1 and isinstance(unique_values[0], original_session.vrSession):
             unique_values = [unique_values[0].mouseName, unique_values[0].dateString, unique_values[0].sessionid]
 
-        elif len(unique_values) != len(self.uniqueFields):
-            expected_list = ", ".join([uf[0] for uf in self.uniqueFields])
+        elif len(unique_values) != len(self.unique_fields):
+            expected_list = ", ".join([uf[0] for uf in self.unique_fields])
             raise ValueError(f"{len(unique_values)} values provided but *getRecord* is expecting values for: {expected_list}")
 
         # Get table and compare
         df = self.get_table()
-        for uf, uv in zip(self.uniqueFields, unique_values):
+        for uf, uv in zip(self.unique_fields, unique_values):
             if uf[1] == str:
                 df = df[df[uf[0]] == uv]
             elif uf[1] == datetime:
@@ -483,11 +483,11 @@ class BaseDatabase:
 
         if len(df) == 0:
             if verbose:
-                unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
+                unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.unique_fields, unique_values)])
                 print(f"No session found under: {unique_combo}")
             return None
         if len(df) > 1:
-            unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.uniqueFields, unique_values)])
+            unique_combo = ", ".join([f"{uf[0]}={uv}" for uf, uv in zip(self.unique_fields, unique_values)])
             raise ValueError(f"Multiple sessions found under: {unique_combo}")
         return df.iloc[0]
 
@@ -522,7 +522,7 @@ class SessionDatabase(BaseDatabase):
     # == It should work as is as long as vrAnalysis stays on the path! ==
 
     # == vrExperiment related methods ==
-    def sessionName(self, row):
+    def session_name(self, row):
         """get session identifiers from record of database"""
         mouseName = row["mouseName"]
         sessionDate = row["sessionDate"].strftime("%Y-%m-%d")
@@ -861,34 +861,6 @@ class SessionDatabase(BaseDatabase):
                     cursor.execute(self.createUpdateStatement("vrRegistrationDate", row[self.uid]), None)
             finally:
                 del vrExpReg
-
-
-class vrDatabaseGrossUpdate(SessionDatabase):
-    def __init__(self, dbName="vrDatabase"):
-        super().__init__(dbName=dbName)
-
-    def checkSessionScratch(self, withDatabaseUpdate=False):
-        df = self.get_table(ignoreScratched=False)
-        good_withJustification = df[(df["sessionQC"] == True) & (~pd.isnull(df["scratchJustification"]))]
-        bad_noJustification = df[(df["sessionQC"] == False) & (pd.isnull(df["scratchJustification"]))]
-
-        goodToBad_UID = good_withJustification[self.uid].tolist()
-        badToGood_UID = bad_noJustification[self.uid].tolist()
-        for idx, row in good_withJustification.iterrows():
-            print(f"Database said sessionQC=True for {self.vrSession(row).sessionPrint()} but there is a scratchJustification.")
-        for idx, row in bad_noJustification.iterrows():
-            print(f"Database said sessionQC=False for {self.vrSession(row).sessionPrint()} but there isn't a scratchJustification.")
-
-        if withDatabaseUpdate:
-            with self.open_cursor(commit_changes=True) as cursor:
-                cursor.executemany(
-                    self.createUpdateManyStatement("sessionQC"),
-                    zip([False] * len(goodToBad_UID), goodToBad_UID),
-                )
-                cursor.executemany(
-                    self.createUpdateManyStatement("sessionQC"),
-                    zip([True] * len(badToGood_UID), badToGood_UID),
-                )
 
 
 # def checkSessionFiles(mouseName, fileIdentifier, onlyTrue=True):
