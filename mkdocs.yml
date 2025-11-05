@@ -56,12 +56,13 @@ plugins:
       handlers:
         python:
           paths: [.]
-          selection:
+          options:
             docstring_style: numpy
-          rendering:
             show_source: true
             show_root_heading: true
             show_root_toc_entry: true
+            show_root_full_path: false
+            show_if_no_docstring: false
 
 nav:
   - Home: index.md
