@@ -1,0 +1,91 @@
+site_name: vrAnalysis2 Documentation
+site_description: Documentation for vrAnalysis2 - Virtual Reality Analysis Package
+site_author: vrAnalysis Team
+
+repo_name: landoskape/vrAnalysis
+repo_url: https://github.com/landoskape/vrAnalysis
+edit_uri: edit/main/docs/
+
+# GitHub Pages configuration
+site_url: https://landoskape.github.io/vrAnalysis/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          selection:
+            docstring_style: numpy
+          rendering:
+            show_source: true
+            show_root_heading: true
+            show_root_toc_entry: true
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quickstart: quickstart.md
+  - Overview: overview.md
+  - Modules:
+    - Database Management: modules/database.md
+    - Sessions: modules/sessions.md
+    - Registration: modules/registration.md
+    - Processors: modules/processors.md
+    - Analysis: modules/analysis.md
+    - Tracking: modules/tracking.md
+    - Multi-session Analysis: modules/multisession.md
+    - Helpers: modules/helpers.md
+  - API Reference:
+    - vrAnalysis2: api/vrAnalysis2.md
+    - database: api/database.md
+    - sessions: api/sessions.md
+    - registration: api/registration.md
+    - processors: api/processors.md
+    - analysis: api/analysis.md
+  - Examples:
+    - Registration Workflow: examples/registration.md
+    - Session Analysis: examples/session_analysis.md
+  - Contributing: contributing.md
+
