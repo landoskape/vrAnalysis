@@ -7,7 +7,6 @@ from numpyencoder import NumpyEncoder
 import speedystats as ss
 from ..files import local_data_path
 from .base import SessionData
-from ..registration.defaults import B2RegistrationOpts
 from roicat_support.classifier import load_classifier
 from roicat_support.classifier import get_results_path as get_classifier_results_path
 
@@ -41,6 +40,20 @@ def create_b2session(mouse_name: str, date: str, session_id: str, params: "B2Ses
     else:
         raise ValueError(f"params must be a B2SessionParams object or a dictionary")
     return B2Session(mouse_name, date, session_id, params)
+
+
+@dataclass
+class B2RegistrationOpts:
+    vrBehaviorVersion: int = 1
+    facecam: bool = False
+    imaging: bool = True
+    oasis: bool = True
+    moveRawData: bool = False
+    redCellProcessing: bool = True
+    clearOne: bool = True
+    neuropilCoefficient: float = 0.7
+    tau: float = 1.5
+    fs: int = 6
 
 
 @dataclass

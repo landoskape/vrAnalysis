@@ -49,7 +49,7 @@ def copyDataToStorage(mouseName, datestr="", session="", toClipboard=True):
     print(cmdPromptCommand)
 
 
-def s2pTargets(*inputs, zaru=True):
+def s2p_targets(*inputs, zaru=True):
     if len(inputs) == 3:
         mouseName, dateString, session = inputs
     else:

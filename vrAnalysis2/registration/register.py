@@ -6,19 +6,45 @@ import numpy as np
 import scipy as sp
 import scipy.io as scio
 from .. import helpers
-from ..sessions.base import LoadingRecipe
 from ..sessions import B2Session
+from ..sessions.base import LoadingRecipe
+from ..sessions.b2session import B2RegistrationOpts
 from .behavior import register_behavior
 from .oasis import oasis_deconvolution
 from .redcell import RedCellProcessing
-from .defaults import B2RegistrationOpts, DefaultRigInfo
+
+
+@dataclass
+class DefaultRigInfo:
+    """this is prepared here in case the RigInfo field was not saved for behavioral data
+
+    it's a serious fallback - the behavioral data should always have this information!
+    we need to know the info to process behavior, but guessing is not a good idea so any
+    time this is called, be careful and do your best to check your work.
+    """
+
+    computerName: str = "ZINKO"
+    rotEncPos: str = "left"
+    rotEncSign: int = -1
+    wheelToVR: int = 4000
+    wheelRadius: float = 9.75
+    rotaryRange: int = 32
 
 
 @dataclass(init=False)
 class B2Registration(B2Session):
-    def __init__(self, mouse_name: str, date_string: str, session_id: str, **user_opts: dict):
+    def __init__(
+        self,
+        mouse_name: str,
+        date_string: str,
+        session_id: str,
+        opts: Union[B2RegistrationOpts, dict] = B2RegistrationOpts(),
+    ):
         super().__init__(mouse_name, date_string, session_id)
-        self.opts = B2RegistrationOpts(**user_opts)
+        if isinstance(opts, B2RegistrationOpts):
+            self.opts = opts
+        else:
+            self.opts = B2RegistrationOpts(**opts)
 
         if not self.data_path.exists():
             raise ValueError(f"Session directory does not exist for {self.session_print()}")
