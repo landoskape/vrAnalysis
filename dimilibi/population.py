@@ -16,8 +16,8 @@ class Population:
         self,
         data: Union[np.ndarray, torch.Tensor],
         generate_splits: bool = True,
-        cell_split_prms={},
-        time_split_prms={},
+        cell_split_prms: dict = {},
+        time_split_prms: dict = {},
         dtype: Optional[torch.dtype] = None,
     ):
         """
@@ -57,16 +57,23 @@ class Population:
             self.split_cells(**cell_split_prms)
             self.split_times(**time_split_prms)
 
-    def get_split_data(self, time_idx: int = 0, center: bool = False, scale: bool = False, pre_split: bool = False, scale_type: Optional[str] = None):
+    def get_split_data(
+        self,
+        time_idx: Optional[Union[int, list[int]]] = None,
+        center: bool = False,
+        scale: bool = False,
+        pre_split: bool = False,
+        scale_type: Optional[str] = None,
+    ):
         """
         Get the source and target data for a specific set of timepoints.
 
         Parameters
         ----------
-        time_idx : int
-            The time group to use as the target data.
+        time_idx : Optional[Union[int, list[int]]]
+            The time group(s) to use as the target data. If a list of integers, will concatenate the data for the specified time groups.
             If None, will use all timepoints in the data.
-            (default is 0)
+            (default is None)
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
             (default is False)
@@ -102,14 +109,14 @@ class Population:
     def apply_split(
         self,
         data: torch.Tensor,
-        time_idx: int = 0,
+        time_idx: Optional[Union[int, list[int]]] = None,
         center: bool = False,
         scale: bool = False,
         pre_split: bool = False,
         scale_type: Optional[str] = None,
     ):
         """
-        Apply the time splits to a new dataset.
+        Apply the time splits to a new dataset. If time_idx is a list of integers, will concatenate the data for the specified time groups.
 
         Parameters
         ----------
@@ -117,8 +124,10 @@ class Population:
             The data to apply the time splits to. Must have shape (num_features, num_timepoints), where
             num_features is unconstrained and num_timepoints must match the number of timepoints in the
             Population instance.
-        time_idx : int
-            The time group to use as the target data.
+        time_idx : Optional[Union[int, list[int]]]
+            The time group(s) to use as the target data. If a list of integers, will concatenate the data for the specified time groups.
+            If None, will use all timepoints in the data.
+            (default is None)
             If None, will use all timepoints in the data.
             (default is 0)
         center : bool
@@ -146,6 +155,12 @@ class Population:
 
         if isinstance(time_idx, int):
             assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
+            time_idx = [time_idx]
+        elif isinstance(time_idx, list):
+            assert all(isinstance(idx, int) for idx in time_idx), "time_idx must be a list of integers"
+            assert all(
+                idx < len(self.time_split_indices) for idx in time_idx
+            ), "time_idx must correspond to one of the time groups in time_split_indices"
         else:
             if not time_idx is None:
                 raise ValueError("time_idx must be an integer or None")
@@ -163,7 +178,8 @@ class Population:
 
         # Select the timepoints for the specified group when time_idx is an integer
         if time_idx is not None:
-            data = data[:, self.time_split_indices[time_idx]]
+            _split_data = [data[:, self.time_split_indices[idx]] for idx in time_idx]
+            data = torch.cat(_split_data, dim=1)
 
         if center:
             if pre_split:

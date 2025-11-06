@@ -104,7 +104,7 @@ def get_population_name(vrexp, population_name=None, get_behavior=False):
     return name
 
 
-def save_population(population, mouse_name, datestr, sessionid, population_name=None, get_behavior=False):
+def save_population(population: Population, mouse_name, datestr, sessionid, population_name=None, get_behavior=False):
     """save population object to cache"""
     pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
     indices_dict = population.get_indices_dict()
