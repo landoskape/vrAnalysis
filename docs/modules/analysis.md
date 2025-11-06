@@ -1,6 +1,6 @@
 # Analysis
 
-The `vrAnalysis2.analysis` module provides tools for analyzing VR session data, including place cell analysis, reliability metrics, and plasticity measurements.
+The `vrAnalysis.analysis` module provides tools for analyzing VR session data, including place cell analysis, reliability metrics, and plasticity measurements.
 
 ## Analysis Modules
 

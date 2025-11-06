@@ -1,10 +1,10 @@
 # Quickstart Guide
 
-This guide will walk you through the basic workflows in vrAnalysis2.
+This guide will walk you through the basic workflows in vrAnalysis.
 
 ## Creating a Session
 
-The core object in vrAnalysis2 is the `B2Session`, which represents a single experimental session.
+The core object in vrAnalysis is the `B2Session`, which represents a single experimental session.
 
 ### Basic Session Creation
 

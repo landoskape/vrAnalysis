@@ -1,4 +1,4 @@
-"""Processors module for vrAnalysis2.
+"""Processors module for vrAnalysis.
 
 This module provides data processing pipelines that transform session data
 into analysis-ready formats.

@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for your interest in contributing to vrAnalysis2!
+Thank you for your interest in contributing to vrAnalysis!
 
 ## Development Setup
 

@@ -1,6 +1,6 @@
 # Processors
 
-The `vrAnalysis2.processors` module provides data processing pipelines that transform session data into analysis-ready formats.
+The `vrAnalysis.processors` module provides data processing pipelines that transform session data into analysis-ready formats.
 
 ## Spike Map Processor
 

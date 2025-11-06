@@ -2,7 +2,7 @@
 
 ## Architecture
 
-vrAnalysis2 is organized around a few core concepts:
+vrAnalysis is organized around a few core concepts:
 
 ### Sessions
 
@@ -60,7 +60,7 @@ Analysis (Analysis Tools)
 
 ## Directory Structure
 
-vrAnalysis2 expects data organized in an Alyx-style structure:
+vrAnalysis expects data organized in an Alyx-style structure:
 
 ```
 localData/
@@ -109,7 +109,7 @@ localData/
 
 ## Integration with Other Tools
 
-vrAnalysis2 integrates with:
+vrAnalysis integrates with:
 - **suite2p**: For calcium imaging data processing
 - **vrControl**: For behavioral data collection
 - **Timeline (Rigbox)**: For experimental event tracking
@@ -120,5 +120,5 @@ vrAnalysis2 integrates with:
 
 - Read the [Quickstart Guide](quickstart.md) for hands-on examples
 - Explore [Module Documentation](modules/database.md) for detailed information
-- Check the [API Reference](api/vrAnalysis2.md) for complete function signatures
+- Check the [API Reference](api/vrAnalysis.md) for complete function signatures
 

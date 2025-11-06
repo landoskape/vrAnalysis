@@ -1,6 +1,6 @@
 # Multi-Session Analysis
 
-The `vrAnalysis2.multisession` module provides tools for analyzing data across multiple sessions, enabling population-level and longitudinal analyses.
+The `vrAnalysis.multisession` module provides tools for analyzing data across multiple sessions, enabling population-level and longitudinal analyses.
 
 ## MultiSessionSpkmaps Class
 

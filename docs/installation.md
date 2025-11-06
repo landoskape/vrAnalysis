@@ -1,6 +1,6 @@
 # Installation
 
-This guide will help you install vrAnalysis2 and its dependencies.
+This guide will help you install vrAnalysis and its dependencies.
 
 ## Prerequisites
 
@@ -43,25 +43,25 @@ pip install -e .
 
 After installation, you have to configure paths for your data:
 
-1. **Data Directory**: Set your local data path in `vrAnalysis2/files.py`:
+1. **Data Directory**: Set your local data path in `vrAnalysis/files.py`:
 
 ```python
 def local_data_path() -> Path:
     return Path("C:/path/to/your/data")
 ```
 
-2. **Database Paths**: Configure database paths in `vrAnalysis2/database.py` using the `get_database_metadata()` function.
+2. **Database Paths**: Configure database paths in `vrAnalysis/database.py` using the `get_database_metadata()` function.
 
 ## Verifying Installation
 
-To verify that vrAnalysis2 is installed correctly:
+To verify that vrAnalysis is installed correctly:
 
 ```python
 import vrAnalysis
 from vrAnalysis.sessions import B2Session, create_b2session
 from vrAnalysis.database import get_database_metadata
 
-print("vrAnalysis2 installed successfully!")
+print("vrAnalysis installed successfully!")
 ```
 
 ## Troubleshooting
@@ -76,5 +76,5 @@ print("vrAnalysis2 installed successfully!")
 
 ## Next Steps
 
-After installation, check out the [Quickstart Guide](quickstart.md) to begin using vrAnalysis2.
+After installation, check out the [Quickstart Guide](quickstart.md) to begin using vrAnalysis.
 

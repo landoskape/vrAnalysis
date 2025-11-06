@@ -1,4 +1,4 @@
-# vrAnalysis2 API Reference
+# vrAnalysis API Reference
 
-::: vrAnalysis2
+::: vrAnalysis
 

@@ -24,7 +24,7 @@ vrAnalysis is designed to work with:
 - **[Installation Guide](installation.md)** - Get started with vrAnalysis
 - **[Quickstart Tutorial](quickstart.md)** - Learn the basics
 - **[Module Documentation](modules/database.md)** - Detailed module descriptions
-- **[API Reference](api/vrAnalysis2.md)** - Complete API documentation
+- **[API Reference](api/vrAnalysis.md)** - Complete API documentation
 
 ## Package Structure
 

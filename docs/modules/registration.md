@@ -1,6 +1,6 @@
 # Registration
 
-The `vrAnalysis2.registration` module handles preprocessing and registration of experimental data. Registration aligns behavioral and imaging data, runs deconvolution, and prepares data for analysis.
+The `vrAnalysis.registration` module handles preprocessing and registration of experimental data. Registration aligns behavioral and imaging data, runs deconvolution, and prepares data for analysis.
 
 ## Core Classes
 

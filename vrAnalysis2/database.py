@@ -703,7 +703,7 @@ class SessionDatabase(BaseDatabase):
         return sessions
 
     # == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==
-    # == It should be refactored to use the new vrAnalysis2 classes eventually, but I'm leaving it here for now ==
+    # == It should be refactored to use the new vrAnalysis classes eventually, but I'm leaving it here for now ==
     # == It should work as is as long as vrAnalysis stays on the path! ==
 
     # == vrExperiment related methods ==

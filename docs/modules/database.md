@@ -1,6 +1,6 @@
 # Database Management
 
-The `vrAnalysis2.database` module provides classes and functions for managing VR session data in a database. It's designed to work with Microsoft Access databases (`.accdb` files) by default, but can be adapted to other SQL databases.
+The `vrAnalysis.database` module provides classes and functions for managing VR session data in a database. It's designed to work with Microsoft Access databases (`.accdb` files) by default, but can be adapted to other SQL databases.
 
 ## Core Classes
 

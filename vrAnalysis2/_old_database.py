@@ -13,7 +13,7 @@ from _old_vrAnalysis import session as original_session
 from _old_vrAnalysis import registration
 from _old_vrAnalysis import fileManagement as fm
 
-# vrAnalysis2 imports
+# vrAnalysis imports
 from .helpers import readable_bytes, error_print, get_confirmation
 from .sessions import B2Session, create_b2session
 
@@ -518,7 +518,7 @@ class SessionDatabase(BaseDatabase):
         return sessions
 
     # == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==
-    # == It should be refactored to use the new vrAnalysis2 classes eventually, but I'm leaving it here for now ==
+    # == It should be refactored to use the new vrAnalysis classes eventually, but I'm leaving it here for now ==
     # == It should work as is as long as vrAnalysis stays on the path! ==
 
     # == vrExperiment related methods ==

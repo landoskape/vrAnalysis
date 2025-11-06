@@ -1,6 +1,6 @@
 # Sessions
 
-The `vrAnalysis2.sessions` module provides classes for loading and managing VR session data. Sessions are the core objects that represent individual experimental runs.
+The `vrAnalysis.sessions` module provides classes for loading and managing VR session data. Sessions are the core objects that represent individual experimental runs.
 
 ## Core Classes
 

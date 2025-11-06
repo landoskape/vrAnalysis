@@ -1,6 +1,6 @@
 # Helpers
 
-The `vrAnalysis2.helpers` module provides utility functions for common operations.
+The `vrAnalysis.helpers` module provides utility functions for common operations.
 
 ## Helper Modules
 

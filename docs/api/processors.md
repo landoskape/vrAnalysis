@@ -1,4 +1,4 @@
 # Processors API Reference
 
-::: vrAnalysis2.processors
+::: vrAnalysis.processors
 

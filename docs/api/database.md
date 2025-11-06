@@ -1,4 +1,4 @@
 # Database API Reference
 
-::: vrAnalysis2.database
+::: vrAnalysis.database
 

@@ -1,6 +1,6 @@
 # Tracking
 
-The `vrAnalysis2.tracking` module provides functionality for tracking cells across multiple sessions, enabling longitudinal analysis of individual neurons.
+The `vrAnalysis.tracking` module provides functionality for tracking cells across multiple sessions, enabling longitudinal analysis of individual neurons.
 
 ## Cell Tracking
 

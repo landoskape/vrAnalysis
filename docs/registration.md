@@ -294,7 +294,7 @@ The `B2RegistrationOpts` dataclass controls registration behavior:
 
 **Behavior Options:**
 - `vrBehaviorVersion` (int): Version of vrControl software (1=standard, 2=CR hippocampus, software no longer exists!)
-    - Note: this system will allow you to use this pipeline with new behavior software, just add a new version number and a new behavior processing function in the ``vrAnalysis2.registration.behavior`` module.
+    - Note: this system will allow you to use this pipeline with new behavior software, just add a new version number and a new behavior processing function in the ``vrAnalysis.registration.behavior`` module.
 
 **Data Processing Flags:**
 
