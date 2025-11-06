@@ -38,13 +38,11 @@ deps_gui = [
     "pyqt5",
     "pyqtgraph",
     "napari[all]",
-    "vrAnalysis.redgui",
-    "vrAnalysis.uiDatabase",
 ]
 
 setup(
     name="vrAnalysis",
-    version="1.0.0",
+    version="2.0.0",
     description="code to analyze behavior and imaging data",
     long_description=long_description,
     long_description_content_type="text/markdown",

@@ -83,7 +83,7 @@ nav:
     - Multi-session Analysis: modules/multisession.md
     - Helpers: modules/helpers.md
   - API Reference:
-    - vrAnalysis2: api/vrAnalysis2.md
+    - vrAnalysis: api/vrAnalysis.md
     - database: api/database.md
     - sessions: api/sessions.md
     - registration: api/registration.md
