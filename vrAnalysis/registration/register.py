@@ -1,6 +1,6 @@
 # inclusions
-from dataclasses import dataclass
-from typing import Union
+from dataclasses import dataclass, asdict, is_dataclass
+from typing import Union, Mapping
 from datetime import datetime
 import numpy as np
 import scipy as sp
@@ -8,7 +8,7 @@ import scipy.io as scio
 from .. import helpers
 from ..sessions import B2Session
 from ..sessions.base import LoadingRecipe
-from ..sessions.b2session import B2RegistrationOpts
+from ..sessions.b2session import B2RegistrationOpts, create_b2session
 from .behavior import register_behavior
 from .oasis import oasis_deconvolution
 from .redcell import RedCellProcessing
@@ -116,8 +116,12 @@ class B2Registration(B2Session):
         super().__init__(mouse_name, date_string, session_id)
         if isinstance(opts, B2RegistrationOpts):
             self.opts = opts
-        else:
+        elif is_dataclass(opts):
+            self.opts = B2RegistrationOpts(**asdict(opts))
+        elif isinstance(opts, Mapping):
             self.opts = B2RegistrationOpts(**opts)
+        else:
+            raise TypeError(f"opts must be B2RegistrationOpts, a dataclass, or a mapping; got {type(opts)}")
 
         if not self.data_path.exists():
             raise ValueError(f"Session directory does not exist for {self.session_print()}")
@@ -506,7 +510,8 @@ class B2Registration(B2Session):
             return
 
         # create RedCellProcessing object
-        red_cell_processing = RedCellProcessing(self)
+        b2session_of_self = create_b2session(self.mouse_name, self.date, self.session_id)
+        red_cell_processing = RedCellProcessing(b2session_of_self)
 
         # compute red-features
         dot_parameters = {"lowcut": 12, "highcut": 250, "order": 3, "fs": 512}

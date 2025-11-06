@@ -1,10 +1,10 @@
 import time
 import numpy as np
 from _old_vrAnalysis import helpers
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from .register import B2Registration
+    from ..sessions import B2Session
 
 
 class RedCellProcessing:
@@ -18,8 +18,8 @@ class RedCellProcessing:
 
     Parameters
     ----------
-    b2_registration : B2Registration
-        The B2Registration object containing the session data.
+    b2session : B2Session
+        The B2Session object containing the session data.
     um_per_pixel : float, optional
         Micrometers per pixel for spatial measurements. Default is 1.3.
     autoload : bool, optional
@@ -28,8 +28,8 @@ class RedCellProcessing:
 
     Attributes
     ----------
-    b2_registration : B2Registration
-        The B2Registration object containing the session data.
+    b2session : B2Session
+        The B2Session object containing the session data.
     feature_names : list of str
         Standard names of features used to determine red cell criterion.
     num_planes : int
@@ -52,14 +52,19 @@ class RedCellProcessing:
         Suite2p red cell values for each ROI.
     """
 
-    def __init__(self, b2_registration: "B2Registration", um_per_pixel: float = 1.3, autoload: bool = True):
+    def __init__(
+        self,
+        b2session: "B2Session",
+        um_per_pixel: float = 1.3,
+        autoload: bool = True,
+    ):
         """
         Initialize RedCellProcessing object.
 
         Parameters
         ----------
-        b2_registration : B2Registration
-            The B2Registration object containing the session data.
+        b2session : B2Session
+            The B2Session object containing the session data.
         um_per_pixel : float, optional
             Micrometers per pixel for spatial measurements. Default is 1.3.
         autoload : bool, optional
@@ -74,15 +79,15 @@ class RedCellProcessing:
 
         # Make sure redcell is available...
         msg = "redcell is not an available suite2p output, so you can't do redCellProcessing."
-        assert "redcell" in b2_registration.get_value("available"), msg
+        assert "redcell" in b2session.get_value("available"), msg
 
-        self.b2_registration = b2_registration
+        self.b2session = b2session
 
         # standard names of the features used to determine red cell criterion
         self.feature_names = ["S2P", "dotProduct", "pearson", "phaseCorrelation"]
 
         # load some critical values for easy readable access
-        self.num_planes = len(self.b2_registration.get_value("planeNames"))
+        self.num_planes = len(self.b2session.get_value("planeNames"))
         self.um_per_pixel = um_per_pixel  # store this for generating correct axes and measuring distances
 
         self.data_loaded = False  # initialize to false in case data isn't loaded
@@ -107,7 +112,7 @@ class RedCellProcessing:
             If reference images do not all have the same shape.
         """
         # load reference images
-        ops = self.b2_registration.load_s2p("ops")
+        ops = self.b2session.load_s2p("ops")
         self.reference = [op["meanImg_chan2"] for op in ops]
         self.lx, self.ly = self.reference[0].shape
         for ref in self.reference:
@@ -115,14 +120,14 @@ class RedCellProcessing:
             assert (self.lx, self.ly) == ref.shape, msg
 
         # load masks (lam=weight of each pixel, xpix & ypix=index of each pixel in ROI mask)
-        stat = self.b2_registration.load_s2p("stat")
+        stat = self.b2session.load_s2p("stat")
         self.lam = [s["lam"] for s in stat]
         self.ypix = [s["ypix"] for s in stat]
         self.xpix = [s["xpix"] for s in stat]
-        self.roi_plane_idx = self.b2_registration.loadone("mpciROIs.stackPosition")[:, 2]
+        self.roi_plane_idx = self.b2session.loadone("mpciROIs.stackPosition")[:, 2]
 
         # load S2P red cell value
-        self.red_s2p = self.b2_registration.loadone("mpciROIs.redS2P")  # (preloaded, will never change in this function)
+        self.red_s2p = self.b2session.loadone("mpciROIs.redS2P")  # (preloaded, will never change in this function)
 
         # create supporting variables for mapping locations and axes
         self.y_base_ref = np.arange(self.ly)
@@ -189,13 +194,13 @@ class RedCellProcessing:
         index is updated in place and saved to oneData.
         """
         # create initial all true red cell idx
-        red_cell_idx = np.full(self.b2_registration.loadone("mpciROIs.redCellIdx").shape, True)
+        red_cell_idx = np.full(self.b2session.loadone("mpciROIs.redCellIdx").shape, True)
 
         # load feature values for each ROI
-        red_s2p = self.b2_registration.loadone("mpciROIs.redS2P")
-        dot_product = self.b2_registration.loadone("mpciROIs.redDotProduct")
-        corr_coef = self.b2_registration.loadone("mpciROIs.redPearson")
-        phase_corr = self.b2_registration.loadone("mpciROIs.redPhaseCorrelation")
+        red_s2p = self.b2session.loadone("mpciROIs.redS2P")
+        dot_product = self.b2session.loadone("mpciROIs.redDotProduct")
+        corr_coef = self.b2session.loadone("mpciROIs.redPearson")
+        phase_corr = self.b2session.loadone("mpciROIs.redPhaseCorrelation")
 
         # create lists for zipping through each feature/cutoff combination
         features = [red_s2p, dot_product, corr_coef, phase_corr]
@@ -220,12 +225,12 @@ class RedCellProcessing:
                 red_cell_idx &= feature <= cutoff[1]
 
         # save new red cell index to one data
-        self.b2_registration.saveone(red_cell_idx, "mpciROIs.redCellIdx")
+        self.b2session.saveone(red_cell_idx, "mpciROIs.redCellIdx")
 
         # save feature cutoffs to one data
         for idx, name in enumerate(self.feature_names):
-            self.b2_registration.saveone(cutoffs[idx], self.one_name_feature_cutoffs(name))
-        print(f"Red Cell curation choices are saved for session {self.b2_registration.session_print()}")
+            self.b2session.saveone(cutoffs[idx], self.one_name_feature_cutoffs(name))
+        print(f"Red Cell curation choices are saved for session {self.b2session.session_print()}")
 
     def update_from_session(self, red_cell, force_update=False):
         """
@@ -251,9 +256,9 @@ class RedCellProcessing:
         assert isinstance(red_cell, RedCellProcessing), "red_cell is not a RedCellProcessing object"
         if not (force_update):
             assert (
-                red_cell.b2_registration.mouse_name == self.b2_registration.mouse_name
+                red_cell.b2session.mouse_name == self.b2session.mouse_name
             ), "session to copy from is from a different mouse, this isn't allowed without the force_update=True input"
-        cutoffs = [red_cell.b2_registration.loadone(red_cell.one_name_feature_cutoffs(name)) for name in self.feature_names]
+        cutoffs = [red_cell.b2session.loadone(red_cell.one_name_feature_cutoffs(name)) for name in self.feature_names]
         self.update_red_idx(s2p_cutoff=cutoffs[0], dot_product_cutoff=cutoffs[1], corr_coef_cutoff=cutoffs[2], phase_corr_cutoff=cutoffs[3])
 
     def cropped_phase_correlation(self, plane_idx=None, width=40, eps=1e6, winFunc=lambda x: np.hamming(x.shape[-1])):
@@ -397,7 +402,7 @@ class RedCellProcessing:
 
         corr_coef = []
         for plane in plane_idx:
-            num_rois = self.b2_registration.get_value("roiPerPlane")[plane]
+            num_rois = self.b2session.get_value("roiPerPlane")[plane]
             c_ref_stack = np.reshape(
                 self.centered_reference_stack(plane_idx=plane, width=width, fill=np.nan, filtPrms=(lowcut, highcut, order, fs)),
                 (num_rois, -1),
@@ -686,15 +691,15 @@ class RedCellProcessing:
             plane_idx = np.arange(self.num_planes)
         if isinstance(plane_idx, (int, np.integer)):
             plane_idx = (plane_idx,)  # make plane_idx iterable
-        msg = f"in session: {self.b2_registration.session_print()}, there are only {self.num_planes} planes!"
+        msg = f"in session: {self.b2session.session_print()}, there are only {self.num_planes} planes!"
         assert all([0 <= plane < self.num_planes for plane in plane_idx]), msg
         if not (self.data_loaded):
             self.load_reference_and_masks()
         roi_mask_volume = []
         for plane in plane_idx:
-            roi_mask_volume.append(np.zeros((self.b2_registration.get_value("roiPerPlane")[plane], self.ly, self.lx)))
+            roi_mask_volume.append(np.zeros((self.b2session.get_value("roiPerPlane")[plane], self.ly, self.lx)))
             idx_roi_in_plane = np.where(self.roi_plane_idx == plane)[0]
-            for roi in range(self.b2_registration.get_value("roiPerPlane")[plane]):
+            for roi in range(self.b2session.get_value("roiPerPlane")[plane]):
                 c_roi_idx = idx_roi_in_plane[roi]
                 roi_mask_volume[-1][roi, self.ypix[c_roi_idx], self.xpix[c_roi_idx]] = self.lam[c_roi_idx]
         return np.concatenate(roi_mask_volume, axis=0)

@@ -84,6 +84,13 @@ class B2RegistrationOpts:
     neuropilCoefficient: float = 0.7
     tau: float = 1.5
     fs: int = 6
+    moveRawData: bool = field(
+        default=False,
+        metadata={
+            "deprecated": True,
+            "note": "For backwards compatibility only; this option is never used in current code.",
+        },
+    )
 
 
 @dataclass
