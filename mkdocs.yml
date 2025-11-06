@@ -69,28 +69,18 @@ plugins:
 nav:
   - Home: index.md
   - Installation: installation.md
-  - Quickstart: quickstart.md
   - Overview: overview.md
-  - Workflows:
-    - Registration: registration.md
-  - Modules:
-    - Database Management: modules/database.md
-    - Sessions: modules/sessions.md
-    - Registration: modules/registration.md
-    - Processors: modules/processors.md
-    - Analysis: modules/analysis.md
-    - Tracking: modules/tracking.md
-    - Multi-session Analysis: modules/multisession.md
-    - Helpers: modules/helpers.md
+  - Workflows: 
+    - Overview: workflows/index.md
+    - Registration: workflows/registration.md
   - API Reference:
-    - vrAnalysis: api/vrAnalysis.md
-    - database: api/database.md
     - sessions: api/sessions.md
+    - b2sessions: api/b2session.md
+    - database: api/database.md
     - registration: api/registration.md
     - processors: api/processors.md
-    - analysis: api/analysis.md
   - Examples:
-    - Registration Workflow: examples/registration.md
+    - Overview: examples/index.md
     - Session Analysis: examples/session_analysis.md
   - Contributing: contributing.md
 

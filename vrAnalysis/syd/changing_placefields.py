@@ -367,7 +367,7 @@ class ChangingPlaceFieldFocusedViewer(Viewer):
         else:
             ax_red_placefield.axis("off")
         ax_ctl_placefield.set_xlabel("Position (cm)")
-        ax_ctl_placefield.set_ylabel("Activity ($\sigma$)")
+        ax_ctl_placefield.set_ylabel(r"Activity ($\sigma$)")
         ax_ctl_placefield.set_title(f"Ctl ROI: {true_ctl_idx}")
         ax_red_placefield.set_xlabel("Position (cm)")
         if show_red:

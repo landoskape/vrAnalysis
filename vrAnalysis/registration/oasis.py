@@ -8,16 +8,22 @@ from functools import partial
 # -------------------------------------- oasis processing methods -----------------------------------
 # ---------------------------------------------------------------------------------------------------
 def _process_fc(fc: np.ndarray, g: float, deconvolve: callable) -> np.ndarray:
-    """Process a single fluorescence trace using oasis.
+    """
+    Process a single fluorescence trace using oasis.
 
-    Parameters:
+    Parameters
     ----------
-    fc: np.ndarray
+    fc : np.ndarray
         The fluorescence trace to process.
-    g: float
+    g : float
         The g parameter for oasis deconvolution.
-    deconvolve: callable
+    deconvolve : callable
         The oasis deconvolve function.
+
+    Returns
+    -------
+    np.ndarray
+        Deconvolved trace with negative values clipped to zero.
     """
     # do oasis and cast as single to match with suite2p data
     c_oasis = deconvolve(fc, g=(g,), penalty=1)[1].astype(np.single)
@@ -28,16 +34,34 @@ def _process_fc(fc: np.ndarray, g: float, deconvolve: callable) -> np.ndarray:
 
 
 def oasis_deconvolution(fcorr: np.ndarray, g: float, num_processes: int = cpu_count() - 1) -> list[np.ndarray]:
-    """Perform oasis deconvolution on a batch of fluorescence traces.
+    """
+    Perform oasis deconvolution on a batch of fluorescence traces.
 
-    Parameters:
+    Processes fluorescence traces in parallel using multiple processes to
+    compute deconvolved spike estimates using the OASIS algorithm.
+
+    Parameters
     ----------
-    fcorr: np.ndarray
-        The fluorescence traces to process.
-    g: float
-        The g parameter for oasis deconvolution.
-    num_processes: int
-        The number of processes to use for oasis deconvolution.
+    fcorr : np.ndarray
+        The fluorescence traces to process, shape (num_rois, num_frames).
+    g : float
+        The g parameter for oasis deconvolution (decay constant).
+    num_processes : int, optional
+        The number of processes to use for parallel processing.
+        Default is cpu_count() - 1.
+
+    Returns
+    -------
+    list of np.ndarray
+        List of deconvolved traces, one per ROI. Each trace has negative
+        values clipped to zero.
+
+    Raises
+    ------
+    ValueError
+        If fcorr is not a 2D array or if num_processes is less than 1.
+    ImportError
+        If the oasis package cannot be imported.
     """
     if fcorr.ndim != 2:
         raise ValueError("fcorr must be a 2D numpy array.")

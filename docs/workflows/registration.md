@@ -421,10 +421,3 @@ After registration, the session's `onedata/` directory contains standardized Num
           print(f"Error: {record['vrRegistrationException']}")
 ```
 
-## See Also
-
-- [Database Module](modules/database.md) for database management
-- [Sessions Module](modules/sessions.md) for session data loading
-- [Registration Module](modules/registration.md) for API reference
-- [Registration Examples](examples/registration.md) for detailed workflows
-

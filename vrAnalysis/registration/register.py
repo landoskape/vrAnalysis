@@ -16,11 +16,29 @@ from .redcell import RedCellProcessing
 
 @dataclass
 class DefaultRigInfo:
-    """this is prepared here in case the RigInfo field was not saved for behavioral data
+    """
+    Default rig information for behavior processing.
 
-    it's a serious fallback - the behavioral data should always have this information!
-    we need to know the info to process behavior, but guessing is not a good idea so any
-    time this is called, be careful and do your best to check your work.
+    This is prepared as a fallback in case the RigInfo field was not saved for
+    behavioral data. The behavioral data should always have this information!
+    We need to know the info to process behavior, but guessing is not a good
+    idea, so any time this is called, be careful and do your best to check
+    your work.
+
+    Attributes
+    ----------
+    computerName : str
+        Name of the computer running the experiment. Default is "ZINKO".
+    rotEncPos : str
+        Position of the rotary encoder ("left" or "right"). Default is "left".
+    rotEncSign : int
+        Sign of the rotary encoder (1 or -1). Default is -1.
+    wheelToVR : int
+        Conversion factor from wheel encoder counts to VR units. Default is 4000.
+    wheelRadius : float
+        Radius of the wheel in centimeters. Default is 9.75.
+    rotaryRange : int
+        Bit range of the rotary encoder. Default is 32.
     """
 
     computerName: str = "ZINKO"
@@ -33,6 +51,41 @@ class DefaultRigInfo:
 
 @dataclass(init=False)
 class B2Registration(B2Session):
+    """
+    Registration class for processing B2 (vrControl) session data.
+
+    This class handles the preprocessing and registration of behavioral and
+    imaging data from vrControl experiments. It processes timeline data,
+    behavioral data, imaging data (suite2p outputs), red cell identification,
+    and creates mappings between behavioral and imaging data.
+
+    Parameters
+    ----------
+    mouse_name : str
+        Name of the mouse.
+    date_string : str
+        Date string in format "YYYY-MM-DD".
+    session_id : str
+        Session identifier.
+    opts : B2RegistrationOpts or dict, optional
+        Registration options. If a dict, will be converted to B2RegistrationOpts.
+        Default is B2RegistrationOpts().
+
+    Attributes
+    ----------
+    opts : B2RegistrationOpts
+        Registration options.
+    tl_file : dict
+        Timeline data loaded from Timeline.mat file.
+    vr_file : dict
+        Behavioral data loaded from VRBehavior_trial.mat file.
+
+    Raises
+    ------
+    ValueError
+        If session directory does not exist.
+    """
+
     def __init__(
         self,
         mouse_name: str,
@@ -40,6 +93,26 @@ class B2Registration(B2Session):
         session_id: str,
         opts: Union[B2RegistrationOpts, dict] = B2RegistrationOpts(),
     ):
+        """
+        Initialize B2Registration object.
+
+        Parameters
+        ----------
+        mouse_name : str
+            Name of the mouse.
+        date_string : str
+            Date string in format "YYYY-MM-DD".
+        session_id : str
+            Session identifier.
+        opts : B2RegistrationOpts or dict, optional
+            Registration options. If a dict, will be converted to B2RegistrationOpts.
+            Default is B2RegistrationOpts().
+
+        Raises
+        ------
+        ValueError
+            If session directory does not exist.
+        """
         super().__init__(mouse_name, date_string, session_id)
         if isinstance(opts, B2RegistrationOpts):
             self.opts = opts
@@ -53,19 +126,54 @@ class B2Registration(B2Session):
             self.one_path.mkdir(parents=True)
 
     def _additional_loading(self):
-        """Override to skip loading registered data.
+        """
+        Override to skip loading registered data.
 
         Registration objects produce registered data rather than load it,
         so we skip the parent's _additional_loading() which tries to load
         from saved JSON files.
+
+        Notes
+        -----
+        This method intentionally does nothing. Registration objects create
+        data rather than loading pre-existing registered data.
         """
         pass
 
     def register(self):
+        """
+        Register the session by running all preprocessing steps.
+
+        This is the main entry point for registration. It runs all preprocessing
+        steps (timeline, behavior, imaging, red cells, facecam, behavior-to-imaging)
+        and saves session parameters.
+
+        See Also
+        --------
+        do_preprocessing : Run all preprocessing steps.
+        save_session_prms : Save session parameters to oneData.
+        """
         self.do_preprocessing()
         self.save_session_prms()
 
     def do_preprocessing(self):
+        """
+        Run all preprocessing steps for the session.
+
+        Processes timeline data, behavioral data, imaging data, red cell
+        identification, facecam data (placeholder), and creates mappings
+        between behavioral and imaging data.
+
+        Notes
+        -----
+        Processing steps are run in order:
+        1. Timeline processing
+        2. Behavior processing
+        3. Imaging processing
+        4. Red cell processing (if enabled)
+        5. Facecam processing (not yet implemented)
+        6. Behavior-to-imaging mapping
+        """
         if self.opts.clearOne:
             self.clear_one_data(certainty=True)
         self.process_timeline()
@@ -77,6 +185,22 @@ class B2Registration(B2Session):
 
     # --------------------------------------------------------------- preprocessing methods ------------------------------------------------------------
     def process_timeline(self):
+        """
+        Process timeline data from rigbox.
+
+        Extracts timestamps, rotary encoder position, lick times, reward times,
+        and trial start times from the Timeline.mat file. Processes photodiode
+        signals to align trial starts with imaging frames.
+
+        Notes
+        -----
+        This method:
+        - Loads timeline structure from Timeline.mat
+        - Converts rotary encoder to position
+        - Detects licks and rewards
+        - Processes photodiode signal to find trial start frames
+        - Saves timeline data to oneData
+        """
         # load these files for raw behavioral & timeline data
         self.load_timeline_structure()
         self.load_behavior_structure()
@@ -154,12 +278,47 @@ class B2Registration(B2Session):
         self.preprocessing.append("timeline")
 
     def process_behavior(self):
+        """
+        Process behavioral data from vrControl.
+
+        Processes behavioral data using the appropriate behavior processing
+        function based on the vrBehaviorVersion option. Extracts trial-level
+        and sample-level behavioral data and aligns timestamps to the timeline.
+
+        See Also
+        --------
+        register_behavior : Dispatcher function for behavior processing.
+        """
         self = register_behavior(self, self.opts.vrBehaviorVersion)
 
         # Confirm that vrBehavior has been processed
         self.preprocessing.append("vrBehavior")
 
     def process_imaging(self):
+        """
+        Process imaging data from suite2p outputs.
+
+        Loads suite2p outputs, identifies available planes and outputs,
+        handles frame count mismatches between suite2p and timeline,
+        optionally recomputes deconvolution using OASIS, and saves imaging
+        data to oneData format.
+
+        Raises
+        ------
+        ValueError
+            If imaging is requested but suite2p directory does not exist, or
+            if required suite2p outputs are missing, or if frame count
+            mismatches cannot be resolved.
+
+        Notes
+        -----
+        This method:
+        - Identifies planes and available suite2p outputs
+        - Checks for required outputs (stat, ops, F, Fneu, iscell, spks)
+        - Handles frame count mismatches between suite2p and timeline
+        - Optionally recomputes deconvolution using OASIS
+        - Saves imaging data to oneData
+        """
         if not self.opts.imaging:
             print(f"In session {self.session_print()}, imaging setting set to False in opts['imaging']. Skipping image processing.")
             return None
@@ -293,9 +452,30 @@ class B2Registration(B2Session):
         self.preprocessing.append("imaging")
 
     def process_facecam(self):
+        """
+        Process facecam data.
+
+        Placeholder for facecam preprocessing. Not yet implemented.
+
+        Notes
+        -----
+        This method currently only prints a message indicating that facecam
+        preprocessing has not been implemented yet.
+        """
         print("Facecam preprocessing has not been coded yet!")
 
     def process_behavior_to_imaging(self):
+        """
+        Create mapping from behavioral frames to imaging frames.
+
+        Computes the nearest imaging frame for each behavioral sample and
+        saves the mapping to oneData.
+
+        Notes
+        -----
+        This method is skipped if imaging is disabled in opts. The mapping
+        is saved as "positionTracking.mpci" in oneData.
+        """
         if not self.opts.imaging:
             print(f"In session {self.session_print()}, imaging setting set to False in opts['imaging']. Skipping behavior2imaging processing.")
             return None
@@ -305,6 +485,19 @@ class B2Registration(B2Session):
         self.saveone(idx_behave_to_frame.astype(int), "positionTracking.mpci")
 
     def process_red_cells(self):
+        """
+        Process red cell features for identification.
+
+        Computes red cell features (dot product, Pearson correlation, phase
+        correlation) using RedCellProcessing and saves them to oneData.
+        Initializes red cell index and manual assignment arrays.
+
+        Notes
+        -----
+        This method is skipped if imaging or redCellProcessing is disabled in opts,
+        or if redcell output is not available in suite2p. The computed features
+        are saved to oneData for later use in red cell identification.
+        """
         if not (self.opts.imaging) or not (self.opts.redCellProcessing):
             return  # if not requested, skip function
         # if imaging was processed and redCellProcessing was requested, then try to preprocess red cell features
@@ -339,10 +532,36 @@ class B2Registration(B2Session):
 
     # -------------------------------------- methods for handling timeline data produced by rigbox ------------------------------------------------------------
     def load_timeline_structure(self):
+        """
+        Load timeline structure from Timeline.mat file.
+
+        Loads the Timeline.mat file produced by rigbox and stores it in
+        self.tl_file. The file is expected to be named
+        "{date}_{session_id}_{mouse_name}_Timeline.mat".
+
+        Notes
+        -----
+        The timeline file contains raw DAQ data, timestamps, and hardware
+        input measurements from the experimental rig.
+        """
         tl_file_name = self.data_path / f"{self.date}_{self.session_id}_{self.mouse_name}_Timeline.mat"  # timeline.mat file name
         self.tl_file = scio.loadmat(tl_file_name, simplify_cells=True)["Timeline"]  # load matlab structure
 
     def timeline_inputs(self, ignore_timestamps=False):
+        """
+        Get list of available timeline input names.
+
+        Parameters
+        ----------
+        ignore_timestamps : bool, optional
+            If True, return only hardware input names. If False, include
+            "timestamps" as the first element. Default is False.
+
+        Returns
+        -------
+        list of str
+            List of timeline input names.
+        """
         if not hasattr(self, "tl_file"):
             self.load_timeline_structure()
         hw_inputs = [hwInput["name"] for hwInput in self.tl_file["hw"]["inputs"]]
@@ -351,6 +570,25 @@ class B2Registration(B2Session):
         return ["timestamps", *hw_inputs]
 
     def get_timeline_var(self, var_name):
+        """
+        Get a timeline variable by name.
+
+        Parameters
+        ----------
+        var_name : str
+            Name of the timeline variable to retrieve. Can be "timestamps"
+            or any hardware input name.
+
+        Returns
+        -------
+        np.ndarray
+            Timeline variable data as a 1D array.
+
+        Raises
+        ------
+        AssertionError
+            If var_name is not a valid timeline variable name.
+        """
         if not hasattr(self, "tl_file"):
             self.load_timeline_structure()
         if var_name == "timestamps":
@@ -361,6 +599,25 @@ class B2Registration(B2Session):
             return np.squeeze(self.tl_file["rawDAQData"][:, np.where([inputName == var_name for inputName in inputNames])[0]])
 
     def convert_rotary_encoder_to_position(self, rotaryEncoder, rigInfo):
+        """
+        Convert rotary encoder counts to position in centimeters.
+
+        The rotary encoder is a counter with a large range that sometimes
+        wraps around. This method handles wrap-around, computes cumulative
+        movement, and scales to centimeters.
+
+        Parameters
+        ----------
+        rotaryEncoder : np.ndarray
+            Rotary encoder counts from timeline.
+        rigInfo : DefaultRigInfo or similar
+            Rig information containing rotary encoder parameters.
+
+        Returns
+        -------
+        np.ndarray
+            Position in centimeters, shape (num_samples,).
+        """
         # rotary encoder is a counter with a big range that sometimes flips around it's axis
         # first get changes in encoder position, fix any big jumps in value, take the cumulative movement and scale to centimeters
         rotary_movement = helpers.diffsame(rotaryEncoder)
@@ -372,6 +629,20 @@ class B2Registration(B2Session):
 
     # -------------------------------------- methods for handling vrBehavior data produced by vrControl ------------------------------------------------------------
     def load_behavior_structure(self):
+        """
+        Load behavioral structure from VRBehavior_trial.mat file.
+
+        Loads the VRBehavior_trial.mat file produced by vrControl and stores
+        it in self.vr_file. If rigInfo is missing, uses DefaultRigInfo as
+        a fallback.
+
+        Notes
+        -----
+        The behavior file contains trial-level and sample-level behavioral
+        data including timestamps, positions, rewards, and licks. The file
+        is expected to be named
+        "{date}_{session_id}_{mouse_name}_VRBehavior_trial.mat".
+        """
         vr_file_name = self.data_path / f"{self.date}_{self.session_id}_{self.mouse_name}_VRBehavior_trial.mat"  # vrBehavior output file name
         self.vr_file = scio.loadmat(vr_file_name, struct_as_record=False, squeeze_me=True)
         if "rigInfo" not in self.vr_file.keys():
@@ -381,6 +652,22 @@ class B2Registration(B2Session):
             self.vr_file["rigInfo"].rotaryRange = 32
 
     def convert_dense(self, data: Union[np.ndarray, sp.sparse.spmatrix]) -> np.ndarray:
+        """
+        Convert sparse or dense array to dense numpy array.
+
+        Truncates data to numTrials rows and converts sparse matrices to
+        dense arrays.
+
+        Parameters
+        ----------
+        data : np.ndarray or scipy.sparse.spmatrix
+            Input data, which may be sparse or dense.
+
+        Returns
+        -------
+        np.ndarray
+            Dense numpy array, truncated to numTrials rows and squeezed.
+        """
         data = data[: self.get_value("numTrials")]
         if sp.sparse.issparse(data):
             data = data.toarray().squeeze()
@@ -389,6 +676,20 @@ class B2Registration(B2Session):
         return data
 
     def create_index(self, time_stamps):
+        """
+        Create index arrays for non-zero/non-NaN timestamps per trial.
+
+        Parameters
+        ----------
+        time_stamps : np.ndarray
+            Timestamps as (numTrials x numSamples) dense numpy array.
+
+        Returns
+        -------
+        list of np.ndarray
+            List of index arrays, one per trial, indicating which samples
+            have valid data (non-NaN or non-zero).
+        """
         # requires timestamps as (numTrials x numSamples) dense numpy array
         if np.any(np.isnan(time_stamps)):
             return [np.where(~np.isnan(t))[0] for t in time_stamps]  # in case we have dense timestamps with nans where no data
@@ -396,4 +697,19 @@ class B2Registration(B2Session):
             return [np.nonzero(t)[0] for t in time_stamps]  # in case we have sparse timestamps with 0s where no data
 
     def get_vr_data(self, data, nzindex):
+        """
+        Extract valid data samples using index arrays.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Data array, shape (numTrials, numSamples).
+        nzindex : list of np.ndarray
+            List of index arrays, one per trial, indicating valid samples.
+
+        Returns
+        -------
+        list of np.ndarray
+            List of data arrays, one per trial, containing only valid samples.
+        """
         return [d[nz] for (d, nz) in zip(data, nzindex)]

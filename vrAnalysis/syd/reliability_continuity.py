@@ -524,9 +524,9 @@ class ReliabilityMasterSummary(Viewer):
                         linewidth=linewidth[imouse],
                         zorder=zorder[imouse],
                     )
-                ax[irow, icol].set_ylabel(f"$\Delta$ {col_name} (red-ctl)")
+                ax[irow, icol].set_ylabel(rf"$\Delta$ {col_name} (red-ctl)")
 
-            ax[-1, icol].set_xlabel("$\Delta$ Session")
+            ax[-1, icol].set_xlabel(r"$\Delta$ Session")
             ax[0, icol].set_title(col_name)
 
             ax_titles = [(f"{col_name}" if irow == 0 else "") for irow in range(num_rows)]

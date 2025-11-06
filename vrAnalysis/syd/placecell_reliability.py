@@ -1285,7 +1285,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
         xmin = min(deltas_familiar_forward) if state["forward_backward"] == "forward" else -max(deltas_familiar_backward)
         xmax = -min(deltas_familiar_backward) if state["forward_backward"] == "backward" else max(deltas_familiar_forward)
         xticks = [xmin, 0, xmax] if state["forward_backward"] == "both" else [xmin, xmax]
-        ax_mouse_familiar.set_xlabel("$\Delta$Session")
+        ax_mouse_familiar.set_xlabel(r"$\Delta$Session")
         ax_mouse_familiar.set_ylabel("Reliability")
         ax_mouse_familiar.set_title(f"Familiar Environment")
         if state["indicate_example"]:
@@ -1349,7 +1349,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
         xmin = min(deltas_novel_forward) if state["forward_backward"] == "forward" else -max(deltas_novel_backward)
         xmax = -min(deltas_novel_backward) if state["forward_backward"] == "backward" else max(deltas_novel_forward)
         xticks = [xmin, 0, xmax] if state["forward_backward"] == "both" else [xmin, xmax]
-        ax_mouse_novel.set_xlabel("$\Delta$Session")
+        ax_mouse_novel.set_xlabel(r"$\Delta$Session")
         # ax_mouse_novel.set_ylabel("Reliability")
         ax_mouse_novel.set_title(f"Novel Environment")
         if state["indicate_example"]:
@@ -1410,7 +1410,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
-        ax_summary_familiar.set_xlabel("$\Delta$Session")
+        ax_summary_familiar.set_xlabel(r"$\Delta$Session")
         ax_summary_familiar.set_ylabel(f"Reliability (red - ctl)")
 
         for imouse, mouse in enumerate(use_mice):
@@ -1455,7 +1455,7 @@ class ConsistentReliabilityFigureMaker(Viewer):
             tick_length=4,
             ylabels=[],
         )
-        ax_summary_novel.set_xlabel("$\Delta$Session")
+        ax_summary_novel.set_xlabel(r"$\Delta$Session")
         # ax_summary_novel.set_ylabel(f"Reliability (red - ctl)")
 
         ax_summary_familiar.axvline(0, color="k", linestyle="--", linewidth=1)
@@ -1765,7 +1765,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             red_example_summary = np.abs(red_pfloc - red_pfloc[state["reference_session"]])
             combo_ctl_name = "pfloc_changes_ctl"
             combo_red_name = "pfloc_changes_red"
-            summary_ylabel = "|$\Delta$PF Location| (cm)"
+            summary_ylabel = r"|$\Delta$PF Location| (cm)"
         elif state["summary_type"] == "pfcorr":
             # Measure correlation coefficients between placefields
             ctl_example_summary = np.full((ctl_placefields.shape[0], ctl_placefields.shape[1]), np.nan)
@@ -1952,9 +1952,9 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             tick_length=4,
         )
         ax_ctl_placefield.set_xlabel("Position (cm)")
-        ax_ctl_placefield.set_ylabel("Activity ($\sigma$)")
+        ax_ctl_placefield.set_ylabel(r"Activity ($\sigma$)")
         ax_red_placefield.set_xlabel("Position (cm)")
-        ax_red_placefield.set_ylabel("Activity ($\sigma$)")
+        ax_red_placefield.set_ylabel(r"Activity ($\sigma$)")
 
         ax_roi_summary.plot(range(len(ctl_roi_summary)), ctl_roi_summary, color="k", linewidth=1.0)
         ax_roi_summary.plot(range(len(red_roi_summary)), red_roi_summary, color="r", linewidth=1.0)
@@ -1992,7 +1992,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         )
         color_violins(ctl_violins, facecolor="k", linecolor="k")
         color_violins(red_violins, facecolor="r", linecolor="r")
-        ax_example_familiar.set_xlabel("$\Delta$Session")
+        ax_example_familiar.set_xlabel(r"$\Delta$Session")
         ax_example_familiar.set_ylabel(summary_ylabel)
         ax_example_familiar.set_title("Familiar Environment")
         ax_example_familiar.set_ylim(example_ylim)
@@ -2033,7 +2033,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
         )
         color_violins(ctl_violins, facecolor="k", linecolor="k")
         color_violins(red_violins, facecolor="r", linecolor="r")
-        ax_example_novel.set_xlabel("$\Delta$Session")
+        ax_example_novel.set_xlabel(r"$\Delta$Session")
         # ax_example_novel.set_ylabel(summary_ylabel)
         ax_example_novel.set_title("Novel Environment")
         ax_example_novel.set_ylim(example_ylim)
@@ -2099,7 +2099,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
-        ax_summary_familiar.set_xlabel("$\Delta$Session")
+        ax_summary_familiar.set_xlabel(r"$\Delta$Session")
         ax_summary_familiar.set_ylabel(f"{summary_ylabel} (red - ctl)")
 
         for imouse, mouse in enumerate(use_mice):
@@ -2144,7 +2144,7 @@ class ChangingPlaceFieldFigureMaker(Viewer):
             spines_visible=["bottom", "left"],
             tick_length=4,
         )
-        ax_summary_novel.set_xlabel("$\Delta$Session")
+        ax_summary_novel.set_xlabel(r"$\Delta$Session")
         # ax_summary_novel.set_ylabel(f"{summary_ylabel} (red - ctl)")
 
         blinded_study_legend(

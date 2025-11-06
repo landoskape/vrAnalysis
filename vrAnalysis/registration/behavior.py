@@ -1,3 +1,11 @@
+"""
+Behavior processing functions for B2Registration.
+
+This module contains functions for processing behavioral data from different
+versions of the vrControl software. Each function processes behavior data
+to achieve the same results structure regardless of the data collection method.
+"""
+
 import numpy as np
 from typing import TYPE_CHECKING
 
@@ -9,6 +17,29 @@ if TYPE_CHECKING:
 # ------------------------------------- behavior processing methods ---------------------------------
 # ---------------------------------------------------------------------------------------------------
 def standard_behavior(b2registration: "B2Registration") -> "B2Registration":
+    """
+    Process standard behavior data from vrControl.
+
+    Extracts behavioral data from trialInfo and expInfo structures, processes
+    timestamps, positions, rewards, and licks, and saves them to oneData format.
+    Aligns behavioral timestamps to the timeline using photodiode flips.
+
+    Parameters
+    ----------
+    b2registration : B2Registration
+        The B2Registration object containing the session data to process.
+
+    Returns
+    -------
+    B2Registration
+        The B2Registration object with behavior data processed and saved.
+
+    Notes
+    -----
+    This function processes behavior data from the standard vrControl format.
+    It extracts trial-level and sample-level behavioral data and aligns timestamps
+    to the imaging timeline.
+    """
     expInfo = b2registration.vr_file["expInfo"]
     trialInfo = b2registration.vr_file["trialInfo"]
     num_values_per_trial = np.diff(trialInfo.time.tocsr().indptr)
@@ -126,6 +157,29 @@ def standard_behavior(b2registration: "B2Registration") -> "B2Registration":
 
 
 def cr_hippocannula_behavior(b2registration: "B2Registration") -> "B2Registration":
+    """
+    Process behavior data from CR hippocannula version of vrControl.
+
+    Extracts behavioral data from TRIAL and EXP structures, processes
+    timestamps, positions, rewards, and licks, and saves them to oneData format.
+    Aligns behavioral timestamps to the timeline using photodiode flips.
+
+    Parameters
+    ----------
+    b2registration : B2Registration
+        The B2Registration object containing the session data to process.
+
+    Returns
+    -------
+    B2Registration
+        The B2Registration object with behavior data processed and saved.
+
+    Notes
+    -----
+    This function processes behavior data from the CR hippocannula version of
+    vrControl. The data structure differs from the standard version, requiring
+    different field names and processing steps.
+    """
     trialInfo = b2registration.vr_file["TRIAL"]
     expInfo = b2registration.vr_file["EXP"]
 
@@ -243,32 +297,51 @@ def cr_hippocannula_behavior(b2registration: "B2Registration") -> "B2Registratio
     return b2registration
 
 
-"""
-BEHAVIOR_PROCESSING: Dictionary of behavior processing functions.
-
-These reflect the different versions of the vrControl software that was used to collect the behavior data.
-Because the behavioral data was collected in different ways, we need to process it differently to achieve
-the same results structure. 
-"""
 BEHAVIOR_PROCESSING = {
     1: standard_behavior,
     2: cr_hippocannula_behavior,
 }
+"""Dictionary of behavior processing functions.
+
+These reflect the different versions of the vrControl software that was used
+to collect the behavior data. Because the behavioral data was collected in
+different ways, we need to process it differently to achieve the same results
+structure.
+
+Keys:
+
+- 1: Standard behavior processing function.
+- 2: CR hippocannula behavior processing function.
+"""
 
 
 def register_behavior(b2registration: "B2Registration", behavior_type: int) -> "B2Registration":
-    """Register behavior for a given behavior type.
+    """
+    Register behavior for a given behavior type.
 
-    This is a dispatcher function that calls the appropriate behavior processing function based on the behavior type.
+    This is a dispatcher function that calls the appropriate behavior processing
+    function based on the behavior type.
 
-    Parameters:
+    Parameters
     ----------
-    b2registration: B2Registration object
-    behavior_type: int, the behavior type to register
+    b2registration : B2Registration
+        The B2Registration object containing the session data to process.
+    behavior_type : int
+        The behavior type to register. Must be a key in BEHAVIOR_PROCESSING.
 
     Returns
     -------
-    B2Registration object with behavior registered
+    B2Registration
+        The B2Registration object with behavior registered.
+
+    Raises
+    ------
+    ValueError
+        If behavior_type is not supported.
+
+    See Also
+    --------
+    BEHAVIOR_PROCESSING : Dictionary mapping behavior types to processing functions.
     """
     if behavior_type not in BEHAVIOR_PROCESSING.keys():
         raise ValueError(f"Behavior type {behavior_type} not supported. Supported types are: {list(BEHAVIOR_PROCESSING.keys())}.")

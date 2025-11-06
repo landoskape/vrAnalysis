@@ -1,16 +1,8 @@
 # Installation
 
-This guide will help you install vrAnalysis and its dependencies.
+The code is designed for developers. To install, first clone the repository and then create a conda environment called vrAnalysis. You can use the `environment.yml` file to create the environment, but I'd actually recommend *not* doing this and instead making an empty environment (python >= 3.9!!!!) and then installing the package locally with `pip install -e .`. 
 
-## Prerequisites
-
-- Python 3.8 or higher (note tested, might be even higher because of typing)
-- Conda or Mamba (recommended for managing dependencies, use Mamba for faster installation!)
-- Git (for cloning the repository)
-
-## Installation
-
-This method allows you to edit the code and is recommended if you plan to contribute or modify the package.
+## Basic Code Installation
 
 1. Clone the repository:
 
@@ -19,25 +11,53 @@ git clone https://github.com/landoskape/vrAnalysis
 cd vrAnalysis
 ```
 
-2. Create a conda environment from the provided `environment.yml`:
+2. Create a conda environment called vrAnalysis:
 
 ```bash
-conda env create -f environment.yml
-# Or use mamba for faster installation:
-mamba env create -f environment.yml
+conda env create -n vrAnalysis
+conda activate vrAnalysis
 ```
 
-3. Activate the environment:
-
-```bash
-conda activate vrAnalysis  # or whatever name is specified in environment.yml
-```
-
-4. Install the package in development mode:
+3. Install the package in development mode:
 
 ```bash
 pip install -e .
 ```
+
+Note: there are "extra" dependencies that will not be installed by this method. The options are:
+
+- registration: includes packages that require special compilers
+    - oasis-deconv
+    - cvxpy
+- gui: includes packages that are used for the GUI for manually adding data to the database
+    - pyqt5
+    - pyqtgraph
+    - napari[all]
+- all: includes all of the above
+
+To install the extra dependencies, use one of the following commands:
+
+```bash
+pip install -e .[registration]
+pip install -e .[gui]
+pip install -e .[all]
+```
+
+## Other dependencies
+
+As an analysis package of experimental data, there are a few other things that need to happen before you can actually use the package. They primarily relate to setting up your database, your data directories, and some other preprocessing that needs to happen with other python packages (primarily `suite2p` and `ROICaT`).
+
+For a detailed guide on all of this, see the [registration workflow](workflows/registration.md) page which walks you through the whole process. 
+
+
+## PyTorch
+
+Some of the package uses pytorch. For reasons that escape me, meta has not found a good way to install pytorch inside other packages using `pip install` or `conda install`. My workaround is to make my environment as described above, install `vrAnalysis`, then install pytorch manually using the instructions on the [pytorch website](https://pytorch.org/get-started/locally/).
+
+If you try to use things that depend on pytorch and haven't done this, you'll get import errors. Sorry. 
+
+!!! tip
+    Make sure to install PyTorch with the correct CUDA version for your GPU, and verify that GPU acceleration is working properly after installation.
 
 ## Configuration
 
@@ -51,30 +71,4 @@ def local_data_path() -> Path:
 ```
 
 2. **Database Paths**: Configure database paths in `vrAnalysis/database.py` using the `get_database_metadata()` function.
-
-## Verifying Installation
-
-To verify that vrAnalysis is installed correctly:
-
-```python
-import vrAnalysis
-from vrAnalysis.sessions import B2Session, create_b2session
-from vrAnalysis.database import get_database_metadata
-
-print("vrAnalysis installed successfully!")
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Database Connection Errors**: Ensure you have the appropriate database drivers installed (e.g., Microsoft Access ODBC drivers for `.accdb` files).
-
-2. **Import Errors**: Make sure you've activated the correct conda environment and installed all dependencies.
-
-3. **Path Issues**: Verify that your data paths are correctly configured and accessible.
-
-## Next Steps
-
-After installation, check out the [Quickstart Guide](quickstart.md) to begin using vrAnalysis.
 

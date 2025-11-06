@@ -933,7 +933,7 @@ class ReliabilityStability(Viewer):
             ax_last_plot.set_xlabel("Session")
             ax_last_plot.axvline(0, color="k", linewidth=0.5, linestyle="--")
             if state["last_plot"] == "centroid-plasticity":
-                ax_last_plot.set_ylabel("$\Delta$PF Centroid")
+                ax_last_plot.set_ylabel(r"$\Delta$PF Centroid")
                 ax_last_plot.set_title("Stable - PF Centroid Change")
                 ax_last_plot.set_ylim(0)
             elif state["last_plot"] == "spkmap-correlation":
@@ -1546,7 +1546,7 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
             tick_length=4,
         )
         ax_red_example.set_xlabel("Ctl Reliability Quantiles", fontsize=fontsize)
-        ax_red_example.set_ylabel("$\Delta$Red Reliability", fontsize=fontsize)
+        ax_red_example.set_ylabel(r"$\Delta$Red Reliability", fontsize=fontsize)
 
         alpha = 1.0 if state["blinded"] else 0.3
         if not state["blinded"]:
@@ -1582,7 +1582,7 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         ylim = ax_summary_familiar.get_ylim()
         ylim_min = min(ylim_min, ylim[0])
         ylim_max = max(ylim_max, ylim[1])
-        ax_summary_familiar.set_ylabel(f"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}", fontsize=fontsize)
+        ax_summary_familiar.set_ylabel(rf"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}", fontsize=fontsize)
 
         for imouse, mouse in enumerate(reliability):
             ax_summary_novel.plot(
@@ -1612,7 +1612,7 @@ class ReliabilityQuantileFigureMaker(ReliabilityQuantileSummary):
         ylim = ax_summary_novel.get_ylim()
         ylim_min = min(ylim_min, ylim[0])
         ylim_max = max(ylim_max, ylim[1])
-        ax_summary_novel.set_ylabel(f"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}", fontsize=fontsize)
+        ax_summary_novel.set_ylabel(rf"$\Delta$Red Reliability\nQuantile {quantile_focus+1}/{num_bins-1}", fontsize=fontsize)
 
         ylim_min = np.ceil(ylim_min * 100) / 100
         ylim_max = np.floor(ylim_max * 100) / 100
@@ -1824,7 +1824,7 @@ class FractionActiveQuantileFigureMaker(ReliabilityQuantileSummary):
             tick_length=4,
         )
         ax_red_example.set_xlabel("Fraction Active Quantiles")
-        ax_red_example.set_ylabel("$\Delta$Red Fraction Active")
+        ax_red_example.set_ylabel(r"$\Delta$Red Fraction Active")
 
         ylim_min = 1
         ylim_max = -1
@@ -1842,7 +1842,7 @@ class FractionActiveQuantileFigureMaker(ReliabilityQuantileSummary):
             ylim = ax.get_ylim()
             ylim_min = min(ylim_min, ylim[0])
             ylim_max = max(ylim_max, ylim[1])
-            ax.set_ylabel(f"$\Delta$Red Fraction Active\nQuantile {quantile_focus+1}/{num_bins-1}")
+            ax.set_ylabel(rf"$\Delta$Red Fraction Active\nQuantile {quantile_focus+1}/{num_bins-1}")
 
         ylim_min = np.ceil(ylim_min * 100) / 100
         ylim_max = np.floor(ylim_max * 100) / 100

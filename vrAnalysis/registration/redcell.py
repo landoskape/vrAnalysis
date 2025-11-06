@@ -9,11 +9,68 @@ if TYPE_CHECKING:
 
 class RedCellProcessing:
     """
-    The redCellProcessing object is devoted to handling red cell processing.
-    It accepts as input a B2Registration object.
+    Handle red cell processing for B2Registration sessions.
+
+    This class processes red cell data from suite2p outputs, computes features
+    for identifying red cells (S2P, dot product, Pearson correlation, phase
+    correlation), and provides methods for updating red cell indices based on
+    cutoff criteria.
+
+    Parameters
+    ----------
+    b2_registration : B2Registration
+        The B2Registration object containing the session data.
+    um_per_pixel : float, optional
+        Micrometers per pixel for spatial measurements. Default is 1.3.
+    autoload : bool, optional
+        If True, automatically load reference images and masks on initialization.
+        Default is True.
+
+    Attributes
+    ----------
+    b2_registration : B2Registration
+        The B2Registration object containing the session data.
+    feature_names : list of str
+        Standard names of features used to determine red cell criterion.
+    num_planes : int
+        Number of imaging planes in the session.
+    um_per_pixel : float
+        Micrometers per pixel for spatial measurements.
+    data_loaded : bool
+        Whether reference images and masks have been loaded.
+    reference : list of np.ndarray
+        Reference images for each plane (loaded when data_loaded is True).
+    lx, ly : int
+        Dimensions of reference images.
+    lam : list of np.ndarray
+        Weights of each pixel in ROI masks.
+    ypix, xpix : list of np.ndarray
+        Pixel indices for each ROI mask.
+    roi_plane_idx : np.ndarray
+        Plane index for each ROI.
+    red_s2p : np.ndarray
+        Suite2p red cell values for each ROI.
     """
 
     def __init__(self, b2_registration: "B2Registration", um_per_pixel: float = 1.3, autoload: bool = True):
+        """
+        Initialize RedCellProcessing object.
+
+        Parameters
+        ----------
+        b2_registration : B2Registration
+            The B2Registration object containing the session data.
+        um_per_pixel : float, optional
+            Micrometers per pixel for spatial measurements. Default is 1.3.
+        autoload : bool, optional
+            If True, automatically load reference images and masks on initialization.
+            Default is True.
+
+        Raises
+        ------
+        AssertionError
+            If redcell is not available in suite2p outputs.
+        """
 
         # Make sure redcell is available...
         msg = "redcell is not an available suite2p output, so you can't do redCellProcessing."
@@ -36,6 +93,19 @@ class RedCellProcessing:
     # -- initialization functions --
     # ------------------------------
     def load_reference_and_masks(self):
+        """
+        Load reference images and ROI masks from suite2p outputs.
+
+        Loads the mean image for channel 2 (red channel) for each plane, along
+        with ROI mask data (lam, ypix, xpix) and ROI plane indices. Also loads
+        suite2p red cell values and creates supporting variables for spatial
+        measurements.
+
+        Raises
+        ------
+        AssertionError
+            If reference images do not all have the same shape.
+        """
         # load reference images
         ops = self.b2_registration.load_s2p("ops")
         self.reference = [op["meanImg_chan2"] for op in ops]
@@ -67,11 +137,57 @@ class RedCellProcessing:
     # -- updating one data functions --
     # ---------------------------------
     def one_name_feature_cutoffs(self, name):
-        """standard method for naming the features used to define redCellIdx cutoffs"""
+        """
+        Generate oneData name for feature cutoff parameters.
+
+        Parameters
+        ----------
+        name : str
+            Feature name (e.g., "S2P", "dotProduct", "pearson", "phaseCorrelation").
+
+        Returns
+        -------
+        str
+            OneData name for the feature cutoff parameter, formatted as
+            "parametersRed{Name}.minMaxCutoff" where {Name} is the capitalized
+            feature name.
+        """
         return "parameters" + "Red" + name[0].upper() + name[1:] + ".minMaxCutoff"
 
     def update_red_idx(self, s2p_cutoff=None, dot_product_cutoff=None, corr_coef_cutoff=None, phase_corr_cutoff=None):
-        """method for updating the red index given new cutoff values"""
+        """
+        Update red cell index based on feature cutoff values.
+
+        Updates the red cell index by applying minimum and maximum cutoffs to
+        each feature (S2P, dot product, Pearson correlation, phase correlation).
+        Only features with non-NaN cutoff values are applied. The red cell index
+        is updated to include only ROIs that meet all specified criteria.
+
+        Parameters
+        ----------
+        s2p_cutoff : array-like of float, length 2, optional
+            [min, max] cutoff values for suite2p red cell feature. NaN values
+            indicate the cutoff should not be applied. Default is None.
+        dot_product_cutoff : array-like of float, length 2, optional
+            [min, max] cutoff values for dot product feature. Default is None.
+        corr_coef_cutoff : array-like of float, length 2, optional
+            [min, max] cutoff values for Pearson correlation feature.
+            Default is None.
+        phase_corr_cutoff : array-like of float, length 2, optional
+            [min, max] cutoff values for phase correlation feature.
+            Default is None.
+
+        Raises
+        ------
+        ValueError
+            If any cutoff is not a numpy array or list, or if any cutoff does
+            not have exactly 2 elements.
+
+        Notes
+        -----
+        Cutoff values are saved to oneData for future reference. The red cell
+        index is updated in place and saved to oneData.
+        """
         # create initial all true red cell idx
         red_cell_idx = np.full(self.b2_registration.loadone("mpciROIs.redCellIdx").shape, True)
 
@@ -112,7 +228,26 @@ class RedCellProcessing:
         print(f"Red Cell curation choices are saved for session {self.b2_registration.session_print()}")
 
     def update_from_session(self, red_cell, force_update=False):
-        """method for updating the red cell cutoffs from another session"""
+        """
+        Update red cell cutoffs from another session.
+
+        Copies red cell cutoff parameters from another RedCellProcessing object
+        and applies them to this session.
+
+        Parameters
+        ----------
+        red_cell : RedCellProcessing
+            Another RedCellProcessing object to copy cutoffs from.
+        force_update : bool, optional
+            If False, only allows copying from sessions with the same mouse name.
+            If True, allows copying from any session. Default is False.
+
+        Raises
+        ------
+        AssertionError
+            If red_cell is not a RedCellProcessing object, or if force_update is
+            False and the mouse names don't match.
+        """
         assert isinstance(red_cell, RedCellProcessing), "red_cell is not a RedCellProcessing object"
         if not (force_update):
             assert (
@@ -123,9 +258,44 @@ class RedCellProcessing:
 
     def cropped_phase_correlation(self, plane_idx=None, width=40, eps=1e6, winFunc=lambda x: np.hamming(x.shape[-1])):
         """
-        This returns the phase correlation of each (cropped) mask with the (cropped) reference image.
-        The default parameters (width=40um, eps=1e6, and a hamming window function) were tested on a few sessions and is purely subjective.
-        I recommend that if you use this function to determine which of your cells are red, you do manual curation and potentially update some of these parameters.
+        Compute phase correlation of cropped masks with cropped reference images.
+
+        Returns the phase correlation of each ROI mask (cropped around the ROI
+        centroid) with the corresponding cropped reference image. This is used
+        as a feature for identifying red cells.
+
+        Parameters
+        ----------
+        plane_idx : int or array-like of int, optional
+            Plane indices to process. If None, processes all planes. Default is None.
+        width : float, optional
+            Width in micrometers of the cropped region around each ROI centroid.
+            Default is 40.
+        eps : float, optional
+            Small value added to avoid division by zero in phase correlation.
+            Default is 1e6.
+        winFunc : callable or str, optional
+            Window function to apply before computing phase correlation. If "hamming",
+            uses Hamming window. Otherwise should be a callable that takes an array
+            and returns a windowed array. Default is Hamming window.
+
+        Returns
+        -------
+        refStack : np.ndarray
+            Stack of cropped reference images, shape (num_rois, height, width).
+        maskStack : np.ndarray
+            Stack of cropped ROI masks, shape (num_rois, height, width).
+        pxcStack : np.ndarray
+            Stack of phase correlation maps, shape (num_rois, height, width).
+        phase_corr_values : np.ndarray
+            Phase correlation values at the center of each correlation map,
+            shape (num_rois,). This is the feature value used for red cell identification.
+
+        Notes
+        -----
+        The default parameters (width=40um, eps=1e6, and a Hamming window function)
+        were tested on a few sessions and are subjective. Manual curation and
+        parameter adjustment may be necessary for optimal results.
         """
         if not (self.data_loaded):
             self.load_reference_and_masks()
@@ -141,6 +311,32 @@ class RedCellProcessing:
         return refStack, maskStack, pxcStack, pxcStack[:, pxcCenterPixel, pxcCenterPixel]
 
     def compute_dot(self, plane_idx=None, lowcut=12, highcut=250, order=3, fs=512):
+        """
+        Compute normalized dot product between filtered reference and ROI masks.
+
+        Computes the dot product between each ROI mask and a Butterworth-filtered
+        reference image. This is used as a feature for identifying red cells.
+
+        Parameters
+        ----------
+        plane_idx : int or array-like of int, optional
+            Plane indices to process. If None, processes all planes. Default is None.
+        lowcut : float, optional
+            Low cutoff frequency for Butterworth bandpass filter in Hz.
+            Default is 12.
+        highcut : float, optional
+            High cutoff frequency for Butterworth bandpass filter in Hz.
+            Default is 250.
+        order : int, optional
+            Order of the Butterworth filter. Default is 3.
+        fs : float, optional
+            Sampling frequency for the filter in Hz. Default is 512.
+
+        Returns
+        -------
+        np.ndarray
+            Normalized dot product values for each ROI, shape (num_rois,).
+        """
         if plane_idx is None:
             plane_idx = np.arange(self.num_planes)
         if isinstance(plane_idx, (int, np.integer)):
@@ -162,6 +358,36 @@ class RedCellProcessing:
         return np.concatenate(dot_prod)
 
     def compute_corr(self, plane_idx=None, width=20, lowcut=12, highcut=250, order=3, fs=512):
+        """
+        Compute Pearson correlation between filtered reference and ROI masks.
+
+        Computes the Pearson correlation coefficient between each ROI mask and
+        a Butterworth-filtered reference image within a cropped region around
+        each ROI. This is used as a feature for identifying red cells.
+
+        Parameters
+        ----------
+        plane_idx : int or array-like of int, optional
+            Plane indices to process. If None, processes all planes. Default is None.
+        width : float, optional
+            Width in micrometers of the cropped region around each ROI centroid.
+            Default is 20.
+        lowcut : float, optional
+            Low cutoff frequency for Butterworth bandpass filter in Hz.
+            Default is 12.
+        highcut : float, optional
+            High cutoff frequency for Butterworth bandpass filter in Hz.
+            Default is 250.
+        order : int, optional
+            Order of the Butterworth filter. Default is 3.
+        fs : float, optional
+            Sampling frequency for the filter in Hz. Default is 512.
+
+        Returns
+        -------
+        np.ndarray
+            Pearson correlation coefficients for each ROI, shape (num_rois,).
+        """
         if plane_idx is None:
             plane_idx = np.arange(self.num_planes)
         if isinstance(plane_idx, (int, np.integer)):
@@ -195,19 +421,79 @@ class RedCellProcessing:
     # -- supporting functions --
     # --------------------------
     def create_centered_axis(self, numElements, scale=1):
+        """
+        Create a centered axis array.
+
+        Parameters
+        ----------
+        numElements : int
+            Number of elements in the axis.
+        scale : float, optional
+            Scaling factor for the axis. Default is 1.
+
+        Returns
+        -------
+        np.ndarray
+            Centered axis array, shape (numElements,), with values ranging from
+            -scale*(numElements-1)/2 to scale*(numElements-1)/2.
+        """
         return scale * (np.arange(numElements) - (numElements - 1) / 2)
 
     def getyref(self, yCenter):
+        """
+        Get y-axis reference coordinates relative to a center point.
+
+        Parameters
+        ----------
+        yCenter : float
+            Y-coordinate of the center point in pixels.
+
+        Returns
+        -------
+        np.ndarray
+            Y-axis coordinates in micrometers relative to yCenter, shape (ly,).
+        """
         if not (self.data_loaded):
             self.load_reference_and_masks()
         return self.um_per_pixel * (self.y_base_ref - yCenter)
 
     def getxref(self, xCenter):
+        """
+        Get x-axis reference coordinates relative to a center point.
+
+        Parameters
+        ----------
+        xCenter : float
+            X-coordinate of the center point in pixels.
+
+        Returns
+        -------
+        np.ndarray
+            X-axis coordinates in micrometers relative to xCenter, shape (lx,).
+        """
         if not (self.data_loaded):
             self.load_reference_and_masks()
         return self.um_per_pixel * (self.x_base_ref - xCenter)
 
     def get_roi_centroid(self, idx, mode="weightedmean"):
+        """
+        Get the centroid of an ROI.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the ROI.
+        mode : str, optional
+            Method for computing centroid. "weightedmean" uses pixel weights (lam),
+            "median" uses median pixel coordinates. Default is "weightedmean".
+
+        Returns
+        -------
+        yc : float
+            Y-coordinate of the centroid in pixels.
+        xc : float
+            X-coordinate of the centroid in pixels.
+        """
         if not (self.data_loaded):
             self.load_reference_and_masks()
 
@@ -221,6 +507,21 @@ class RedCellProcessing:
         return yc, xc
 
     def get_roi_range(self, idx):
+        """
+        Get the range (peak-to-peak) of x and y pixels for an ROI.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the ROI.
+
+        Returns
+        -------
+        yr : int
+            Range of y-pixels (peak-to-peak).
+        xr : int
+            Range of x-pixels (peak-to-peak).
+        """
         if not (self.data_loaded):
             self.load_reference_and_masks()
         # get range of x and y pixels for a particular ROI
@@ -229,6 +530,19 @@ class RedCellProcessing:
         return yr, xr
 
     def get_roi_in_plane_idx(self, idx):
+        """
+        Get the index of an ROI within its own plane.
+
+        Parameters
+        ----------
+        idx : int
+            Global ROI index.
+
+        Returns
+        -------
+        int
+            Index of the ROI within its plane (0-indexed within that plane).
+        """
         if not (self.data_loaded):
             self.load_reference_and_masks()
         # return index of ROI within it's own plane
@@ -236,10 +550,33 @@ class RedCellProcessing:
         return idx - np.sum(self.roi_plane_idx < plane_idx)
 
     def centered_reference_stack(self, plane_idx=None, width=15, fill=0.0, filtPrms=None):
-        # return stack of reference images centered on each ROI (+/- width um around ROI centroid)
-        # if plane_idx is none, then returns across all planes
-        # fill determines what value to use as the background (should either be 0 or nan...)
-        # if filterPrms=None, then just returns centered reference stack. otherwise, filterPrms requires a tuple of 4 parameters which define a butterworth filter
+        """
+        Create a stack of reference images centered on each ROI.
+
+        Returns a stack of reference images cropped around each ROI centroid
+        within a specified width. Optionally applies a Butterworth filter to
+        the reference images before cropping.
+
+        Parameters
+        ----------
+        plane_idx : int or array-like of int, optional
+            Plane indices to process. If None, processes all planes. Default is None.
+        width : float, optional
+            Width in micrometers of the cropped region around each ROI centroid.
+            Default is 15.
+        fill : float, optional
+            Value to use for background pixels outside the image bounds.
+            Should be 0.0 or np.nan. Default is 0.0.
+        filtPrms : tuple of 4 floats, optional
+            Parameters for Butterworth filter: (lowcut, highcut, order, fs).
+            If None, no filtering is applied. Default is None.
+
+        Returns
+        -------
+        np.ndarray
+            Stack of centered reference images, shape (num_rois, height, width),
+            where height = width = 2 * round(width / um_per_pixel) + 1.
+        """
         if plane_idx is None:
             plane_idx = np.arange(self.num_planes)
         if isinstance(plane_idx, (int, np.integer)):
@@ -276,9 +613,30 @@ class RedCellProcessing:
         return np.concatenate(ref_stack, axis=0).astype(np.float32)
 
     def centered_mask_stack(self, plane_idx=None, width=15, fill=0.0):
-        # return stack of ROI Masks centered on each ROI (+/- width um around ROI centroid)
-        # if plane_idx is none, then returns across all planes
-        # fill determines what value to use as the background (should either be 0 or nan)
+        """
+        Create a stack of ROI masks centered on each ROI.
+
+        Returns a stack of ROI masks cropped around each ROI centroid within
+        a specified width. Mask values (lam) are placed at the appropriate
+        positions in the centered stack.
+
+        Parameters
+        ----------
+        plane_idx : int or array-like of int, optional
+            Plane indices to process. If None, processes all planes. Default is None.
+        width : float, optional
+            Width in micrometers of the cropped region around each ROI centroid.
+            Default is 15.
+        fill : float, optional
+            Value to use for background pixels outside the ROI mask.
+            Should be 0.0 or np.nan. Default is 0.0.
+
+        Returns
+        -------
+        np.ndarray
+            Stack of centered ROI masks, shape (num_rois, height, width),
+            where height = width = 2 * round(width / um_per_pixel) + 1.
+        """
         if plane_idx is None:
             plane_idx = np.arange(self.num_planes)
         if isinstance(plane_idx, (int, np.integer)):
@@ -301,6 +659,29 @@ class RedCellProcessing:
         return np.concatenate(mask_stack, axis=0).astype(np.float32)
 
     def compute_volume(self, plane_idx=None):
+        """
+        Compute full-volume ROI masks for specified planes.
+
+        Creates a 3D array where each ROI mask is placed at its original
+        position in the full image plane. This is useful for visualization
+        or volume-based operations.
+
+        Parameters
+        ----------
+        plane_idx : int or array-like of int, optional
+            Plane indices to process. If None, processes all planes. Default is None.
+
+        Returns
+        -------
+        np.ndarray
+            Volume array of ROI masks, shape (num_rois, ly, lx), where ly and lx
+            are the dimensions of the reference images.
+
+        Raises
+        ------
+        AssertionError
+            If any plane index is out of range.
+        """
         if plane_idx is None:
             plane_idx = np.arange(self.num_planes)
         if isinstance(plane_idx, (int, np.integer)):
