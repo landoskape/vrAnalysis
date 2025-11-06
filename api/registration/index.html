@@ -1853,7 +1853,7 @@
 
   
       dataclass
-   (vrAnalysis.sessions.B2Session)" href="../b2session/#vrAnalysis.sessions.B2Session">B2Session</a></code></p>
+   (vrAnalysis.sessions.b2session.B2Session)" href="../b2session/#vrAnalysis.sessions.B2Session">B2Session</a></code></p>
 
 
         <p>Registration class for processing B2 (vrControl) session data.</p>
@@ -3165,7 +3165,7 @@ Default is B2RegistrationOpts().</p>
 <a id="__codelineno-0-510" name="__codelineno-0-510"></a>            <span class="k">return</span>
 <a id="__codelineno-0-511" name="__codelineno-0-511"></a>
 <a id="__codelineno-0-512" name="__codelineno-0-512"></a>        <span class="c1"># create RedCellProcessing object</span>
-<a id="__codelineno-0-513" name="__codelineno-0-513"></a>        <span class="n">b2session_of_self</span> <span class="o">=</span> <span class="n">create_b2session</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">mouse_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">date</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
+<a id="__codelineno-0-513" name="__codelineno-0-513"></a>        <span class="n">b2session_of_self</span> <span class="o">=</span> <span class="n">B2Session</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">mouse_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">date</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
 <a id="__codelineno-0-514" name="__codelineno-0-514"></a>        <span class="n">red_cell_processing</span> <span class="o">=</span> <span class="n">RedCellProcessing</span><span class="p">(</span><span class="n">b2session_of_self</span><span class="p">)</span>
 <a id="__codelineno-0-515" name="__codelineno-0-515"></a>
 <a id="__codelineno-0-516" name="__codelineno-0-516"></a>        <span class="c1"># compute red-features</span>
@@ -5144,7 +5144,7 @@ are saved to oneData for later use in red cell identification.</p>
 <a id="__codelineno-0-510" name="__codelineno-0-510"></a>        <span class="k">return</span>
 <a id="__codelineno-0-511" name="__codelineno-0-511"></a>
 <a id="__codelineno-0-512" name="__codelineno-0-512"></a>    <span class="c1"># create RedCellProcessing object</span>
-<a id="__codelineno-0-513" name="__codelineno-0-513"></a>    <span class="n">b2session_of_self</span> <span class="o">=</span> <span class="n">create_b2session</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">mouse_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">date</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
+<a id="__codelineno-0-513" name="__codelineno-0-513"></a>    <span class="n">b2session_of_self</span> <span class="o">=</span> <span class="n">B2Session</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">mouse_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">date</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
 <a id="__codelineno-0-514" name="__codelineno-0-514"></a>    <span class="n">red_cell_processing</span> <span class="o">=</span> <span class="n">RedCellProcessing</span><span class="p">(</span><span class="n">b2session_of_self</span><span class="p">)</span>
 <a id="__codelineno-0-515" name="__codelineno-0-515"></a>
 <a id="__codelineno-0-516" name="__codelineno-0-516"></a>    <span class="c1"># compute red-features</span>

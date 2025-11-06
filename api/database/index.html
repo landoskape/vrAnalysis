@@ -5787,7 +5787,7 @@ registration workflows, and handling quality control processes.</p>
 <a id="__codelineno-0-685" name="__codelineno-0-685"></a><span class="sd">        ----------</span>
 <a id="__codelineno-0-686" name="__codelineno-0-686"></a><span class="sd">        session_params : dict, default={}</span>
 <a id="__codelineno-0-687" name="__codelineno-0-687"></a><span class="sd">            Additional parameters to pass to the session constructor when creating</span>
-<a id="__codelineno-0-688" name="__codelineno-0-688"></a><span class="sd">            B2Session objects. These are passed through to create_b2session().</span>
+<a id="__codelineno-0-688" name="__codelineno-0-688"></a><span class="sd">            B2Session objects. These are passed through to B2Session.create().</span>
 <a id="__codelineno-0-689" name="__codelineno-0-689"></a><span class="sd">        **kw_conditions : dict, optional</span>
 <a id="__codelineno-0-690" name="__codelineno-0-690"></a><span class="sd">            Additional filtering conditions passed to get_table().</span>
 <a id="__codelineno-0-691" name="__codelineno-0-691"></a><span class="sd">            See get_table() documentation for filtering syntax.</span>
@@ -5801,7 +5801,7 @@ registration workflows, and handling quality control processes.</p>
 <a id="__codelineno-0-699" name="__codelineno-0-699"></a>        <span class="n">df</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_table</span><span class="p">(</span><span class="o">**</span><span class="n">kw_conditions</span><span class="p">)</span>
 <a id="__codelineno-0-700" name="__codelineno-0-700"></a>        <span class="n">sessions</span> <span class="o">=</span> <span class="p">[]</span>
 <a id="__codelineno-0-701" name="__codelineno-0-701"></a>        <span class="k">for</span> <span class="n">_</span><span class="p">,</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">df</span><span class="o">.</span><span class="n">iterrows</span><span class="p">():</span>
-<a id="__codelineno-0-702" name="__codelineno-0-702"></a>            <span class="n">sessions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">create_b2session</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;mouseName&quot;</span><span class="p">],</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionDate&quot;</span><span class="p">],</span> <span class="nb">str</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionID&quot;</span><span class="p">]),</span> <span class="n">params</span><span class="o">=</span><span class="n">session_params</span><span class="p">))</span>
+<a id="__codelineno-0-702" name="__codelineno-0-702"></a>            <span class="n">sessions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">B2Session</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;mouseName&quot;</span><span class="p">],</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionDate&quot;</span><span class="p">],</span> <span class="nb">str</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionID&quot;</span><span class="p">]),</span> <span class="n">params</span><span class="o">=</span><span class="n">session_params</span><span class="p">))</span>
 <a id="__codelineno-0-703" name="__codelineno-0-703"></a>        <span class="k">return</span> <span class="n">sessions</span>
 <a id="__codelineno-0-704" name="__codelineno-0-704"></a>
 <a id="__codelineno-0-705" name="__codelineno-0-705"></a>    <span class="c1"># == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==</span>
@@ -5844,7 +5844,7 @@ registration workflows, and handling quality control processes.</p>
 <a id="__codelineno-0-742" name="__codelineno-0-742"></a><span class="sd">            Session object initialized with data from the record.</span>
 <a id="__codelineno-0-743" name="__codelineno-0-743"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-744" name="__codelineno-0-744"></a>        <span class="n">mouse_name</span><span class="p">,</span> <span class="n">session_date</span><span class="p">,</span> <span class="n">session_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_name</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
-<a id="__codelineno-0-745" name="__codelineno-0-745"></a>        <span class="k">return</span> <span class="n">create_b2session</span><span class="p">(</span><span class="n">mouse_name</span><span class="p">,</span> <span class="n">session_date</span><span class="p">,</span> <span class="n">session_id</span><span class="p">)</span>
+<a id="__codelineno-0-745" name="__codelineno-0-745"></a>        <span class="k">return</span> <span class="n">B2Session</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">mouse_name</span><span class="p">,</span> <span class="n">session_date</span><span class="p">,</span> <span class="n">session_id</span><span class="p">)</span>
 <a id="__codelineno-0-746" name="__codelineno-0-746"></a>
 <a id="__codelineno-0-747" name="__codelineno-0-747"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">make_b2registration</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">row</span><span class="p">:</span> <span class="n">pd</span><span class="o">.</span><span class="n">Series</span><span class="p">,</span> <span class="n">opts</span><span class="p">:</span> <span class="n">B2RegistrationOpts</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">B2Registration</span><span class="p">:</span>
 <a id="__codelineno-0-748" name="__codelineno-0-748"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
@@ -6572,7 +6572,7 @@ False otherwise. Returns None if return_check is False.</p>
             <td>
               <div class="doc-md-description">
                 <p>Additional parameters to pass to the session constructor when creating
-B2Session objects. These are passed through to create_b2session().</p>
+B2Session objects. These are passed through to B2Session.create().</p>
               </div>
             </td>
             <td>
@@ -6660,7 +6660,7 @@ Examples: <code>mouseName='ATL028'</code>, <code>imaging=True</code>, <code>sess
 <a id="__codelineno-0-685" name="__codelineno-0-685"></a><span class="sd">    ----------</span>
 <a id="__codelineno-0-686" name="__codelineno-0-686"></a><span class="sd">    session_params : dict, default={}</span>
 <a id="__codelineno-0-687" name="__codelineno-0-687"></a><span class="sd">        Additional parameters to pass to the session constructor when creating</span>
-<a id="__codelineno-0-688" name="__codelineno-0-688"></a><span class="sd">        B2Session objects. These are passed through to create_b2session().</span>
+<a id="__codelineno-0-688" name="__codelineno-0-688"></a><span class="sd">        B2Session objects. These are passed through to B2Session.create().</span>
 <a id="__codelineno-0-689" name="__codelineno-0-689"></a><span class="sd">    **kw_conditions : dict, optional</span>
 <a id="__codelineno-0-690" name="__codelineno-0-690"></a><span class="sd">        Additional filtering conditions passed to get_table().</span>
 <a id="__codelineno-0-691" name="__codelineno-0-691"></a><span class="sd">        See get_table() documentation for filtering syntax.</span>
@@ -6674,7 +6674,7 @@ Examples: <code>mouseName='ATL028'</code>, <code>imaging=True</code>, <code>sess
 <a id="__codelineno-0-699" name="__codelineno-0-699"></a>    <span class="n">df</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_table</span><span class="p">(</span><span class="o">**</span><span class="n">kw_conditions</span><span class="p">)</span>
 <a id="__codelineno-0-700" name="__codelineno-0-700"></a>    <span class="n">sessions</span> <span class="o">=</span> <span class="p">[]</span>
 <a id="__codelineno-0-701" name="__codelineno-0-701"></a>    <span class="k">for</span> <span class="n">_</span><span class="p">,</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">df</span><span class="o">.</span><span class="n">iterrows</span><span class="p">():</span>
-<a id="__codelineno-0-702" name="__codelineno-0-702"></a>        <span class="n">sessions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">create_b2session</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;mouseName&quot;</span><span class="p">],</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionDate&quot;</span><span class="p">],</span> <span class="nb">str</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionID&quot;</span><span class="p">]),</span> <span class="n">params</span><span class="o">=</span><span class="n">session_params</span><span class="p">))</span>
+<a id="__codelineno-0-702" name="__codelineno-0-702"></a>        <span class="n">sessions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">B2Session</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;mouseName&quot;</span><span class="p">],</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionDate&quot;</span><span class="p">],</span> <span class="nb">str</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;sessionID&quot;</span><span class="p">]),</span> <span class="n">params</span><span class="o">=</span><span class="n">session_params</span><span class="p">))</span>
 <a id="__codelineno-0-703" name="__codelineno-0-703"></a>    <span class="k">return</span> <span class="n">sessions</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -7045,7 +7045,7 @@ See get_table() documentation for filtering syntax.</p>
 <a id="__codelineno-0-742" name="__codelineno-0-742"></a><span class="sd">        Session object initialized with data from the record.</span>
 <a id="__codelineno-0-743" name="__codelineno-0-743"></a><span class="sd">    &quot;&quot;&quot;</span>
 <a id="__codelineno-0-744" name="__codelineno-0-744"></a>    <span class="n">mouse_name</span><span class="p">,</span> <span class="n">session_date</span><span class="p">,</span> <span class="n">session_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_name</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
-<a id="__codelineno-0-745" name="__codelineno-0-745"></a>    <span class="k">return</span> <span class="n">create_b2session</span><span class="p">(</span><span class="n">mouse_name</span><span class="p">,</span> <span class="n">session_date</span><span class="p">,</span> <span class="n">session_id</span><span class="p">)</span>
+<a id="__codelineno-0-745" name="__codelineno-0-745"></a>    <span class="k">return</span> <span class="n">B2Session</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">mouse_name</span><span class="p">,</span> <span class="n">session_date</span><span class="p">,</span> <span class="n">session_id</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
