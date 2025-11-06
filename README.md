@@ -11,86 +11,51 @@ which uses an experiment management program called "Timeline". Behavioral
 processing is designed to work with experiments operated by the
 [vrControl](https://github.com/landoskape/vrControl) package in conjunction
 with timeline. These are virtual reality experiments where subjects (mice) run
-on a virtual linear track to collect rewards. 
-
-The imaging processing is designed to work with the standard output of 
-suite2p, so if you are looking for a system to help analyze 2P data then 
-you'll only need to change a few things. 
+on a virtual linear track to collect rewards. The imaging processing is designed 
+to work with the standard output of [suite2p](https://github.com/MouseLand/suite2p).
 
 Finally, the package assumes [Alyx](https://github.com/cortex-lab/alyx) 
 database structure. This means that the data should be organized in a 
 directory first by mouse, then by date, then by session ID. These files should
 be contained in a directory, which you can set in the
-[fileManagement](https://github.com/landoskape/vrAnalysis/blob/main/vrAnalysis/fileManagement.py#L7)
-module with the `localDataPath` method.
+[files](https://github.com/landoskape/vrAnalysis/blob/main/vrAnalysis/files.py#L7)
+module with the `local_data_path` method.
 
 ## Installation
-There are two ways to install the vrAnalysis package. The first is by working
-directly from the code after cloning the repository from GitHub. First, 
-navigate to whatever folder you want to store the cloned repository in. Then, 
-clone the repository, make a new conda (or mamba!) environment, and install 
-the requirements via the `environment.yml` file.
-```
+
+1. Clone the repository:
+```bash
 git clone https://github.com/landoskape/vrAnalysis
 cd vrAnalysis
-conda env create -f environment.yml # try mamba instead of conda if you haven't yet
 ```
 
-Alternatively, you can do a pip install from GitHub if you don't want to edit 
-the code at all. For this method, note that you have to choose which features
-you want to include. The core requirements exclude some packages required for 
-reprocessing deconvolved calcium traces and exclude the red cell GUI.
-
-In an existing conda environment, type:
-```
-pip install git+https://github.com/landoskape/vrAnalysis # core requirements
+2. Create a conda environment (Python >= 3.9) and install in development mode:
+```bash
+conda create -n vrAnalysis python>=3.9
+conda activate vrAnalysis
+pip install -e .
 ```
 
-Or, for the extra installs, use one of the following. The registration 
-component includes some packages that require special compilers. The gui
-component includes some plotting and interactivity related packages that I've
-found can conflict with other packages if you're using jupyter. 
-```
-# pip install git+https://github.com/landoskape/vrAnalysis[registration] # include the registration packages
-# pip install git+https://github.com/landoskape/vrAnalysis[gui] # include the red cell GUI
-# pip install git+https://github.com/landoskape/vrAnalysis[all] # include everything
+3. Optional: Install extra dependencies:
+```bash
+pip install -e .[registration]  # for deconvolution and registration
+pip install -e .[gui]           # for GUI tools
+pip install -e .[all]           # includes everything
 ```
 
-## Capabilities
-vrAnalysis can do the following things: 
-- Manage a database (can work with any SQL database with a few adjustments). 
-- Register and preprocess experimental data including behavior and imaging
-  (will include facecam data soon).  
-- Manually annotate results, especially related to whether cells express
-  a counter-fluorophore (finished) and for annotating tracked ROIs (not coded
-  yet). 
-- Analyzing data using organized analysis objects that make it easy to do an
-  analysis across groups of sessions from the database.
+4. Install PyTorch separately following the [official instructions](https://pytorch.org/get-started/locally/). Not necessary for most components of the package (more so the "dimilibi" stuff).
 
-### Highlights
-#### 1. GUI for adding data to a database
-To add a new record to a database, check out this GUI! Note that the labels 
-and datatypes aren't hardcoded, so if your SQL database has a different 
-structure, this GUI will reflect it. For more info, go 
-[here](docs/database.md).
-![addEntryGUI](docs/media/addEntryGUI.png)
+5. Configure paths: Set your data directory in `vrAnalysis/files.py` and database paths in `vrAnalysis/database.py`.
 
-#### 2. Show what sessions require registration
-To figure out what sessions you have in your database that haven't been 
-registered (e.g. preprocessed), you can do this:
-![needRegistrationDisplay](docs/media/needsRegistrationDisplay.png)
+For detailed setup instructions including database configuration and preprocessing workflows, see the [installation guide](https://landoskape.github.io/vrAnalysis/installation/) and [registration workflow](https://landoskape.github.io/vrAnalysis/workflows/registration/).
+
 
 ## Documentation
-This isn't even close to a professional package so the documentation is 
-primarily oriented towards helping future me remember what I've written. To
-that end, the documentation files contain a commentary on how to use the 
-repository with lots of code blocks indicating standard usage. So, hopefully
-that's useful to anyone trying to use the repository or at least just to see
-what using this repository will look like.
+This is not professional software, but it's hopefully useful to people (especially maybe 1 other person in cortex lab). So anyway I made a "proper" documentation system which you can find [here](https://landoskape.github.io/vrAnalysis/).
 
-Documentation Pages
-1. [Standard Workflows](docs/workflows.md)
+Some old documentation that is all outdated but still a tiny bit useful is here:
+1. [Standard Workflows](_old_docs_/workflows.md)
 2. Components
-   - [Database](docs/database.md)
-   - [Red Cell Curation Interface](docs/redCellGUI.md)
-   - [Analyzing Data](docs/analysis.md)
+   - [Database](_old_docs_/database.md)
+   - [Red Cell Curation Interface](_old_docs_/redCellGUI.md)
+   - [Analyzing Data](_old_docs_/analysis.md)
