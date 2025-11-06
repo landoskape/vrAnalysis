@@ -1,0 +1,2219 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for vrAnalysis - Virtual Reality Analysis Package">
+      
+      
+        <meta name="author" content="Andrew Landau">
+      
+      
+        <link rel="canonical" href="https://landoskape.github.io/vrAnalysis/registration/">
+      
+      
+        <link rel="prev" href="../overview/">
+      
+      
+        <link rel="next" href="../modules/database/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.23">
+    
+    
+      
+        <title>Registration - vrAnalysis Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.84d31ad4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#registration" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="vrAnalysis Documentation" class="md-header__button md-logo" aria-label="vrAnalysis Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            vrAnalysis Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Registration
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/landoskape/vrAnalysis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    landoskape/vrAnalysis
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../installation/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Installation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quickstart
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Overview
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Workflows
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../modules/database/" class="md-tabs__link">
+          
+  
+  
+  Modules
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../api/vrAnalysis2/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../examples/registration/" class="md-tabs__link">
+          
+  
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="vrAnalysis Documentation" class="md-nav__button md-logo" aria-label="vrAnalysis Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    vrAnalysis Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/landoskape/vrAnalysis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    landoskape/vrAnalysis
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Quickstart
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Workflows
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Workflows
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Registration
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Registration
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      Prerequisites
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-database-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Database Setup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-adding-sessions-to-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Adding Sessions to Database
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-suite2p-processing-for-imaging-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Suite2p Processing (for imaging sessions)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-required-input-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Required Input Files
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Structure
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#timeline-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Timeline Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#behavioral-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Behavioral Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#imaging-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Imaging Data
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-the-database-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Database Pipeline
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Using the Database Pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#finding-sessions-needing-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Finding Sessions Needing Registration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#registering-a-single-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      Registering a Single Session
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#registering-multiple-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Registering Multiple Sessions
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error Handling
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#manual-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Manual Registration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registration-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      Registration Options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-data-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      Output Data Structure
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output Data Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#timeline-data_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Timeline Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#behavioral-data_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Behavioral Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#imaging-data_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Imaging Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#red-cell-data-if-processed" class="md-nav__link">
+    <span class="md-ellipsis">
+      Red Cell Data (if processed)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#session-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session Metadata
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#common-issues" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common Issues
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#checking-registration-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      Checking Registration Status
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      See Also
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    Modules
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Modules
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Database Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Sessions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/registration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Registration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/processors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Processors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Analysis
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/tracking/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tracking
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/multisession/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Multi-session Analysis
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../modules/helpers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Helpers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/vrAnalysis2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    vrAnalysis2
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    database
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    sessions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/registration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    registration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/processors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    processors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    analysis
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/registration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Registration Workflow
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/session_analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Session Analysis
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      Prerequisites
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-database-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Database Setup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-adding-sessions-to-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Adding Sessions to Database
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-suite2p-processing-for-imaging-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Suite2p Processing (for imaging sessions)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-required-input-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Required Input Files
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Structure
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#timeline-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Timeline Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#behavioral-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Behavioral Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#imaging-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Imaging Data
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-the-database-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Database Pipeline
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Using the Database Pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#finding-sessions-needing-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Finding Sessions Needing Registration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#registering-a-single-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      Registering a Single Session
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#registering-multiple-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Registering Multiple Sessions
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error Handling
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#manual-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Manual Registration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registration-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      Registration Options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-data-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      Output Data Structure
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output Data Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#timeline-data_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Timeline Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#behavioral-data_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Behavioral Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#imaging-data_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Imaging Data
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#red-cell-data-if-processed" class="md-nav__link">
+    <span class="md-ellipsis">
+      Red Cell Data (if processed)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#session-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session Metadata
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Troubleshooting
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#common-issues" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common Issues
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#checking-registration-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      Checking Registration Status
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      See Also
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="registration">Registration<a class="headerlink" href="#registration" title="Permanent link">&para;</a></h1>
+<p>Registration is the process of preprocessing and preparing experimental data from VR sessions for analysis. This includes processing behavioral data from Timeline and vrControl, aligning imaging data from suite2p, running deconvolution algorithms, and creating a unified data structure for analysis.</p>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>The registration process transforms raw experimental data into a standardized format that can be used for analysis. It handles both behavioral and imaging data. It handles:</p>
+<ul>
+<li><strong>Timeline Data</strong>: Raw hardware signals from Rigbox (rotary encoder, photodiode, lick detector, reward commands)</li>
+<li><strong>Behavioral Data</strong>: VR environment data from vrControl (position tracking, trial information, rewards, licks)</li>
+<li><strong>Imaging Data</strong>: Calcium imaging data from suite2p (ROI fluorescence traces, deconvolved spikes)</li>
+<li><strong>Data Alignment</strong>: Synchronizing behavioral and imaging data in time</li>
+</ul>
+<p>The registration process produces "onedata" files - standardized NumPy arrays stored in the session's <code>onedata/</code> directory that can be easily loaded for analysis.</p>
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<p>Before registering a session, several prerequisites must be met:</p>
+<h3 id="1-database-setup">1. Database Setup<a class="headerlink" href="#1-database-setup" title="Permanent link">&para;</a></h3>
+<p>You must have a SQL database (preferably Microsoft Access) set up with a table containing session information. The table should have the following columns (not all are required):</p>
+<p><strong>Required Columns:</strong></p>
+<ul>
+<li><code>uSessionID</code> (int): Unique session identifier</li>
+<li><code>mouseName</code> (str): Mouse identifier</li>
+<li><code>sessionDate</code> (datetime): Session date</li>
+<li><code>sessionID</code> (int): Session ID number</li>
+<li><code>vrRegistration</code> (bool): Registration status flag</li>
+<li><code>imaging</code> (bool): Whether session has imaging data</li>
+<li><code>behavior</code> (bool): Whether session has behavioral data</li>
+<li><code>faceCamera</code> (bool): Whether session has face camera data</li>
+<li><code>vrBehaviorVersion</code> (int): Version of vrControl software used (1 or 2)</li>
+</ul>
+<p><strong>Optional Columns:</strong></p>
+<ul>
+<li><code>sessionQC</code> (bool): Quality control flag</li>
+<li><code>experimentType</code> (str)</li>
+<li><code>experimentID</code> (int)</li>
+<li><code>variableGain</code> (bool)</li>
+<li><code>vrEnvironments</code> (int)</li>
+<li><code>headPlateRotation</code> (float)</li>
+<li><code>numPlanes</code> (int)</li>
+<li><code>planeSeparation</code> (float)</li>
+<li><code>pockelsPercentage</code> (float)</li>
+<li><code>objectiveRotation</code> (float)</li>
+<li><code>suite2p</code> (bool)</li>
+<li><code>suite2pQC</code> (bool)</li>
+<li><code>redCellQC</code> (bool)</li>
+<li><code>scratchJustification</code> (str)</li>
+<li><code>logtime</code> (datetime)</li>
+<li><code>sessionNotes</code> (str)</li>
+<li><code>suite2pDate</code> (datetime)</li>
+<li><code>vrRegistrationDate</code> (datetime)</li>
+<li><code>vrRegistrationError</code> (bool)</li>
+<li><code>vrRegistrationException</code> (str)</li>
+<li><code>redCellQCDate</code> (datetime)</li>
+<li><code>dontTrack</code> (bool)</li>
+</ul>
+<h3 id="2-adding-sessions-to-database">2. Adding Sessions to Database<a class="headerlink" href="#2-adding-sessions-to-database" title="Permanent link">&para;</a></h3>
+<p>The best way to add a new session entry to the database is using the GUI. The GUI will automatically build a form based on the database schema, so this will actually work for any database object you provide. </p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.database</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_database</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.uilib.add_entry_gui</span><span class="w"> </span><span class="kn">import</span> <span class="n">NewEntryGUI</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  <span class="c1"># Get database</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  <span class="n">db</span> <span class="o">=</span> <span class="n">get_database</span><span class="p">(</span><span class="s2">&quot;vrSessions&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  <span class="c1"># Optionally create a session object to auto-populate fields</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.sessions</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_b2session</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  <span class="n">session</span> <span class="o">=</span> <span class="n">create_b2session</span><span class="p">(</span><span class="s2">&quot;mouse001&quot;</span><span class="p">,</span> <span class="s2">&quot;2024-01-15&quot;</span><span class="p">,</span> <span class="s2">&quot;001&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  <span class="c1"># any other parameters you want to use to preload the GUI form.</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  <span class="n">other_params</span> <span class="o">=</span> <span class="p">{}</span> 
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  <span class="c1"># Open GUI to add entry</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  <span class="n">gui</span> <span class="o">=</span> <span class="n">NewEntryGUI</span><span class="p">(</span><span class="n">db</span><span class="p">,</span> <span class="n">ses</span><span class="o">=</span><span class="n">session</span><span class="p">,</span> <span class="o">**</span><span class="n">other_params</span><span class="p">)</span>
+</code></pre></div>
+<p>The GUI will automatically populate fields from the session object if provided, and validate all inputs before submission.</p>
+<h3 id="3-suite2p-processing-for-imaging-sessions">3. Suite2p Processing (for imaging sessions)<a class="headerlink" href="#3-suite2p-processing-for-imaging-sessions" title="Permanent link">&para;</a></h3>
+<p>If the session has imaging data, suite2p must be run before registration. The suite2p output directory should be located at:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>{session_path}/suite2p/
+</code></pre></div>
+<p>Where <code>session_path</code> follows the conventional structure: <code>{local_data_path}/{mouse_name}/{date}/{session_id}/</code></p>
+<p>The suite2p directory should contain subdirectories for each imaging plane (e.g., <code>plane0/</code>, <code>plane1/</code>, etc.), each containing the standard suite2p output files (<code>.npy</code> files like <code>F.npy</code>, <code>Fneu.npy</code>, <code>spks.npy</code>, <code>stat.npy</code>, <code>ops.npy</code>, <code>iscell.npy</code>).</p>
+<h3 id="4-required-input-files">4. Required Input Files<a class="headerlink" href="#4-required-input-files" title="Permanent link">&para;</a></h3>
+<p>The session directory must contain the following files. Note that they are determined by other software - including both <a href="https://github.com/landoskape/vrControl">vrControl</a> and <a href="https://github.com/cortex-lab/Rigbox">Rigbox</a>.</p>
+<p><strong>Timeline Data:</strong>
+- <code>{date}_{session_id}_{mouse_name}_Timeline.mat</code>: Contains raw hardware signals from Rigbox</p>
+<p><strong>Behavioral Data:</strong>
+- <code>{date}_{session_id}_{mouse_name}_VRBehavior_trial.mat</code>: Contains VR environment data from vrControl</p>
+<p>These files are typically generated during the experiment by Rigbox and vrControl software.</p>
+<h2 id="data-structure">Data Structure<a class="headerlink" href="#data-structure" title="Permanent link">&para;</a></h2>
+<h3 id="timeline-data">Timeline Data<a class="headerlink" href="#timeline-data" title="Permanent link">&para;</a></h3>
+<p>The Timeline.mat file contains hardware signals recorded by Rigbox:</p>
+<ul>
+<li><strong>timestamps</strong>: Raw DAQ timestamps for all signals</li>
+<li><strong>rotaryEncoder</strong>: Rotary encoder position counter (circular, needs conversion to linear position)</li>
+<li><strong>photoDiode</strong>: Photodiode signal for detecting visual stimulus flips</li>
+<li><strong>lickDetector</strong>: Edge counter signal for detecting licks</li>
+<li><strong>rewardCommand</strong>: Voltage signal indicating reward delivery</li>
+<li><strong>neuralFrames</strong>: Frame counter from ScanImage indicating imaging volume acquisition</li>
+<li><strong>mpepUDPTimes/mpepUDPEvents</strong>: Trial start/end messages from vrControl</li>
+</ul>
+<h3 id="behavioral-data">Behavioral Data<a class="headerlink" href="#behavioral-data" title="Permanent link">&para;</a></h3>
+<p>The VRBehavior_trial.mat file contains VR environment data. The structure varies by <code>vrBehaviorVersion</code>:</p>
+<p><strong>Version 1 (standard_behavior):</strong></p>
+<ul>
+<li><code>expInfo</code>: Experiment information (room length, movement gain per trial)</li>
+<li><code>trialInfo</code>: Sparse matrices containing trial-by-trial data:</li>
+<li><code>time</code>: Timestamps for each behavioral sample</li>
+<li><code>roomPosition</code>: Virtual position in VR environment</li>
+<li><code>rewardPosition</code>: Reward zone position</li>
+<li><code>rewardTolerance</code>: Reward zone half-width</li>
+<li><code>rewardAvailable</code>: Whether reward was available</li>
+<li><code>rewardDeliveryFrame</code>: Frame when reward was delivered</li>
+<li><code>activeLicking</code>: Whether active licking was required</li>
+<li><code>activeStopping</code>: Whether active stopping was required</li>
+<li><code>lick</code>: Lick counts per frame</li>
+<li><code>vrEnvIdx</code>: Environment index (optional)</li>
+</ul>
+<p><strong>Version 2 (cr_hippocannula_behavior):</strong></p>
+<ul>
+<li>Similar structure but with different field names (<code>TRIAL</code> instead of <code>trialInfo</code>, <code>EXP</code> instead of <code>expInfo</code>)</li>
+</ul>
+<p>Both versions also contain <code>rigInfo</code> with hardware configuration:</p>
+<ul>
+<li><code>rotEncPos</code>: Rotary encoder position ("left" or "right")</li>
+<li><code>rotEncSign</code>: Sign of rotary encoder (-1 or 1)</li>
+<li><code>wheelToVR</code>: Conversion factor from wheel counts to VR units</li>
+<li><code>wheelRadius</code>: Physical wheel radius in cm</li>
+<li><code>rotaryRange</code>: Bit range of rotary encoder (typically 32)</li>
+</ul>
+<h3 id="imaging-data">Imaging Data<a class="headerlink" href="#imaging-data" title="Permanent link">&para;</a></h3>
+<p>Suite2p outputs are organized by plane:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>suite2p/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  plane0/
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    F.npy          # Fluorescence traces (nROIs x nFrames)
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    Fneu.npy       # Neuropil fluorescence (nROIs x nFrames)
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    spks.npy       # Deconvolved spikes (nROIs x nFrames)
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    stat.npy        # ROI statistics (list of dicts)
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    ops.npy         # Suite2p options (dict)
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    iscell.npy      # Cell classifier output (nROIs x 2)
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    redcell.npy     # Red cell classifier output (optional, nROIs x 2)
+</code></pre></div>
+<h2 id="using-the-database-pipeline">Using the Database Pipeline<a class="headerlink" href="#using-the-database-pipeline" title="Permanent link">&para;</a></h2>
+<p>The recommended way to register sessions is through the database pipeline, which handles error tracking and status updates automatically. The database object for sessions includes some supporting methods that make it easy to identify sessions that need registration and register them all at once.</p>
+<h3 id="finding-sessions-needing-registration">Finding Sessions Needing Registration<a class="headerlink" href="#finding-sessions-needing-registration" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.database</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_database</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  <span class="n">db</span> <span class="o">=</span> <span class="n">get_database</span><span class="p">(</span><span class="s2">&quot;vrSessions&quot;</span><span class="p">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>  <span class="c1"># Get DataFrame of sessions needing registration</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  <span class="n">needs_reg</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">needs_registration</span><span class="p">(</span><span class="n">return_df</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>  <span class="c1"># Filter by mouse</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>  <span class="n">needs_reg</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">needs_registration</span><span class="p">(</span><span class="n">mouseName</span><span class="o">=</span><span class="s2">&quot;mouse001&quot;</span><span class="p">,</span> <span class="n">return_df</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>  <span class="c1"># Print sessions (alternative to DataFrame)</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>  <span class="n">db</span><span class="o">.</span><span class="n">needs_registration</span><span class="p">(</span><span class="n">return_df</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">mouseName</span><span class="o">=</span><span class="s2">&quot;mouse001&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="registering-a-single-session">Registering a Single Session<a class="headerlink" href="#registering-a-single-session" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.database</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_database</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  <span class="n">db</span> <span class="o">=</span> <span class="n">get_database</span><span class="p">(</span><span class="s2">&quot;vrSessions&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>  <span class="c1"># Register by identifiers</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  <span class="n">success</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">register_single_session</span><span class="p">(</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>      <span class="n">mouse_name</span><span class="o">=</span><span class="s2">&quot;mouse001&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>      <span class="n">session_date</span><span class="o">=</span><span class="s2">&quot;2024-01-15&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>      <span class="n">session_id</span><span class="o">=</span><span class="s2">&quot;001&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>  <span class="p">)</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>  <span class="k">if</span> <span class="n">success</span><span class="p">:</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>      <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Registration successful!&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>  <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>      <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Registration failed - check database for error details&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="registering-multiple-sessions">Registering Multiple Sessions<a class="headerlink" href="#registering-multiple-sessions" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.database</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_database</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>  <span class="n">db</span> <span class="o">=</span> <span class="n">get_database</span><span class="p">(</span><span class="s2">&quot;vrSessions&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>  <span class="c1"># Register all sessions needing registration</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>  <span class="c1"># Stops when total data size exceeds max_data (default 30 GB)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>  <span class="n">db</span><span class="o">.</span><span class="n">register_sessions</span><span class="p">(</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>      <span class="n">max_data</span><span class="o">=</span><span class="mf">30e9</span><span class="p">,</span>        <span class="c1"># Maximum total data to process (bytes)</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>      <span class="n">skip_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>     <span class="c1"># Skip sessions with previous errors</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>      <span class="n">raise_exception</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="c1"># Don&#39;t raise exceptions on failure</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>  <span class="p">)</span>
+</code></pre></div>
+<p>The <code>register_sessions</code> method provides progress updates including:
+- Accumulated onedata registered
+- Average data size per session
+- Estimated remaining data to process</p>
+<h3 id="error-handling">Error Handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h3>
+<p>When registration fails, the database is automatically updated:</p>
+<ul>
+<li><code>vrRegistrationError</code> set to <code>True</code></li>
+<li><code>vrRegistrationException</code> contains the error message</li>
+<li>All onedata files are cleared</li>
+<li>Registration status remains <code>False</code></li>
+</ul>
+<p>You can check for errors:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>  <span class="c1"># Print all registration errors</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  <span class="n">db</span><span class="o">.</span><span class="n">print_registration_errors</span><span class="p">()</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  <span class="c1"># Get sessions with errors</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>  <span class="n">errors</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">get_table</span><span class="p">(</span><span class="n">vrRegistrationError</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+<p>If you try to register sessions without setting the <code>skip_errors</code> parameter to <code>False</code>, the bulk registration pipeline will simply skip sessions that had previous errors. You probably don't want this
+unless you want to abandon the session! So use the <code>needs_registration</code> method above and the <code>kwarg</code>
+<code>vrRegistrationError=True</code> to identify sessions that had errors. You'll need to debug them yourself.</p>
+<h2 id="manual-registration">Manual Registration<a class="headerlink" href="#manual-registration" title="Permanent link">&para;</a></h2>
+<p>You can also register sessions directly without using the database:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.registration</span><span class="w"> </span><span class="kn">import</span> <span class="n">B2Registration</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.sessions.b2session</span><span class="w"> </span><span class="kn">import</span> <span class="n">B2RegistrationOpts</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  <span class="c1"># Create registration options</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  <span class="n">opts</span> <span class="o">=</span> <span class="n">B2RegistrationOpts</span><span class="p">(</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>      <span class="n">vrBehaviorVersion</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>      <span class="c1"># Version of vrControl (1 or 2)</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>      <span class="n">facecam</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>             <span class="c1"># Process face camera data</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>      <span class="n">imaging</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>              <span class="c1"># Process imaging data</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>      <span class="n">oasis</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>                <span class="c1"># Run OASIS deconvolution</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>      <span class="n">redCellProcessing</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>   <span class="c1"># Process red cell features</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>      <span class="n">clearOne</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>            <span class="c1"># Clear existing onedata before registration</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>      <span class="n">neuropilCoefficient</span><span class="o">=</span><span class="mf">0.7</span><span class="p">,</span>  <span class="c1"># Neuropil subtraction coefficient</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>      <span class="n">tau</span><span class="o">=</span><span class="mf">1.5</span><span class="p">,</span>                  <span class="c1"># OASIS tau parameter (seconds)</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>      <span class="n">fs</span><span class="o">=</span><span class="mi">6</span>                      <span class="c1"># Sampling frequency (Hz)</span>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>  <span class="p">)</span>
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>  <span class="c1"># Create registration object</span>
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>  <span class="n">registration</span> <span class="o">=</span> <span class="n">B2Registration</span><span class="p">(</span>
+<a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>      <span class="n">mouse_name</span><span class="o">=</span><span class="s2">&quot;mouse001&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>      <span class="n">date_string</span><span class="o">=</span><span class="s2">&quot;2024-01-15&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>      <span class="n">session_id</span><span class="o">=</span><span class="s2">&quot;001&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>      <span class="n">opts</span><span class="o">=</span><span class="n">opts</span>
+<a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>  <span class="p">)</span>
+<a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>
+<a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>  <span class="c1"># Run registration</span>
+<a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>  <span class="n">registration</span><span class="o">.</span><span class="n">register</span><span class="p">()</span>
+<a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a>
+<a id="__codelineno-7-28" name="__codelineno-7-28" href="#__codelineno-7-28"></a>  <span class="c1"># Save session parameters (automatically called by register())</span>
+<a id="__codelineno-7-29" name="__codelineno-7-29" href="#__codelineno-7-29"></a>  <span class="c1"># registration.save_session_prms()</span>
+</code></pre></div>
+<h2 id="registration-options">Registration Options<a class="headerlink" href="#registration-options" title="Permanent link">&para;</a></h2>
+<p>The <code>B2RegistrationOpts</code> dataclass controls registration behavior:</p>
+<p><strong>Behavior Options:</strong>
+- <code>vrBehaviorVersion</code> (int): Version of vrControl software (1=standard, 2=CR hippocampus, software no longer exists!)
+    - Note: this system will allow you to use this pipeline with new behavior software, just add a new version number and a new behavior processing function in the <code>vrAnalysis2.registration.behavior</code> module.</p>
+<p><strong>Data Processing Flags:</strong></p>
+<ul>
+<li><code>imaging</code> (bool): Process imaging data (requires suite2p directory)</li>
+<li><code>facecam</code> (bool): Process face camera data (not yet implemented)</li>
+<li><code>redCellProcessing</code> (bool): Compute red cell features</li>
+</ul>
+<p><strong>Deconvolution Options:</strong></p>
+<ul>
+<li><code>oasis</code> (bool): Run OASIS deconvolution (recomputes spikes from corrected fluorescence)</li>
+<li><code>tau</code> (float): OASIS decay time constant in seconds (default: 1.5)</li>
+<li><code>fs</code> (int): Sampling frequency in Hz (default: 6)</li>
+<li><code>neuropilCoefficient</code> (float): Coefficient for neuropil subtraction (default: 0.7)</li>
+</ul>
+<p><strong>Data Management:</strong></p>
+<ul>
+<li><code>clearOne</code> (bool): Clear existing onedata before registration (default: True)</li>
+</ul>
+<h2 id="output-data-structure">Output Data Structure<a class="headerlink" href="#output-data-structure" title="Permanent link">&para;</a></h2>
+<p>After registration, the session's <code>onedata/</code> directory contains standardized NumPy arrays:</p>
+<h3 id="timeline-data_1">Timeline Data<a class="headerlink" href="#timeline-data_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>wheelPosition.times.npy</code>: Timeline timestamps</li>
+<li><code>wheelPosition.position.npy</code>: Wheel position in cm</li>
+<li><code>licks.times.npy</code>: Lick event timestamps</li>
+<li><code>rewards.times.npy</code>: Reward delivery timestamps</li>
+<li><code>trials.startTimes.npy</code>: Trial start timestamps</li>
+</ul>
+<h3 id="behavioral-data_1">Behavioral Data<a class="headerlink" href="#behavioral-data_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>positionTracking.times.npy</code>: Behavioral timestamps</li>
+<li><code>positionTracking.position.npy</code>: Virtual position in VR environment</li>
+<li><code>positionTracking.mpci.npy</code>: Mapping from behavioral samples to imaging frames</li>
+<li><code>trials.positionTracking.npy</code>: Start frame index for each trial</li>
+<li><code>trials.environmentIndex.npy</code>: Environment ID for each trial</li>
+<li><code>trials.roomlength.npy</code>: Room length for each trial</li>
+<li><code>trials.movementGain.npy</code>: Movement gain for each trial</li>
+<li><code>trials.rewardPosition.npy</code>: Reward zone position</li>
+<li><code>trials.rewardZoneHalfwidth.npy</code>: Reward zone half-width</li>
+<li><code>trials.rewardAvailability.npy</code>: Whether reward was available</li>
+<li><code>trials.rewardPositionTracking.npy</code>: Reward delivery frame index</li>
+<li><code>trials.activeLicking.npy</code>: Active licking requirement</li>
+<li><code>trials.activeStopping.npy</code>: Active stopping requirement</li>
+<li><code>licksTracking.positionTracking.npy</code>: Lick event indices in behavioral samples</li>
+</ul>
+<h3 id="imaging-data_1">Imaging Data<a class="headerlink" href="#imaging-data_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>mpci.times.npy</code>: Imaging frame timestamps</li>
+<li><code>mpci.roiActivityF.npy</code>: Fluorescence traces (or LoadingRecipe reference)</li>
+<li><code>mpci.roiNeuropilActivityF.npy</code>: Neuropil fluorescence (or LoadingRecipe reference)</li>
+<li><code>mpci.roiActivityDeconvolved.npy</code>: Suite2p deconvolved spikes (or LoadingRecipe reference)</li>
+<li><code>mpci.roiActivityDeconvolvedOasis.npy</code>: OASIS deconvolved spikes (if computed)</li>
+<li><code>mpciROIs.isCell.npy</code>: Cell classifier output</li>
+<li><code>mpciROIs.stackPosition.npy</code>: ROI positions (nROIs x 3: x, y, plane)</li>
+<li><code>mpciROIs.redS2P.npy</code>: Red cell classifier output (if available)</li>
+</ul>
+<h3 id="red-cell-data-if-processed">Red Cell Data (if processed)<a class="headerlink" href="#red-cell-data-if-processed" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>mpciROIs.redDotProduct.npy</code>: Dot product feature</li>
+<li><code>mpciROIs.redPearson.npy</code>: Pearson correlation feature</li>
+<li><code>mpciROIs.redPhaseCorrelation.npy</code>: Phase correlation feature</li>
+<li><code>mpciROIs.redCellIdx.npy</code>: Boolean array for red cell identification</li>
+<li><code>mpciROIs.redCellManualAssignments.npy</code>: Manual assignment array</li>
+<li><code>parametersRedDotProduct.keyValuePairs.npy</code>: Dot product parameters</li>
+<li><code>parametersRedPearson.keyValuePairs.npy</code>: Pearson parameters</li>
+<li><code>parametersRedPhaseCorrelation.keyValuePairs.npy</code>: Phase correlation parameters</li>
+</ul>
+<h3 id="session-metadata">Session Metadata<a class="headerlink" href="#session-metadata" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>vrExperimentOptions.json</code>: Registration options used</li>
+<li><code>vrExperimentPreprocessing.json</code>: List of preprocessing steps completed</li>
+<li><code>vrExperimentValues.json</code>: Session metadata values (numTrials, numROIs, etc.)</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="common-issues">Common Issues<a class="headerlink" href="#common-issues" title="Permanent link">&para;</a></h3>
+<p><strong>"Session directory does not exist"</strong></p>
+<ul>
+<li>Ensure the session directory follows the expected structure: <code>{local_data_path}/{mouse_name}/{date}/{session_id}/</code></li>
+<li>Check that <code>local_data_path()</code> is configured correctly</li>
+</ul>
+<p><strong>"suite2p directory does not exist"</strong></p>
+<ul>
+<li>Run suite2p processing before registration</li>
+<li>Ensure suite2p output is in <code>{session_path}/suite2p/</code></li>
+</ul>
+<p><strong>"Missing required suite2p files"</strong></p>
+<ul>
+<li>Verify all planes have the required <code>.npy</code> files (F, Fneu, spks, stat, ops, iscell)</li>
+<li>Check for typos in file names</li>
+</ul>
+<p><strong>"Frame count mismatch"</strong></p>
+<ul>
+<li>The registration process attempts to handle minor mismatches automatically</li>
+<li>Large mismatches may indicate a problem with the Timeline neuralFrames signal</li>
+<li>Check that ScanImage TTL signals were properly recorded</li>
+</ul>
+<p><strong>"Behavior type not supported"</strong></p>
+<ul>
+<li>Ensure <code>vrBehaviorVersion</code> matches the version of vrControl used</li>
+<li>Currently supported: 1 (standard), 2 (CR hippocampus)</li>
+</ul>
+<p><strong>"First flips in trial are not all down"</strong></p>
+<ul>
+<li>This assertion only applies to sessions after 2022-08-30</li>
+<li>May indicate a problem with photodiode signal or trial preparation</li>
+</ul>
+<h3 id="checking-registration-status">Checking Registration Status<a class="headerlink" href="#checking-registration-status" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>  <span class="kn">from</span><span class="w"> </span><span class="nn">vrAnalysis.database</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_database</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  <span class="n">db</span> <span class="o">=</span> <span class="n">get_database</span><span class="p">(</span><span class="s2">&quot;vrSessions&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>  <span class="c1"># Check if session is registered</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>  <span class="n">record</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">get_record</span><span class="p">(</span><span class="s2">&quot;mouse001&quot;</span><span class="p">,</span> <span class="s2">&quot;2024-01-15&quot;</span><span class="p">,</span> <span class="s2">&quot;001&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>  <span class="k">if</span> <span class="n">record</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>      <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Registration status: </span><span class="si">{</span><span class="n">record</span><span class="p">[</span><span class="s1">&#39;vrRegistration&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>      <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Registration date: </span><span class="si">{</span><span class="n">record</span><span class="p">[</span><span class="s1">&#39;vrRegistrationDate&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>      <span class="k">if</span> <span class="n">record</span><span class="p">[</span><span class="s1">&#39;vrRegistrationError&#39;</span><span class="p">]:</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>          <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Error: </span><span class="si">{</span><span class="n">record</span><span class="p">[</span><span class="s1">&#39;vrRegistrationException&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../modules/database/">Database Module</a> for database management</li>
+<li><a href="../modules/sessions/">Sessions Module</a> for session data loading</li>
+<li><a href="../modules/registration/">Registration Module</a> for API reference</li>
+<li><a href="../examples/registration/">Registration Examples</a> for detailed workflows</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.annotate"], "search": "../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.f55a23d4.min.js"></script>
+      
+    
+  </body>
+</html>
