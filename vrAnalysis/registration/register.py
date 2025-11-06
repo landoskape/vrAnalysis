@@ -8,7 +8,7 @@ import scipy.io as scio
 from .. import helpers
 from ..sessions import B2Session
 from ..sessions.base import LoadingRecipe
-from ..sessions.b2session import B2RegistrationOpts, create_b2session
+from ..sessions.b2session import B2RegistrationOpts, B2Session
 from .behavior import register_behavior
 from .oasis import oasis_deconvolution
 from .redcell import RedCellProcessing
@@ -510,7 +510,7 @@ class B2Registration(B2Session):
             return
 
         # create RedCellProcessing object
-        b2session_of_self = create_b2session(self.mouse_name, self.date, self.session_id)
+        b2session_of_self = B2Session.create(self.mouse_name, self.date, self.session_id)
         red_cell_processing = RedCellProcessing(b2session_of_self)
 
         # compute red-features

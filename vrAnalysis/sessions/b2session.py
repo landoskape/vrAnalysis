@@ -12,42 +12,6 @@ from roicat_support.classifier import load_classifier
 from roicat_support.classifier import get_results_path as get_classifier_results_path
 
 
-def create_b2session(
-    mouse_name: str,
-    date: str,
-    session_id: str,
-    params: "B2SessionParams" | Dict[str, Any] | None = None,
-) -> "B2Session":
-    """Create a B2Session object and (optionally) specify the parameters
-
-    Parameters
-    ----------
-    mouse_name: str
-        The name of the mouse
-    date: str
-        The date of the session
-    session_id: str
-        The id of the session
-    params: B2SessionParams, dict, or None
-        The parameters to use for the session. If None, the default parameters will be used.
-        If a dictionary, it can contain the keys:
-            - spks_type: str (which kind of spks data to load)
-            - keep_planes: list[int] (which planes to keep)
-            - good_labels: list[str] (which labels to keep from the roicat classifier analysis)
-            - fraction_filled_threshold: float (threshold for the fraction of the ROI that is filled -- based on local concavity analysis)
-            - footprint_size_threshold: int (threshold for the size of the ROI)
-    """
-    if params is None:
-        params = B2SessionParams()
-    elif isinstance(params, dict):
-        params = B2SessionParams.from_dict(params)
-    elif isinstance(params, B2SessionParams):
-        pass
-    else:
-        raise ValueError(f"params must be a B2SessionParams object or a dictionary")
-    return B2Session(mouse_name, date, session_id, params)
-
-
 @dataclass
 class B2RegistrationOpts:
     """
@@ -245,6 +209,43 @@ class B2Session(SessionData):
     opts: B2RegistrationOpts = field(default_factory=B2RegistrationOpts, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
     params: B2SessionParams = field(default_factory=B2SessionParams, repr=False)
+
+    @classmethod
+    def create(
+        cls,
+        mouse_name: str,
+        date: str,
+        session_id: str,
+        params: "B2SessionParams" | Dict[str, Any] | None = None,
+    ) -> "B2Session":
+        """Create a B2Session object and (optionally) specify the parameters
+
+        Parameters
+        ----------
+        mouse_name: str
+            The name of the mouse
+        date: str
+            The date of the session
+        session_id: str
+            The id of the session
+        params: B2SessionParams, dict, or None
+            The parameters to use for the session. If None, the default parameters will be used.
+            If a dictionary, it can contain the keys:
+                - spks_type: str (which kind of spks data to load)
+                - keep_planes: list[int] (which planes to keep)
+                - good_labels: list[str] (which labels to keep from the roicat classifier analysis)
+                - fraction_filled_threshold: float (threshold for the fraction of the ROI that is filled -- based on local concavity analysis)
+                - footprint_size_threshold: int (threshold for the size of the ROI)
+        """
+        if params is None:
+            params = B2SessionParams()
+        elif isinstance(params, dict):
+            params = B2SessionParams.from_dict(params)
+        elif isinstance(params, B2SessionParams):
+            pass
+        else:
+            raise ValueError(f"params must be a B2SessionParams object or a dictionary")
+        return cls(mouse_name, date, session_id, params)
 
     @property
     def s2p_path(self) -> Path:

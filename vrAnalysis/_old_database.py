@@ -15,7 +15,7 @@ from _old_vrAnalysis import fileManagement as fm
 
 # vrAnalysis imports
 from .helpers import readable_bytes, error_print, get_confirmation
-from .sessions import B2Session, create_b2session
+from .sessions import B2Session
 
 
 def get_database_metadata(db_name: str) -> dict:
@@ -514,7 +514,7 @@ class SessionDatabase(BaseDatabase):
         df = self.get_table(**kw_conditions)
         sessions = []
         for _, row in df.iterrows():
-            sessions.append(create_b2session(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params))
+            sessions.append(B2Session.create(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params))
         return sessions
 
     # == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==

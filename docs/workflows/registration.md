@@ -70,8 +70,8 @@ The best way to add a new session entry to the database is using the GUI. The GU
   db = get_database("vrSessions")
   
   # Optionally create a session object to auto-populate fields
-  from vrAnalysis.sessions import create_b2session
-  session = create_b2session("mouse001", "2024-01-15", "001")
+  from vrAnalysis.sessions import B2Session
+  session = B2Session.create("mouse001", "2024-01-15", "001")
   
   # any other parameters you want to use to preload the GUI form.
   other_params = {} 

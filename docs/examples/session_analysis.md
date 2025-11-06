@@ -5,11 +5,11 @@ This example demonstrates how to perform analysis on a single session.
 ## Loading and Processing Data
 
 ```python
-from vrAnalysis.sessions import create_b2session
+from vrAnalysis.sessions import B2Session
 from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
 # Create session
-session = create_b2session(
+session = B2Session.create(
     mouse_name="mouse001",
     date="2024-01-15",
     session_id="001"

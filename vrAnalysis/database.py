@@ -19,7 +19,7 @@ from typing import Union, List, Tuple, Optional, Any, Dict, Generator
 
 from .files import s2p_targets
 from .helpers import readable_bytes, error_print
-from .sessions import B2Session, create_b2session
+from .sessions import B2Session
 from .sessions.b2session import B2RegistrationOpts
 from .registration import B2Registration
 
@@ -685,7 +685,7 @@ class SessionDatabase(BaseDatabase):
         ----------
         session_params : dict, default={}
             Additional parameters to pass to the session constructor when creating
-            B2Session objects. These are passed through to create_b2session().
+            B2Session objects. These are passed through to B2Session.create().
         **kw_conditions : dict, optional
             Additional filtering conditions passed to get_table().
             See get_table() documentation for filtering syntax.
@@ -699,7 +699,7 @@ class SessionDatabase(BaseDatabase):
         df = self.get_table(**kw_conditions)
         sessions = []
         for _, row in df.iterrows():
-            sessions.append(create_b2session(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params))
+            sessions.append(B2Session.create(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params))
         return sessions
 
     # == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==
@@ -742,7 +742,7 @@ class SessionDatabase(BaseDatabase):
             Session object initialized with data from the record.
         """
         mouse_name, session_date, session_id = self.session_name(row)
-        return create_b2session(mouse_name, session_date, session_id)
+        return B2Session.create(mouse_name, session_date, session_id)
 
     def make_b2registration(self, row: pd.Series, opts: B2RegistrationOpts) -> B2Registration:
         """

@@ -6,7 +6,7 @@ import joblib
 
 
 # import package
-from .sessions import B2Session, create_b2session
+from .sessions import B2Session
 from . import helpers
 from . import files
 from roicat_support import tracking as roicat_tracking
@@ -44,7 +44,7 @@ class Tracker:
         self.cluster_silhouettes = self.get_tracking_files("cluster_silhouettes")
 
         # identify sessions that were tracked and create session objects for them
-        self.sessions: list[B2Session] = [create_b2session(*session_name) for session_name in self.session_names]
+        self.sessions: list[B2Session] = [B2Session.create(*session_name) for session_name in self.session_names]
         self.num_sessions: int = len(self.session_names)
 
     @classmethod

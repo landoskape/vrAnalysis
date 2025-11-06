@@ -4,8 +4,6 @@ B2Sessions are the core class for loading and managing VR session data. They are
 
 ## Main Classes and Functions
 
-::: vrAnalysis.sessions.create_b2session
-
 ::: vrAnalysis.sessions.B2Session
     options:
       members:

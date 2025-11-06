@@ -2,7 +2,7 @@ import joblib
 import numpy as np
 from _old_vrAnalysis import database
 from _old_vrAnalysis.session import vrExperiment
-from vrAnalysis.sessions import create_b2session, B2Session
+from vrAnalysis.sessions import B2Session
 from vrAnalysis.analysis.same_cell_candidates import (
     SameCellProcessor,
     SameCellParams,
@@ -25,7 +25,7 @@ cluster_params = SameCellClusterParameters()
 
 
 def convert_to_b2session(session: vrExperiment, spks_type: str):
-    return create_b2session(session.mouseName, session.dateString, session.sessionid, dict(spks_type=spks_type))
+    return B2Session.create(session.mouseName, session.dateString, session.sessionid, dict(spks_type=spks_type))
 
 
 def iterate_through_sessions():
