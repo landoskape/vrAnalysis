@@ -26,10 +26,10 @@ import pyqtgraph as pg
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/../.."
 sys.path.append(mainPath)
 
-from vrAnalysis import tracking
-from vrAnalysis.helpers import named_transpose, edge2center
-from vrAnalysis.uilib import CurrentSelection, SliderSelector
-from vrAnalysis import analysis
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis.helpers import named_transpose, edge2center
+from _old_vrAnalysis.uilib import CurrentSelection, SliderSelector
+from _old_vrAnalysis import analysis
 
 
 def handle_inputs():

@@ -1,10 +1,10 @@
-# vrAnalysis2 Documentation
+# vrAnalysis Documentation
 
-Welcome to the documentation for **vrAnalysis2**, a comprehensive Python package for processing and analyzing virtual reality (VR) behavioral and imaging experiments.
+Welcome to the documentation for **vrAnalysis**, a comprehensive Python package for processing and analyzing virtual reality (VR) behavioral and imaging experiments.
 
 ## Overview
 
-vrAnalysis2 is designed to work with:
+vrAnalysis is designed to work with:
 - **Behavioral data** from [vrControl](https://github.com/landoskape/vrControl) experiments
 - **Imaging data** processed with [suite2p](https://github.com/MouseLand/suite2p)
 - **Database management** using Microsoft Access databases (or other SQL databases with minimal modifications)
@@ -21,14 +21,14 @@ vrAnalysis2 is designed to work with:
 
 ## Quick Navigation
 
-- **[Installation Guide](installation.md)** - Get started with vrAnalysis2
+- **[Installation Guide](installation.md)** - Get started with vrAnalysis
 - **[Quickstart Tutorial](quickstart.md)** - Learn the basics
 - **[Module Documentation](modules/database.md)** - Detailed module descriptions
 - **[API Reference](api/vrAnalysis2.md)** - Complete API documentation
 
 ## Package Structure
 
-vrAnalysis2 is organized into several main modules:
+vrAnalysis is organized into several main modules:
 
 - **`database`**: Database management and session tracking
 - **`sessions`**: Session data loading and management
@@ -45,5 +45,5 @@ If you encounter issues or have questions:
 
 1. Check the [Quickstart Guide](quickstart.md) for common workflows
 2. Review the [Module Documentation](modules/database.md) for specific features
-3. Consult the [API Reference](api/vrAnalysis2.md) for detailed function signatures
+3. Consult the [API Reference](api/vrAnalysis.md) for detailed function signatures
 

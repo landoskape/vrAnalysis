@@ -36,7 +36,7 @@ The database module is part of the vrAnalysis package. Import as follows and
 create a database object (a one size fits all object for communicating with 
 the database). 
 ```python
-from vrAnalysis import database
+from _old_vrAnalysis import database
 sessiondb = database.vrDatabase('vrSessions')
 ```
 

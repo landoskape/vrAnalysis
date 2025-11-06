@@ -5,8 +5,8 @@ This example demonstrates a complete registration workflow for processing VR ses
 ## Basic Registration
 
 ```python
-from vrAnalysis2.registration import B2Registration
-from vrAnalysis2.sessions.b2session import B2RegistrationOpts
+from vrAnalysis.registration import B2Registration
+from vrAnalysis.sessions.b2session import B2RegistrationOpts
 
 # Create registration options
 opts = B2RegistrationOpts(
@@ -35,8 +35,8 @@ registration.register()
 Register multiple sessions from the database:
 
 ```python
-from vrAnalysis2.database import get_database
-from vrAnalysis2.sessions.b2session import B2RegistrationOpts
+from vrAnalysis.database import get_database
+from vrAnalysis.sessions.b2session import B2RegistrationOpts
 
 # Get database
 db = get_database("vrSessions")

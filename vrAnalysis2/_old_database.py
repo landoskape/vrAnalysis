@@ -9,9 +9,9 @@ from subprocess import run
 from typing import Union
 
 # Back-compatibility imports
-from vrAnalysis import session as original_session
-from vrAnalysis import registration
-from vrAnalysis import fileManagement as fm
+from _old_vrAnalysis import session as original_session
+from _old_vrAnalysis import registration
+from _old_vrAnalysis import fileManagement as fm
 
 # vrAnalysis2 imports
 from .helpers import readable_bytes, error_print, get_confirmation
@@ -734,7 +734,6 @@ class SessionDatabase(BaseDatabase):
         opts["facecam"] = False  # whether or not face video was performed on this session (note: only set to True when DLC has already been run!)
         opts["imaging"] = True  # whether or not imaging was performed on this session (note: only set to True when suite2p has already been run!)
         opts["oasis"] = True  # whether or not to rerun oasis on calcium signals (note: only used if imaging is run)
-        opts["moveRawData"] = False  # whether or not to move raw data files to 'rawData'
         opts["redCellProcessing"] = (
             True  # whether or not to preprocess redCell features into oneData using the redCellProcessing object (only runs if redcell in self.value['available'])
         )

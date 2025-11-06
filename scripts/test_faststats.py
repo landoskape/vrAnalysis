@@ -7,8 +7,8 @@ import numpy as np
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
-from vrAnalysis import faststats as fs
-from vrAnalysis.faststats.faststats import _requires_q
+from _old_vrAnalysis import faststats as fs
+from _old_vrAnalysis.faststats.faststats import _requires_q
 
 methods = [
     "ptp",

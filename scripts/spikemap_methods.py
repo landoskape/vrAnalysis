@@ -7,8 +7,8 @@ sys.path.append(mainPath)
 
 from argparse import ArgumentParser
 import numpy as np
-from vrAnalysis import database
-from vrAnalysis.analysis import SpikemapMethods
+from _old_vrAnalysis import database
+from _old_vrAnalysis.analysis import SpikemapMethods
 
 mousedb = database.vrDatabase("vrMice")
 sessiondb = database.vrDatabase("vrSessions")

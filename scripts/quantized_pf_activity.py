@@ -2,9 +2,9 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from vrAnalysis import analysis
-from vrAnalysis import database
-from vrAnalysis import tracking
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
 
 sessiondb = database.vrDatabase("vrSessions")
 mousedb = database.vrDatabase("vrMice")

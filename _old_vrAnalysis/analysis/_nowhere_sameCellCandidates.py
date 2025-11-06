@@ -9,11 +9,11 @@ Quick Start
 ----------
 Basic usage for analyzing correlation between ROIs across planes:
 
-    from vrAnalysis.analysis import sameCellCandidates
-    
+    from _old_vrAnalysis.analysis import sameCellCandidates
+
     # Initialize with a VR experiment object
     scc = sameCellCandidates(vrexp)
-    
+
     # Create histograms of correlated ROI pairs across planes
     scc.planePairHistograms(
         corrCutoff=[0.5, 0.6, 0.7, 0.8],  # correlation thresholds
@@ -81,8 +81,8 @@ Batch Processing
 --------------
 For analyzing multiple sessions:
 
-    from vrAnalysis.database import vrDatabase
-    
+    from _old_vrAnalysis.database import vrDatabase
+
     vrdb = vrDatabase()
     for ses in vrdb.iterSessions(imaging=True, vrRegistration=True):
         scc = sameCellCandidates(ses)

@@ -1,6 +1,6 @@
 import time
 import numpy as np
-from vrAnalysis import helpers
+from _old_vrAnalysis import helpers
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

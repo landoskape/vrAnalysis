@@ -110,27 +110,6 @@ params = {
 }
 
 
-def get_column_descriptions(vrdb: "BaseDatabase") -> List[Tuple]:
-    """
-    Retrieve column descriptions from the database schema.
-
-    Parameters
-    ----------
-    vrdb : BaseDatabase
-        Database instance to query.
-
-    Returns
-    -------
-    list[tuple]
-        List of column description tuples from cursor.description.
-    """
-    with vrdb.open_cursor(commit_changes=False) as cursor:
-        query = f"SELECT * FROM {vrdb.table_name} WHERE 1=0"
-        cursor.execute(query)
-        column_descriptions = cursor.description
-    return column_descriptions
-
-
 class NewEntryGUI(QWidget):
     """
     GUI for adding new entries to a database table.
@@ -148,8 +127,7 @@ class NewEntryGUI(QWidget):
         super().__init__()
 
         try:
-            column_descriptions = get_column_descriptions(vrdb)
-            column_name, data_type, size, _, _, _, nullable = map(list, zip(*column_descriptions))
+            column_name, data_type, nullable = vrdb.table_column_info()
         except Exception as e:
             print(f"Error getting column descriptions: {e}")
             print("Cannot create GUI without database schema information.")
@@ -159,7 +137,6 @@ class NewEntryGUI(QWidget):
         self.ses = ses
         self.column_name = column_name
         self.data_type = data_type
-        self.size = size
         self.nullable = nullable
         self.defaults = [default_vals[cname] if cname in default_vals else None for cname in column_name]
 
@@ -242,7 +219,7 @@ class NewEntryGUI(QWidget):
         self.entryLabels = []
         self.entryFields = []
         self.entryIndex = []
-        for idx, (ignore, name, dtype, ss, null) in enumerate(zip(ignore_column, self.column_name, self.data_type, self.size, self.nullable)):
+        for idx, (ignore, name, dtype, null) in enumerate(zip(ignore_column, self.column_name, self.data_type, self.nullable)):
             if ignore:
                 continue
 

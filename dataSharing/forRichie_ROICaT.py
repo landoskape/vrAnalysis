@@ -4,9 +4,9 @@ from tqdm import tqdm
 import numpy as np
 import joblib
 
-from vrAnalysis2.database import get_database
-from vrAnalysis2.tracking import Tracker
-from vrAnalysis2.multisession import MultiSessionSpkmaps
+from vrAnalysis.database import get_database
+from vrAnalysis.tracking import Tracker
+from vrAnalysis.multisession import MultiSessionSpkmaps
 
 
 def get_save_path() -> Path:

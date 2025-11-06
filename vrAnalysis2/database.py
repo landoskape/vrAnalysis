@@ -366,6 +366,25 @@ class BaseDatabase:
         else:
             print(f"No default filters.")
 
+    def table_column_info(self) -> Tuple[List[str], List[str], List[bool]]:
+        """
+        Retrieve the column names, data types, and nullable status of the table.
+
+        Returns
+        -------
+        tuple
+            A tuple containing three elements:
+            - A list of strings representing the column names of the table.
+            - A list of strings representing the data types of the table.
+            - A list of booleans representing the nullable status of the table.
+        """
+        with self.open_cursor(commit_changes=False) as cursor:
+            query = f"SELECT * FROM {self.table_name} WHERE 1=0"
+            cursor.execute(query)
+            column_descriptions = cursor.description
+        column_name, data_type, _, _, _, _, nullable = map(list, zip(*column_descriptions))
+        return column_name, data_type, nullable
+
     # == retrieve table data ==
     def table_data(self) -> Tuple[List[str], List[Tuple[Any, ...]]]:
         """
@@ -1062,10 +1081,8 @@ class SessionDatabase(BaseDatabase):
         opts.vrBehaviorVersion = record["vrBehaviorVersion"]
         b2reg = self.make_b2registration(record, opts)
         try:
-            print(f"Performing preprocessing for session: {b2reg.session_print()}")
-            b2reg.do_preprocessing()
-            print(f"Saving params...")
-            b2reg.save_session_prms()
+            print(f"Registering data for session: {b2reg.session_print()}")
+            b2reg.register()
         except Exception as ex:
             with self.open_cursor(commit_changes=True) as cursor:
                 cursor.execute(self.create_update_statement("vrRegistrationError", record[self.uid]), True)
@@ -1137,7 +1154,11 @@ class SessionDatabase(BaseDatabase):
         return out[0]
 
     def register_sessions(
-        self, max_data: float = 30e9, skip_errors: bool = True, raise_exception: bool = False, imaging: Optional[bool] = None
+        self,
+        max_data: float = 30e9,
+        skip_errors: bool = True,
+        raise_exception: bool = False,
+        imaging: Optional[bool] = None,
     ) -> None:
         """
         Register multiple sessions that need registration.

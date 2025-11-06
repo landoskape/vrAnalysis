@@ -2,9 +2,9 @@ from typing import Optional, Dict
 import numpy as np
 from matplotlib import pyplot as plt
 import matplotlib as mpl
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis import session
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis import session
 from syd import Viewer
 
 sessiondb = database.vrDatabase("vrSessions")

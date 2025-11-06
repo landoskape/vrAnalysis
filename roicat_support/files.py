@@ -1,4 +1,4 @@
-from vrAnalysis2 import files
+from vrAnalysis import files
 
 
 def get_classification_dir():

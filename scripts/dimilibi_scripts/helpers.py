@@ -13,10 +13,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # import from dimilibi package
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
-from vrAnalysis import database
-from vrAnalysis import tracking
-from vrAnalysis import analysis
-from vrAnalysis import session
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import session
 from dimilibi import Population
 
 SPEEDTHRESHOLD = 1  # speed threshold for filtering out ITIs -- I'm not saving this value so it's hard-coded here to be standardized whenever called.

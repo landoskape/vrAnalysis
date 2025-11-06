@@ -8,7 +8,7 @@ from multiprocessing import Pool
 from functools import partial
 from tqdm import tqdm
 
-from vrAnalysis import fileManagement as files
+from _old_vrAnalysis import fileManagement as files
 
 from .process import analyze_data
 

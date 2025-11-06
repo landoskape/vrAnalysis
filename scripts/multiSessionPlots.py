@@ -6,9 +6,9 @@ mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
 from argparse import ArgumentParser
-from vrAnalysis import database
-from vrAnalysis import tracking
-from vrAnalysis import analysis
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import analysis
 
 mousedb = database.vrDatabase("vrMice")
 

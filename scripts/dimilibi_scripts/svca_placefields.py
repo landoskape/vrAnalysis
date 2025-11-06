@@ -14,10 +14,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
 from scripts.dimilibi_scripts.helpers import make_position_basis, filter_timepoints, figure_folder
 
-from vrAnalysis import analysis
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis import faststats as fs
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis import faststats as fs
 from dimilibi import Population
 from dimilibi import SVCA
 from dimilibi import PCA

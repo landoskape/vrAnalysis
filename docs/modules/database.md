@@ -18,7 +18,7 @@ The base class for database operations. Provides core functionality for connecti
 **Example:**
 
 ```python
-from vrAnalysis2.database import get_database
+from vrAnalysis.database import get_database
 
 # Get a database instance
 db = get_database("vrMice")
@@ -26,8 +26,8 @@ db = get_database("vrMice")
 # Query records
 mice = db.get_table()
 
-# Get a specific record
-mouse = db.get_record("mouse001")
+# Get a specific record (using unique identifier)
+mouse = db.get_record("mouse001")  # Uses first unique field
 
 # Update a field
 db.update_database_field("someField", "newValue", mouseName="mouse001")
@@ -49,7 +49,7 @@ Specialized database class for managing VR sessions. Extends `BaseDatabase` with
 **Example:**
 
 ```python
-from vrAnalysis2.database import get_database
+from vrAnalysis.database import get_database
 
 # Get session database
 db = get_database("vrSessions")
@@ -60,8 +60,8 @@ needs_reg = db.needs_registration(mouseName="mouse001")
 # Create session objects
 sessions = db.iter_sessions(mouseName="mouse001", sessionQC=True)
 
-# Check suite2p status
-db.check_s2p(with_database_update=True)
+# Check suite2p status (if method exists)
+# db.check_s2p(with_database_update=True)
 ```
 
 ## Configuration
@@ -110,7 +110,7 @@ df = db.get_table(use_default=False, mouseName="mouse001")
 Use the GUI to add new records:
 
 ```python
-from vrAnalysis2.uilib.add_entry_gui import add_entry_gui
+from vrAnalysis.uilib.add_entry_gui import add_entry_gui
 
 # Open GUI for adding entries
 add_entry_gui("vrSessions")

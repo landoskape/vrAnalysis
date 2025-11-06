@@ -8,7 +8,7 @@ See the [README](..) for details on how to install the GUI. Note that if you
 installed via pip, you have to include the `[gui]` extras in the install. Once
 it's installed, you can import the gui with a standard package import line:
 ```python
-from vrAnalysis.redgui import redCellGUI as rgui
+from _old_vrAnalysis.redgui import redCellGUI as rgui
 ```
 
 At the moment, this GUI is only compatible with data formatted and stored as

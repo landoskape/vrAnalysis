@@ -1,9 +1,9 @@
 import joblib
 import numpy as np
-from vrAnalysis import database
-from vrAnalysis.session import vrExperiment
-from vrAnalysis2.sessions import create_b2session, B2Session
-from vrAnalysis2.analysis.same_cell_candidates import (
+from _old_vrAnalysis import database
+from _old_vrAnalysis.session import vrExperiment
+from vrAnalysis.sessions import create_b2session, B2Session
+from vrAnalysis.analysis.same_cell_candidates import (
     SameCellProcessor,
     SameCellParams,
     SameCellClusterParameters,

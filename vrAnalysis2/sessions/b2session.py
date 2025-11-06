@@ -48,7 +48,6 @@ class B2RegistrationOpts:
     facecam: bool = False
     imaging: bool = True
     oasis: bool = True
-    moveRawData: bool = False
     redCellProcessing: bool = True
     clearOne: bool = True
     neuropilCoefficient: float = 0.7

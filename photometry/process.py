@@ -2,7 +2,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 from scipy.signal import butter, filtfilt
 from scipy import ndimage
-from vrAnalysis.helpers import nearestpoint
+from _old_vrAnalysis.helpers import nearestpoint
 
 
 def resample_with_antialiasing(data, time, new_sampling_rate, filter_order=8):

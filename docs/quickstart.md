@@ -9,7 +9,7 @@ The core object in vrAnalysis2 is the `B2Session`, which represents a single exp
 ### Basic Session Creation
 
 ```python
-from vrAnalysis2.sessions import create_b2session
+from vrAnalysis.sessions import create_b2session
 
 # Create a session with default parameters
 session = create_b2session(
@@ -24,7 +24,7 @@ session = create_b2session(
 You can customize how data is loaded using `B2SessionParams`:
 
 ```python
-from vrAnalysis2.sessions import create_b2session
+from vrAnalysis.sessions import create_b2session
 
 # Create a session with custom parameters
 params = {
@@ -47,20 +47,22 @@ session = create_b2session(
 ### Querying Sessions
 
 ```python
-from vrAnalysis2.database import get_database
+from vrAnalysis.database import get_database
 
 # Get database metadata
 db = get_database("vrSessions")
 
 # Query sessions
-sessions = db.get_sessions(
-    conditions={"mouseName": "mouse001"},
-    sessionQC=True  # Only get QC'd sessions
-)
+sessions_df = db.get_table(mouseName="mouse001", sessionQC=True)
 
 # Access session data
-for session_row in sessions:
+for _, session_row in sessions_df.iterrows():
     print(f"Session: {session_row['sessionDate']} - {session_row['sessionID']}")
+
+# Or create session objects directly
+sessions = db.iter_sessions(mouseName="mouse001", sessionQC=True)
+for session in sessions:
+    print(f"Session: {session.session_print()}")
 ```
 
 ### Adding Sessions to Database
@@ -68,7 +70,7 @@ for session_row in sessions:
 Use the GUI to add new sessions:
 
 ```python
-from vrAnalysis2.uilib.add_entry_gui import add_entry_gui
+from vrAnalysis.uilib.add_entry_gui import add_entry_gui
 
 # Open the database entry GUI
 add_entry_gui("vrSessions")
@@ -79,8 +81,8 @@ add_entry_gui("vrSessions")
 Registration is the process of preprocessing and aligning behavioral and imaging data.
 
 ```python
-from vrAnalysis2.registration import B2Registration
-from vrAnalysis2.sessions.b2session import B2RegistrationOpts
+from vrAnalysis.registration import B2Registration
+from vrAnalysis.sessions.b2session import B2RegistrationOpts
 
 # Create registration options
 opts = B2RegistrationOpts(
@@ -110,7 +112,7 @@ registration.register()
 Generate spatial representations of neural activity:
 
 ```python
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
 # Create processor
 processor = SpkmapProcessor(session)
@@ -133,19 +135,23 @@ speed_map = maps.speedmap
 Track the same cells across multiple sessions:
 
 ```python
-from vrAnalysis2.tracking import TrackedPair
+from vrAnalysis.tracking import Tracker
 
-# Load two sessions
-session1 = create_b2session("mouse001", "2024-01-15", "001")
-session2 = create_b2session("mouse001", "2024-01-16", "001")
+# Create tracker for a mouse (tracks all sessions for that mouse)
+tracker = Tracker("mouse001")
 
-# Track cells
-tracked = TrackedPair(session1, session2)
-matched_pairs = tracked.get_matched_pairs()
+# Get tracked ROIs across sessions
+idx_tracked, extras = tracker.get_tracked_idx(
+    idx_ses=[0, 1],  # Track between first two sessions
+    use_session_filters=True
+)
 
-# Access matched ROIs
-for roi1_idx, roi2_idx in matched_pairs:
-    print(f"ROI {roi1_idx} in session 1 matches ROI {roi2_idx} in session 2")
+# idx_tracked is a (num_sessions, num_tracked_rois) array
+# Each column represents a tracked ROI across sessions
+for roi_idx in range(idx_tracked.shape[1]):
+    session1_roi = idx_tracked[0, roi_idx]
+    session2_roi = idx_tracked[1, roi_idx]
+    print(f"ROI {session1_roi} in session 1 matches ROI {session2_roi} in session 2")
 ```
 
 ## Multi-Session Analysis
@@ -153,18 +159,14 @@ for roi1_idx, roi2_idx in matched_pairs:
 Analyze data across multiple sessions:
 
 ```python
-from vrAnalysis2.multisession import MultiSession
-from vrAnalysis2.database import get_database_metadata, SessionDatabase
+from vrAnalysis.multisession import MultiSessionSpkmaps
+from vrAnalysis.tracking import Tracker
 
-# Get database
-db_meta = get_database_metadata("vrSessions")
-db = SessionDatabase(**db_meta)
+# Create tracker for a mouse
+tracker = Tracker("mouse001")
 
-# Get sessions for a mouse
-sessions_data = db.get_sessions(conditions={"mouseName": "mouse001"})
-
-# Create multi-session object
-multi = MultiSession(sessions_data)
+# Create multi-session object for spike map analysis
+multi = MultiSessionSpkmaps(tracker)
 
 # Perform analysis across sessions
 # (specific analysis methods depend on your needs)

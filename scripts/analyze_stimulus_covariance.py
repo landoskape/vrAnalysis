@@ -16,9 +16,9 @@ import os
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
-from vrAnalysis import faststats as fs
-from vrAnalysis import helpers
-from vrAnalysis import fileManagement as fm
+from _old_vrAnalysis import faststats as fs
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import fileManagement as fm
 
 
 def get_variance_estimates(samples):

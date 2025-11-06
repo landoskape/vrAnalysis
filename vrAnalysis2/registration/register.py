@@ -61,6 +61,10 @@ class B2Registration(B2Session):
         """
         pass
 
+    def register(self):
+        self.do_preprocessing()
+        self.save_session_prms()
+
     def do_preprocessing(self):
         if self.opts.clearOne:
             self.clear_one_data(certainty=True)

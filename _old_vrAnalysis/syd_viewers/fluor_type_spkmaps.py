@@ -2,8 +2,8 @@ from typing import List, Dict, Any
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from vrAnalysis import session
-from vrAnalysis.analysis import placeCellSingleSession
+from _old_vrAnalysis import session
+from _old_vrAnalysis.analysis import placeCellSingleSession
 from syd import Viewer
 
 

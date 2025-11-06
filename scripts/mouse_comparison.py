@@ -13,11 +13,11 @@ import numpy as np
 from matplotlib import pyplot as plt
 import matplotlib as mpl
 
-from vrAnalysis.helpers import cutoff_type, positive_float, AttributeDict, fit_exponentials
-from vrAnalysis import database
-from vrAnalysis import tracking
-from vrAnalysis import analysis
-from vrAnalysis.analysis.variance_structure import (
+from _old_vrAnalysis.helpers import cutoff_type, positive_float, AttributeDict, fit_exponentials
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis.analysis.variance_structure import (
     load_spectra_data,
     plot_spectral_data,
     plot_spectral_averages,

@@ -4,11 +4,11 @@ from tqdm import tqdm
 import numpy as np
 import pickle
 
-from vrAnalysis import analysis
-from vrAnalysis import tracking
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis import faststats as fs
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis import faststats as fs
 
 from dimilibi import Population, SVCA
 

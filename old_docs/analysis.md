@@ -34,8 +34,8 @@ the main analyses to do with each module and the standard usage for them.
 
 All modules require you to import the analysis package:
 ```python 
-from vrAnalysis import analysis
-from vrAnalysis import database # this is also used
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import database # this is also used
 vrdb = database.vrDatabase() # open a database manager
 ```
 

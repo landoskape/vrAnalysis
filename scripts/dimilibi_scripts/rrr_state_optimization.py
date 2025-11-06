@@ -17,10 +17,10 @@ from scripts.dimilibi.helpers import load_population, make_position_basis
 from scripts.dimilibi.helpers import SPEEDTHRESHOLD
 
 
-from vrAnalysis import analysis
-from vrAnalysis import session
-from vrAnalysis.helpers import save_figure
-from vrAnalysis.helpers import refline
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import session
+from _old_vrAnalysis.helpers import save_figure
+from _old_vrAnalysis.helpers import refline
 
 from dimilibi import ReducedRankRegression, scaled_mse, measure_r2
 

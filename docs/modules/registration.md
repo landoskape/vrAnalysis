@@ -19,8 +19,8 @@ Extends `B2Session` with registration workflows. Handles the complete preprocess
 **Example:**
 
 ```python
-from vrAnalysis2.registration import B2Registration
-from vrAnalysis2.sessions.b2session import B2RegistrationOpts
+from vrAnalysis.registration import B2Registration
+from vrAnalysis.sessions.b2session import B2RegistrationOpts
 
 # Create registration options
 opts = B2RegistrationOpts(
@@ -55,7 +55,6 @@ Dataclass for configuring registration options.
 - `facecam`: Whether to process facecam data
 - `imaging`: Whether to process imaging data
 - `oasis`: Whether to run OASIS deconvolution
-- `moveRawData`: Whether to move raw data files
 - `redCellProcessing`: Whether to process red cell annotations
 - `clearOne`: Whether to clear One files
 - `neuropilCoefficient`: Coefficient for neuropil subtraction (default: 0.7)
@@ -77,7 +76,7 @@ The registration process includes:
 Behavior processing handles different versions of vrControl:
 
 ```python
-from vrAnalysis2.registration.behavior import register_behavior
+from vrAnalysis.registration.behavior import register_behavior
 
 # Process behavior for version 1
 registration = register_behavior(registration, behavior_type=1)
@@ -97,7 +96,7 @@ Different behavior versions may require different processing:
 OASIS deconvolution converts calcium traces to spike trains:
 
 ```python
-from vrAnalysis2.registration.oasis import oasis_deconvolution
+from vrAnalysis.registration.oasis import oasis_deconvolution
 
 # Run OASIS
 deconvolved = oasis_deconvolution(
@@ -109,16 +108,26 @@ deconvolved = oasis_deconvolution(
 
 ## Red Cell Processing
 
-Process red cell classifier results:
+Red cell processing is automatically handled during registration when `redCellProcessing=True` in the options. The `RedCellProcessing` class provides methods for computing red cell features:
 
 ```python
-from vrAnalysis2.registration.redcell import RedCellProcessing
+from vrAnalysis.registration.redcell import RedCellProcessing
 
-# Create processor
-processor = RedCellProcessing(session)
+# Red cell processing is typically done during registration
+# But you can also use it manually:
+red_cell = RedCellProcessing(registration)
 
-# Process red cells
-processor.process()
+# Compute red cell features
+dot_product = red_cell.compute_dot()
+corr_coeff = red_cell.compute_corr()
+phase_corr = red_cell.cropped_phase_correlation()[3]
+
+# Update red cell index based on cutoffs
+red_cell.update_red_idx(
+    s2p_cutoff=[0.5, np.inf],
+    dot_product_cutoff=[0.3, np.inf],
+    corr_coef_cutoff=[0.4, np.inf]
+)
 ```
 
 ## Database Integration
@@ -126,7 +135,7 @@ processor.process()
 Registration status is tracked in the database:
 
 ```python
-from vrAnalysis2.database import get_database
+from vrAnalysis.database import get_database
 
 # Get database
 db = get_database("vrSessions")

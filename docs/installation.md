@@ -57,9 +57,9 @@ def local_data_path() -> Path:
 To verify that vrAnalysis2 is installed correctly:
 
 ```python
-import vrAnalysis2
-from vrAnalysis2.sessions import B2Session, create_b2session
-from vrAnalysis2.database import get_database_metadata
+import vrAnalysis
+from vrAnalysis.sessions import B2Session, create_b2session
+from vrAnalysis.database import get_database_metadata
 
 print("vrAnalysis2 installed successfully!")
 ```

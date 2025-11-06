@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 from rastermap import Rastermap
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
-from vrAnalysis import analysis
-from vrAnalysis import tracking
-from vrAnalysis import helpers
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import helpers
 from dimilibi import RidgeRegression, ReducedRankRegression, Population, measure_r2, measure_rms
 
 from scripts.dimilibi.rrr_state_optimization import rrr_state_tempfile_name

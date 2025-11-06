@@ -37,7 +37,7 @@ Registration creates standardized data structures that can be used for analysis.
 ### Processors
 
 **Processors** transform session data into analysis-ready formats. For example:
-- `SpikeMapProcessor`: Creates spatial maps of neural activity
+- `SpkmapProcessor`: Creates spatial maps of neural activity
 - Other processors generate various representations of the data
 
 ### Tracking

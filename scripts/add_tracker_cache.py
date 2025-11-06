@@ -1,8 +1,8 @@
 from argparse import ArgumentParser
 from tqdm import tqdm
-from vrAnalysis2.helpers import Timer
-from vrAnalysis2.database import get_database
-from vrAnalysis2.tracking import Tracker, save_tracker
+from vrAnalysis.helpers import Timer
+from vrAnalysis.database import get_database
+from vrAnalysis.tracking import Tracker, save_tracker
 
 
 if __name__ == "__main__":

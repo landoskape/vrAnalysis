@@ -10,25 +10,26 @@ from helpers import load_population, get_ranks
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
-from vrAnalysis import analysis
-from vrAnalysis import session
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import session
 
 from dimilibi import scaled_mse
 from dimilibi import SVCANet, EarlyStopping
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
 # methods for optimizing network hyperparameters
 def build_networks(
-        train_source, 
-        train_target, 
-        num_hidden, 
-        num_latent, 
-        lr, 
-        weight_decay, 
-        transparent_relu,
-        dropout_rate,
-        num_networks,
+    train_source,
+    train_target,
+    num_hidden,
+    num_latent,
+    lr,
+    weight_decay,
+    transparent_relu,
+    dropout_rate,
+    num_networks,
 ):
     """
     Build networks to be used in an optuna optimization.
@@ -68,20 +69,22 @@ def build_networks(
             num_hidden,
             num_latent,
             num_target_neurons,
-            activation = torch.nn.ReLU(),
-            nonnegative = True,
-            transparent_relu = transparent_relu,
-            dropout_rate = dropout_rate,
+            activation=torch.nn.ReLU(),
+            nonnegative=True,
+            transparent_relu=transparent_relu,
+            dropout_rate=dropout_rate,
         ).to(device)
         for _ in range(num_networks)
     ]
 
     optimizers = [torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay) for net in nets]
-    loss_fn = torch.nn.MSELoss(reduction='sum')
+    loss_fn = torch.nn.MSELoss(reduction="sum")
     return nets, optimizers, loss_fn
 
 
-def train_networks(nets, optimizers, loss_fn, train_source, train_target, test_source, test_target, noise_level, num_epochs, reduce=True, verbose=False):
+def train_networks(
+    nets, optimizers, loss_fn, train_source, train_target, test_source, test_target, noise_level, num_epochs, reduce=True, verbose=False
+):
     """
     Train a networks for a set number of epochs (to be used in an optuna optimization).
 
@@ -99,22 +102,22 @@ def train_networks(nets, optimizers, loss_fn, train_source, train_target, test_s
     train_target = train_target.to(device)
     test_source = test_source.to(device)
     test_target = test_target.to(device)
-    
+
     # Setup early stopping
-    early_stopping = EarlyStopping(num_nets, patience=10, min_delta=0.01, direction='maximize')
+    early_stopping = EarlyStopping(num_nets, patience=10, min_delta=0.01, direction="maximize")
 
     for net in nets:
         net.train()
-        
+
     if verbose:
-        progress = tqdm(range(num_epochs), desc='Training Networks')
+        progress = tqdm(range(num_epochs), desc="Training Networks")
     else:
         progress = range(num_epochs)
-    
+
     for epoch in progress:
-                
+
         itime = torch.randperm(num_timepoints)[:batch_size]
-        
+
         source_batch = train_source[:, itime].T
         target_batch = train_target[:, itime].T
 
@@ -127,7 +130,7 @@ def train_networks(nets, optimizers, loss_fn, train_source, train_target, test_s
             l.backward()
         for opt in optimizers:
             opt.step()
-         
+
         scores = [net.score(source_batch, target_batch) for net in nets]
 
         for inet in range(num_nets):
@@ -150,15 +153,15 @@ def train_networks(nets, optimizers, loss_fn, train_source, train_target, test_s
 
         if torch.any(torch.isnan(traintest_score[:, epoch])):
             raise optuna.TrialPruned()
-    
 
-    best_scores = torch.max(traintest_score[:, :epoch+1], dim=1).values
-    best_epochs = torch.argmax(traintest_score[:, :epoch+1], dim=1)
+    best_scores = torch.max(traintest_score[:, : epoch + 1], dim=1).values
+    best_epochs = torch.argmax(traintest_score[:, : epoch + 1], dim=1)
 
-    if reduce: 
+    if reduce:
         return torch.mean(best_scores), torch.mean(best_epochs.float())
-    
+
     return best_scores, best_epochs
+
 
 def objective(trial, train_source, train_target, test_source, test_target, num_latent, num_epochs, num_networks=10):
     # Define the hyperparameter to optimize
@@ -167,7 +170,7 @@ def objective(trial, train_source, train_target, test_source, test_target, num_l
     num_hidden = trial.suggest_int("num_hidden", 50, 2000, log=True)
     noise_level = trial.suggest_float("noise_level", 1e-3, 1e2, log=True)
     dropout_rate = trial.suggest_float("dropout_rate", 0.0, 0.5)
-    transparent_relu = True #trial.suggest_categorical("transparent_relu", [True, False])
+    transparent_relu = True  # trial.suggest_categorical("transparent_relu", [True, False])
 
     # Build the network
     nets, optimizers, loss_fn = build_networks(
@@ -181,11 +184,13 @@ def objective(trial, train_source, train_target, test_source, test_target, num_l
         dropout_rate,
         num_networks,
     )
-    
-    # Train the network
-    best_score = train_networks(nets, optimizers, loss_fn, train_source, train_target, test_source, test_target, noise_level, num_epochs=num_epochs)[0]
 
-    # Return the evaluation metric (the best testing score during training: early stopping is going to be used)    
+    # Train the network
+    best_score = train_networks(nets, optimizers, loss_fn, train_source, train_target, test_source, test_target, noise_level, num_epochs=num_epochs)[
+        0
+    ]
+
+    # Return the evaluation metric (the best testing score during training: early stopping is going to be used)
     return best_score
 
 
@@ -213,20 +218,32 @@ def test_networks(train_source, train_target, val_source, val_target, test_sourc
 
     test_source = test_source.to(device)
     test_target = test_target.to(device)
-    
+
     for inet, net in enumerate(nets):
         net.eval()
         pred = net(test_source.T)
-        test_loss[inet] = torch.nn.MSELoss(reduction='sum')(pred, test_target.T).item()
+        test_loss[inet] = torch.nn.MSELoss(reduction="sum")(pred, test_target.T).item()
         test_score[inet] = net.score(test_source.T, test_target.T).item()
         test_scaled_mse[inet] = scaled_mse(pred, test_target.T).item()
 
     return test_loss, test_score, test_scaled_mse
 
-def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epochs=1000, num_networks=3, n_trials=50, retest_only=False, show_progress_bar=False, population_name=None):
+
+def optimize_hyperparameters(
+    mouse_name,
+    datestr,
+    sessionid,
+    num_latent,
+    num_epochs=1000,
+    num_networks=3,
+    n_trials=50,
+    retest_only=False,
+    show_progress_bar=False,
+    population_name=None,
+):
     """
     Optimize hyperparameters for networks trained on peer prediction.
-    
+
     Loads the population data for the session and splits it into training, validation, and test sets.
     Uses optuna to optimize hyperparameters for networks trained on the training set and evaluated on the validation set.
     The best hyperparameters are then used to train a new set of networks and evaluate them on the test set.
@@ -245,15 +262,30 @@ def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epo
         original_results = pcss.load_temp_file(hyp_filename)
         study = original_results["study"]
         best_params = original_results["best_params"]
-    
+
     else:
         study = optuna.create_study(direction="maximize")
-        study.optimize(lambda trial: objective(trial, train_source, train_target, val_source, val_target, num_latent, num_epochs, num_networks), 
-                    n_trials=n_trials, n_jobs=2, show_progress_bar=show_progress_bar)    
+        study.optimize(
+            lambda trial: objective(trial, train_source, train_target, val_source, val_target, num_latent, num_epochs, num_networks),
+            n_trials=n_trials,
+            n_jobs=2,
+            show_progress_bar=show_progress_bar,
+        )
         best_params = study.best_params
-    
+
     # Use the best hyperparameters to train a new round of networks and evaluate them on the test data
-    test_loss, test_score, test_scaled_mse = test_networks(train_source, train_target, val_source, val_target, test_source, test_target, num_latent, best_params, num_epochs=num_epochs, num_networks=num_networks)
+    test_loss, test_score, test_scaled_mse = test_networks(
+        train_source,
+        train_target,
+        val_source,
+        val_target,
+        test_source,
+        test_target,
+        num_latent,
+        best_params,
+        num_epochs=num_epochs,
+        num_networks=num_networks,
+    )
 
     return dict(
         mouse_name=mouse_name,
@@ -267,6 +299,7 @@ def optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, num_epo
         test_scaled_mse=test_scaled_mse,
     )
 
+
 def retest_networks(mouse_name, datestr, sessionid, num_latent, num_epochs, num_networks, population_name=None):
     npop = load_population(mouse_name, datestr, sessionid, population_name=population_name)
 
@@ -278,13 +311,25 @@ def retest_networks(mouse_name, datestr, sessionid, num_latent, num_epochs, num_
     hyp_filename = network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)
     original_results = pcss.load_temp_file(hyp_filename)
     best_params = original_results["best_params"]
-    test_loss, test_score, test_scaled_mse = test_networks(train_source, train_target, val_source, val_target, test_source, test_target, num_latent, best_params, num_epochs=num_epochs, num_networks=num_networks)
+    test_loss, test_score, test_scaled_mse = test_networks(
+        train_source,
+        train_target,
+        val_source,
+        val_target,
+        test_source,
+        test_target,
+        num_latent,
+        best_params,
+        num_epochs=num_epochs,
+        num_networks=num_networks,
+    )
 
     original_results["test_loss"] = test_loss
     original_results["test_score"] = test_score
     original_results["test_scaled_mse"] = test_scaled_mse
 
     return original_results
+
 
 def network_tempfile_name(vrexp, rank, population_name=None):
     """generate temporary file name for network tuning results"""
@@ -293,11 +338,12 @@ def network_tempfile_name(vrexp, rank, population_name=None):
         name += f"_{population_name}"
     return name
 
+
 def do_network_optimization(all_sessions, retest_only=False, population_name=None, skip_completed=True, save=True):
     """
     Perform network optimization and testing of network models on peer prediction.
 
-    Will use optuna to optimize hyperparameters for networks trained on each session in 
+    Will use optuna to optimize hyperparameters for networks trained on each session in
     all_sessions and test the best model on the test set. The results are saved as a
     dictionary and stored in a temporary file using the standard analysis temporary file
     storage system.
@@ -319,24 +365,30 @@ def do_network_optimization(all_sessions, retest_only=False, population_name=Non
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
             for num_latent in ranks:
-                if not retest_only and skip_completed and pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)):
+                if (
+                    not retest_only
+                    and skip_completed
+                    and pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name))
+                ):
                     print(f"Found completed hyperparameter optimization for: {mouse_name}, {datestr}, {sessionid}, rank:{num_latent}")
                     continue
                 if retest_only and not pcss.check_temp_file(network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name)):
                     print(f"Skipping retest for: {mouse_name}, {datestr}, {sessionid}, rank:{num_latent} (no hyperparameter optimization found)")
                     continue
                 print(f"Optimizing network hyperparameters for: {mouse_name}, {datestr}, {sessionid}, rank: {num_latent}:")
-                hyperparameter_results = optimize_hyperparameters(mouse_name, datestr, sessionid, num_latent, retest_only=retest_only, show_progress_bar=False, population_name=population_name)
+                hyperparameter_results = optimize_hyperparameters(
+                    mouse_name, datestr, sessionid, num_latent, retest_only=retest_only, show_progress_bar=False, population_name=population_name
+                )
                 if save:
                     pcss.save_temp_file(hyperparameter_results, network_tempfile_name(pcss.vrexp, num_latent, population_name=population_name))
 
 
 @torch.no_grad()
-def load_network_results(all_sessions, results='all', population_name=None):
+def load_network_results(all_sessions, results="all", population_name=None):
     ranks = get_ranks()
     network_results = []
     session_ids = []
-    tested_ranks = [] # this is just for confirmation that everything was processed correctly and completely
+    tested_ranks = []  # this is just for confirmation that everything was processed correctly and completely
     for mouse_name, sessions in all_sessions.items():
         for datestr, sessionid in sessions:
             pcss = analysis.placeCellSingleSession(session.vrExperiment(mouse_name, datestr, sessionid), autoload=False)
@@ -353,32 +405,36 @@ def load_network_results(all_sessions, results='all', population_name=None):
                     tested_ranks[-1][irank] = True
                 print(f"Loading hyperparameter_results from {mouse_name}, {datestr}, {sessionid}, rank:{num_latent}")
                 network_results[-1].append(pcss.load_temp_file(hyp_filename))
-    
-    if results=='all':
+
+    if results == "all":
         if not torch.stack(tested_ranks).all():
             print(f"Warning!!! Not all ranks were processed for all sessions!")
         return network_results, session_ids, tested_ranks
-    
-    if results=='test_by_mouse':
+
+    if results == "test_by_mouse":
         if not torch.stack(tested_ranks).all():
             raise ValueError("Not all ranks were processed for all sessions, can't consolidate across sessions within mouse!")
-        
-        mouse_names = sorted(list(set(map(lambda x: x[0], session_ids)))) # get master list of mouse names
+
+        mouse_names = sorted(list(set(map(lambda x: x[0], session_ids))))  # get master list of mouse names
         num_mice = len(mouse_names)
         num_ranks = len(ranks)
         val_scores = torch.zeros((num_mice, num_ranks))
         test_scores = torch.zeros((num_mice, num_ranks))
         test_scaled_mses = torch.zeros((num_mice, num_ranks))
-        params = dict(zip(network_results[0][0]["best_params"].keys(), [[[] for _ in range(num_ranks)] for _ in network_results[0][0]["best_params"]]))
+        params = dict(
+            zip(network_results[0][0]["best_params"].keys(), [[[] for _ in range(num_ranks)] for _ in network_results[0][0]["best_params"]])
+        )
         num_samples = torch.zeros(num_mice)
         for network_result in network_results:
             mouse_idx = mouse_names.index(network_result[0]["mouse_name"])
             for irank, net_res in enumerate(network_result):
-                assert net_res["rank"] == ranks[irank], f"ranks don't match for {ranks[irank]} in session: {net_res['mouse_name']}/{net_res['datestr']}/{net_res['sessionid']}"
+                assert (
+                    net_res["rank"] == ranks[irank]
+                ), f"ranks don't match for {ranks[irank]} in session: {net_res['mouse_name']}/{net_res['datestr']}/{net_res['sessionid']}"
                 val_scores[mouse_idx, irank] += net_res["study"].best_value
                 test_scores[mouse_idx, irank] += net_res["test_score"].mean().item()
                 test_scaled_mses[mouse_idx, irank] += net_res["test_scaled_mse"].mean().item()
-                if irank==0:
+                if irank == 0:
                     num_samples[mouse_idx] += 1
                 for key, val in net_res["best_params"].items():
                     params[key][irank].append(val)
@@ -395,5 +451,5 @@ def load_network_results(all_sessions, results='all', population_name=None):
             params=params,
         )
         return test_results, session_ids
-    
+
     raise ValueError(f"results must be 'all' or 'test_by_mouse', got {results}")

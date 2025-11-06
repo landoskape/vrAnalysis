@@ -9,8 +9,8 @@ from helpers import load_population, get_ranks, memory
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
-from vrAnalysis import analysis
-from vrAnalysis import session
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import session
 
 from dimilibi import ReducedRankRegression, scaled_mse
 

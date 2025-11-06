@@ -25,7 +25,7 @@ The main session class that loads and provides access to experimental data.
 **Example:**
 
 ```python
-from vrAnalysis2.sessions import create_b2session
+from vrAnalysis.sessions import create_b2session
 
 # Create session with default parameters
 session = create_b2session(
@@ -62,7 +62,7 @@ Dataclass for configuring how session data is loaded.
 **Example:**
 
 ```python
-from vrAnalysis2.sessions import create_b2session, B2SessionParams
+from vrAnalysis.sessions import create_b2session, B2SessionParams
 
 # Create custom parameters
 params = B2SessionParams(

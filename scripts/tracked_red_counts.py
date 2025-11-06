@@ -11,11 +11,11 @@ import os, sys
 
 sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
-from vrAnalysis import analysis
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis import tracking
-from vrAnalysis import fileManagement as fm
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import fileManagement as fm
 
 sessiondb = database.vrDatabase("vrSessions")
 mousedb = database.vrDatabase("vrMice")

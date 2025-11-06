@@ -6,13 +6,18 @@ The `vrAnalysis2.analysis` module provides tools for analyzing VR session data, 
 
 ### Place Cell Reliability
 
-Analyze place cell reliability across sessions:
+Analyze place cell reliability:
 
 ```python
-from vrAnalysis2.syd.placecell_reliability import analyze_reliability
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
-# Analyze reliability for a session
-reliability = analyze_reliability(session)
+# Create processor and get reliability
+processor = SpkmapProcessor(session)
+maps = processor.process(bin_size=5.0, by_environment=True)
+reliability = processor.get_reliability(envnum=0)
+
+# Access reliability scores
+reliability_scores = reliability.reliability
 ```
 
 ### Changing Place Fields
@@ -20,10 +25,19 @@ reliability = analyze_reliability(session)
 Track how place fields change across sessions:
 
 ```python
-from vrAnalysis2.syd.changing_placefields import analyze_changes
+from vrAnalysis.multisession import MultiSessionSpkmaps
+from vrAnalysis.tracking import Tracker
 
-# Analyze place field changes
-changes = analyze_changes(session1, session2)
+# Create multi-session object
+tracker = Tracker("mouse001")
+multi = MultiSessionSpkmaps(tracker)
+
+# Get maps for same environment across sessions
+envnum = 0
+maps_list = multi.get_env_maps(envnum)
+
+# Compare place fields between sessions
+# (implement comparison logic based on your needs)
 ```
 
 ### Tracked Plasticity
@@ -31,10 +45,14 @@ changes = analyze_changes(session1, session2)
 Analyze plasticity in tracked cells:
 
 ```python
-from vrAnalysis2.analysis.tracked_plasticity import analyze_plasticity
+from vrAnalysis.tracking import Tracker
 
-# Analyze plasticity for tracked pairs
-plasticity = analyze_plasticity(tracked_pairs)
+# Get tracked ROIs
+tracker = Tracker("mouse001")
+idx_tracked, extras = tracker.get_tracked_idx()
+
+# Analyze changes in tracked cells
+# (implement analysis based on your needs)
 ```
 
 ## Common Analysis Workflows
@@ -42,15 +60,15 @@ plasticity = analyze_plasticity(tracked_pairs)
 ### Single Session Analysis
 
 ```python
-from vrAnalysis2.sessions import create_b2session
-from vrAnalysis2.processors.spkmaps import SpikeMapProcessor
+from vrAnalysis.sessions import create_b2session
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
 # Load session
 session = create_b2session("mouse001", "2024-01-15", "001")
 session.load_data()
 
 # Generate spike maps
-processor = SpikeMapProcessor(session)
+processor = SpkmapProcessor(session)
 maps = processor.process(bin_size=5.0)
 
 # Perform analysis
@@ -60,15 +78,14 @@ maps = processor.process(bin_size=5.0)
 ### Multi-Session Analysis
 
 ```python
-from vrAnalysis2.multisession import MultiSession
-from vrAnalysis2.database import get_database
+from vrAnalysis.multisession import MultiSessionSpkmaps
+from vrAnalysis.tracking import Tracker
 
-# Get sessions from database
-db = get_database("vrSessions")
-sessions_data = db.get_table(mouseName="mouse001")
+# Create tracker for a mouse
+tracker = Tracker("mouse001")
 
 # Create multi-session object
-multi = MultiSession(sessions_data)
+multi = MultiSessionSpkmaps(tracker)
 
 # Perform cross-session analysis
 # (analysis code here)

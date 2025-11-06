@@ -9,11 +9,11 @@ import os, sys
 mainPath = os.path.dirname(os.path.abspath(__file__)) + "/.."
 sys.path.append(mainPath)
 
-from vrAnalysis import analysis
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis import tracking
-from vrAnalysis import fileManagement as fm
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import fileManagement as fm
 
 
 def handle_args():

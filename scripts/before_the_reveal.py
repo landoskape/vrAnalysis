@@ -6,14 +6,14 @@ from matplotlib import pyplot as plt
 import matplotlib as mpl
 import joblib
 
-from vrAnalysis2.files import analysis_path
-from vrAnalysis2.database import get_database
-from vrAnalysis2.helpers import Timer, save_figure, edge2center, fractional_histogram
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor
-from vrAnalysis2.tracking import Tracker
-from vrAnalysis2.metrics import FractionActive
-from vrAnalysis2.multisession import MultiSessionSpkmaps
-from vrAnalysis2.syd.reliability_continuity import ReliabilityStabilitySummary
+from vrAnalysis.files import analysis_path
+from vrAnalysis.database import get_database
+from vrAnalysis.helpers import Timer, save_figure, edge2center, fractional_histogram
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
+from vrAnalysis.tracking import Tracker
+from vrAnalysis.metrics import FractionActive
+from vrAnalysis.multisession import MultiSessionSpkmaps
+from vrAnalysis.syd.reliability_continuity import ReliabilityStabilitySummary
 
 sessiondb = get_database("vrSessions")
 mousedb = get_database("vrMice")

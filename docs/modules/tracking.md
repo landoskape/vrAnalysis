@@ -7,56 +7,69 @@ The `vrAnalysis2.tracking` module provides functionality for tracking cells acro
 Track the same cells across sessions:
 
 ```python
-from vrAnalysis2.tracking import TrackedPair
-from vrAnalysis2.sessions import create_b2session
+from vrAnalysis.tracking import Tracker
 
-# Load two sessions
-session1 = create_b2session("mouse001", "2024-01-15", "001")
-session2 = create_b2session("mouse001", "2024-01-16", "001")
+# Create tracker for a mouse (automatically loads all tracked sessions)
+tracker = Tracker("mouse001")
 
-# Create tracked pair
-tracked = TrackedPair(session1, session2)
+# Get tracked ROIs across specific sessions
+idx_tracked, extras = tracker.get_tracked_idx(
+    idx_ses=[0, 1],  # Track between first two sessions
+    use_session_filters=True,
+    keep_method="any"  # Keep ROI if valid in any session, or "all" for all sessions
+)
 
-# Get matched pairs
-matched_pairs = tracked.get_matched_pairs()
+# idx_tracked is a (num_sessions, num_tracked_rois) array
+# Each column represents a tracked ROI across sessions
+for roi_idx in range(idx_tracked.shape[1]):
+    session1_roi = idx_tracked[0, roi_idx]
+    session2_roi = idx_tracked[1, roi_idx]
+    print(f"ROI {session1_roi} in session 1 matches ROI {session2_roi} in session 2")
 
-# Access matched ROIs
-for roi1_idx, roi2_idx in matched_pairs:
-    print(f"ROI {roi1_idx} in session 1 matches ROI {roi2_idx} in session 2")
+# Access tracking metadata
+cluster_ids = extras["cluster_ids"]
+sample_silhouettes = extras["sample_silhouettes"]
+cluster_silhouettes = extras["cluster_silhouettes"]
 ```
 
 ## Tracking Methods
 
-Tracking uses spatial correlation and other metrics to match ROIs:
+Tracking uses ROICaT clustering to match ROIs across sessions:
 
 ```python
-# Get tracking metrics
-metrics = tracked.get_tracking_metrics()
+# Get cluster index for a specific cluster ID
+cluster_id = 5
+cluster_idx = tracker.get_cluster_idx(cluster_id)
+# Returns array with ROI index in each session, or -1 if not present
 
-# Access correlation scores
-correlations = metrics["correlation"]
-
-# Access distance scores
-distances = metrics["distance"]
+# Access tracking files directly
+labels = tracker.labels  # List of label arrays, one per session
+sample_silhouettes = tracker.sample_silhouettes  # Sample silhouettes per session
+cluster_silhouettes = tracker.cluster_silhouettes  # Cluster silhouettes (shared)
 ```
 
 ## Multi-Session Tracking
 
-Track cells across multiple sessions:
+Track cells across multiple sessions using MultiSessionSpkmaps:
 
 ```python
-from vrAnalysis2.multisession import MultiSession
+from vrAnalysis.multisession import MultiSessionSpkmaps
+from vrAnalysis.tracking import Tracker
 
-# Create multi-session object
-multi = MultiSession(sessions_data)
+# Create tracker
+tracker = Tracker("mouse001")
 
-# Track cells across all sessions
-tracked_cells = multi.track_cells()
+# Create multi-session object for spike map analysis
+multi = MultiSessionSpkmaps(tracker)
+
+# Get tracked ROIs across all sessions
+idx_tracked, extras = tracker.get_tracked_idx(
+    idx_ses=None  # Use all sessions
+)
 
 # Access tracking chains
-for chain in tracked_cells:
-    # chain contains ROI indices for each session
-    print(f"Cell tracked across {len(chain)} sessions")
+num_tracked = idx_tracked.shape[1]
+print(f"Found {num_tracked} tracked ROIs across {len(tracker.sessions)} sessions")
 ```
 
 ## See Also

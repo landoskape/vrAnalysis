@@ -9,7 +9,7 @@ The `vrAnalysis2.helpers` module provides utility functions for common operation
 Utilities for creating plots:
 
 ```python
-from vrAnalysis2.helpers.plotting import plot_spike_map, plot_traces
+from vrAnalysis.helpers.plotting import plot_spike_map, plot_traces
 
 # Plot spike map
 plot_spike_map(spike_map, occupancy_map)
@@ -23,7 +23,7 @@ plot_traces(traces, time_axis)
 Signal processing utilities:
 
 ```python
-from vrAnalysis2.helpers.signals import smooth, normalize
+from vrAnalysis.helpers.signals import smooth, normalize
 
 # Smooth signal
 smoothed = smooth(signal, window_size=5)
@@ -37,7 +37,7 @@ normalized = normalize(signal)
 Indexing utilities:
 
 ```python
-from vrAnalysis2.helpers.indexing import get_plane_indices
+from vrAnalysis.helpers.indexing import get_plane_indices
 
 # Get indices for specific plane
 indices = get_plane_indices(session, plane=0)
@@ -48,7 +48,7 @@ indices = get_plane_indices(session, plane=0)
 VR-specific utilities:
 
 ```python
-from vrAnalysis2.helpers.vrsupport import get_environment_transitions
+from vrAnalysis.helpers.vrsupport import get_environment_transitions
 
 # Get environment transition times
 transitions = get_environment_transitions(behavior)

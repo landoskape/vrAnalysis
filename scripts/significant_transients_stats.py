@@ -1,8 +1,8 @@
 from tqdm import tqdm
 import numpy as np
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis import analysis
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis import analysis
 from scipy.sparse import csc_array
 
 sessiondb = database.vrDatabase("vrSessions")

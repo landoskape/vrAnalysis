@@ -1,4 +1,4 @@
-from vrAnalysis import session
+from _old_vrAnalysis import session
 from dimilibi import Population
 from dimilibi import ReducedRankRegression
 

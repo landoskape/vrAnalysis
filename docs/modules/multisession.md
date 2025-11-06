@@ -2,23 +2,25 @@
 
 The `vrAnalysis2.multisession` module provides tools for analyzing data across multiple sessions, enabling population-level and longitudinal analyses.
 
-## MultiSession Class
+## MultiSessionSpkmaps Class
 
-The `MultiSession` class manages multiple sessions and provides cross-session analysis capabilities.
+The `MultiSessionSpkmaps` class manages multiple sessions and provides cross-session spike map analysis capabilities.
 
 ```python
-from vrAnalysis2.multisession import MultiSession
-from vrAnalysis2.database import get_database
+from vrAnalysis.multisession import MultiSessionSpkmaps
+from vrAnalysis.tracking import Tracker
 
-# Get sessions from database
-db = get_database("vrSessions")
-sessions_data = db.get_table(mouseName="mouse001")
+# Create tracker for a mouse
+tracker = Tracker("mouse001")
 
 # Create multi-session object
-multi = MultiSession(sessions_data)
+multi = MultiSessionSpkmaps(tracker)
+
+# Access processors (one per session)
+processors = multi.processors
 
 # Access sessions
-sessions = multi.sessions
+sessions = tracker.sessions
 ```
 
 ## Cross-Session Analysis
@@ -26,14 +28,15 @@ sessions = multi.sessions
 Analyze data across sessions:
 
 ```python
-# Analyze place field stability
-stability = multi.analyze_place_field_stability()
+# Get spike maps for a specific environment across sessions
+envnum = 0
+maps_list = multi.get_env_maps(envnum)
 
-# Analyze population activity
-population_activity = multi.analyze_population()
+# Get reliability across sessions
+reliability = multi.get_reliability(envnum)
 
-# Compare sessions
-comparison = multi.compare_sessions(session1_idx=0, session2_idx=1)
+# Get tracked ROIs
+idx_tracked, extras = tracker.get_tracked_idx()
 ```
 
 ## See Also

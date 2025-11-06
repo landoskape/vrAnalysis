@@ -1,8 +1,8 @@
 import shutil
 from tqdm import tqdm
-from vrAnalysis2.database import get_database
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor, get_spkmap_params
-from vrAnalysis2.helpers import get_confirmation
+from vrAnalysis.database import get_database
+from vrAnalysis.processors.spkmaps import SpkmapProcessor, get_spkmap_params
+from vrAnalysis.helpers import get_confirmation
 
 
 def cache_raw_maps(ises, params_type="default", force_recompute: bool = False, max_gb=1000):

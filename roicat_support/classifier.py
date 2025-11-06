@@ -13,8 +13,8 @@ from umap import UMAP
 import matplotlib.pyplot as plt
 from syd import make_viewer
 
-from vrAnalysis import database
-from vrAnalysis.helpers import get_confirmation
+from _old_vrAnalysis import database
+from _old_vrAnalysis.helpers import get_confirmation
 from .files import get_classifier_files, get_results_path
 
 import importlib.util

@@ -4,7 +4,7 @@ The `vrAnalysis2.processors` module provides data processing pipelines that tran
 
 ## Spike Map Processor
 
-The `SpikeMapProcessor` creates spatial representations of neural activity.
+The `SpkmapProcessor` creates spatial representations of neural activity.
 
 ### Maps Class
 
@@ -19,7 +19,7 @@ The `Maps` dataclass contains occupancy, speed, and spike maps:
 ### Processing Spike Maps
 
 ```python
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
 # Create processor
 processor = SpkmapProcessor(session)
@@ -63,7 +63,7 @@ averaged = maps.average_environments()
 Maps can be visualized using helper functions:
 
 ```python
-from vrAnalysis2.helpers.plotting import plot_spike_map
+from vrAnalysis.helpers.plotting import plot_spike_map
 
 # Plot spike map for a single ROI
 plot_spike_map(
@@ -125,9 +125,9 @@ maps2 = processor.process(bin_size=5.0)  # Fast!
 You can create custom processors by extending the base processor class:
 
 ```python
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
-class CustomProcessor(SpikeMapProcessor):
+class CustomProcessor(SpkmapProcessor):
     def process_custom(self, **kwargs):
         # Custom processing logic
         maps = self.process(**kwargs)

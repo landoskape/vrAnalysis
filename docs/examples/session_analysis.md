@@ -5,8 +5,8 @@ This example demonstrates how to perform analysis on a single session.
 ## Loading and Processing Data
 
 ```python
-from vrAnalysis2.sessions import create_b2session
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor
+from vrAnalysis.sessions import create_b2session
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
 # Create session
 session = create_b2session(
@@ -38,27 +38,39 @@ for env_idx, env in enumerate(maps.environments):
 ## Analyzing Place Cells
 
 ```python
-from vrAnalysis2.syd.placecell_reliability import analyze_reliability
+from vrAnalysis.processors.spkmaps import SpkmapProcessor
 
-# Analyze place cell reliability
-reliability = analyze_reliability(session)
+# Generate spike maps and reliability
+processor = SpkmapProcessor(session)
+maps = processor.process(bin_size=5.0, by_environment=True)
+reliability = processor.get_reliability(envnum=0)  # Get reliability for environment 0
 
 # Access results
-reliable_cells = reliability["reliable_cells"]
-reliability_scores = reliability["scores"]
+reliability_scores = reliability.reliability  # Array of reliability scores per ROI
 ```
 
 ## Visualizing Results
 
 ```python
-from vrAnalysis2.helpers.plotting import plot_spike_map
+# Plot spike maps for cells with high reliability
+# (You'll need to implement plotting based on your visualization needs)
+import matplotlib.pyplot as plt
 
-# Plot spike maps for reliable cells
-for roi_idx in reliable_cells:
-    plot_spike_map(
-        maps.spkmap[roi_idx],
-        maps.occmap,
-        title=f"ROI {roi_idx}"
-    )
+# Example: plot spike map for a single ROI
+roi_idx = 0
+if maps.by_environment:
+    spk_map = maps.spkmap[0][roi_idx]  # First environment, specific ROI
+    occ_map = maps.occmap[0]
+else:
+    spk_map = maps.spkmap[roi_idx]
+    occ_map = maps.occmap
+
+# Create rate map (spikes per second)
+rate_map = spk_map / (occ_map + 1e-6)  # Avoid division by zero
+
+plt.imshow(rate_map, aspect='auto', origin='lower')
+plt.colorbar(label='Firing rate (Hz)')
+plt.title(f"ROI {roi_idx}")
+plt.show()
 ```
 

@@ -1,8 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from vrAnalysis import analysis
-from vrAnalysis import tracking
-from vrAnalysis import helpers
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import helpers
 
 if __name__ == "__main__":
     mouse_name = "ATL027"

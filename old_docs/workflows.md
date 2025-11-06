@@ -10,9 +10,9 @@ blocks indicating standard usage.
 The red cell QC control workflow is pretty simple. It requires the following 
 import statements and the database object:
 ```python
-from vrAnalysis import session
-from vrAnalysis import database
-from vrAnalysis.redgui import redCellGUI as rgui
+from _old_vrAnalysis import session
+from _old_vrAnalysis import database
+from _old_vrAnalysis.redgui import redCellGUI as rgui
 vrdb = database.vrDatabase()
 ```
 

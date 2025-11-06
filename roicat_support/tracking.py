@@ -1,7 +1,7 @@
 import re
 import joblib
 import numpy as np
-from vrAnalysis2 import files
+from vrAnalysis import files
 
 PLANE_NAMES = ["plane0", "plane1", "plane2", "plane3", "plane4"]
 

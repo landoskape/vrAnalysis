@@ -4,10 +4,10 @@ from functools import wraps
 from typing import Any
 from math import floor, ceil
 
-from vrAnalysis2.sessions.b2session import B2SessionParams
-from vrAnalysis2.processors.spkmaps import SpkmapProcessor, SpkmapParams, Maps
-from vrAnalysis2.tracking import Tracker
-from vrAnalysis2.helpers import resolve_dataclass, argsort, named_transpose, get_place_field
+from vrAnalysis.sessions.b2session import B2SessionParams
+from vrAnalysis.processors.spkmaps import SpkmapProcessor, SpkmapParams, Maps
+from vrAnalysis.tracking import Tracker
+from vrAnalysis.helpers import resolve_dataclass, argsort, named_transpose, get_place_field
 
 
 def handle_idx_ses(func):

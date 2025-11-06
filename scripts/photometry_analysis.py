@@ -5,8 +5,8 @@ from scipy.stats import ttest_rel
 from matplotlib import pyplot as plt
 import matplotlib as mpl
 
-from vrAnalysis import fileManagement as files
-from vrAnalysis.helpers import errorPlot, argbool, save_figure, batch_plot_context, beeswarm
+from _old_vrAnalysis import fileManagement as files
+from _old_vrAnalysis.helpers import errorPlot, argbool, save_figure, batch_plot_context, beeswarm
 from photometry.loaders import get_files, process_data_parallel
 
 

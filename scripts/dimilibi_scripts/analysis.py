@@ -12,7 +12,7 @@ from rrr_state_optimization import do_rrr_state_optimization, load_rrr_state_res
 
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
-from vrAnalysis.helpers import argbool, refline, save_figure
+from _old_vrAnalysis.helpers import argbool, refline, save_figure
 
 import numpy as np
 import torch

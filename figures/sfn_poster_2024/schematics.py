@@ -7,7 +7,7 @@ import os, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 from scripts.dimilibi.helpers import figure_folder
-from vrAnalysis import helpers
+from _old_vrAnalysis import helpers
 
 
 def create_arrow(ax, start, length, head_length=0.4, direction="right", color="gray", width=0.15):

@@ -10,11 +10,11 @@ from scipy.stats import ttest_rel
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from argparse import ArgumentParser
-from vrAnalysis import database
-from vrAnalysis import tracking
-from vrAnalysis import analysis
-from vrAnalysis import fileManagement as fm
-from vrAnalysis.helpers import Figure_Saver
+from _old_vrAnalysis import database
+from _old_vrAnalysis import tracking
+from _old_vrAnalysis import analysis
+from _old_vrAnalysis import fileManagement as fm
+from _old_vrAnalysis.helpers import Figure_Saver
 
 mousedb = database.vrDatabase("vrMice")
 

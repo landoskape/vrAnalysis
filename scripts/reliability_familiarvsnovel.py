@@ -3,12 +3,12 @@ from tqdm import tqdm
 import numpy as np
 from matplotlib import pyplot as plt
 
-from vrAnalysis.helpers import argbool
-from vrAnalysis import helpers
-from vrAnalysis import database
-from vrAnalysis.tracking import tracker
-from vrAnalysis.analysis import placeCellMultiSession
-from vrAnalysis.metrics import FractionActive, KernelDensityEstimator, plot_contours
+from _old_vrAnalysis.helpers import argbool
+from _old_vrAnalysis import helpers
+from _old_vrAnalysis import database
+from _old_vrAnalysis.tracking import tracker
+from _old_vrAnalysis.analysis import placeCellMultiSession
+from _old_vrAnalysis.metrics import FractionActive, KernelDensityEstimator, plot_contours
 
 keep_planes = [1, 2, 3, 4]
 onefiles = ["mpci.roiActivityDeconvolvedOasis", "mpci.roiSignificantFluorescence"]

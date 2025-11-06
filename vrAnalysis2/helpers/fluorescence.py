@@ -2,7 +2,7 @@ from tqdm import tqdm
 import numpy as np
 from numba import njit, prange
 from .signals import percentile_filter
-from vrAnalysis import faststats
+from _old_vrAnalysis import faststats
 
 
 def get_transients(dff_std, threshold):
