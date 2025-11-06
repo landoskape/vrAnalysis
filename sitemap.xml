@@ -17,15 +17,7 @@
          <lastmod>2025-11-06</lastmod>
     </url>
     <url>
-         <loc>https://landoskape.github.io/vrAnalysis/quickstart/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/registration/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/api/analysis/</loc>
+         <loc>https://landoskape.github.io/vrAnalysis/api/b2session/</loc>
          <lastmod>2025-11-06</lastmod>
     </url>
     <url>
@@ -45,11 +37,7 @@
          <lastmod>2025-11-06</lastmod>
     </url>
     <url>
-         <loc>https://landoskape.github.io/vrAnalysis/api/vrAnalysis2/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/examples/registration/</loc>
+         <loc>https://landoskape.github.io/vrAnalysis/examples/</loc>
          <lastmod>2025-11-06</lastmod>
     </url>
     <url>
@@ -57,35 +45,11 @@
          <lastmod>2025-11-06</lastmod>
     </url>
     <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/analysis/</loc>
+         <loc>https://landoskape.github.io/vrAnalysis/workflows/</loc>
          <lastmod>2025-11-06</lastmod>
     </url>
     <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/database/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/helpers/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/multisession/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/processors/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/registration/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/sessions/</loc>
-         <lastmod>2025-11-06</lastmod>
-    </url>
-    <url>
-         <loc>https://landoskape.github.io/vrAnalysis/modules/tracking/</loc>
+         <loc>https://landoskape.github.io/vrAnalysis/workflows/registration/</loc>
          <lastmod>2025-11-06</lastmod>
     </url>
 </urlset>
