@@ -15,10 +15,10 @@ class Population:
     def __init__(
         self,
         data: Union[np.ndarray, torch.Tensor],
-        generate_splits: bool = True,
         cell_split_prms: dict = {},
         time_split_prms: dict = {},
         dtype: Optional[torch.dtype] = None,
+        generate_splits: bool = True,
     ):
         """
         Initialize the Population object
@@ -27,9 +27,6 @@ class Population:
         ----------
         data : Union[np.ndarray, torch.Tensor]
             A 2D array of shape (num_neurons, num_timepoints) representing the activity of neurons over time.
-        generate_splits : bool
-            If True, will generate splits for cells and timepoints using any parameters in cell_split_prms and time_split_prms, respectively.
-            (default is True)
         cell_split_prms : dict
             Parameters for splitting the cells into groups.
             (default is {})
@@ -39,6 +36,9 @@ class Population:
         dtype : Optional[torch.dtype]
             The data type to cast the data to if it isn't already a torch tensor.
             (default is None)
+        generate_splits : bool
+            If True, will generate splits for cells and timepoints using any parameters in cell_split_prms and time_split_prms, respectively.
+            (default is True)
         """
         # Converts to a torch tensor if necessary and throws an error if it can't
         data = self._check_datatype(data)
@@ -51,15 +51,12 @@ class Population:
         self.dtype = dtype
 
         if generate_splits:
-            # remove return_indices from the parameters to avoid returning the indices (force storing as attributes when called in constructor method)
-            cell_split_prms.pop("return_indices", None)
-            time_split_prms.pop("return_indices", None)
             self.split_cells(**cell_split_prms)
             self.split_times(**time_split_prms)
 
     def get_split_data(
         self,
-        time_idx: Optional[Union[int, list[int]]] = None,
+        time_idx: Optional[Union[int, list[int], tuple[int]]] = None,
         center: bool = False,
         scale: bool = False,
         pre_split: bool = False,
@@ -70,9 +67,9 @@ class Population:
 
         Parameters
         ----------
-        time_idx : Optional[Union[int, list[int]]]
-            The time group(s) to use as the target data. If a list of integers, will concatenate the data for the specified time groups.
-            If None, will use all timepoints in the data.
+        time_idx : Optional[Union[int, list[int], tuple[int]]]
+            The time group(s) to use as the target data. If a list or tuple of integers, will concatenate the data
+            for the specified time groups. If None, will use all timepoints in the data.
             (default is None)
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
@@ -109,14 +106,14 @@ class Population:
     def apply_split(
         self,
         data: torch.Tensor,
-        time_idx: Optional[Union[int, list[int]]] = None,
+        time_idx: Optional[Union[int, list[int], tuple[int]]] = None,
         center: bool = False,
         scale: bool = False,
         pre_split: bool = False,
         scale_type: Optional[str] = None,
     ):
         """
-        Apply the time splits to a new dataset. If time_idx is a list of integers, will concatenate the data for the specified time groups.
+        Apply the time splits to a new dataset. If time_idx is a list or tuple of integers, will concatenate the data for the specified time groups.
 
         Parameters
         ----------
@@ -124,8 +121,8 @@ class Population:
             The data to apply the time splits to. Must have shape (num_features, num_timepoints), where
             num_features is unconstrained and num_timepoints must match the number of timepoints in the
             Population instance.
-        time_idx : Optional[Union[int, list[int]]]
-            The time group(s) to use as the target data. If a list of integers, will concatenate the data for the specified time groups.
+        time_idx : Optional[Union[int, list[int], tuple[int]]]
+            The time group(s) to use as the target data. If a list or tuple of integers, will concatenate the data for the specified time groups.
             If None, will use all timepoints in the data.
             (default is None)
             If None, will use all timepoints in the data.
@@ -156,8 +153,8 @@ class Population:
         if isinstance(time_idx, int):
             assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
             time_idx = [time_idx]
-        elif isinstance(time_idx, list):
-            assert all(isinstance(idx, int) for idx in time_idx), "time_idx must be a list of integers"
+        elif isinstance(time_idx, list) or isinstance(time_idx, tuple):
+            assert all(isinstance(idx, int) for idx in time_idx), "time_idx must be a list or tuple of integers"
             assert all(
                 idx < len(self.time_split_indices) for idx in time_idx
             ), "time_idx must correspond to one of the time groups in time_split_indices"
@@ -208,7 +205,7 @@ class Population:
 
         return data
 
-    def split_cells(self, force_even: bool = False, return_indices: bool = False):
+    def split_cells(self, force_even: bool = False):
         """
         Assign indices to each neurons to split into two groups.
 
@@ -220,15 +217,6 @@ class Population:
             If True, will ensure that the number of neurons in each group is equal to each other.
             If number of neurons isn't divisible by number of groups, will clip neurons randomly.
             (default is False)
-        return_indices : bool
-            If True, will return the indices of the split neurons instead of storing them
-            (default is False)
-
-        Returns
-        -------
-        torch.Tensor
-            A tensor of shape (num_neurons, ) representing the group assignment of each neuron
-            Only returned if return_indices is True.
         """
         index = torch.randperm(self.num_neurons)
 
@@ -238,21 +226,15 @@ class Population:
             total_neurons = num_per_group * 2
             index = index[:total_neurons]
 
-        cell_split_indices = torch.tensor_split(index, 2)
-
-        if return_indices:
-            return cell_split_indices
-
-        self.cell_split_indices = cell_split_indices
+        self.cell_split_indices = torch.tensor_split(index, 2)
 
     def split_times(
         self,
         num_groups: int = 2,
-        relative_size: Optional[list[int]] = None,
+        relative_size: Optional[tuple[int]] = None,
         chunks_per_group: int = 5,
         num_buffer: int = 10,
         force_even: bool = False,
-        return_indices: bool = False,
     ):
         """
         Assign indices to each timepoint to split into groups.
@@ -267,7 +249,7 @@ class Population:
         num_groups : int
             Number of groups to split the timepoints into.
             (default is 2)
-        relative_size : Optional[list[int]]
+        relative_size : Optional[tuple[int]]
             A list of integers representing the relative size of each group.
             If provided, will split timepoints into groups based on the relative size.
             (default is None)
@@ -284,15 +266,12 @@ class Population:
             If True, will ensure that the number of timepoints in each group is equal to each other.
             If number of timepoints isn't divisible by number of groups, will clip timepoints of later groups.
             (default is False)
-        return_indices : bool
-            If True, will return the indices of the split timepoints instead of storing them
-            (default is False)
         """
         if relative_size is None:
             relative_size = [1] * num_groups
         else:
             assert len(relative_size) == num_groups, "relative_size must have the same length as num_groups"
-            assert all(isinstance(size, int) for size in relative_size), "relative_size must be a list of integers"
+            assert all(isinstance(size, int) for size in relative_size), "relative_size must be a tuple of integers"
 
         indices = torch.arange(self.num_timepoints)
         time_chunks = self._chunk_indices(indices, chunks_per_group * sum(relative_size), num_buffer, force_even=force_even)
@@ -311,9 +290,6 @@ class Population:
         time_split_indices = []
         for i in range(num_groups):
             time_split_indices.append(torch.cat(time_chunks[start_stop_index[i] : start_stop_index[i + 1]]))
-
-        if return_indices:
-            return time_split_indices
 
         self.time_split_indices = time_split_indices
 
@@ -462,9 +438,9 @@ class SourceTarget(Population):
         self,
         source: Union[np.ndarray, torch.Tensor],
         target: Union[np.ndarray, torch.Tensor],
-        generate_splits: bool = True,
         time_split_prms={},
         dtype: Optional[torch.dtype] = None,
+        generate_splits: bool = True,
     ):
         """
         Initialize the SourceTarget object
@@ -475,15 +451,15 @@ class SourceTarget(Population):
             A 2D array of shape (num_source_features, num_timepoints) representing variable used to make predictions.
         target : Union[np.ndarray, torch.Tensor]
             A 2D array of shape (num_target_features, num_timepoints) representing variable to predict.
-        generate_splits : bool
-            If True, will generate splits for timepoints using any parameters in time_split_prms.
-            (default is True)
         time_split_prms : dict
             Parameters for splitting the timepoints into groups.
             (default is {})
         dtype : Optional[torch.dtype]
             The data type to cast the data to if it isn't already a torch tensor.
             (default is None)
+        generate_splits : bool
+            If True, will generate splits for timepoints using any parameters in time_split_prms.
+            (default is True)
         """
         if isinstance(source, np.ndarray):
             source = torch.from_numpy(source)
@@ -513,8 +489,6 @@ class SourceTarget(Population):
         self.cell_split_indices = [feature_index[: self.num_source_features], feature_index[self.num_source_features :]]
 
         if generate_splits:
-            # remove return_indices from the parameters to avoid returning the indices (force storing as attributes when called in constructor method)
-            time_split_prms.pop("return_indices", None)
             self.split_times(**time_split_prms)
 
     def size(self):
