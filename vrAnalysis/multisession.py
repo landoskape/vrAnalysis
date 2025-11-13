@@ -7,7 +7,7 @@ from math import floor, ceil
 from vrAnalysis.sessions.b2session import B2SessionParams
 from vrAnalysis.processors.spkmaps import SpkmapProcessor, SpkmapParams, Maps
 from vrAnalysis.tracking import Tracker
-from vrAnalysis.helpers import resolve_dataclass, argsort, named_transpose, get_place_field
+from vrAnalysis.helpers import resolve_dataclass, argsort, named_transpose, get_placefield_location
 
 
 def handle_idx_ses(func):
@@ -339,7 +339,7 @@ class MultiSessionSpkmaps:
             spkmaps = [s[..., ~idx_nan_positions] for s in spkmaps]
             positions = positions[~idx_nan_positions]
 
-        pfloc, pfidx = named_transpose([get_place_field(spkmap, method="max", positions=positions) for spkmap in spkmaps])
+        pfloc, pfidx = named_transpose([get_placefield_location(spkmap, method="max", positions=positions) for spkmap in spkmaps])
 
         extras = dict(
             idx_tracked=idx_tracked,

@@ -1,8 +1,11 @@
+from typing import Optional, TYPE_CHECKING
 import numpy as np
 import numba as nb
 from .. import faststats as fs
-
 from . import edge2center, getGaussKernel, convolveToeplitz, cvFoldSplit, vectorCorrelation
+
+if TYPE_CHECKING:
+    from ..processors.spkmaps import SpkmapProcessor
 
 
 def get_env_order(mousedb, mouse_name):
@@ -11,7 +14,7 @@ def get_env_order(mousedb, mouse_name):
 
 
 # ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
-def get_place_field(spkmap: np.ndarray, method: str = "max", positions: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+def get_placefield_location(spkmap: np.ndarray, method: str = "max", positions: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Get place field location and sorting index
 
     Makes an assumption about spkmap based on ndims --
@@ -58,6 +61,71 @@ def get_place_field(spkmap: np.ndarray, method: str = "max", positions: np.ndarr
     pfidx = np.argsort(pfloc)
 
     return pfloc, pfidx
+
+
+def sort_by_preferred_environment(smp: "SpkmapProcessor", use_session_filters: bool = True, idx_rois: Optional[np.ndarray] = None) -> np.ndarray:
+    """Sort the ROIs by their preferred environment, then by their place field position.
+
+    Parameters
+    ----------
+    smp : SpkmapProcessor
+        The spkmap processor to use.
+    use_session_filters : bool, default=True
+        Whether to use the session filters to filter the ROIs.
+    idx_rois : Optional[np.ndarray], default=None
+        The indices of the ROIs to sort. If None, all ROIs are used.
+
+    Returns
+    -------
+    idx_sort : np.ndarray
+        The indices of the ROIs sorted by their preferred environment, then by their place field position.
+    """
+    # Sort by preferred environment, then place field position
+    env_maps = smp.get_env_maps(use_session_filters=use_session_filters)
+    env_maps.average_trials()
+    if idx_rois is not None:
+        env_maps.filter_rois(idx_rois)
+    env_with_strongest_placefield = np.argmax(np.stack([np.nanmax(s, axis=1) for s in env_maps.spkmap]), axis=0)
+    idx_within_env = []
+    for ienv in range(len(env_maps.spkmap)):
+        idx_rois = np.where(env_with_strongest_placefield == ienv)[0]
+        pfidx = get_placefield_location(env_maps.spkmap[ienv][idx_rois])[1]
+        idx_within_env.append(idx_rois[pfidx])
+
+    # Master sort by environment then place field position
+    return np.concatenate(idx_within_env)
+
+
+def cross_validate_trials(trial_environment: np.ndarray, fractions: list[float]):
+    """Cross-validate trials based on the environment and the fractions of trials to include in each fold.
+
+    Parameters
+    ----------
+    trial_environment : np.ndarray
+        The environment of each trial.
+    fractions : list[float]
+        The fractions of trials to include in each fold.
+
+    Returns
+    -------
+    trials : list[list[int]]
+        The trials to include in each fold.
+    """
+    relative_fractions = np.array(fractions) / np.sum(fractions)
+    num_folds = len(fractions)
+    trials = [[] for _ in range(num_folds)]
+    envs = np.unique(trial_environment)
+    for env in envs:
+        env_trials = np.where(trial_environment == env)[0]
+        np.random.shuffle(env_trials)
+        # Calculate cumulative split indices
+        cumsum_fracs = np.cumsum(relative_fractions)
+        split_indices = (cumsum_fracs[:-1] * len(env_trials)).astype(int)
+        # Split into independent chunks
+        env_chunks = np.split(env_trials, split_indices)
+        for fold, chunk in enumerate(env_chunks):
+            trials[fold].extend(chunk)
+    return trials
 
 
 # ------------------------------------------------- simple processing functions for behavioral data --------------------------------------------------------
