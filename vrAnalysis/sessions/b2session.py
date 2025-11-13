@@ -1,6 +1,6 @@
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Union
+from dataclasses import dataclass, field, fields
+from typing import Optional, Dict, Any, Union, Literal
 import joblib
 import numpy as np
 import json
@@ -89,7 +89,7 @@ class B2SessionParams:
         Default is True.
     """
 
-    spks_type: str = "significant"
+    spks_type: "SpksTypes" = "significant"
     keep_planes: list[int] | None = None
     good_labels: list[str] = field(default_factory=lambda: ["c", "d"])
     fraction_filled_threshold: float | None = None
@@ -204,11 +204,14 @@ class B2Session(SessionData):
         List of preprocessing steps that were applied during registration.
     params : B2SessionParams
         Parameters for configuring data loading and ROI filtering.
+    spks_types: tuple[str]
+        Tuple of spks types to load.
     """
 
     opts: B2RegistrationOpts = field(default_factory=B2RegistrationOpts, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
     params: B2SessionParams = field(default_factory=B2SessionParams, repr=False)
+    spks_types: tuple[str, ...] = ("oasis", "deconvolved", "raw", "neuropil", "significant", "corrected")
 
     @classmethod
     def create(
@@ -298,19 +301,6 @@ class B2Session(SessionData):
             Available transforms: "transpose", "idx_column1".
         """
         return {"transpose": lambda x: x.T, "idx_column1": lambda x: x[:, 1]}
-
-    @classmethod
-    def spks_types(cls) -> list[str]:
-        """
-        Get list of available spike data types.
-
-        Returns
-        -------
-        list[str]
-            List of valid spks_type values: "oasis", "deconvolved", "raw",
-            "neuropil", "significant", "corrected".
-        """
-        return ["oasis", "deconvolved", "raw", "neuropil", "significant", "corrected"]
 
     def _load_spks(self, spks_type: str = None) -> np.ndarray:
         """
@@ -994,3 +984,12 @@ class B2Session(SessionData):
             Hash value based on the session_name tuple.
         """
         return hash(self.session_name)
+
+    def __repr__(self) -> str:
+        """
+        Custom repr that excludes spks_types class variable.
+        """
+        return f"B2Session(mouse_name='{self.mouse_name}', date='{self.date}', session_id='{self.session_id}', spks_type='{self.params.spks_type}')"
+
+
+SpksTypes = Literal[*B2Session.spks_types]
