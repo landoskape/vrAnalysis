@@ -1,5 +1,4 @@
-from typing import Union, Optional, Dict
-
+from typing import Union, Optional, Dict, Literal
 import numpy as np
 import torch
 
@@ -19,6 +18,8 @@ class Population:
         time_split_prms: dict = {},
         dtype: Optional[torch.dtype] = None,
         generate_splits: bool = True,
+        idx_neurons: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        idx_samples: Optional[Union[np.ndarray, torch.Tensor]] = None,
     ):
         """
         Initialize the Population object
@@ -39,6 +40,12 @@ class Population:
         generate_splits : bool
             If True, will generate splits for cells and timepoints using any parameters in cell_split_prms and time_split_prms, respectively.
             (default is True)
+        idx_neurons: Optional[Union[np.ndarray, torch.Tensor]] = None
+            The indices of the neurons to use in the population. If None, will use all neurons.
+            (default is None)
+        idx_samples: Optional[Union[np.ndarray, torch.Tensor]] = None
+            The indices of the samples to use in the population. If None, will use all samples.
+            (default is None)
         """
         # Converts to a torch tensor if necessary and throws an error if it can't
         data = self._check_datatype(data)
@@ -46,10 +53,18 @@ class Population:
         if len(data.shape) != 2:
             raise ValueError("data must be a 2D array/tensor with shape (num_neurons, num_timepoints)")
 
+        # Store the data and note the total number of neurons and timepoints
         self.data = data
-        self.num_neurons, self.num_timepoints = data.shape
+        self.total_neurons, self.total_timepoints = data.shape
+
+        # Build filtering indices to the neurons and timepoints to use
+        self.idx_neurons = _validate_indices(idx_neurons, self.total_neurons)
+        self.idx_samples = _validate_indices(idx_samples, self.total_timepoints)
+        self.num_neurons = len(self.idx_neurons)
+        self.num_timepoints = len(self.idx_samples)
         self.dtype = dtype
 
+        # Generate splits for cells and timepoints
         if generate_splits:
             self.split_cells(**cell_split_prms)
             self.split_times(**time_split_prms)
@@ -99,9 +114,80 @@ class Population:
         if not hasattr(self, "time_split_indices"):
             raise ValueError("time_split_indices must be set before calling get_source_target")
 
-        source = self.apply_split(self.data[self.cell_split_indices[0]], time_idx, center, scale, pre_split, scale_type)
-        target = self.apply_split(self.data[self.cell_split_indices[1]], time_idx, center, scale, pre_split, scale_type)
+        source = self.apply_split(self.data[self.idx_neurons[self.cell_split_indices[0]]], time_idx, center, scale, pre_split, scale_type)
+        target = self.apply_split(self.data[self.idx_neurons[self.cell_split_indices[1]]], time_idx, center, scale, pre_split, scale_type)
         return source, target
+
+    def get_split_times(self, time_idx: Optional[Union[int, list[int], tuple[int]]] = None, within_idx_samples: bool = True) -> torch.Tensor:
+        """Get the timepoints for a specific set of timepoints.
+
+        Parameters
+        ----------
+        time_idx : Optional[Union[int, list[int], tuple[int]]]
+            The time group(s) to use as the target data. If a list or tuple of integers,
+            will concatenate the indices for the specified time groups. If None, will use
+            all timepoints in the data. (default is None).
+        within_idx_samples : bool
+            If True, will return the indices to the timepoints within the idx_samples array. This is how the population
+            is filtered by get_split_data, otherwise it simply provides the indices to idx_samples, which may not
+            be contiguous. Default is True to match the behavior of get_split_data.
+
+        Returns
+        -------
+        torch.Tensor
+            The indices to timepoints for the specified time groups. Will be sorted in ascending order.
+        """
+        if not hasattr(self, "time_split_indices"):
+            raise ValueError("time_split_indices must be set before calling get_split_times")
+
+        if isinstance(time_idx, int):
+            assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
+            time_idx = [time_idx]
+        elif isinstance(time_idx, list) or isinstance(time_idx, tuple):
+            assert all(isinstance(idx, int) for idx in time_idx), "time_idx must be a list or tuple of integers"
+            assert all(
+                idx < len(self.time_split_indices) for idx in time_idx
+            ), "time_idx must correspond to one of the time groups in time_split_indices"
+        elif time_idx is None:
+            time_idx = list(range(len(self.time_split_indices)))
+        else:
+            if time_idx is not None:
+                raise ValueError("time_idx must be an integer or None")
+
+        idx_times = torch.sort(torch.cat([self.time_split_indices[idx] for idx in time_idx])).values
+        if within_idx_samples:
+            return self.idx_samples[idx_times]
+        else:
+            return idx_times
+
+    def get_split_cells(self, group: Literal["source", "target"], within_idx_neurons: bool = True) -> torch.Tensor:
+        """Get the cells for a specific group.
+
+        Parameters
+        ----------
+        group : Literal["source", "target"]
+            The group to get the cells for.
+        within_idx_neurons : bool
+            If True, will return the indices to the cells within the idx_neurons array. This is how the population
+            is filtered by get_split_data, otherwise it simply provides the indices to idx_neurons, which may not
+            be contiguous. Default is True to match the behavior of get_split_data.
+
+        Returns
+        -------
+        torch.Tensor
+            The indices to the cells for the specified group.
+        """
+        if group == "source":
+            csi = self.cell_split_indices[0]
+        elif group == "target":
+            csi = self.cell_split_indices[1]
+        else:
+            raise ValueError("group must be one of ['source', 'target']")
+
+        if within_idx_neurons:
+            return self.idx_neurons[csi]
+        else:
+            return csi
 
     def apply_split(
         self,
@@ -147,24 +233,9 @@ class Population:
         torch.Tensor
             The data for the specified set of timepoints.
         """
-        if not hasattr(self, "time_split_indices"):
-            raise ValueError("time_split_indices must be set before calling get_source_target")
-
-        if isinstance(time_idx, int):
-            assert time_idx < len(self.time_split_indices), "time_idx must correspond to one of the time groups in time_split_indices"
-            time_idx = [time_idx]
-        elif isinstance(time_idx, list) or isinstance(time_idx, tuple):
-            assert all(isinstance(idx, int) for idx in time_idx), "time_idx must be a list or tuple of integers"
-            assert all(
-                idx < len(self.time_split_indices) for idx in time_idx
-            ), "time_idx must correspond to one of the time groups in time_split_indices"
-        else:
-            if not time_idx is None:
-                raise ValueError("time_idx must be an integer or None")
-
         # Convert data to torch tensor if necessary and throw an error if it can't
         data = self._check_datatype(data)
-        assert data.size(1) == self.num_timepoints, "data must have the same number of timepoints as the Population instance"
+        assert data.size(1) == self.total_timepoints, "data must have the same number of timepoints as the Population instance"
 
         if pre_split:
             if center:
@@ -173,11 +244,12 @@ class Population:
                 std = data.std(dim=1, keepdim=True)
                 std[std == 0] = 1
 
-        # Select the timepoints for the specified group when time_idx is an integer
+        # Select the timepoints for the specified group
         if time_idx is not None:
-            _split_data = [data[:, self.time_split_indices[idx]] for idx in time_idx]
-            data = torch.cat(_split_data, dim=1)
+            idx_times = self.get_split_times(time_idx, within_idx_samples=True)
+            data = data[:, idx_times]
 
+        # Center the data if requested
         if center:
             if pre_split:
                 data = data - mean
@@ -226,7 +298,7 @@ class Population:
             total_neurons = num_per_group * 2
             index = index[:total_neurons]
 
-        self.cell_split_indices = torch.tensor_split(index, 2)
+        self.cell_split_indices = [torch.sort(indices).values for indices in torch.tensor_split(index, 2)]
 
     def split_times(
         self,
@@ -289,7 +361,7 @@ class Population:
         start_stop_index = torch.cumsum(torch.tensor([0] + [rs * chunks_per_group for rs in relative_size]), dim=0)
         time_split_indices = []
         for i in range(num_groups):
-            time_split_indices.append(torch.cat(time_chunks[start_stop_index[i] : start_stop_index[i + 1]]))
+            time_split_indices.append(torch.sort(torch.cat(time_chunks[start_stop_index[i] : start_stop_index[i + 1]])).values)
 
         self.time_split_indices = time_split_indices
 
@@ -383,8 +455,12 @@ class Population:
         return {
             "cell_split_indices": [indices.tolist() for indices in self.cell_split_indices] if hasattr(self, "cell_split_indices") else None,
             "time_split_indices": [indices.tolist() for indices in self.time_split_indices] if hasattr(self, "time_split_indices") else None,
+            "total_neurons": self.total_neurons,
+            "total_timepoints": self.total_timepoints,
             "num_neurons": self.num_neurons,
             "num_timepoints": self.num_timepoints,
+            "idx_neurons": self.idx_neurons.tolist(),
+            "idx_samples": self.idx_samples.tolist(),
             "dtype": self.dtype,
         }
 
@@ -410,14 +486,29 @@ class Population:
         ValueError
             If the shape of the provided data doesn't match the saved indices.
         """
+        # Backwards compatibility with old indices_dicts
+        # They didn't have the sub indices idx_neurons, idx_samples, so num_* represents total_*
+        if "total_neurons" not in indices_dict:
+            indices_dict["total_neurons"] = indices_dict["num_neurons"]
+            indices_dict["total_timepoints"] = indices_dict["num_timepoints"]
+            indices_dict["idx_neurons"] = torch.arange(indices_dict["total_neurons"])
+            indices_dict["idx_samples"] = torch.arange(indices_dict["total_timepoints"])
+
+        if "idx_neurons" not in indices_dict or "idx_samples" not in indices_dict:
+            raise ValueError("idx_neurons and idx_samples must be provided in the indices_dict")
+        else:
+            idx_neurons = torch.tensor(indices_dict["idx_neurons"])
+            idx_samples = torch.tensor(indices_dict["idx_samples"])
+
         # Check if the shape of the provided data matches the saved indices
-        if data.shape != (indices_dict["num_neurons"], indices_dict["num_timepoints"]):
+        if data.shape != (indices_dict["total_neurons"], indices_dict["total_timepoints"]):
             raise ValueError(
                 f"Shape of provided data {data.shape} doesn't match the shape in saved indices "
-                f"({indices_dict['num_neurons']}, {indices_dict['num_timepoints']})"
+                f"({indices_dict['total_neurons']}, {indices_dict['total_timepoints']})"
             )
 
-        population = cls(data, generate_splits=False, dtype=indices_dict.get("dtype", None))
+        # Remake population with saved indices, don't generate splits because we already have them
+        population = cls(data, generate_splits=False, dtype=indices_dict.get("dtype", None), idx_neurons=idx_neurons, idx_samples=idx_samples)
 
         if indices_dict["cell_split_indices"]:
             population.cell_split_indices = [torch.tensor(indices) for indices in indices_dict["cell_split_indices"]]
@@ -560,3 +651,57 @@ class SourceTarget(Population):
             source_target.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
 
         return source_target
+
+
+# Create indices to the neurons and timepoints to use in data splits
+def _validate_indices(
+    indices: Optional[Union[np.ndarray, torch.Tensor]],
+    max_index: int,
+) -> torch.Tensor:
+    """Check and/or convert indices to integer indices within valid range and return as a torch tensor.
+
+    Parameters
+    ----------
+    indices : Optional[Union[np.ndarray, torch.Tensor]]
+        The indices to validate. Can be None, numpy array, or torch tensor.
+    max_index : int
+        The maximum valid index (exclusive). Indices must be in range [0, max_index).
+
+    Returns
+    -------
+    torch.Tensor
+        Validated integer indices as a torch tensor.
+
+    Raises
+    ------
+    ValueError
+        If indices are out of range integers or boolean masks with incorrect length.
+    """
+    if indices is None:
+        return torch.arange(max_index)
+
+    # Convert to torch tensor if needed
+    if isinstance(indices, np.ndarray):
+        indices = torch.from_numpy(indices)
+    elif not isinstance(indices, torch.Tensor):
+        raise TypeError(f"indices must be numpy array or torch tensor, got {type(indices)}")
+
+    # Check if it's a boolean mask and convert if so
+    if indices.dtype == torch.bool:
+        if len(indices) != max_index:
+            raise ValueError("boolean masks must be the same length as the maximum index")
+        return torch.nonzero(indices)
+
+    # Ensure integer type
+    if indices.dtype not in (torch.int8, torch.int16, torch.int32, torch.int64):
+        raise ValueError(f"indices must be integer type, got {indices.dtype}")
+    indices = indices.to(torch.long)
+
+    # Check range
+    if len(indices) > 0:
+        min_idx = indices.min().item()
+        max_idx = indices.max().item()
+        if min_idx < 0 or max_idx >= max_index:
+            raise ValueError(f"indices must be in range [0, {max_index}), " f"got range [{min_idx}, {max_idx}]")
+
+    return indices
