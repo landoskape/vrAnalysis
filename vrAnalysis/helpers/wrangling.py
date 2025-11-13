@@ -3,6 +3,7 @@ import inspect
 import math
 import numpy as np
 from itertools import chain
+from hashlib import sha256
 
 
 def get_confirmation(message: str = ""):
@@ -242,3 +243,27 @@ def concat_with_spacer(listN, x, axis=1):
     # chain.from_iterable avoids making intermediate Python lists
     interleaved = chain.from_iterable(zip(listN[:-1], [x] * (len(listN) - 1)))
     return np.concatenate((*interleaved, listN[-1]), axis=axis)
+
+
+def stable_hash(*items, shorten: bool = True) -> str:
+    """Create a stable hash of a list of items.
+
+    Parameters
+    ----------
+    *items : Any
+        The items to hash.
+    shorten : bool
+        If True, the hash will be shortened to 8 characters. Default is True.
+
+    Returns
+    -------
+    str
+        The stable hash of the items.
+    """
+    h = sha256()
+    for x in items:
+        h.update(repr(x).encode())
+    digest = h.hexdigest()
+    if shorten:
+        return digest[:8]
+    return digest
