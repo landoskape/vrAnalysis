@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, Literal
 import torch
 
 
@@ -43,11 +43,11 @@ def scaled_mse(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Union[str, No
     return scaled_error
 
 
-def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor, reduce="mean"):
+def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor, reduce: Literal["mean", "none"] = "mean"):
     """
     Measure r-squared between predicted and true target values.
 
-    Will measure the r-squared for each sample, then take the average across samples.
+    Will measure the r-squared for each sample, then take the average across features.
 
     In the case where the target has no variance, the R^2 value will be set to 0.0.
     In the case where the prediction is perfect, the R^2 value will be set to 1.0.
@@ -55,9 +55,12 @@ def measure_r2(y_pred: torch.Tensor, y_true: torch.Tensor, reduce="mean"):
     Parameters
     ----------
     y_pred : torch.Tensor
-        The predicted values (num_features, num_samples).
+        The predicted values (num_samples, num_features).
     y_true : torch.Tensor
-        The true target values (num_features, num_samples).
+        The true target values (num_samples, num_features).
+    reduce : str
+        The reduction to apply to the r-squared value. If "mean", the mean of the r-squared value
+        is returned. If "none", the r-squared value is returned without reduction. Default is mean.
 
     Returns
     -------
