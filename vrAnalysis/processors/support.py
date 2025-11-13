@@ -6,8 +6,23 @@ from scipy.linalg import convolution_matrix
 
 @nb.njit(parallel=True, fastmath=True, cache=True)
 def median_zscore(spks: np.ndarray, median_subtract: bool = True) -> np.ndarray:
-    """Standardize the spks by subtracting the median and dividing by the standard deviation."""
-    output = np.zeros_like(spks)
+    """Standardize the spks by subtracting the median and dividing by the standard deviation.
+
+    Operates on axis = 0, assuming that spks are (Frames, ROIs)
+
+    Parameters
+    ----------
+    spks : np.ndarray
+        The spiking activity to standardize. (Frames x ROIs)
+    median_subtract : bool, default=True
+        Whether to subtract the median from the spiking activity.
+
+    Returns
+    -------
+    zscored_spks : np.ndarray
+        The z-scored spiking activity. (Frames x ROIs)
+    """
+    zscored_spks = np.zeros_like(spks)
     for iroi in nb.prange(spks.shape[1]):
         if median_subtract:
             median = np.median(spks[:, iroi])
@@ -15,10 +30,10 @@ def median_zscore(spks: np.ndarray, median_subtract: bool = True) -> np.ndarray:
             median = 0
         std = np.std(spks[:, iroi])
         if std == 0:
-            output[:, iroi] = 0
+            zscored_spks[:, iroi] = 0
         else:
-            output[:, iroi] = (spks[:, iroi] - median) / std
-    return output
+            zscored_spks[:, iroi] = (spks[:, iroi] - median) / std
+    return zscored_spks
 
 
 def get_gauss_kernel(timestamps: np.ndarray, width: float, nonzero: bool = True) -> np.ndarray:
@@ -224,3 +239,70 @@ def replace_missing_data(data, firstValidBin, lastValidBin, replaceWith=np.nan):
         data[trial, :fvb] = replaceWith
         data[trial, lvb + 1 :] = replaceWith
     return data
+
+
+def convert_position_to_bins(position: np.ndarray, dist_edges: np.ndarray, check_invalid: bool = True):
+    """Convert position to position bin with a given set of position edges.
+
+    I can never remember how to use searchsorted, so this function does it for me the way I always want
+    for making place fields! You provide dist_edges, similar to the edges used in a histogram, and it
+    returns the bin index for each position within the edges (so there is one less bin than edges). If
+    check_invalid is True, it will return NaN for positions outside the edges.
+
+    Parameters
+    ----------
+    position : np.ndarray
+        The position to convert to a bin.
+    dist_edges : np.ndarray
+        The edges of the distance bins.
+    check_invalid : bool, optional
+        Whether to return NaN for positions outside the edges. Default is True.
+
+    Returns
+    -------
+    frame_bins : np.ndarray
+        The bin index for each position.
+    """
+    if check_invalid and (np.any(position < dist_edges[0]) or np.any(position > dist_edges[-1]) or np.any(np.isnan(position))):
+        raise ValueError("position is outside the edges or is NaN")
+    return np.searchsorted(dist_edges, position, side="right") - 1
+
+
+@nb.njit(parallel=True)
+def placefield_prediction_numba(
+    placefield_prediction: np.ndarray,
+    spkmaps: np.ndarray,
+    frame_environment_index: np.ndarray,
+    frame_position_index: np.ndarray,
+    idx_valid: np.ndarray,
+) -> np.ndarray:
+    """Numba-accelerated place field prediction.
+
+    Parameters
+    ----------
+    placefield_prediction : np.ndarray
+        Output array to fill with predictions. Shape: (frames, rois).
+    spkmaps : np.ndarray
+        Spike maps with shape (environments, positions, rois).
+    frame_environment_index : np.ndarray
+        Environment index for each frame. Shape: (frames,).
+    frame_position_index : np.ndarray
+        Position bin index for each frame. Shape: (frames,).
+    idx_valid : np.ndarray
+        Boolean array indicating valid frames. Shape: (frames,).
+
+    Returns
+    -------
+    np.ndarray
+        The placefield_prediction array (modified in-place).
+
+    Notes
+    -----
+    This is a Numba-compiled function for fast parallel computation of place
+    field predictions. It fills placefield_prediction with values from spkmaps
+    based on frame_environment_index and frame_position_index.
+    """
+    for isample in nb.prange(placefield_prediction.shape[0]):
+        if idx_valid[isample]:
+            placefield_prediction[isample] = spkmaps[frame_environment_index[isample]][frame_position_index[isample]]
+    return placefield_prediction
