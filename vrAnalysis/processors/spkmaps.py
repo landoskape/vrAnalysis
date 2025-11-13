@@ -14,11 +14,52 @@ from ..sessions.base import SessionData
 from ..sessions.b2session import B2Session
 from .support import median_zscore, get_gauss_kernel, convolve_toeplitz
 from .support import get_summation_map, correct_map, replace_missing_data
+from .support import placefield_prediction_numba
 
 
 @dataclass
 class Maps:
-    """Base class for occupancy, speed, and spike maps."""
+    """Container for occupancy, speed, and spike maps.
+
+    This class holds spatial maps representing neural activity, behavioral occupancy,
+    and speed across position bins. Maps can be organized either as single arrays
+    (all trials combined) or as lists of arrays (separated by environment).
+
+    Attributes
+    ----------
+    occmap : np.ndarray or list of np.ndarray
+        Occupancy map(s) representing time spent in each position bin.
+        Shape: (trials, positions) for single array, or list of (trials, positions)
+        arrays when by_environment=True.
+    speedmap : np.ndarray or list of np.ndarray
+        Speed map(s) representing average speed in each position bin.
+        Shape: (trials, positions) for single array, or list of (trials, positions)
+        arrays when by_environment=True.
+    spkmap : np.ndarray or list of np.ndarray
+        Spike map(s) representing neural activity in each position bin.
+        Shape depends on rois_first:
+        - If rois_first=True: (rois, trials, positions) or list of (rois, trials, positions)
+        - If rois_first=False: (trials, positions, rois) or list of (trials, positions, rois)
+    by_environment : bool
+        Whether maps are separated by environment (True) or combined (False).
+    rois_first : bool
+        Whether ROI dimension is first (True) or last (False) in spkmap arrays.
+    environments : list of int, optional
+        List of environment numbers when by_environment=True. Default is None.
+    distcenters : np.ndarray, optional
+        Center positions of distance bins. Default is None.
+    _averaged : bool
+        Internal flag indicating whether trials have been averaged. Default is False.
+
+    Notes
+    -----
+    The Maps class supports two organizational modes:
+    1. Single maps: All trials combined in single arrays (by_environment=False)
+    2. Environment-separated maps: Maps split by environment (by_environment=True)
+
+    The spkmap can have ROIs as the first or last dimension depending on rois_first.
+    This allows flexibility in how data is organized for different processing steps.
+    """
 
     occmap: np.ndarray | list[np.ndarray]
     speedmap: np.ndarray | list[np.ndarray]
@@ -83,16 +124,77 @@ class Maps:
 
     @classmethod
     def create_raw_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray, distcenters: np.ndarray = None) -> "Maps":
+        """Create a Maps instance from raw (unprocessed) map data.
+
+        Parameters
+        ----------
+        occmap : np.ndarray
+            Occupancy map with shape (trials, positions).
+        speedmap : np.ndarray
+            Speed map with shape (trials, positions).
+        spkmap : np.ndarray
+            Spike map with shape (trials, positions, rois).
+        distcenters : np.ndarray, optional
+            Center positions of distance bins. Default is None.
+
+        Returns
+        -------
+        Maps
+            Maps instance with by_environment=False and rois_first=False.
+        """
         return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, distcenters=distcenters, by_environment=False, rois_first=False)
 
     @classmethod
     def create_processed_maps(cls, occmap: np.ndarray, speedmap: np.ndarray, spkmap: np.ndarray, distcenters: np.ndarray = None) -> "Maps":
+        """Create a Maps instance from processed map data.
+
+        Parameters
+        ----------
+        occmap : np.ndarray
+            Occupancy map with shape (trials, positions).
+        speedmap : np.ndarray
+            Speed map with shape (trials, positions).
+        spkmap : np.ndarray
+            Spike map with shape (rois, trials, positions).
+        distcenters : np.ndarray, optional
+            Center positions of distance bins. Default is None.
+
+        Returns
+        -------
+        Maps
+            Maps instance with by_environment=False and rois_first=True.
+        """
         return cls(occmap=occmap, speedmap=speedmap, spkmap=spkmap, distcenters=distcenters, by_environment=False, rois_first=True)
 
     @classmethod
     def create_environment_maps(
-        cls, occmap: list[np.ndarray], speedmap: list[np.ndarray], spkmap: list[np.ndarray], environments: list[int], distcenters: np.ndarray = None
+        cls,
+        occmap: list[np.ndarray],
+        speedmap: list[np.ndarray],
+        spkmap: list[np.ndarray],
+        environments: list[int],
+        distcenters: np.ndarray = None,
     ) -> "Maps":
+        """Create a Maps instance with maps separated by environment.
+
+        Parameters
+        ----------
+        occmap : list of np.ndarray
+            List of occupancy maps, one per environment. Each with shape (trials, positions).
+        speedmap : list of np.ndarray
+            List of speed maps, one per environment. Each with shape (trials, positions).
+        spkmap : list of np.ndarray
+            List of spike maps, one per environment. Each with shape (rois, trials, positions).
+        environments : list of int
+            List of environment numbers corresponding to each map in the lists.
+        distcenters : np.ndarray, optional
+            Center positions of distance bins. Default is None.
+
+        Returns
+        -------
+        Maps
+            Maps instance with by_environment=True and rois_first=True.
+        """
         return cls(
             occmap=occmap,
             speedmap=speedmap,
@@ -104,17 +206,62 @@ class Maps:
         )
 
     @classmethod
-    def map_types(self) -> List[str]:
+    def map_types(cls) -> List[str]:
+        """Get the list of map type names.
+
+        Returns
+        -------
+        list of str
+            List containing ["occmap", "speedmap", "spkmap"].
+        """
         return ["occmap", "speedmap", "spkmap"]
 
-    def __getitem__(self, key: str) -> np.ndarray:
+    def __getitem__(self, key: str) -> np.ndarray | list[np.ndarray]:
+        """Get a map by name using dictionary-like access.
+
+        Parameters
+        ----------
+        key : str
+            Name of the map to retrieve ("occmap", "speedmap", or "spkmap").
+
+        Returns
+        -------
+        np.ndarray or list of np.ndarray
+            The requested map array(s).
+        """
         return getattr(self, key)
 
-    def __setitem__(self, key: str, value: np.ndarray):
+    def __setitem__(self, key: str, value: np.ndarray | list[np.ndarray]) -> None:
+        """Set a map by name using dictionary-like access.
+
+        Parameters
+        ----------
+        key : str
+            Name of the map to set ("occmap", "speedmap", or "spkmap").
+        value : np.ndarray or list of np.ndarray
+            The map array(s) to assign.
+        """
         setattr(self, key, value)
 
     def _get_position_axis(self, mapname: str) -> int:
-        """The only time the position axis isn't the last one is for spkmap when rois_first is False"""
+        """Get the axis index for the position dimension.
+
+        Parameters
+        ----------
+        mapname : str
+            Name of the map ("occmap", "speedmap", or "spkmap").
+
+        Returns
+        -------
+        int
+            Axis index for the position dimension. Typically -1 (last axis),
+            except for spkmap when rois_first=False, where it's -2.
+
+        Notes
+        -----
+        The only time the position axis isn't the last one is for spkmap when
+        rois_first is False, where the shape is (trials, positions, rois).
+        """
         average_offset = -1 if self._averaged else 0
         if mapname == "spkmap" and not self.rois_first:
             return -2 + average_offset
@@ -122,6 +269,18 @@ class Maps:
             return -1
 
     def filter_positions(self, idx_positions: np.ndarray) -> None:
+        """Filter maps to keep only specified position bins.
+
+        Parameters
+        ----------
+        idx_positions : np.ndarray
+            Indices of position bins to keep. Must be a 1D array of integers.
+
+        Notes
+        -----
+        This method modifies the maps in-place, keeping only the position bins
+        specified by idx_positions. Also updates distcenters if present.
+        """
         if self.distcenters is not None:
             self.distcenters = self.distcenters[idx_positions]
         for mapname in self.map_types():
@@ -132,6 +291,19 @@ class Maps:
                 self[mapname] = np.take(self[mapname], idx_positions, axis=axis)
 
     def filter_rois(self, idx_rois: np.ndarray) -> None:
+        """Filter spike maps to keep only specified ROIs.
+
+        Parameters
+        ----------
+        idx_rois : np.ndarray
+            Indices of ROIs to keep. Must be a 1D array of integers.
+
+        Notes
+        -----
+        This method modifies the spkmap in-place, keeping only the ROIs
+        specified by idx_rois. Only affects spkmap; occmap and speedmap
+        are unchanged.
+        """
         axis = 0 if self.rois_first else -1
         if self.by_environment:
             self.spkmap = [np.take(x, idx_rois, axis=axis) for x in self.spkmap]
@@ -139,6 +311,24 @@ class Maps:
             self.spkmap = np.take(self.spkmap, idx_rois, axis=axis)
 
     def filter_environments(self, environments: list[int]) -> None:
+        """Filter maps to keep only specified environments.
+
+        Parameters
+        ----------
+        environments : list of int
+            List of environment numbers to keep.
+
+        Raises
+        ------
+        ValueError
+            If by_environment is False, since environments cannot be filtered
+            when maps are not separated by environment.
+
+        Notes
+        -----
+        This method modifies the maps in-place, keeping only the environments
+        specified. Only works when by_environment=True.
+        """
         if self.by_environment:
             idx_to_requested_env = [i for i, env in enumerate(self.environments) if env in environments]
             self.occmap = [self.occmap[i] for i in idx_to_requested_env]
@@ -149,7 +339,14 @@ class Maps:
             raise ValueError("Cannot filter environments when maps aren't separated by environment!")
 
     def pop_nan_positions(self) -> None:
-        """Remove positions with nans from the maps"""
+        """Remove position bins that contain NaN values in any map.
+
+        Notes
+        -----
+        This method identifies position bins that have NaN values in any of the
+        maps (occmap, speedmap, or spkmap) and removes them from all maps.
+        Useful for cleaning data before analysis.
+        """
         if self.by_environment:
             idx_valid_positions = np.where(~np.any(np.stack([np.any(np.isnan(occmap), axis=0) for occmap in self.occmap], axis=0), axis=0))[0]
         else:
@@ -157,7 +354,22 @@ class Maps:
         self.filter_positions(idx_valid_positions)
 
     def smooth_maps(self, positions: np.ndarray, kernel_width: float) -> None:
-        """Smooth the maps using a Gaussian kernel"""
+        """Smooth the maps using a Gaussian kernel.
+
+        Parameters
+        ----------
+        positions : np.ndarray
+            Position values corresponding to the position bins. Used to compute
+            the Gaussian kernel.
+        kernel_width : float
+            Width of the Gaussian smoothing kernel in spatial units.
+
+        Notes
+        -----
+        This method applies Gaussian smoothing to all maps (occmap, speedmap, spkmap).
+        NaN values are temporarily replaced with 0 during smoothing, then restored
+        afterward. The smoothing is applied along the position dimension.
+        """
         kernel = get_gauss_kernel(positions, kernel_width)
 
         # Replace nans with 0s
@@ -203,7 +415,20 @@ class Maps:
                 self.spkmap = np.moveaxis(self.spkmap, -1, 0)
 
     def average_trials(self, keepdims: bool = False) -> None:
-        """Average the trials within each environment"""
+        """Average the trials within each environment.
+
+        Parameters
+        ----------
+        keepdims : bool, optional
+            Whether to keep the trial dimension with size 1 after averaging.
+            Default is False.
+
+        Notes
+        -----
+        This method computes the mean across trials for each map. After averaging,
+        the _averaged flag is set to True to prevent redundant averaging.
+        The trial dimension is removed unless keepdims=True.
+        """
         if self._averaged:
             return
         for mapname in self.map_types():
@@ -215,6 +440,13 @@ class Maps:
         self._averaged = True
 
     def nbytes(self) -> int:
+        """Calculate the total memory size of all maps in bytes.
+
+        Returns
+        -------
+        int
+            Total number of bytes used by all map arrays.
+        """
         num_bytes = 0
         for name in self.map_types():
             if self.by_environment:
@@ -224,7 +456,31 @@ class Maps:
         return num_bytes
 
     def raw_to_processed(self, positions: np.ndarray, smooth_width: float | None = None) -> "Maps":
-        """Convert raw maps to processed maps"""
+        """Convert raw maps to processed maps.
+
+        Processing steps:
+        1. Optionally smooth maps with a Gaussian kernel
+        2. Divide speedmap and spkmap by occmap (correct_map)
+        3. Reorganize spkmap to have ROIs as the first dimension
+
+        Parameters
+        ----------
+        positions : np.ndarray
+            Position values corresponding to the position bins.
+        smooth_width : float, optional
+            Width of the Gaussian smoothing kernel. If None, no smoothing is applied.
+            Default is None.
+
+        Returns
+        -------
+        Maps
+            Self, with maps now in processed format (rois_first=True).
+
+        Notes
+        -----
+        This method modifies the maps in-place. After processing, spkmap will
+        have shape (rois, trials, positions) instead of (trials, positions, rois).
+        """
         if smooth_width is not None:
             self.smooth_maps(positions, smooth_width)
 
@@ -264,12 +520,48 @@ class Reliability:
         return f"Reliability(num_rois={self.values.shape[1]}, environments={self.environments}, method={self.method})"
 
     def filter_rois(self, idx_rois: np.ndarray) -> "Reliability":
+        """Filter reliability values to keep only specified ROIs.
+
+        Parameters
+        ----------
+        idx_rois : np.ndarray
+            Indices of ROIs to keep. Must be a 1D array of integers.
+
+        Returns
+        -------
+        Reliability
+            New Reliability instance with filtered ROI values.
+        """
         return Reliability(self.values[:, idx_rois], self.environments, self.method)
 
     def filter_environments(self, idx_environments: np.ndarray) -> "Reliability":
+        """Filter reliability values to keep only specified environments by index.
+
+        Parameters
+        ----------
+        idx_environments : np.ndarray
+            Indices of environments to keep. Must be a 1D array of integers.
+
+        Returns
+        -------
+        Reliability
+            New Reliability instance with filtered environment values.
+        """
         return Reliability(self.values[idx_environments], self.environments[idx_environments], self.method)
 
     def filter_by_environment(self, environments: list[int]) -> "Reliability":
+        """Filter reliability values to keep only specified environments by environment number.
+
+        Parameters
+        ----------
+        environments : list of int
+            List of environment numbers to keep.
+
+        Returns
+        -------
+        Reliability
+            New Reliability instance with filtered environment values.
+        """
         idx_to_requested_env = [i for i, env in enumerate(self.environments) if env in environments]
         return Reliability(self.values[idx_to_requested_env], self.environments[idx_to_requested_env], self.method)
 
@@ -454,24 +746,67 @@ class SpkmapParams:
 
     @classmethod
     def from_dict(cls, params_dict: dict) -> "SpkmapParams":
-        """Create a SpkmapParams instance from a dictionary, using defaults for missing values"""
+        """Create a SpkmapParams instance from a dictionary.
+
+        Parameters
+        ----------
+        params_dict : dict
+            Dictionary of parameter names and values. Missing parameters will
+            use default values from SpkmapParams.
+
+        Returns
+        -------
+        SpkmapParams
+            New SpkmapParams instance with values from the dictionary.
+        """
         return cls(**{k: params_dict[k] for k in params_dict})
 
     @classmethod
     def from_path(cls, path: Path) -> "SpkmapParams":
-        """Create a SpkmapParams instance from a json file"""
+        """Create a SpkmapParams instance from a JSON file.
+
+        Parameters
+        ----------
+        path : Path
+            Path to the JSON file containing parameter values.
+
+        Returns
+        -------
+        SpkmapParams
+            New SpkmapParams instance loaded from the JSON file.
+        """
         with open(path, "r") as f:
             return cls.from_dict(json.load(f))
 
     def compare(self, other: "SpkmapParams", filter_keys: Optional[List[str]] = None) -> bool:
-        """Compare two SpkmapParams instances"""
+        """Compare two SpkmapParams instances.
+
+        Parameters
+        ----------
+        other : SpkmapParams
+            Another SpkmapParams instance to compare against.
+        filter_keys : list of str, optional
+            If provided, only compare the specified parameter keys.
+            If None, compare all parameters. Default is None.
+
+        Returns
+        -------
+        bool
+            True if the parameters match (or specified keys match), False otherwise.
+        """
         if filter_keys is None:
             return self == other
         else:
             return all(getattr(self, key) == getattr(other, key) for key in filter_keys)
 
     def save(self, path: Path) -> None:
-        """Save the parameters to a json file"""
+        """Save the parameters to a JSON file.
+
+        Parameters
+        ----------
+        path : Path
+            Path where the JSON file will be saved.
+        """
         with open(path, "w") as f:
             json.dump(asdict(self), f, sort_keys=True)
 
@@ -739,7 +1074,18 @@ class SpkmapProcessor:
         self.params = helpers.resolve_dataclass(self.params, SpkmapParams)
 
     def cached_dependencies(self, data_type: str) -> List[str]:
-        """Get the dependencies for a given data type"""
+        """Get the parameter dependencies for a given data type.
+
+        Parameters
+        ----------
+        data_type : str
+            Type of cached data ("raw_maps", "processed_maps", "env_maps", or "reliability").
+
+        Returns
+        -------
+        list of str
+            List of parameter names that affect the cache validity for this data type.
+        """
         if data_type == "raw_maps":
             return ["dist_step", "speed_threshold", "speed_max_allowed", "standardize_spks"]
         elif data_type == "processed_maps":
@@ -759,7 +1105,7 @@ class SpkmapProcessor:
         # Otherwise just return all params
         return list(self.params.__dict__.keys())
 
-    def show_cache(self, data_type: Optional[str] = None) -> str:
+    def show_cache(self, data_type: Optional[str] = None) -> None:
         """Helper function that scrapes the cache directory and shows cached files
 
         Parameters
@@ -767,10 +1113,10 @@ class SpkmapProcessor:
         data_type: Optional[str] = None
             Indicate a data type to filter which parts of the cache to show
 
-        Returns
-        -------
-        str
-            Formatted string showing cache information including data_type, size, parameters, and date
+        Notes
+        -----
+        Prints a formatted table showing cache information including data_type, size,
+        parameters, and modification date. If no cache directory exists, prints a message.
         """
         import os
         from datetime import datetime
@@ -779,7 +1125,8 @@ class SpkmapProcessor:
         base_cache_dir = self.cache_directory()
 
         if not base_cache_dir.exists():
-            return f"No cache directory found at: {base_cache_dir}"
+            print(f"No cache directory found at: {base_cache_dir}")
+            return
 
         # Collect information about all cache files
         cache_info = []
@@ -862,7 +1209,8 @@ class SpkmapProcessor:
                 )
 
         if not cache_info:
-            return "No cache files found."
+            print("No cache files found.")
+            return
 
         # Format the output as a table
         output_lines = []
@@ -881,7 +1229,18 @@ class SpkmapProcessor:
         print(result)
 
     def _format_file_size(self, size_bytes: int) -> str:
-        """Convert bytes to human readable format"""
+        """Convert bytes to human-readable format.
+
+        Parameters
+        ----------
+        size_bytes : int
+            Size in bytes.
+
+        Returns
+        -------
+        str
+            Human-readable size string (e.g., "1.5 MB").
+        """
         if size_bytes == 0:
             return "0 B"
 
@@ -894,7 +1253,19 @@ class SpkmapProcessor:
         return f"{s} {size_names[i]}"
 
     def cache_directory(self, data_type: Optional[str] = None) -> Path:
-        """Get the cache directory for a given data type and spks_type"""
+        """Get the cache directory path for a given data type.
+
+        Parameters
+        ----------
+        data_type : str, optional
+            Type of cached data. If None, returns the base cache directory.
+            Default is None.
+
+        Returns
+        -------
+        Path
+            Path to the cache directory for the specified data type.
+        """
         if data_type is None:
             return self.session.data_path / "spkmaps"
         else:
@@ -902,15 +1273,50 @@ class SpkmapProcessor:
             return self.session.data_path / "spkmaps" / folder_name
 
     def dependent_params(self, data_type: str) -> dict:
-        """Get the dependent parameters for a given data type"""
+        """Get the dependent parameters for a given data type as a dictionary.
+
+        Parameters
+        ----------
+        data_type : str
+            Type of cached data.
+
+        Returns
+        -------
+        dict
+            Dictionary mapping parameter names to their values for the given data type.
+        """
         return {k: getattr(self.params, k) for k in self.cached_dependencies(data_type)}
 
     def _params_hash(self, data_type: str) -> str:
-        """Get the hash of the dependent parameters for a given data type"""
+        """Get the hash of the dependent parameters for a given data type.
+
+        Parameters
+        ----------
+        data_type : str
+            Type of cached data.
+
+        Returns
+        -------
+        str
+            SHA256 hash of the dependent parameters (as hexadecimal string).
+        """
         return hashlib.sha256(json.dumps(self.dependent_params(data_type), sort_keys=True).encode()).hexdigest()
 
-    def save_cache(self, data_type: str, data: Union[Maps, Reliability]):
-        """Save the cached params and data for a given data type"""
+    def save_cache(self, data_type: str, data: Union[Maps, Reliability]) -> None:
+        """Save the cached parameters and data for a given data type.
+
+        Parameters
+        ----------
+        data_type : str
+            Type of data being cached ("raw_maps", "processed_maps", "env_maps", or "reliability").
+        data : Maps or Reliability
+            The data object to cache.
+
+        Notes
+        -----
+        Creates the cache directory if it doesn't exist. Saves parameters as an NPZ file
+        and data as NPY files, using a hash of the parameters in the filenames.
+        """
         cache_dir = self.cache_directory(data_type)
         params_hash = self._params_hash(data_type)
         cache_param_path = cache_dir / f"params_{params_hash}.npz"
@@ -937,8 +1343,21 @@ class SpkmapProcessor:
         else:
             raise ValueError(f"Unknown data type: {data_type}")
 
-    def load_from_cache(self, data_type: str) -> Tuple[Union[Maps, Reliability], bool]:
-        """Get the cached params and data for a given data type"""
+    def load_from_cache(self, data_type: str) -> Tuple[Union[Maps, Reliability, None], bool]:
+        """Load cached parameters and data for a given data type.
+
+        Parameters
+        ----------
+        data_type : str
+            Type of cached data to load.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - The cached data (Maps or Reliability), or None if not found
+            - A boolean indicating whether valid cache was found
+        """
         cache_dir = self.cache_directory(data_type)
         if cache_dir.exists():
             # If the directory exists, check if there are any cached params that match the expected hash
@@ -967,7 +1386,28 @@ class SpkmapProcessor:
         return cached_params and all(cached_params[k] == getattr(self.params, k) for k in cached_params)
 
     def _load_from_cache(self, data_type: str, params_hash: str, params: Optional[Dict[str, Any]] | None = None) -> Union[Maps, Reliability]:
-        """Load the cached data for a given data type"""
+        """Load cached data from disk using a parameter hash.
+
+        Parameters
+        ----------
+        data_type : str
+            Type of cached data to load.
+        params_hash : str
+            Hash string identifying the cached parameters.
+        params : dict, optional
+            Dictionary of cached parameters. Used for reliability method.
+            Default is None.
+
+        Returns
+        -------
+        Maps or Reliability
+            The loaded cached data object.
+
+        Raises
+        ------
+        ValueError
+            If data_type is not recognized.
+        """
         cache_dir = self.cache_directory(data_type)
         if data_type == "raw_maps" or data_type == "processed_maps":
             cached_data = {}
@@ -998,14 +1438,27 @@ class SpkmapProcessor:
         self,
         envnum: Union[int, Iterable[int], None] = None,
         clear_one_cache: bool = True,
-    ) -> np.ndarray[bool]:
-        """Filter the session data to only include trials from certain environments
+    ) -> np.ndarray:
+        """Filter the session data to only include trials from certain environments.
 
-        NOTE:
-        This assumes that the trials are in order. We might want to use the third output of session.positions to
-        get the "real" trial numbers which aren't always contiguous and 0 indexed.
+        Parameters
+        ----------
+        envnum : int, iterable of int, or None, optional
+            Environment number(s) to filter. If None, returns all trials.
+            Default is None.
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after filtering. Default is True.
 
-        If envnum is not provided, will return all trials.
+        Returns
+        -------
+        np.ndarray
+            Boolean array indicating which trials belong to the specified environment(s).
+
+        Notes
+        -----
+        This assumes that the trials are in order. We might want to use the third
+        output of session.positions to get the "real" trial numbers which aren't
+        always contiguous and 0 indexed.
         """
         if envnum is None:
             envnum = self.session.environments
@@ -1013,8 +1466,25 @@ class SpkmapProcessor:
         return np.isin(self.session.trial_environment, envnum)
 
     @property
-    def dist_edges(self) -> np.ndarray[float]:
-        """Distance edges for the position bins"""
+    def dist_edges(self) -> np.ndarray:
+        """Distance edges for the position bins.
+
+        Returns
+        -------
+        np.ndarray
+            1D array of position bin edges. Shape is (num_positions + 1,).
+
+        Raises
+        ------
+        ValueError
+            If not all trials have the same environment length.
+
+        Notes
+        -----
+        The number of position bins is determined by dividing the environment
+        length by dist_step. This property caches the environment length
+        internally after first access.
+        """
         if not hasattr(self, "_env_length"):
             env_length = self.session.env_length
             if hasattr(env_length, "__len__"):
@@ -1028,8 +1498,14 @@ class SpkmapProcessor:
         return np.linspace(0, self._env_length, num_positions + 1)
 
     @property
-    def dist_centers(self) -> np.ndarray[float]:
-        """Distance centers for the position bins"""
+    def dist_centers(self) -> np.ndarray:
+        """Distance centers for the position bins.
+
+        Returns
+        -------
+        np.ndarray
+            1D array of position bin centers. Shape is (num_positions,).
+        """
         return helpers.edge2center(self.dist_edges)
 
     @manage_one_cache
@@ -1064,18 +1540,40 @@ class SpkmapProcessor:
         clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
     ) -> Maps:
-        """Get maps (occupancy, speed, spkmap) from session data by processing with provided parameters.
+        """Get raw maps (occupancy, speed, spkmap) from session data.
+
+        This method processes session data to create spatial maps representing
+        occupancy, speed, and neural activity across position bins. The maps
+        are in raw format (not smoothed or normalized by occupancy).
 
         Parameters
         ----------
-        force_recompute : bool, default=False
-            Whether to force the recomputation of the maps even if they exist in the cache.
-        clear_one_cache : bool, default=False
-            Whether to clear the onefile cache after getting the maps (only clears the onecache for this method)
-        params : SpkmapParams, dict, or None, default=None
-            Parameters for the maps. If None, the parameters will be taken from the SpkmapProcessor instance.
-            If a dictionary, it will be used to update the parameters.
-            Will always be temporary -- so the original parameters will be restored after the method is finished.
+        force_recompute : bool, optional
+            Whether to force recomputation even if cached data exists. Default is False.
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after processing. Default is True.
+        params : SpkmapParams, dict, or None, optional
+            Parameters for processing. If None, uses instance parameters.
+            If a dict, updates instance parameters temporarily.
+            Parameters are restored after method execution. Default is None.
+
+        Returns
+        -------
+        Maps
+            Maps instance containing raw occupancy, speed, and spike maps.
+            Shape: (trials, positions) for occmap/speedmap,
+            (trials, positions, rois) for spkmap.
+
+        Notes
+        -----
+        The method:
+        1. Bins positions according to dist_step
+        2. Filters by speed threshold
+        3. Computes occupancy, speed, and spike maps
+        4. Sets unvisited position bins to NaN
+        5. Optionally standardizes spike data
+
+        Results are cached based on parameter hash for efficient reuse.
         """
         dist_edges = self.dist_edges
         dist_centers = self.dist_centers
@@ -1195,7 +1693,32 @@ class SpkmapProcessor:
         clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
     ) -> Maps:
-        """Process the maps"""
+        """Get processed maps (smoothed and normalized by occupancy).
+
+        This method creates processed maps by:
+        1. Getting raw maps
+        2. Optionally smoothing with a Gaussian kernel
+        3. Normalizing speedmap and spkmap by occupancy
+        4. Reorganizing spkmap to have ROIs as the first dimension
+
+        Parameters
+        ----------
+        force_recompute : bool, optional
+            Whether to force recomputation even if cached data exists. Default is False.
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after processing. Default is True.
+        params : SpkmapParams, dict, or None, optional
+            Parameters for processing. If None, uses instance parameters.
+            If a dict, updates instance parameters temporarily.
+            Parameters are restored after method execution. Default is None.
+
+        Returns
+        -------
+        Maps
+            Maps instance containing processed occupancy, speed, and spike maps.
+            Shape: (trials, positions) for occmap/speedmap,
+            (rois, trials, positions) for spkmap.
+        """
         # Get the raw maps first (don't need to specify params because they're already set by this method)
         maps = self.get_raw_maps(
             force_recompute=force_recompute,
@@ -1215,7 +1738,35 @@ class SpkmapProcessor:
         clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
     ) -> Maps:
-        """Get the map for a given environment number"""
+        """Get processed maps separated by environment.
+
+        This method creates environment-separated maps by:
+        1. Getting processed maps
+        2. Filtering to include only full trials (based on full_trial_flexibility)
+        3. Filtering ROIs if use_session_filters=True
+        4. Grouping maps by environment
+
+        Parameters
+        ----------
+        use_session_filters : bool, optional
+            Whether to filter ROIs using session.idx_rois. Default is True.
+        force_recompute : bool, optional
+            Whether to force recomputation even if cached data exists. Default is False.
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after processing. Default is True.
+        params : SpkmapParams, dict, or None, optional
+            Parameters for processing. If None, uses instance parameters.
+            If a dict, updates instance parameters temporarily.
+            Parameters are restored after method execution. Default is None.
+
+        Returns
+        -------
+        Maps
+            Maps instance with by_environment=True, containing lists of maps
+            for each environment. Shape per environment:
+            (trials_in_env, positions) for occmap/speedmap,
+            (rois, trials_in_env, positions) for spkmap.
+        """
         # Make sure it's an iterable -- the output will always be a list
         envnum = helpers.check_iterable(self.session.environments)
 
@@ -1276,8 +1827,40 @@ class SpkmapProcessor:
         force_recompute: bool = False,
         clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
-    ):
-        """Get the reliability of the maps"""
+    ) -> Reliability:
+        """Calculate reliability of spike maps across trials.
+
+        Reliability measures how consistent neural activity is across trials
+        within each environment. Multiple methods are supported.
+
+        Parameters
+        ----------
+        use_session_filters : bool, optional
+            Whether to filter ROIs using session.idx_rois. Default is True.
+        force_recompute : bool, optional
+            Whether to force recomputation even if cached data exists. Default is False.
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after processing. Default is True.
+        params : SpkmapParams, dict, or None, optional
+            Parameters for processing. If None, uses instance parameters.
+            If a dict, updates instance parameters temporarily.
+            Parameters are restored after method execution. Default is None.
+
+        Returns
+        -------
+        Reliability
+            Reliability instance containing reliability values for each ROI
+            in each environment. Shape: (num_environments, num_rois).
+
+        Notes
+        -----
+        Supported reliability methods:
+        - "leave_one_out": Leave-one-out cross-validation
+        - "correlation": Correlation between trial pairs
+        - "mse": Mean squared error between trial pairs
+
+        All reliability measures require maps with no NaN positions.
+        """
         envnum = helpers.check_iterable(self.session.environments)
 
         # A list of the requested environments (all if not specified)
@@ -1308,11 +1891,35 @@ class SpkmapProcessor:
     # ------------------- convert between imaging and behavioral time -------------------
     @with_temp_params
     @manage_one_cache
-    def get_frame_behavior(self, clear_one_cache: bool = True, params: Union[SpkmapParams, Dict[str, Any], None] = None):
-        """
-        get position and environment data for each frame in imaging data
-        nan if no position data is available for that frame (e.g. if the closest
-        behavioral sample is further away in time than the sampling period)
+    def get_frame_behavior(
+        self,
+        clear_one_cache: bool = True,
+        params: Union[SpkmapParams, Dict[str, Any], None] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Get position and environment data for each imaging frame.
+
+        This method aligns behavioral data (position, speed, environment, trial)
+        to imaging frame timestamps. Returns NaN for frames where no position
+        data is available (e.g., if the closest behavioral sample is further
+        away in time than half the sampling period).
+
+        Parameters
+        ----------
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after processing. Default is True.
+        params : SpkmapParams, dict, or None, optional
+            Parameters for processing. If None, uses instance parameters.
+            If a dict, updates instance parameters temporarily.
+            Parameters are restored after method execution. Default is None.
+
+        Returns
+        -------
+        tuple
+            A tuple containing four arrays (all with shape (num_frames,)):
+            - frame_position: Position for each frame (NaN if unavailable)
+            - frame_speed: Speed for each frame (NaN if unavailable)
+            - frame_environment: Environment number for each frame (NaN if unavailable)
+            - frame_trial: Trial number for each frame (NaN if unavailable)
         """
         timestamps = self.session.loadone("positionTracking.times")
         position = self.session.loadone("positionTracking.position")
@@ -1344,10 +1951,7 @@ class SpkmapProcessor:
         frame_speed = np.diff(frame_position) / np.diff(frame_timestamps)
         frame_speed = np.append(frame_speed, 0)
 
-        # Let the last frame of each trial have a speed equal to previous frame
-        idx_first_nan = np.where(np.diff(1.0 * np.isnan(frame_position)) == 1.0)[0]
-        frame_speed[idx_first_nan] = frame_speed[idx_first_nan - 1]
-
+        # Get a map from frame to behavior time for quick lookup
         idx_frame_to_behave, dist_frame_to_behave = helpers.nearestpoint(frame_timestamps, timestamps)
         idx_get_position = dist_frame_to_behave < dist_cutoff
 
@@ -1370,9 +1974,45 @@ class SpkmapProcessor:
         use_speed_threshold: bool = True,
         clear_one_cache: bool = True,
         params: Union[SpkmapParams, Dict[str, Any], None] = None,
-    ):
-        """
-        get placefield prediction of session spks data from spkmaps
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """Predict neural activity from place field maps.
+
+        This method uses averaged environment maps to predict neural activity
+        at each imaging frame based on the animal's position and environment.
+
+        Parameters
+        ----------
+        use_session_filters : bool, optional
+            Whether to filter ROIs using session.idx_rois. Default is True.
+        spks_type : str or None, optional
+            Type of spike data to use. If None, uses session's current spks_type.
+            Temporarily changes session.spks_type if provided. Default is None.
+        use_speed_threshold : bool, optional
+            Whether to only predict for frames where speed exceeds threshold.
+            Default is True.
+        clear_one_cache : bool, optional
+            Whether to clear the onefile cache after processing. Default is True.
+        params : SpkmapParams, dict, or None, optional
+            Parameters for processing. If None, uses instance parameters.
+            If a dict, updates instance parameters temporarily.
+            Parameters are restored after method execution. Default is None.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - placefield_prediction: Predicted activity array with shape (frames, rois).
+              NaN for frames where prediction is not possible.
+            - extras: Dictionary with additional information:
+              - frame_position_index: Position bin index for each frame
+              - frame_environment_index: Environment index for each frame
+              - idx_valid: Boolean array indicating valid predictions
+
+        Notes
+        -----
+        Predictions are based on averaged trial maps. Frames where the animal
+        is not moving (if use_speed_threshold=True) or where position/environment
+        data is unavailable will have NaN predictions.
         """
         if spks_type is not None:
             _spks_type = self.session.spks_type
@@ -1401,9 +2041,10 @@ class SpkmapProcessor:
 
         # Use a numba speed up to get the placefield prediction (single pass simple algorithm)
         placefield_prediction = np.full(spks.shape, np.nan)
-        placefield_prediction = _placefield_prediction_numba(
+        spkmaps = np.stack(list(map(lambda x: x.T, env_maps.spkmap)))
+        placefield_prediction = placefield_prediction_numba(
             placefield_prediction,
-            env_maps.spkmap,
+            spkmaps,
             frame_environment_index,
             frame_position_index,
             idx_valid,
@@ -1430,11 +2071,50 @@ class SpkmapProcessor:
         idx_roi: int,
         idx_env: int,
         width: int = 10,
-        placefield_threshold: float = 5.0,  # in cm (or whatever units the frame_position is in)
+        placefield_threshold: float = 5.0,
         fill_nan: bool = False,
         spks: np.ndarray = None,
         spks_prediction: np.ndarray = None,
-    ):
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract neural activity around place field peak during traversals.
+
+        This method identifies trials where the animal passes through a neuron's
+        place field peak and extracts activity windows around those moments.
+
+        Parameters
+        ----------
+        idx_roi : int
+            Index of the ROI (neuron) to analyze.
+        idx_env : int
+            Index of the environment to analyze (index into env_maps.environments).
+        width : int, optional
+            Number of frames on each side of the peak to include. Total window
+            size is 2*width + 1. Default is 10.
+        placefield_threshold : float, optional
+            Maximum distance from place field peak to include a trial (in spatial units).
+            Default is 5.0.
+        fill_nan : bool, optional
+            Whether to fill NaN values with 0. Default is False.
+        spks : np.ndarray, optional
+            Spike data array. If None, loads from session. Default is None.
+        spks_prediction : np.ndarray, optional
+            Place field prediction array. If None, computes it. Default is None.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - traversals: Array of shape (num_traversals, 2*width+1) containing
+              actual neural activity around each traversal.
+            - pred_travs: Array of shape (num_traversals, 2*width+1) containing
+              predicted activity around each traversal.
+
+        Notes
+        -----
+        Only includes trials where the animal passes within placefield_threshold
+        of the place field peak. The peak is determined from the averaged spike
+        map for the specified ROI and environment.
+        """
         frame_position, _, frame_environment, frame_trial = self.get_frame_behavior()
         if spks_prediction is None:
             spks_prediction = self.get_placefield_prediction(use_session_filters=True)[0]
@@ -1479,20 +2159,3 @@ class SpkmapProcessor:
             pred_travs[np.isnan(pred_travs)] = 0.0
 
         return traversals, pred_travs
-
-
-@nb.njit(parallel=True)
-def _placefield_prediction_numba(
-    placefield_prediction: np.ndarray,
-    spkmaps: list[np.ndarray],
-    frame_environment_index: np.ndarray,
-    frame_position_index: np.ndarray,
-    idx_valid: np.ndarray,
-) -> np.ndarray:
-    """
-    Placefield prediction using numba
-    """
-    for isample in nb.prange(placefield_prediction.shape[0]):
-        if idx_valid[isample]:
-            placefield_prediction[isample] = spkmaps[frame_environment_index[isample]][:, frame_position_index[isample]]
-    return placefield_prediction
