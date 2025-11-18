@@ -702,11 +702,27 @@ class SessionDatabase(BaseDatabase):
             sessions.append(B2Session.create(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params))
         return sessions
 
-    # == EVERYTHING BELOW HERE IS THE SAME AS THE ORIGINAL DATABASE CLASS ==
-    # == It should be refactored to use the new vrAnalysis classes eventually, but I'm leaving it here for now ==
-    # == It should work as is as long as vrAnalysis stays on the path! ==
+    def gen_sessions(self, session_params: Dict[str, Any] = {}, **kw_conditions: Any) -> Generator[B2Session, None, None]:
+        """Generate sessions matching conditions.
 
-    # == vrExperiment related methods ==
+        Parameters
+        ----------
+        session_params : dict, default={}
+            Additional parameters to pass to the session constructor when creating
+            B2Session objects. These are passed through to B2Session.create().
+        **kw_conditions : dict, optional
+            Additional filtering conditions passed to get_table().
+            See get_table() documentation for filtering syntax.
+
+        Returns
+        -------
+        generator[B2Session]
+            Generator of sessions matching the conditions.
+        """
+        df = self.get_table(**kw_conditions)
+        for _, row in df.iterrows():
+            yield B2Session.create(row["mouseName"], row["sessionDate"], str(row["sessionID"]), params=session_params)
+
     def session_name(self, row: pd.Series) -> Tuple[str, str, str]:
         """
         Extract session identifiers from a database record.
