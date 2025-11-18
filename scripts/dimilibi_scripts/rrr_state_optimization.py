@@ -13,8 +13,8 @@ from rastermap import Rastermap
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
-from scripts.dimilibi.helpers import load_population, make_position_basis
-from scripts.dimilibi.helpers import SPEEDTHRESHOLD
+from scripts.dimilibi_scripts.helpers import load_population, make_position_basis
+from scripts.dimilibi_scripts.helpers import SPEEDTHRESHOLD
 
 
 from _old_vrAnalysis import analysis
