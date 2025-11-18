@@ -3,6 +3,7 @@ from typing import Optional, Literal, overload
 from pathlib import Path
 from joblib import dump, load
 import numpy as np
+import torch
 from vrAnalysis import files
 from vrAnalysis.helpers import stable_hash
 from vrAnalysis.sessions import B2Session, SpksTypes
@@ -10,7 +11,7 @@ from vrAnalysis.processors.placefields import get_frame_behavior, FrameBehavior
 from vrAnalysis.processors.support import convert_position_to_bins
 from dimilibi import Population
 from .base import RegressionModel
-from .models import PlaceFieldModel, ReducedRankRegressionModel  # , RBFPosModel
+from .models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
 from .hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
 
 # Type alias for model names
@@ -22,6 +23,22 @@ ModelName = Literal[
     "rbfpos",
     "rrr",
 ]
+
+SPKS_TYPES: tuple[SpksTypes] = (
+    "significant",
+    "sigbase",
+    "sigrebase",
+    "oasis",
+    "deconvolved",
+)
+SPKS_TYPES_VARIANCE_CHECK: tuple[SpksTypes] = (
+    "oasis",
+    "deconvolved",
+)
+
+MIN_ALLOWED_VARIANCE_NONINCLUSIVE: float = 1.0
+MIN_FRACTION_VALID_FRAMES: float = 0.9
+MIN_FRACTION_LOW_VARIANCE: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -77,16 +94,32 @@ class TimeSplit:
     two independent train sets which are typically combined for training in all other models.
     """
 
-    train_0: int = 0
-    train_1: int = 1
+    train0: int = 0
+    train1: int = 1
     validation: int = 2
     test: int = 3
     train: tuple[int, int] = (0, 1)
     full: tuple[int, int, int, int] = (0, 1, 2, 3)
+    half0: tuple[int, int] = (0, 2)
+    half1: tuple[int, int] = (1, 3)
 
     def __getitem__(self, name):
-        # Enables access like time_split[split_name] to get the split index/tuple.
-        # Accept both string keys ("full") and int keys (0, 1, etc.)
+        """
+        Enables access to time split indices using bracket notation.
+
+        Allows retrieval of split indices or tuples by passing the split name as a string,
+        such as `time_split["full"]` or `time_split["train"]`.
+
+        Parameters
+        ----------
+        name : str or int
+            The name of the time split as a string ("train", "validation", "full", etc.).
+
+        Returns
+        -------
+        int or tuple of int
+            The split index or tuple of indices corresponding to the given split name.
+        """
         if isinstance(name, str):
             if name in self.__dataclass_fields__:
                 return getattr(self, name)
@@ -125,6 +158,7 @@ class PopulationRegistry:
         self.registry_params = registry_params
         self.time_split = time_split
         self.autosave = autosave
+        self.population_cache: dict[str, tuple[Population, FrameBehavior]] = {}
 
     def get_population(
         self,
@@ -158,12 +192,22 @@ class PopulationRegistry:
         # If a spks_type is provided, use it to set the session's spks_type
         if spks_type is not None:
             session.params.spks_type = spks_type
+
+        # First check instance cache (include spks_type here b/c it's not included in _get_unique_id)
+        unique_cache_id = self._get_unique_id(session) + "_" + session.params.spks_type
+        if unique_cache_id in self.population_cache:
+            return self.population_cache[unique_cache_id]
+
+        # If not loaded already, check disk registry
         if self._check_population_exists(session) and not force_remake:
             population, frame_behavior = self._load_population(session)
         else:
             population, frame_behavior = self._make_population(session)
             if self.autosave:
                 self._save_population(session, population)
+
+        # Save to cache and return
+        self.population_cache[unique_cache_id] = (population, frame_behavior)
         return population, frame_behavior
 
     def clear_population(self, session: B2Session) -> None:
@@ -179,6 +223,10 @@ class PopulationRegistry:
         """
         ppath = self._get_population_path(session)
         ppath.unlink(missing_ok=True)
+
+    def clear_population_cache(self) -> None:
+        """Clear the population cache."""
+        self.population_cache.clear()
 
     def _make_population(self, session: B2Session) -> tuple[Population, FrameBehavior]:
         """Create a new population object for a session.
@@ -200,6 +248,17 @@ class PopulationRegistry:
         fast_frame = frame_behavior.speed >= self.registry_params.speed_threshold
         idx_valid = frame_behavior.valid_frames() & fast_frame
         frame_behavior = frame_behavior.filter(idx_valid)
+        idx_samples = np.where(idx_valid)[0]
+
+        # Compute idx_rois in a way that is independent of spks_type
+        # because it usually filters out silent ROIs which might be different for different spks_types.
+        original_spks_type = session.params.spks_type
+        idx_rois = np.ones(session.get_value("numROIs"), dtype=bool)
+        for _check_spks_type in SPKS_TYPES:
+            session.params.spks_type = _check_spks_type
+            idx_rois &= session.idx_rois
+        session.params.spks_type = original_spks_type
+        idx_neurons = np.where(idx_rois)[0]
 
         # Check that each env/position combo is present in every split
         max_attempts = 10
@@ -208,27 +267,34 @@ class PopulationRegistry:
         # Hard coded because this is the most high resolution place fields we are using in models.py
         max_num_bins = 100
         bin_edges = np.linspace(0, session.env_length[0], max_num_bins + 1)
+        failure_reason = {
+            "envs_missing": 0,
+            "frames_invalidated": 0,
+            "silent_neurons": 0,
+        }
         while True:
             # Can only do this so many times...
             attempts += 1
             if attempts > max_attempts:
-                raise ValueError(f"Failed to make a valid population after {max_attempts} attempts.")
+                failure_message = ", ".join([f"{k}: {v}" for k, v in failure_reason.items()])
+                raise ValueError(f"Failed to make a valid population after {max_attempts} attempts. Failure reasons: {failure_message}")
 
             # Make a new population which defines the cell splits and time splits
             population = Population(
                 session.spks.T,
                 time_split_prms=self.registry_params.time_split_prms,
                 cell_split_prms=self.registry_params.cell_split_prms,
-                idx_samples=np.where(idx_valid)[0],
-                idx_neurons=np.where(session.idx_rois)[0],
+                idx_samples=idx_samples,
+                idx_neurons=idx_neurons,
             )
 
             # Check that each env/position combo is present in every split
             environments = np.unique(frame_behavior.environment)
 
-            splits = ["train_0", "train_1"]
+            splits = ["train0", "train1"]
             num_splits = len(splits)
             valid_split_positions = np.zeros((num_splits, len(environments), len(bin_edges) - 1), dtype=bool)
+            restart_population = False
             for i, split in enumerate(splits):
                 split_idx = self.time_split[split]
                 idx = np.array(population.get_split_times(split_idx, within_idx_samples=False))
@@ -241,7 +307,15 @@ class PopulationRegistry:
                     else:
                         # This means an environment wasn't in at least one of the splits,
                         # try building the population splits again!
-                        continue
+                        restart_population = True
+                        break
+                if restart_population:
+                    break
+
+            if restart_population:
+                # An environment wasn't in at least one of the splits
+                failure_reason["envs_missing"] += 1
+                continue
 
             # Figure out the valid positions
             position_bins = convert_position_to_bins(frame_behavior.position, bin_edges)
@@ -252,8 +326,9 @@ class PopulationRegistry:
                 in_valid_position = valid_positions[ienv, position_bins]
                 valid_frames[idx_env & in_valid_position] = True
 
-            if np.sum(valid_frames) / len(valid_frames) < 0.9:
-                # Too many invalid frames, try again!
+            if np.sum(valid_frames) / len(valid_frames) < MIN_FRACTION_VALID_FRAMES:
+                # There were too many frames that were invalidated due to position not being present in splits
+                failure_reason["frames_invalidated"] += 1
                 continue
 
             # Otherwise, filter the time splits
@@ -261,6 +336,22 @@ class PopulationRegistry:
             for itsi, time_split_index in enumerate(time_split_indices):
                 _valid = valid_frames[time_split_index]
                 time_split_indices[itsi] = time_split_index[_valid]
+
+            # Now check the variances of the neurons
+            _original_spks_type = session.params.spks_type
+            low_variance = [np.zeros(len(csi), dtype=bool) for csi in population.cell_split_indices]
+            for spks_type in SPKS_TYPES_VARIANCE_CHECK:
+                session.params.spks_type = spks_type
+                _spks = session.spks.T
+                for i, csi in enumerate(population.cell_split_indices):
+                    for tsi in time_split_indices:
+                        c_variance = np.var(_spks[population.idx_neurons][csi][:, tsi], axis=1)
+                        low_variance[i][c_variance < MIN_ALLOWED_VARIANCE_NONINCLUSIVE] = True
+
+            if any([np.sum(~lv) / len(lv) < MIN_FRACTION_LOW_VARIANCE for lv in low_variance]):
+                # Too many neurons with low variance, try again!
+                failure_reason["silent_neurons"] += 1
+                continue
 
             # Save the new time splits
             population.time_split_indices = time_split_indices
@@ -433,8 +524,7 @@ def get_model(
     model_name: Literal["rbfpos"],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
-) -> RegressionModel:  # Update to RBFPosModel when implemented!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    ...
+) -> RBFPosModel: ...
 
 
 @overload
@@ -481,8 +571,8 @@ def get_model(
     if model_name == "internal_placefield_1d_gain":
         hyperparameters = hyperparameters or PlaceFieldHyperparameters()
         return PlaceFieldModel(population_registry, internal=True, gain=True, hyperparameters=PlaceFieldHyperparameters())
-    # if model_name == "rbfpos":
-    #     return RBFPosModel(population_registry)
+    if model_name == "rbfpos":
+        return RBFPosModel(population_registry)
     if model_name == "rrr":
         hyperparameters = hyperparameters or ReducedRankRegressionHyperparameters()
         return ReducedRankRegressionModel(population_registry, hyperparameters=hyperparameters)
