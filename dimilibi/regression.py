@@ -90,7 +90,25 @@ class RidgeRegression:
             The coefficient of determination (R^2) for the model.
         """
         y_pred = self.predict(X, nonnegative=nonnegative)
-        return measure_r2(y_pred.T, y.T)
+        return measure_r2(y_pred, y)
+
+    def to(self, device):
+        """
+        Move the RidgeRegression model to a device.
+
+        Parameters
+        ----------
+        device : torch.device or str
+            The device to move the model to (e.g., 'cpu', 'cuda', torch.device('cuda:0')).
+
+        Returns
+        -------
+        self : RidgeRegression
+            The RidgeRegression object with all tensors moved to the specified device.
+        """
+        if hasattr(self, "_beta_ols"):
+            self._beta_ols = self._beta_ols.to(device)
+        return self
 
     def _add_intercept(self, X: torch.Tensor) -> torch.Tensor:
         """
@@ -238,7 +256,7 @@ class ReducedRankRegression(RidgeRegression):
 
         return prediction
 
-    def score(self, X: torch.Tensor, y: torch.Tensor, rank: Optional[int] = None, nonnegative: Optional[bool] = False) -> torch.Tensor:
+    def score(self, X: torch.Tensor, y: torch.Tensor, rank: Optional[int] = None, nonnegative: Optional[bool] = False) -> float:
         """
         Score the ReducedRankRegression model on the provided data.
 
@@ -255,11 +273,11 @@ class ReducedRankRegression(RidgeRegression):
 
         Returns
         -------
-        r2 : torch.Tensor
+        r2 : float
             The coefficient of determination (R^2) for the model.
         """
         y_pred = self.predict(X, rank=rank, nonnegative=nonnegative)
-        return measure_r2(y_pred.T, y.T)
+        return measure_r2(y_pred, y, dim=0)
 
     def predict_latent(self, X: torch.Tensor, rank: Optional[int] = None) -> torch.Tensor:
         """
@@ -289,6 +307,29 @@ class ReducedRankRegression(RidgeRegression):
 
         encoder_coefficients = self._beta_ols @ self._Xbeta_V[:, : rank or self.rank]
         return X @ encoder_coefficients
+
+    def to(self, device):
+        """
+        Move the ReducedRankRegression model to a device.
+
+        Parameters
+        ----------
+        device : torch.device or str
+            The device to move the model to (e.g., 'cpu', 'cuda', torch.device('cuda:0')).
+
+        Returns
+        -------
+        self : ReducedRankRegression
+            The ReducedRankRegression object with all tensors moved to the specified device.
+        """
+        super().to(device)
+        if hasattr(self, "_Xbeta_V"):
+            self._Xbeta_V = self._Xbeta_V.to(device)
+        if hasattr(self, "_rank_restraint"):
+            self._rank_restraint = self._rank_restraint.to(device)
+        if hasattr(self, "_beta_rrr"):
+            self._beta_rrr = self._beta_rrr.to(device)
+        return self
 
     def _make_coefficients(self, rank) -> torch.Tensor:
         """

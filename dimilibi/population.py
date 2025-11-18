@@ -1,6 +1,30 @@
-from typing import Union, Optional, Dict, Literal
+from typing import Union, Optional, Dict, Literal, List
 import numpy as np
 import torch
+
+
+def _ensure_tensor(data: Union[np.ndarray, torch.Tensor, list, tuple]) -> torch.Tensor:
+    """Convert input data to a torch tensor, handling multiple input types.
+
+    Parameters
+    ----------
+    data : Union[np.ndarray, torch.Tensor, list, tuple]
+        Input data to convert. Can be a numpy array, existing torch tensor,
+        or any sequence-like object that can be converted to a tensor.
+
+    Returns
+    -------
+    torch.Tensor
+        A torch tensor containing the data. If input was already a tensor,
+        returns a detached clone. If input was a numpy array, returns a tensor
+        sharing memory with the numpy array (via torch.from_numpy).
+    """
+    if isinstance(data, np.ndarray):
+        return torch.from_numpy(data)
+    elif isinstance(data, torch.Tensor):
+        return data.clone().detach()
+    else:
+        return torch.tensor(data)
 
 
 class Population:
@@ -73,7 +97,7 @@ class Population:
         self,
         time_idx: Optional[Union[int, list[int], tuple[int]]] = None,
         center: bool = False,
-        scale: bool = False,
+        scale: Union[bool, float] = False,
         pre_split: bool = False,
         scale_type: Optional[str] = None,
     ):
@@ -89,17 +113,22 @@ class Population:
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
             (default is False)
-        scale : bool
-            If True, will scale the data so each neuron has a standard deviation of 1 across timepoints
+        scale : Union[bool, float]
+            If scale_type is not 'percentile': If True, will scale the data. If False, no scaling is applied.
+            If scale_type is 'percentile': The percentile value (0-100) to use for scaling. Each neuron will be
+            scaled by its percentile value across timepoints.
             (default is False)
         pre_split : bool
             If True, will center and scale the data before splitting into source and target data
         scale_type : Optional[str]
             How to scale the data.
-            =[None, 'std'] -> will scale the data by the standard deviation of the source data.
-            ='sqrt' -> will scale the data by the square root of the standard deviation of the source data.
+            =[None, 'std'] -> will scale the data by the standard deviation of each neuron.
+            ='sqrt' -> will scale the data by the square root of the standard deviation of each neuron.
             ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1,
             and the other neurons will be scaled accordingly (preserving the relative standard deviation).
+            ='percentile' -> will scale the data by a percentile of each neuron's values across timepoints.
+            When using 'percentile', the scale parameter must be a numeric value (0-100) representing the percentile.
+            ='max' -> will scale the data by the maximum value of each neuron across timepoints.
 
         Returns
         -------
@@ -114,8 +143,24 @@ class Population:
         if not hasattr(self, "time_split_indices"):
             raise ValueError("time_split_indices must be set before calling get_source_target")
 
-        source = self.apply_split(self.data[self.idx_neurons[self.cell_split_indices[0]]], time_idx, center, scale, pre_split, scale_type)
-        target = self.apply_split(self.data[self.idx_neurons[self.cell_split_indices[1]]], time_idx, center, scale, pre_split, scale_type)
+        source = self.apply_split(
+            self.data[self.idx_neurons[self.cell_split_indices[0]]],
+            time_idx,
+            center,
+            scale,
+            pre_split,
+            scale_type,
+            prefiltered=False,
+        )
+        target = self.apply_split(
+            self.data[self.idx_neurons[self.cell_split_indices[1]]],
+            time_idx,
+            center,
+            scale,
+            pre_split,
+            scale_type,
+            prefiltered=False,
+        )
         return source, target
 
     def get_split_times(self, time_idx: Optional[Union[int, list[int], tuple[int]]] = None, within_idx_samples: bool = True) -> torch.Tensor:
@@ -189,14 +234,50 @@ class Population:
         else:
             return csi
 
+    def _compute_percentile_scale(self, data: torch.Tensor, scale: Union[bool, float]) -> torch.Tensor:
+        """
+        Compute percentile scaling values for each neuron.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The data tensor with shape (num_features, num_timepoints).
+        scale : Union[bool, float]
+            The percentile value (0-100) to use for scaling.
+
+        Returns
+        -------
+        torch.Tensor
+            A tensor with shape (num_features, 1) containing the percentile values for each neuron.
+            Zero values are replaced with 1 to avoid division by zero.
+
+        Raises
+        ------
+        ValueError
+            If scale is not a numeric value or is outside the valid range [0, 100].
+        """
+        # Validate percentile usage
+        if not isinstance(scale, (int, float)):
+            raise ValueError("When scale_type='percentile', scale must be a numeric " f"percentile value (0-100), got {type(scale).__name__}")
+        percentile = float(scale)
+        if not (0 <= percentile <= 100):
+            raise ValueError(f"Percentile must be between 0 and 100, got {percentile}")
+
+        # Compute percentile per neuron across timepoints
+        quantile = percentile / 100.0
+        percentile_val = torch.quantile(data, quantile, dim=1, keepdim=True)
+        percentile_val[percentile_val == 0] = 1
+        return percentile_val
+
     def apply_split(
         self,
         data: torch.Tensor,
         time_idx: Optional[Union[int, list[int], tuple[int]]] = None,
         center: bool = False,
-        scale: bool = False,
+        scale: Union[bool, float] = False,
         pre_split: bool = False,
         scale_type: Optional[str] = None,
+        prefiltered: bool = True,
     ):
         """
         Apply the time splits to a new dataset. If time_idx is a list or tuple of integers, will concatenate the data for the specified time groups.
@@ -211,22 +292,27 @@ class Population:
             The time group(s) to use as the target data. If a list or tuple of integers, will concatenate the data for the specified time groups.
             If None, will use all timepoints in the data.
             (default is None)
-            If None, will use all timepoints in the data.
-            (default is 0)
         center : bool
             If True, will center the data so each neuron has a mean of 0 across timepoints
             (default is False)
-        scale : bool
-            If True, will scale the data so each neuron has a standard deviation of 1 across timepoints
+        scale : Union[bool, float]
+            If scale_type is not 'percentile': If True, will scale the data. If False, no scaling is applied.
+            If scale_type is 'percentile': The percentile value (0-100) to use for scaling. Each neuron will be
+            scaled by its percentile value across timepoints.
             (default is False)
         pre_split : bool
             If True, will center and scale the data before splitting into source and target data
         scale_type : Optional[str]
             How to scale the data.
-            =[None, 'std'] -> will scale the data by the standard deviation of the source data.
-            ='sqrt' -> will scale the data by the square root of the standard deviation of the source data.
+            =[None, 'std'] -> will scale the data by the standard deviation of each neuron.
+            ='sqrt' -> will scale the data by the square root of the standard deviation of each neuron.
             ='preserve' -> will scale the data such that the neuron with median std will end up with a std of 1,
             and the other neurons will be scaled accordingly (preserving the relative standard deviation).
+            ='percentile' -> will scale the data by a percentile of each neuron's values across timepoints.
+            When using 'percentile', the scale parameter must be a numeric value (0-100) representing the percentile.
+            ='max' -> will scale the data by the maximum value of each neuron across timepoints.
+        prefiltered : bool
+            If True, assumes that provided data is already filtered by idx_samples. Defaults to True.
 
         Returns
         -------
@@ -235,18 +321,32 @@ class Population:
         """
         # Convert data to torch tensor if necessary and throw an error if it can't
         data = self._check_datatype(data)
-        assert data.size(1) == self.total_timepoints, "data must have the same number of timepoints as the Population instance"
+        if prefiltered:
+            if data.size(1) != self.num_timepoints:
+                raise ValueError("Data must be pre-filtered to match the length of idx_samples when prefiltered is True")
+        else:
+            if data.size(1) != self.total_timepoints:
+                raise ValueError("Data must have the same number of timepoints as the Population instance when prefiltered is False")
 
         if pre_split:
             if center:
                 mean = data.mean(dim=1, keepdim=True)
             if scale:
-                std = data.std(dim=1, keepdim=True)
-                std[std == 0] = 1
+                if scale_type == "percentile":
+                    percentile_val = self._compute_percentile_scale(data, scale)
+                elif scale_type == "max":
+                    max_val = data.max(dim=1, keepdim=True)[0]
+                    max_val[max_val == 0] = 1
+                else:
+                    # Validate boolean usage for non-percentile scaling
+                    if not isinstance(scale, bool):
+                        raise ValueError(f"When scale_type is not 'percentile', scale must be a boolean, " f"got {type(scale).__name__}")
+                    std = data.std(dim=1, keepdim=True)
+                    std[std == 0] = 1
 
         # Select the timepoints for the specified group
         if time_idx is not None:
-            idx_times = self.get_split_times(time_idx, within_idx_samples=True)
+            idx_times = self.get_split_times(time_idx, within_idx_samples=not prefiltered)
             data = data[:, idx_times]
 
         # Center the data if requested
@@ -257,20 +357,48 @@ class Population:
                 data = data - data.mean(dim=1, keepdim=True)
 
         if scale:
-            # prepare source / target standard deviation if not pre-computed
-            if not pre_split:
-                std = data.std(dim=1, keepdim=True)
-                std[std == 0] = 1
+            # Validate scale parameter based on scale_type
+            if scale_type == "percentile":
+                # Compute percentile scaling
+                if pre_split:
+                    # Use pre-computed percentile value
+                    data = data / percentile_val
+                else:
+                    # Compute percentile per neuron across timepoints
+                    percentile_val = self._compute_percentile_scale(data, scale)
+                    data = data / percentile_val
+            elif scale_type == "max":
+                # Validate boolean usage for max scaling
+                if not isinstance(scale, bool):
+                    raise ValueError(f"When scale_type='max', scale must be a boolean, " f"got {type(scale).__name__}")
 
-            # normalize source and target appropriately
-            if scale_type is None or scale_type == "std":
-                data = data / std
-            elif scale_type == "sqrt":
-                data = data / torch.sqrt(std)
-            elif scale_type == "preserve":
-                data = data / std.median()
+                # Compute max per neuron across timepoints if not pre-computed
+                if pre_split:
+                    # Use pre-computed max value
+                    data = data / max_val
+                else:
+                    max_val = data.max(dim=1, keepdim=True)[0]
+                    max_val[max_val == 0] = 1
+                    data = data / max_val
             else:
-                raise ValueError(f"scale_type must be one of [None, 'std', 'sqrt', 'preserve'], got {scale_type}")
+                # Validate boolean usage for non-percentile scaling
+                if not isinstance(scale, bool):
+                    raise ValueError(f"When scale_type is not 'percentile', scale must be a boolean, " f"got {type(scale).__name__}")
+
+                # prepare source / target standard deviation if not pre-computed
+                if not pre_split:
+                    std = data.std(dim=1, keepdim=True)
+                    std[std == 0] = 1
+
+                # normalize source and target appropriately
+                if scale_type is None or scale_type == "std":
+                    data = data / std
+                elif scale_type == "sqrt":
+                    data = data / torch.sqrt(std)
+                elif scale_type == "preserve":
+                    data = data / std.median()
+                else:
+                    raise ValueError(f"scale_type must be one of [None, 'std', 'sqrt', 'preserve', 'percentile', 'max'], got {scale_type}")
 
         if self.dtype is not None:
             data = data.to(self.dtype)
@@ -358,8 +486,8 @@ class Population:
             chunks_per_group = num_chunks // sum(relative_size)
 
         # consolidate chunks into groups
-        start_stop_index = torch.cumsum(torch.tensor([0] + [rs * chunks_per_group for rs in relative_size]), dim=0)
-        time_split_indices = []
+        start_stop_index = torch.cumsum(_ensure_tensor([0] + [rs * chunks_per_group for rs in relative_size]), dim=0)
+        time_split_indices: list[torch.Tensor] = []
         for i in range(num_groups):
             time_split_indices.append(torch.sort(torch.cat(time_chunks[start_stop_index[i] : start_stop_index[i + 1]])).values)
 
@@ -443,6 +571,31 @@ class Population:
         """Get the size of the population activity (works like torch.size on self.data)"""
         return self.data.size(dim)
 
+    def to(self, device):
+        """
+        Move the Population to a device.
+
+        Parameters
+        ----------
+        device : torch.device or str
+            The device to move the Population to (e.g., 'cpu', 'cuda', torch.device('cuda:0')).
+
+        Returns
+        -------
+        self : Population
+            The Population object with all tensors moved to the specified device.
+        """
+        self.data = self.data.to(device)
+        if hasattr(self, "idx_neurons"):
+            self.idx_neurons = self.idx_neurons.to(device)
+        if hasattr(self, "idx_samples"):
+            self.idx_samples = self.idx_samples.to(device)
+        if hasattr(self, "cell_split_indices"):
+            self.cell_split_indices = [indices.to(device) for indices in self.cell_split_indices]
+        if hasattr(self, "time_split_indices"):
+            self.time_split_indices = [indices.to(device) for indices in self.time_split_indices]
+        return self
+
     def get_indices_dict(self) -> Dict:
         """
         Get a dictionary containing the split indices and metadata.
@@ -497,8 +650,8 @@ class Population:
         if "idx_neurons" not in indices_dict or "idx_samples" not in indices_dict:
             raise ValueError("idx_neurons and idx_samples must be provided in the indices_dict")
         else:
-            idx_neurons = torch.tensor(indices_dict["idx_neurons"])
-            idx_samples = torch.tensor(indices_dict["idx_samples"])
+            idx_neurons = _ensure_tensor(indices_dict["idx_neurons"])
+            idx_samples = _ensure_tensor(indices_dict["idx_samples"])
 
         # Check if the shape of the provided data matches the saved indices
         if data.shape != (indices_dict["total_neurons"], indices_dict["total_timepoints"]):
@@ -511,10 +664,10 @@ class Population:
         population = cls(data, generate_splits=False, dtype=indices_dict.get("dtype", None), idx_neurons=idx_neurons, idx_samples=idx_samples)
 
         if indices_dict["cell_split_indices"]:
-            population.cell_split_indices = [torch.tensor(indices) for indices in indices_dict["cell_split_indices"]]
+            population.cell_split_indices = [_ensure_tensor(indices) for indices in indices_dict["cell_split_indices"]]
 
         if indices_dict["time_split_indices"]:
-            population.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
+            population.time_split_indices = [_ensure_tensor(indices) for indices in indices_dict["time_split_indices"]]
 
         return population
 
@@ -645,10 +798,10 @@ class SourceTarget(Population):
         source_target = cls(source, target, generate_splits=False, dtype=indices_dict.get("dtype", None))
 
         if indices_dict["cell_split_indices"]:
-            source_target.cell_split_indices = [torch.tensor(indices) for indices in indices_dict["cell_split_indices"]]
+            source_target.cell_split_indices = [_ensure_tensor(indices) for indices in indices_dict["cell_split_indices"]]
 
         if indices_dict["time_split_indices"]:
-            source_target.time_split_indices = [torch.tensor(indices) for indices in indices_dict["time_split_indices"]]
+            source_target.time_split_indices = [_ensure_tensor(indices) for indices in indices_dict["time_split_indices"]]
 
         return source_target
 

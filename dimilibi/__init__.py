@@ -1,5 +1,5 @@
 from .cross import CrossCompare
-from .metrics import scaled_mse, measure_r2, measure_rms
+from .metrics import scaled_mse, measure_r2, measure_rms, mse
 from .networks import SVCANet, HurdleNet, BetaVAE
 from .pca import PCA
 from .population import Population, SourceTarget
