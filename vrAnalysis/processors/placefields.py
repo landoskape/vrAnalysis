@@ -193,6 +193,22 @@ class FrameBehavior:
             trial=self.trial[idx],
         )
 
+    def position_by_environment(self) -> np.ndarray:
+        """Get the position by environment.
+
+        Returns
+        -------
+        position_by_environment : np.ndarray
+            An array of shape (num_environments, num_frames) with the position for each frame in each environment.
+            Na values are used for frames where no position data is available.
+        """
+        environments = np.unique(self.environment)
+        position_by_environment = np.full((len(environments), len(self.position)), np.nan)
+        for ienv, env in enumerate(environments):
+            idx_env = self.environment == env
+            position_by_environment[ienv, idx_env] = self.position[idx_env]
+        return position_by_environment
+
     def __len__(self) -> int:
         return len(self.position)
 
@@ -442,11 +458,10 @@ def get_placefield_prediction(placefield: Placefield, frame_behavior: FrameBehav
         The predicted activity array with shape (frames, rois). NaN for frames where prediction is not possible.
     """
     idx_valid_frames = frame_behavior.valid_frames()
-    environments = np.unique(frame_behavior.environment)
     frame_position_indices = convert_position_to_bins(frame_behavior.position, placefield.dist_edges, check_invalid=True)
-    if np.any(~np.isin(frame_behavior.environment, environments)):
-        raise ValueError("frame_behavior.environment is not in the placefield.environment")
-    frame_environment_indices = np.searchsorted(environments, frame_behavior.environment)
+    if np.any(~np.isin(frame_behavior.environment, placefield.environment)):
+        raise ValueError(f"frame_behavior.environment contains environments that are not in the placefield.environment!!!")
+    frame_environment_indices = np.searchsorted(placefield.environment, frame_behavior.environment)
     num_rois = placefield.shape[2]
 
     # Use a numba speed up to get the placefield prediction (single pass simple algorithm)
