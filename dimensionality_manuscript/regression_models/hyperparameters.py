@@ -50,7 +50,7 @@ class PlaceFieldHyperparameters(HyperparametersBase):
         Returns
         -------
         params : dict[str, Any]
-            Dictionary of hyperparameter values (not distributions) suggested by Optuna.
+            Dictionary of hyperparameter values suggested by Optuna.
             Keys are hyperparameter names, values are the suggested parameter values.
             Example: {"num_bins": 200, "smooth_width": 2.5}
         """
@@ -71,14 +71,74 @@ class PlaceFieldHyperparameters(HyperparametersBase):
 
 
 @dataclass(frozen=True)
+class RBFPosHyperparameters(HyperparametersBase):
+    """Hyperparameters for the RBFPosModel.
+
+    Parameters
+    ----------
+    num_basis : int, default=10
+        Number of position basis functions for the RBF(Pos) model.
+    basis_width : float, default=10.0
+        Width of the Gaussian basis functions for the RBF(Pos) model.
+    alpha : float, default=0.0
+        The ridge regularization parameter.
+    """
+
+    num_basis: int = field(default=10, init=True, repr=True)
+    basis_width: float = field(default=10.0, init=True, repr=True)
+    alpha: float = field(default=1e7, init=True, repr=True)
+
+    @classmethod
+    def get_search_space(cls) -> dict[str, tuple[Any, ...]]:
+        """Get the search space for grid search.
+
+        Returns
+        -------
+        search_space : dict[str, tuple[Any, ...]]
+            Dictionary with hyperparameter names as keys and tuples of possible values.
+        """
+        return {
+            "num_basis": (10, 25, 40, 100),
+            "basis_width": (5.0, 15.0, 40.0),
+            "alpha": tuple(torch.logspace(3, 9, 7).tolist()),
+        }
+
+    @classmethod
+    def get_optuna_space(cls, trial: "Trial") -> dict[str, Any]:
+        """Get hyperparameters from Optuna trial.
+
+        Parameters
+        ----------
+        trial : optuna.Trial
+            The Optuna trial object to suggest hyperparameters from.
+
+        Returns
+        -------
+        params : dict[str, Any]
+            Dictionary of hyperparameter values suggested by Optuna.
+            Keys are hyperparameter names, values are the suggested parameter values.
+            Example: {"num_basis": 10, "basis_width": 10.0, "alpha": 1e7}
+        """
+        num_basis = trial.suggest_categorical("num_basis", (10, 25, 40, 100))
+        basis_width = trial.suggest_float("basis_width", 5.0, 40.0, log=True)
+        alpha = trial.suggest_float("alpha", 1e3, 1e9, log=True)
+
+        return {
+            "num_basis": num_basis,
+            "basis_width": basis_width,
+            "alpha": alpha,
+        }
+
+
+@dataclass(frozen=True)
 class ReducedRankRegressionHyperparameters(HyperparametersBase):
     """Hyperparameters for the ReducedRankRegressionModel.
 
     Parameters
     ----------
-    rank : int, default=200
+    rank : int, default=100
         The rank of the model.
-    alpha : float, default=0.0
+    alpha : float, default=1e6
         The ridge regularization parameter.
     """
 
@@ -95,8 +155,8 @@ class ReducedRankRegressionHyperparameters(HyperparametersBase):
             Dictionary with hyperparameter names as keys and tuples of possible values.
         """
         return {
-            "rank": (1, 2, 3, 5, 8, 15, 50, 100, 200),
-            "alpha": tuple(torch.logspace(1, 9, 9).tolist()),
+            "rank": (1, 2, 3, 5, 8, 15, 50, 100),
+            "alpha": tuple(torch.logspace(3, 9, 7).tolist()),
         }
 
     @classmethod
@@ -111,12 +171,12 @@ class ReducedRankRegressionHyperparameters(HyperparametersBase):
         Returns
         -------
         params : dict[str, Any]
-            Dictionary of hyperparameter values (not distributions) suggested by Optuna.
+            Dictionary of hyperparameter values suggested by Optuna.
             Keys are hyperparameter names, values are the suggested parameter values.
-            Example: {"rank": 200, "alpha": 1e5}
+            Example: {"rank": 100, "alpha": 1e5}
         """
-        rank = trial.suggest_categorical("rank", (1, 2, 3, 5, 8, 15, 50, 100, 200))
-        alpha = trial.suggest_float("alpha", 1e1, 1e9, log=True)
+        rank = trial.suggest_categorical("rank", (1, 2, 3, 5, 8, 15, 50, 100))
+        alpha = trial.suggest_float("alpha", 1e3, 1e9, log=True)
 
         return {
             "rank": rank,

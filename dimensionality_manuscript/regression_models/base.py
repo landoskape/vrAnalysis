@@ -1,4 +1,5 @@
 from typing import Literal, Optional, TYPE_CHECKING, Any, Union, overload, TypeVar, Generic
+from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from itertools import product
 from joblib import dump, load
@@ -8,7 +9,8 @@ import pandas as pd
 import torch
 from vrAnalysis.helpers import stable_hash
 from vrAnalysis.sessions import B2Session, SpksTypes
-from dimilibi import measure_r2
+from vrAnalysis.processors.placefields import FrameBehavior
+from dimilibi import measure_r2, scaled_mse, mse
 
 if TYPE_CHECKING:
     from .registry import PopulationRegistry
@@ -19,23 +21,39 @@ SplitName = Literal["train", "train0", "train1", "validation", "test", "full"]
 H = TypeVar("H", bound="HyperparametersBase")
 
 
+@dataclass(frozen=True)
+class ActivityParameters:
+    """Parameters for the activity data.
+
+    Parameters
+    ----------
+    center : bool
+        Whether to center the activity data.
+    scale : bool
+        Whether to scale the activity data.
+    scale_type : str
+        The type of scaling to apply to the activity data.
+    presplit : bool
+        Whether to compute statistical modes on full data before splitting by timepoint.
+    """
+
+    center: bool = False
+    scale: bool = True
+    scale_type: str = "preserve"
+    presplit: bool = True
+
+
 class RegressionModel(ABC, Generic[H]):
     hyperparameters: H
 
     def __init__(
         self,
         registry: "PopulationRegistry",
-        center: bool = False,
-        scale: bool = True,
-        scale_type: Optional[str] = "preserve",
-        presplit: bool = True,
+        activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
     ):
         self.registry = registry
-        self.center = center
-        self.scale = scale
-        self.scale_type = scale_type
-        self.presplit = presplit
+        self.activity_parameters = activity_parameters
         self.autosave = autosave
 
     @abstractmethod
@@ -103,24 +121,89 @@ class RegressionModel(ABC, Generic[H]):
     @abstractmethod
     def _get_model_name(self) -> str: ...
 
+    def get_session_data(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional[SplitName] = "test",
+    ) -> tuple[torch.Tensor, torch.Tensor, FrameBehavior]:
+        """Get the activity data and frame behavior for a session.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to get the activity data for.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the session's default.
+        split : Optional[SplitName]
+            The split to use for the activity data. If None, uses the split from the session provided as input. Default is "test".
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor, FrameBehavior]
+            The source and target activity data and frame behavior for the session.
+            All data is filtered to the requested split.
+        """
+        population, frame_behavior = self.registry.get_population(session, spks_type)
+        source_data, target_data = population.get_split_data(
+            self.registry.time_split[split],
+            center=self.activity_parameters.center,
+            scale=self.activity_parameters.scale,
+            scale_type=self.activity_parameters.scale_type,
+            pre_split=self.activity_parameters.presplit,
+        )
+        idx = np.array(population.get_split_times(self.registry.time_split[split], within_idx_samples=False))
+        frame_behavior = frame_behavior.filter(idx)
+        return source_data, target_data, frame_behavior
+
     @overload
     def score(
         self,
         session: B2Session,
         reduce: Literal["mean"],
+        full_results: Literal[False],
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        train_split: Optional[SplitName] = "train",
+        test_split: Optional[SplitName] = "test",
         hyperparameters: Optional[H] = None,
+        nan_safe: bool = True,
     ) -> float: ...
     @overload
     def score(
         self,
         session: B2Session,
         reduce: Literal["none"],
+        full_results: Literal[False],
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        train_split: Optional[SplitName] = "train",
+        test_split: Optional[SplitName] = "test",
         hyperparameters: Optional[H] = None,
+        nan_safe: bool = True,
     ) -> np.ndarray: ...
+    @overload
+    def score(
+        self,
+        session: B2Session,
+        reduce: Literal["mean"],
+        full_results: Literal[True],
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional[SplitName] = "train",
+        test_split: Optional[SplitName] = "test",
+        hyperparameters: Optional[H] = None,
+        nan_safe: bool = True,
+    ) -> tuple[float, np.ndarray, np.ndarray, dict]: ...
+    @overload
+    def score(
+        self,
+        session: B2Session,
+        reduce: Literal["none"],
+        full_results: Literal[True],
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional[SplitName] = "train",
+        test_split: Optional[SplitName] = "test",
+        hyperparameters: Optional[H] = None,
+        nan_safe: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]: ...
     def score(
         self,
         session: B2Session,
@@ -129,7 +212,9 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional[SplitName] = "train",
         test_split: Optional[SplitName] = "test",
         hyperparameters: Optional[H] = None,
-    ) -> Union[float, np.ndarray]:
+        full_results: bool = False,
+        nan_safe: bool = True,
+    ) -> Union[float, np.ndarray, tuple[Union[float, np.ndarray], np.ndarray, np.ndarray, dict]]:
         """Score the model on a session.
 
         Parameters
@@ -140,8 +225,8 @@ class RegressionModel(ABC, Generic[H]):
             The type of spike data to use for the population. If None, uses the spks_type from the session
             provided as input.
         reduce : Literal["mean", "none"]
-            The reduction to apply to the r-squared value. If "mean", the mean of the r-squared value
-            is returned. If "none", the r-squared value is returned without reduction. Default is mean.
+            The reduction to apply to the MSE. If "mean", the mean of the MSE
+            is returned. If "none", the MSE is returned without reduction. Default is "mean".
         train_split: Optional[SplitName]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         test_split: Optional[SplitName]
@@ -149,21 +234,26 @@ class RegressionModel(ABC, Generic[H]):
             provided as input. Default is "test".
         hyperparameters: Optional[Hyperparameters]
             The hyperparameters to use for the model. If None, uses the default hyperparameters for the model. Must be the appropriate subclass for the model.
+        full_results: bool = False
+            If True, will also return predicted data, target data, and any extras returned by the predict method.
+        nan_safe: bool = True
+            If True, will check for NaN values in predictions and MSE and raise errors if found.
+            If False, will skip all NaN checks and allow NaN values to pass through.
 
         Returns
         -------
-        score : Union[float, np.ndarray]
-            The score of the model on the session. If reduce is "mean", returns a float. If reduce is "none", returns a numpy array.
+        mse : Union[float, np.ndarray]
+            The scaled mean squared error of the model on the session. If reduce is "mean", returns a float.
+            If reduce is "none", returns a numpy array with MSE for each neuron.
+        predicted_data : np.ndarray
+            The predicted data for the session. Only returned if full_results=True.
+        target_data : np.ndarray
+            The target data for the session. Only returned if full_results=True.
+        extras : dict
+            Any extras returned by the predict method. Only returned if full_results=True.
         """
+        # Train model and predict target activity
         hyperparameters = hyperparameters or self.hyperparameters
-        population = self.registry.get_population(session, spks_type)[0]
-        target_data = population.get_split_data(
-            self.registry.time_split[test_split],
-            center=self.center,
-            scale=self.scale,
-            scale_type=self.scale_type,
-            pre_split=self.presplit,
-        )[1]
         trained_model = self.train(
             session,
             spks_type,
@@ -177,15 +267,26 @@ class RegressionModel(ABC, Generic[H]):
             split=test_split,
             hyperparameters=hyperparameters,
         )
-        idx_nan_samples = np.any(np.isnan(predicted_data), axis=0)
-        if np.any(idx_nan_samples):
-            raise ValueError(f"{np.sum(idx_nan_samples)} / {len(idx_nan_samples)} samples have nan predictions in {session.session_print()}!!!")
-        r2 = measure_r2(predicted_data.T, target_data.T, reduce=reduce)
-        if torch.any(torch.isnan(r2)):
-            raise ValueError(f"NaN r-squared values in {session.session_print()}!!!")
+
+        # Check for NaN values in predictions
+        if nan_safe:
+            idx_nan_samples = np.any(np.isnan(predicted_data), axis=0)
+            if np.any(idx_nan_samples):
+                raise ValueError(f"{np.sum(idx_nan_samples)} / {len(idx_nan_samples)} samples have nan predictions in {session.session_print()}!!!")
+
+        # Measure score (scaled mean squared error)
+        target_data = self.get_session_data(session, spks_type, test_split)[1]
+        score = mse(predicted_data.T, target_data.T, reduce=reduce)
         if reduce == "none":
-            return np.array(r2)
-        return r2
+            score = np.array(score)
+        else:
+            score = score
+        if nan_safe:
+            if np.any(np.isnan(score)):
+                raise ValueError(f"NaN MSE values in {session.session_print()}!!!")
+        if full_results:
+            return score, predicted_data, np.array(target_data), extras
+        return score
 
     def optimize(
         self,
@@ -263,7 +364,7 @@ class RegressionModel(ABC, Generic[H]):
         """
         hyperparameter_grid = hyperparameters.generate_grid()
         best_params = None
-        best_score = -float("inf")
+        best_score = float("inf")
         results = []
         for params in tqdm(hyperparameter_grid, desc="Grid search", leave=False):
             score = self.score(
@@ -277,7 +378,7 @@ class RegressionModel(ABC, Generic[H]):
             result["score"] = score
             results.append(result)
 
-            if score > best_score:
+            if score < best_score:
                 best_score = score
                 best_params = params
 
@@ -404,8 +505,8 @@ class RegressionModel(ABC, Generic[H]):
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
         reduce : Literal["mean", "none"]
-            The reduction to apply to the r-squared value. If "mean", the mean of the r-squared value
-            is returned. If "none", the r-squared value is returned without reduction. Default is "mean".
+            The reduction to apply to the MSE. If "mean", the mean of the MSE
+            is returned. If "none", the MSE is returned without reduction. Default is "mean".
         train_split : Optional[SplitName]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         validation_split : Optional[SplitName]
@@ -424,7 +525,7 @@ class RegressionModel(ABC, Generic[H]):
         Returns
         -------
         best_score : float
-            The best score for the model.
+            The best score (MSE) for the model. Lower is better.
         """
         # First get the cache key to identify a potential cached result
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
@@ -459,7 +560,7 @@ class RegressionModel(ABC, Generic[H]):
     ) -> bool:
         """Check if the hyperparameters for the model exist in the hyperparameter cache."""
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
-        cache_path = self.registry.registry_paths.hyperparameter_path / cache_key
+        cache_path = self.registry.registry_paths.hyperparameter_path / f"{cache_key}.joblib"
         return cache_path.exists()
 
     def check_existing_score(
@@ -473,7 +574,7 @@ class RegressionModel(ABC, Generic[H]):
     ) -> bool:
         """Check if the score for the model exist in the score cache."""
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
-        cache_path = self.registry.registry_paths.score_path / cache_key
+        cache_path = self.registry.registry_paths.score_path / f"{cache_key}.joblib"
         return cache_path.exists()
 
     def _get_hyperparameter_cache_key(
@@ -529,7 +630,14 @@ class RegressionModel(ABC, Generic[H]):
         registry_params_hash = stable_hash(self.registry.registry_params)
 
         # Scaling hash
-        scaling_hash = stable_hash((self.center, self.scale, self.scale_type, self.presplit))
+        scaling_hash = stable_hash(
+            (
+                self.activity_parameters.center,
+                self.activity_parameters.scale,
+                self.activity_parameters.scale_type,
+                self.activity_parameters.presplit,
+            )
+        )
 
         # Combine all components into cache key
         cache_params = [
@@ -611,7 +719,7 @@ class RegressionModel(ABC, Generic[H]):
             The method used for optimization. Default is "grid".
         """
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
-        cache_path = self.registry.registry_paths.hyperparameter_path / cache_key
+        cache_path = self.registry.registry_paths.hyperparameter_path / f"{cache_key}.joblib"
         if cache_path.exists():
             cache_path.unlink()
 
@@ -642,7 +750,7 @@ class RegressionModel(ABC, Generic[H]):
             The method used for optimization. Default is "grid".
         """
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
-        cache_path = self.registry.registry_paths.score_path / cache_key
+        cache_path = self.registry.registry_paths.score_path / f"{cache_key}.joblib"
         if cache_path.exists():
             cache_path.unlink()
 
