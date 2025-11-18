@@ -66,7 +66,7 @@ class B2SessionParams:
     ----------
     spks_type : str, optional
         Type of spike data to load. Options: "oasis", "deconvolved", "raw",
-        "neuropil", "significant", "corrected". Default is "significant".
+        "neuropil", "significant", "sigbase", "corrected". Default is "significant".
     keep_planes : list[int], optional
         List of plane indices to keep. If None, all planes are kept.
         Default is None.
@@ -211,7 +211,7 @@ class B2Session(SessionData):
     opts: B2RegistrationOpts = field(default_factory=B2RegistrationOpts, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
     params: B2SessionParams = field(default_factory=B2SessionParams, repr=False)
-    spks_types: tuple[str, ...] = ("oasis", "deconvolved", "raw", "neuropil", "significant", "corrected")
+    spks_types: tuple[str, ...] = ("oasis", "deconvolved", "raw", "neuropil", "significant", "corrected", "sigbase", "sigrebase")
 
     @classmethod
     def create(
@@ -311,7 +311,7 @@ class B2Session(SessionData):
         spks_type : str, optional
             Type of spike data to load. If None, uses params.spks_type.
             Options: "oasis", "deconvolved", "raw", "neuropil", "significant",
-            "corrected".
+            "corrected", "sigbase", "sigrebase".
 
         Returns
         -------
@@ -333,6 +333,10 @@ class B2Session(SessionData):
             return self.loadone("mpci.roiNeuropilActivityF")
         elif spks_type == "significant":
             return self.loadone("mpci.roiSignificantFluorescence", sparse=True, keep_sparse=False)
+        elif spks_type == "sigbase":
+            return self.loadone("mpci.roiSignificantFluorescenceBase", sparse=True, keep_sparse=False)
+        elif spks_type == "sigrebase":
+            return self.loadone("mpci.roiSignificantFluorescenceRebase", sparse=True, keep_sparse=False)
         elif spks_type == "corrected":
             return self.loadfcorr().T
         else:
@@ -367,6 +371,10 @@ class B2Session(SessionData):
         elif spks_type == "neuropil":
             return False
         elif spks_type == "significant":
+            return True
+        elif spks_type == "sigbase":
+            return True
+        elif spks_type == "sigrebase":
             return True
         elif spks_type == "corrected":
             return False
