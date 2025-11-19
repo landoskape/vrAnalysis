@@ -66,7 +66,7 @@ if __name__ == "__main__":
 
                 if check_existing_scores:
                     if model.check_existing_score(session, spks_type=spks_type):
-                        print(f"Score for model {model_name} on session {session.session_print()} already exists")
+                        # print(f"Score for model {model_name} on session {session.session_print()} already exists")
                         pass
                     else:
                         print(f"!!!!! Score for model {model_name} on session {session.session_print()} does not exist")
