@@ -39,7 +39,7 @@ class ActivityParameters:
 
     center: bool = False
     scale: bool = True
-    scale_type: str = "preserve"
+    scale_type: str = "max"
     presplit: bool = True
 
 
@@ -276,7 +276,7 @@ class RegressionModel(ABC, Generic[H]):
 
         # Measure score (scaled mean squared error)
         target_data = self.get_session_data(session, spks_type, test_split)[1]
-        score = mse(predicted_data.T, target_data.T, reduce=reduce)
+        score = mse(predicted_data, target_data, reduce=reduce, dim=1)
         if reduce == "none":
             score = np.array(score)
         else:
