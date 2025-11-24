@@ -40,7 +40,7 @@ class PlaceFieldHyperparameters(HyperparametersBase):
 
     @classmethod
     def get_optuna_space(cls, trial: "Trial") -> dict[str, Any]:
-        """Get hyperparameters from Optuna trial.
+        """Get the Optuna search space for the PlaceFieldModel.
 
         Parameters
         ----------
@@ -49,23 +49,17 @@ class PlaceFieldHyperparameters(HyperparametersBase):
 
         Returns
         -------
-        params : dict[str, Any]
-            Dictionary of hyperparameter values suggested by Optuna.
-            Keys are hyperparameter names, values are the suggested parameter values.
-            Example: {"num_bins": 200, "smooth_width": 2.5}
+        search_space : dict[str, Any]
+            Dictionary with hyperparameter names as keys and the suggested values.
         """
-        # Use categorical for num_bins (discrete choices)
-        num_bins = trial.suggest_categorical("num_bins", (100, 40, 25, 10))
-
-        # For smooth_width, first decide if smoothing should be used
-        use_smoothing = trial.suggest_categorical("use_smoothing", (True, False))
+        use_smoothing = trial.suggest_categorical("use_smoothing", [True, False])
         if use_smoothing:
             smooth_width = trial.suggest_float("smooth_width", 1.0, 50.0, log=True)
         else:
             smooth_width = None
 
         return {
-            "num_bins": num_bins,
+            "num_bins": trial.suggest_int("num_bins", 10, 100, log=True),
             "smooth_width": smooth_width,
         }
 
@@ -80,13 +74,16 @@ class RBFPosHyperparameters(HyperparametersBase):
         Number of position basis functions for the RBF(Pos) model.
     basis_width : float, default=10.0
         Width of the Gaussian basis functions for the RBF(Pos) model.
-    alpha : float, default=0.0
-        The ridge regularization parameter.
+    alpha_encoder : float, default=1e0
+        The ridge regularization parameter for the encoder.
+    alpha_decoder : float, default=1e0
+        The ridge regularization parameter for the decoder.
     """
 
-    num_basis: int = field(default=10, init=True, repr=True)
-    basis_width: float = field(default=10.0, init=True, repr=True)
-    alpha: float = field(default=1e7, init=True, repr=True)
+    num_basis: int = field(default=100, init=True, repr=True)
+    basis_width: float = field(default=5.0, init=True, repr=True)
+    alpha_encoder: float = field(default=1e0, init=True, repr=True)
+    alpha_decoder: float = field(default=1e0, init=True, repr=True)
 
     @classmethod
     def get_search_space(cls) -> dict[str, tuple[Any, ...]]:
@@ -98,14 +95,15 @@ class RBFPosHyperparameters(HyperparametersBase):
             Dictionary with hyperparameter names as keys and tuples of possible values.
         """
         return {
-            "num_basis": (10, 25, 40, 100),
+            "num_basis": (100, 40, 25, 10),
             "basis_width": (5.0, 15.0, 40.0),
-            "alpha": tuple(torch.logspace(3, 9, 7).tolist()),
+            "alpha_encoder": tuple(torch.logspace(-2, 2, 9).tolist()),
+            "alpha_decoder": tuple(torch.logspace(-2, 2, 9).tolist()),
         }
 
     @classmethod
     def get_optuna_space(cls, trial: "Trial") -> dict[str, Any]:
-        """Get hyperparameters from Optuna trial.
+        """Get the Optuna search space for the RBFPosModel.
 
         Parameters
         ----------
@@ -114,19 +112,14 @@ class RBFPosHyperparameters(HyperparametersBase):
 
         Returns
         -------
-        params : dict[str, Any]
-            Dictionary of hyperparameter values suggested by Optuna.
-            Keys are hyperparameter names, values are the suggested parameter values.
-            Example: {"num_basis": 10, "basis_width": 10.0, "alpha": 1e7}
+        search_space : dict[str, Any]
+            Dictionary with hyperparameter names as keys and the suggested values.
         """
-        num_basis = trial.suggest_categorical("num_basis", (10, 25, 40, 100))
-        basis_width = trial.suggest_float("basis_width", 5.0, 40.0, log=True)
-        alpha = trial.suggest_float("alpha", 1e3, 1e9, log=True)
-
         return {
-            "num_basis": num_basis,
-            "basis_width": basis_width,
-            "alpha": alpha,
+            "num_basis": trial.suggest_int("num_basis", 10, 100, log=True),
+            "basis_width": trial.suggest_float("basis_width", 1.0, 50.0, log=True),
+            "alpha_encoder": trial.suggest_float("alpha_encoder", 1e-2, 1e2, log=True),
+            "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-2, 1e2, log=True),
         }
 
 
@@ -143,7 +136,8 @@ class ReducedRankRegressionHyperparameters(HyperparametersBase):
     """
 
     rank: int = field(default=50, init=True, repr=True)
-    alpha: float = field(default=1e7, init=True, repr=True)
+    alpha: float = field(default=1e2, init=True, repr=True)
+    independent_optimization: bool = field(default=True, init=False, repr=False)
 
     @classmethod
     def get_search_space(cls) -> dict[str, tuple[Any, ...]]:
@@ -154,14 +148,17 @@ class ReducedRankRegressionHyperparameters(HyperparametersBase):
         search_space : dict[str, tuple[Any, ...]]
             Dictionary with hyperparameter names as keys and tuples of possible values.
         """
-        return {
-            "rank": (1, 2, 3, 5, 8, 15, 50, 100),
-            "alpha": tuple(torch.logspace(3, 9, 7).tolist()),
+        training = {
+            "alpha": tuple(torch.logspace(0, 4, 9).tolist()),
         }
+        prediction = {
+            "rank": (1, 2, 3, 5, 8, 15, 50, 100),
+        }
+        return {"training": training, "prediction": prediction}
 
     @classmethod
     def get_optuna_space(cls, trial: "Trial") -> dict[str, Any]:
-        """Get hyperparameters from Optuna trial.
+        """Get the Optuna search space for the ReducedRankRegressionModel.
 
         Parameters
         ----------
@@ -170,15 +167,13 @@ class ReducedRankRegressionHyperparameters(HyperparametersBase):
 
         Returns
         -------
-        params : dict[str, Any]
-            Dictionary of hyperparameter values suggested by Optuna.
-            Keys are hyperparameter names, values are the suggested parameter values.
-            Example: {"rank": 100, "alpha": 1e5}
+        search_space : dict[str, Any]
+            Dictionary with hyperparameter names as keys and the suggested values.
         """
-        rank = trial.suggest_categorical("rank", (1, 2, 3, 5, 8, 15, 50, 100))
-        alpha = trial.suggest_float("alpha", 1e3, 1e9, log=True)
-
-        return {
-            "rank": rank,
-            "alpha": alpha,
+        training = {
+            "alpha": trial.suggest_float("alpha", 1e-2, 1e2, log=True),
         }
+        prediction = {
+            "rank": (1, 2, 3, 5, 8, 15, 50, 100),
+        }
+        return {"training": training, "prediction": prediction}

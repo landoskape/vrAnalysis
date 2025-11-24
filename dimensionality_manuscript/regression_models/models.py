@@ -1,18 +1,16 @@
-from typing import Optional, Union, Literal, TYPE_CHECKING
+from typing import Optional, Union, TYPE_CHECKING, Type
 import numpy as np
 from scipy.stats import norm
 import torch
 from vrAnalysis.helpers import edge2center
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, Placefield, FrameBehavior
-from dimilibi import ReducedRankRegression
-from .base import RegressionModel, SplitName, ActivityParameters
+from dimilibi import RidgeRegression, ReducedRankRegression
+from .base import RegressionModel, ActivityParameters
 from .hyperparameters import PlaceFieldHyperparameters, RBFPosHyperparameters, ReducedRankRegressionHyperparameters
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 if TYPE_CHECKING:
-    from .registry import PopulationRegistry
+    from ..registry import PopulationRegistry, SplitName
 
 
 class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
@@ -38,7 +36,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "train",
+        split: Optional["SplitName"] = "train",
         hyperparameters: Optional[PlaceFieldHyperparameters] = None,
     ) -> Union[Placefield, tuple[Placefield, Placefield]]:
         """Train the model by predicting the place field activity on train timepoints.
@@ -49,7 +47,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             The session to train the placefield model on.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        split: Optional[SplitName]
+        split: Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         hyperparameters : Optional[PlaceFieldHyperparameters]
             The hyperparameters to use for the placefield model. If None, uses the default hyperparameters for the model.
@@ -106,8 +104,9 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         session: B2Session,
         coefficients: Union[Placefield, tuple[Placefield, Placefield]],
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        split: Optional["SplitName"] = "test",
         hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        nan_safe: bool = False,
     ) -> tuple[np.ndarray, dict]:
         """Predict the target place field activity for a session.
 
@@ -123,12 +122,15 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session
             provided as input.
-        split : Optional[SplitName]
+        split : Optional["SplitName"]
             The split to use for the prediction. If None, uses the split from the session
             provided as input. Default is "test".
         hyperparameters : Optional[PlaceFieldHyperparameters]
             The hyperparameters used for the model. These are not actually used for prediction so the presence of this parameter
             is ignored and only here for consistency with other model types.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and raise an error if found.
+            If False, will filter out NaN samples from predictions.
 
         Returns
         -------
@@ -150,6 +152,10 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         # Get session data for the requested split
         source_data, _, frame_behavior = self.get_session_data(session, spks_type, split)
 
+        # Track original number of samples for idx_valid_predictions
+        num_samples_prediction = len(frame_behavior)
+        idx_valid_prediction = np.arange(num_samples_prediction, dtype=np.int64)  # Track which original indices are still valid
+
         # Get the source data to predict the internal position estimates
         if self.internal:
             error = torch.mean((source_data[None, None] - torch.tensor(source_placefield.placefield[..., None])) ** 2, dim=2)
@@ -170,51 +176,30 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             # This way the estimator is cross-validated by neurons.
             # -----------------------------------------------------
             # First get the prediction for the source neurons, and target source data
-            source_prediction = torch.tensor(get_placefield_prediction(source_placefield, frame_behavior)[0].T).to(device)
-            source_data = source_data.to(device)
+            source_prediction = torch.tensor(get_placefield_prediction(source_placefield, frame_behavior)[0].T)
 
-            idx_nan = torch.any(torch.isnan(source_prediction) | torch.isnan(source_data), dim=0)
-            if torch.any(idx_nan):
-                raise ValueError(f"{np.sum(idx_nan)} / {len(idx_nan)} samples have nan predictions in {session.session_print()}!!!")
+            # Check for NaNs in source_prediction and source_data
+            idx_nan_gain = torch.any(torch.isnan(source_prediction) | torch.isnan(source_data), dim=0)
 
-            # Our objective function is the MSE loss between the predicted and target data
-            def _objective(gain, prediction, target):
-                return torch.sum((prediction * gain - target) ** 2)
+            if nan_safe:
+                if torch.any(idx_nan_gain):
+                    raise ValueError(f"{torch.sum(idx_nan_gain)} / {len(idx_nan_gain)} samples have nan predictions in {session.session_print()}!!!")
+            else:
+                # Filter out NaN samples before computing gain
+                idx_valid_gain = ~idx_nan_gain
+                source_prediction = source_prediction[:, idx_valid_gain]
+                source_data = source_data[:, idx_valid_gain]
+                frame_behavior = frame_behavior.filter(np.where(idx_valid_gain.numpy())[0])
+                # Update tracking of valid indices from original
+                idx_valid_prediction = idx_valid_prediction[idx_valid_gain.numpy()]
 
-            # Initialize the gain and optimize it using gradient descent
-            gain = torch.ones(source_prediction.size(1), dtype=source_prediction.dtype, requires_grad=True, device=device)
-            optimizer = torch.optim.Adam([gain], lr=1e-2)
+            with torch.no_grad():
+                gain = torch.sum(source_prediction * source_data, dim=0) / torch.sum(source_prediction**2, dim=0)
+                gain = gain.numpy()
 
-            # Early stopping setup
-            best_loss = float("inf")
-            max_epochs = 1000
-            patience = 50
-            patience_counter = 0
-            min_delta = 1e-6
-            loss_history = []
-
-            for _ in range(max_epochs):
-                optimizer.zero_grad()
-                loss = _objective(gain, source_prediction, source_data)
-                loss.backward()
-                optimizer.step()
-
-                # Early stopping check
-                current_loss = loss.item()
-                loss_history.append(current_loss)
-                if current_loss < best_loss - min_delta:
-                    best_loss = current_loss
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                    if patience_counter >= patience:
-                        break
-
-            # Reset the gain to nan for bad samples
-            gain = gain.detach().cpu().numpy()
-
-            if np.any(np.isnan(gain)):
-                raise ValueError(f"{np.sum(np.isnan(gain))} / {len(gain)} gains have nan values in {session.session_print()}!!!")
+            if nan_safe:
+                if np.any(np.isnan(gain)):
+                    raise ValueError(f"{np.sum(np.isnan(gain))} / {len(gain)} gains have nan values in {session.session_print()}!!!")
 
         # Get prediction for the test timepoints
         prediction, extras = get_placefield_prediction(target_placefield, frame_behavior)
@@ -225,15 +210,34 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             prediction = prediction * gain.reshape(-1, 1)
             extras["gain"] = gain
 
-        if np.any(np.isnan(prediction)):
-            raise ValueError(
-                f"{np.sum(np.any(np.isnan(prediction), axis=1))} / {len(prediction)} predictions have nan values in {session.session_print()}!!!"
-            )
+        # Convert to numpy for consistency
+        prediction = np.array(prediction.T)
 
-        return prediction.T, extras
+        # Check for NaNs in prediction and handle based on nan_safe
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                num_nan = np.sum(idx_nan_samples)
+                total = len(idx_nan_samples)
+                raise ValueError(f"{num_nan} / {total} samples have NaN values in prediction!")
+        else:
+            # Filter out NaN samples
+            idx_valid_final = ~idx_nan_samples
+            prediction = prediction[:, idx_valid_final]
+            if "frame_behavior" in extras:
+                extras["frame_behavior"] = extras["frame_behavior"].filter(np.where(idx_valid_final)[0])
+            if "gain" in extras:
+                # Filter gain to match filtered prediction
+                extras["gain"] = extras["gain"][idx_valid_final]
+
+            # Update tracking: idx_valid_final is relative to current data, map back to original
+            extras["idx_valid_predictions"] = idx_valid_prediction[idx_valid_final]
+
+        return prediction, extras
 
     @property
-    def _model_hyperparameters(self) -> type[PlaceFieldHyperparameters]:
+    def _model_hyperparameters(self) -> Type[PlaceFieldHyperparameters]:
         """Return the hyperparameter class constructor for PlaceFieldModel.
 
         Returns
@@ -262,6 +266,8 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
     def __init__(
         self,
         registry: "PopulationRegistry",
+        split_train: bool = True,
+        predict_latents: bool = True,
         hyperparameters: RBFPosHyperparameters = RBFPosHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
@@ -285,15 +291,21 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         # split parameter for the train split - so instead we set a flag called _split_train
         # which tells us to split 'train' into 'train0' and 'train1'.... but we *won't* double
         # cross-validate if any other split is requested.
-        self._split_train = True
+        self.predict_latents = predict_latents
+        if not predict_latents:
+            # When we're not predicting latents, we don't need to split the training set
+            # into the decoder and encoder splits!
+            self.split_train = False
+        else:
+            self.split_train = split_train
 
     def train(
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "train",
+        split: Optional["SplitName"] = "train",
         hyperparameters: Optional[RBFPosHyperparameters] = None,
-    ) -> ReducedRankRegression:
+    ) -> Union[RidgeRegression, tuple[RidgeRegression, RidgeRegression]]:
         """Train the model by fitting the RBF(Pos) model to the training data.
 
         Parameters
@@ -302,7 +314,7 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
             The session to train the RBF(Pos) model on.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        split: Optional[SplitName]
+        split: Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
             When _split_train is True, 'train' is split into 'train0' and 'train1' for the encoder and decoder.
         hyperparameters : Optional[RBFPosHyperparameters]
@@ -310,45 +322,49 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
 
         Returns
         -------
-        tuple[ReducedRankRegression, ReducedRankRegression]
+        RidgeRegression or tuple[RidgeRegression, RidgeRegression]
             The trained encoder and decoder models. The encoder model predicts position basis from activity of the source
             neurons, and the decoder model predicts activity of the target neurons from the position basis.
+            - When predict_latents is False, returns a single RidgeRegression object corresponding to the decoder model.
+            - When predict_latents is True, returns a tuple of RidgeRegression objects corresponding to the encoder and decoder models.
         """
         if hyperparameters is None:
             hyperparameters = self.hyperparameters
 
         # Split the neural data
-        if self._split_train and split == "train":
+        if self.split_train and split == "train":
             encoder_split = "train0"
             decoder_split = "train1"
         else:
             encoder_split = split
             decoder_split = split
 
-        # Get source activity and frame_behavior for encoder split
-        source_data_encoder, _, frame_behavior_encoder = self.get_session_data(session, spks_type, encoder_split)
+        if self.predict_latents:
+            # Train the encoder model to predict the position basis from source neuron activity
+            source_data_encoder, _, frame_behavior_encoder = self.get_session_data(session, spks_type, encoder_split)
+            basis_for_encoder = self.make_position_basis(session, frame_behavior_encoder, hyperparameters)
+            encoder = RidgeRegression(alpha=hyperparameters.alpha_encoder, fit_intercept=self.fit_intercept)
+            encoder = encoder.fit(source_data_encoder.T, basis_for_encoder)
 
-        # Get target activity and frame_behavior for decoder split
+        # Train the decoder model to predict the target neuron activity from the position basis
         _, target_data_decoder, frame_behavior_decoder = self.get_session_data(session, spks_type, decoder_split)
-
-        # Create a position basis and split it for encoder / decoder
-        basis_for_encoder = self.make_position_basis(session, frame_behavior_encoder, hyperparameters)
         basis_for_decoder = self.make_position_basis(session, frame_behavior_decoder, hyperparameters)
-
-        # Note that ReducedRankRegression uses full rank unless specified in its predict() method.
-        encoder = ReducedRankRegression(alpha=hyperparameters.alpha, fit_intercept=self.fit_intercept)
-        decoder = ReducedRankRegression(alpha=hyperparameters.alpha, fit_intercept=self.fit_intercept)
-        encoder = encoder.fit(source_data_encoder.T, basis_for_encoder)
+        decoder = RidgeRegression(alpha=hyperparameters.alpha_decoder, fit_intercept=self.fit_intercept)
         decoder = decoder.fit(basis_for_decoder, target_data_decoder.T)
-        return encoder, decoder
+
+        if self.predict_latents:
+            return encoder, decoder
+        else:
+            return decoder
 
     def predict(
         self,
         session: B2Session,
-        rbfpos_model: tuple[ReducedRankRegression, ReducedRankRegression],
+        rbfpos_model: Union[RidgeRegression, tuple[RidgeRegression, RidgeRegression]],
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        split: Optional["SplitName"] = "test",
         hyperparameters: Optional[RBFPosHyperparameters] = None,
+        nan_safe: bool = False,
     ) -> tuple[np.ndarray, dict]:
         """Predict the target place field activity for a session.
 
@@ -356,18 +372,21 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         ----------
         session : B2Session
             The session to predict the target place field activity for.
-        rbfpos_model : tuple[ReducedRankRegression, ReducedRankRegression]
-            The trained encoder and decoder models. The encoder model predicts position basis from activity of the source
-            neurons, and the decoder model predicts activity of the target neurons from the position basis.
+        rbfpos_model : Union[RidgeRegression, tuple[RidgeRegression, RidgeRegression]]
+            The trained encoder and decoder models. If predict_latents is False, rbfpos_model is a single RidgeRegression object corresponding to the decoder model.
+            If predict_latents is True, rbfpos_model is a tuple of RidgeRegression objects corresponding to the encoder and decoder models. Otherwise, it is just the decoder model.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session
             provided as input.
-        split : Optional[SplitName]
+        split : Optional["SplitName"]
             The split to use for the prediction. If None, uses the split from the session
             provided as input. Default is "test".
         hyperparameters : Optional[RBFPosHyperparameters]
             The hyperparameters used for the model. These are not actually used for prediction so the presence of this parameter
             is ignored and only here for consistency with other model types.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and raise an error if found.
+            If False, will filter out NaN samples from predictions.
 
         Returns
         -------
@@ -381,18 +400,41 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
 
         # Make the position basis... of the "true" position
         position_basis = self.make_position_basis(session, frame_behavior, hyperparameters)
+        extras = {"position_basis": np.array(position_basis)}
 
-        # Predict the position basis with the encoder model
-        position_basis_predicted = rbfpos_model[0].predict(source_data.T, nonnegative=self.nonnegative)
+        if self.predict_latents:
+            # Predict the position basis with the encoder model, then the target from the predicted basis
+            position_basis_predicted = rbfpos_model[0].predict(source_data.T, nonnegative=self.nonnegative)
+            prediction = rbfpos_model[1].predict(position_basis_predicted, nonnegative=self.nonnegative).T
+            extras["position_basis_predicted"] = np.array(position_basis_predicted)
 
-        # Predict the activity with the decoder model
-        prediction = rbfpos_model[1].predict(position_basis_predicted, nonnegative=self.nonnegative).T
+        else:
+            # Predict the target from the true position basis
+            prediction = rbfpos_model.predict(position_basis, nonnegative=self.nonnegative).T
 
-        extras = {
-            "position_basis": np.array(position_basis),
-            "position_basis_predicted": np.array(position_basis_predicted),
-        }
-        return np.array(prediction), extras
+        prediction = np.array(prediction)
+
+        # Check for NaNs in prediction and handle based on nan_safe
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                num_nan = np.sum(idx_nan_samples)
+                total = len(idx_nan_samples)
+                raise ValueError(f"{num_nan} / {total} samples have NaN values in prediction!")
+        else:
+            # Filter out NaN samples
+            idx_valid = ~idx_nan_samples
+            prediction = prediction[:, idx_valid]
+            if "position_basis" in extras:
+                extras["position_basis"] = extras["position_basis"][idx_valid]
+            if "position_basis_predicted" in extras:
+                extras["position_basis_predicted"] = extras["position_basis_predicted"][idx_valid]
+
+            # Track which original samples are valid
+            extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+
+        return prediction, extras
 
     def make_position_basis(
         self,
@@ -437,7 +479,7 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         basis = torch.tensor(norm.pdf(frame_behavior.position[:, None], basis_centers, basis_width), dtype=torch.float32)
 
         # Now we need to divide it by environment (right now it's agnostic)
-        environments = np.unique(frame_behavior.environment)
+        environments = session.environments
         env_idx = torch.tensor(np.searchsorted(environments, frame_behavior.environment))
         basis_by_env = torch.zeros((len(frame_behavior.position), len(environments), hyperparameters.num_basis))
 
@@ -447,7 +489,7 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         return basis_by_env.view(len(frame_behavior.position), -1)
 
     @property
-    def _model_hyperparameters(self) -> type[RBFPosHyperparameters]:
+    def _model_hyperparameters(self) -> Type[RBFPosHyperparameters]:
         """Return the hyperparameter class constructor for RBFPosModel.
 
         Returns
@@ -463,12 +505,18 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         Returns
         -------
         str
-            The model name identifier, either "rbfpos" or "rbfpos_leak" for RBFPosModel.
+            The model name identifier, "rbfpos", "rbfpos_decoder_only", or "rbfpos_leak" for RBFPosModel.
+            The "_decoder_only" suffix indicates that the model was trained to predict target neurons from
+            True position basis, rather than a prediction of the position basis from source neurons..
             The "_leak" suffix indicates that the model was trained without double-cross-validation,
             which allows for non-spatial leakage between activity and position in the training set.
+
+            Note that if predict_latents is False, split_train is ignored.
         """
         model_name = "rbfpos"
-        if not self._split_train:
+        if not self.predict_latents:
+            model_name += "_decoder_only"
+        elif not self.split_train:
             model_name += "_leak"
         return model_name
 
@@ -494,7 +542,7 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "train",
+        split: Optional["SplitName"] = "train",
         hyperparameters: Optional[ReducedRankRegressionHyperparameters] = None,
     ) -> ReducedRankRegression:
         """Train the model by fitting the reduced rank regression model to the training data.
@@ -505,7 +553,7 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
             The session to train the reduced rank regression model on.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        split: Optional[SplitName]
+        split: Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         hyperparameters : Optional[ReducedRankRegressionHyperparameters]
             The hyperparameters to use for the reduced rank regression model. If None, uses the default hyperparameters for the model.
@@ -530,8 +578,9 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         session: B2Session,
         rrr_model: ReducedRankRegression,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        split: Optional["SplitName"] = "test",
         hyperparameters: Optional[ReducedRankRegressionHyperparameters] = None,
+        nan_safe: bool = False,
     ) -> tuple[np.ndarray, dict]:
         """Predict the target place field activity for a session.
 
@@ -544,12 +593,15 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session
             provided as input.
-        split : Optional[SplitName]
+        split : Optional["SplitName"]
             The split to use for the prediction. If None, uses the split from the session
             provided as input. Default is "test".
         hyperparameters : Optional[ReducedRankRegressionHyperparameters]
             The hyperparameters used for the model. These are not actually used for prediction so the presence of this parameter
             is ignored and only here for consistency with other model types.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and raise an error if found.
+            If False, will filter out NaN samples from predictions.
 
         Returns
         -------
@@ -563,10 +615,35 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
 
         # Predict the target activity with the trained model
         prediction = rrr_model.predict(source_data.T, rank=hyperparameters.rank, nonnegative=self.nonnegative).T
-        return np.array(prediction), {}
+        latents = rrr_model.predict_latent(source_data.T, rank=hyperparameters.rank)
+        extras = {
+            "latents": np.array(latents).T,
+        }
+
+        prediction = np.array(prediction)
+
+        # Check for NaNs in prediction and handle based on nan_safe
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                num_nan = np.sum(idx_nan_samples)
+                total = len(idx_nan_samples)
+                raise ValueError(f"{num_nan} / {total} samples have NaN values in prediction!")
+        else:
+            # Filter out NaN samples
+            idx_valid = ~idx_nan_samples
+            prediction = prediction[:, idx_valid]
+            if "latents" in extras:
+                extras["latents"] = extras["latents"][:, idx_valid]
+
+            # Track which original samples are valid
+            extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+
+        return prediction, extras
 
     @property
-    def _model_hyperparameters(self) -> type[ReducedRankRegressionHyperparameters]:
+    def _model_hyperparameters(self) -> Type[ReducedRankRegressionHyperparameters]:
         """Return the hyperparameter class constructor for ReducedRankRegressionModel.
 
         Returns

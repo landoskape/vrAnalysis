@@ -1,24 +1,30 @@
-from typing import Literal, Optional, TYPE_CHECKING, Any, Union, overload, TypeVar, Generic
+from typing import Literal, Optional, TYPE_CHECKING, Any, TypeVar, Generic, Type
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from itertools import product
 from joblib import dump, load
 from tqdm import tqdm
 import numpy as np
-import pandas as pd
 import torch
+import pandas as pd
+import optuna
+from optuna.samplers import TPESampler
+from tqdm.auto import tqdm as tqdm_async
 from vrAnalysis.helpers import stable_hash
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import FrameBehavior
-from dimilibi import measure_r2, scaled_mse, mse
+from dimilibi import measure_r2, mse
 
 if TYPE_CHECKING:
-    from .registry import PopulationRegistry
+    from ..registry import PopulationRegistry, SplitName
     from optuna import Trial
 
-SplitName = Literal["train", "train0", "train1", "validation", "test", "full"]
-
 H = TypeVar("H", bound="HyperparametersBase")
+
+# We've got beautiful nested Taqqadums and Optuna's like meeeeeeeeeeeeeee... nope.
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+MINIMUM_NON_NAN_FRACTION: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -61,7 +67,7 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "train",
+        split: Optional["SplitName"] = "train",
         hyperparameters: Optional[H] = None,
     ) -> Any:
         """Train the model on the given session.
@@ -72,7 +78,7 @@ class RegressionModel(ABC, Generic[H]):
             The session to train on.
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the session's default.
-        split : Optional[SplitName]
+        split : Optional["SplitName"]
             The data split to use for training. Default is "train".
         hyperparameters : Optional[Hyperparameters]
             Model-specific hyperparameters. If None, uses the model's default.
@@ -90,8 +96,9 @@ class RegressionModel(ABC, Generic[H]):
         session: B2Session,
         coefficients: Any,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        split: Optional["SplitName"] = "test",
         hyperparameters: Optional[H] = None,
+        nan_safe: bool = False,
     ) -> tuple[np.ndarray, dict]:
         """Predict target activity for a session.
 
@@ -103,10 +110,13 @@ class RegressionModel(ABC, Generic[H]):
             Model-specific trained coefficients (output of train()).
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the session's default.
-        split : Optional[SplitName]
+        split : Optional["SplitName"]
             The data split to use for prediction. Default is "test".
         hyperparameters : Optional[Hyperparameters]
             Model-specific hyperparameters. If None, uses the model's default.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and raise an error if found.
+            If False, will filter out NaN samples from predictions.
 
         Returns
         -------
@@ -117,7 +127,7 @@ class RegressionModel(ABC, Generic[H]):
 
     @property
     @abstractmethod
-    def _model_hyperparameters(self) -> type[H]: ...
+    def _model_hyperparameters(self) -> Type[H]: ...
     @abstractmethod
     def _get_model_name(self) -> str: ...
 
@@ -125,7 +135,7 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        split: Optional[SplitName] = "test",
+        split: Optional["SplitName"] = "test",
     ) -> tuple[torch.Tensor, torch.Tensor, FrameBehavior]:
         """Get the activity data and frame behavior for a session.
 
@@ -135,7 +145,7 @@ class RegressionModel(ABC, Generic[H]):
             The session to get the activity data for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the session's default.
-        split : Optional[SplitName]
+        split : Optional["SplitName"]
             The split to use for the activity data. If None, uses the split from the session provided as input. Default is "test".
 
         Returns
@@ -156,66 +166,173 @@ class RegressionModel(ABC, Generic[H]):
         frame_behavior = frame_behavior.filter(idx)
         return source_data, target_data, frame_behavior
 
-    @overload
     def score(
         self,
         session: B2Session,
-        reduce: Literal["mean"],
-        full_results: Literal[False],
+        trained_model: Any,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        test_split: Optional[SplitName] = "test",
+        split: Optional["SplitName"] = "test",
         hyperparameters: Optional[H] = None,
-        nan_safe: bool = True,
-    ) -> float: ...
-    @overload
-    def score(
+        nan_safe: bool = False,
+    ) -> float:
+        """Score the model on the given session.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to score the model on.
+        trained_model : Any
+            The trained model to score.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        split : Optional["SplitName"]
+            The split to use for the scoring. If None, uses the split from the session provided as input. Default is "test".
+        hyperparameters : Optional[Hyperparameters]
+            The hyperparameters to use for the model. If None, uses the default hyperparameters for the model. Must be the appropriate subclass for the model.
+        nan_safe : bool = True
+            If True, will check for NaN values in predictions and metrics and raise errors if found. If False, will remove NaN samples from the prediction and target data.
+
+        Returns
+        -------
+        score : float
+            The MSE of the model on the session at the requested split.
+        """
+        predicted_data, extras = self.predict(
+            session,
+            trained_model,
+            spks_type=spks_type,
+            split=split,
+            hyperparameters=hyperparameters,
+            nan_safe=nan_safe,
+        )
+        target_data = self.get_session_data(session, spks_type, split)[1]
+
+        # If nan_safe=False, filter target_data to match filtered predictions
+        if not nan_safe and "idx_valid_predictions" in extras:
+            if (len(extras["idx_valid_predictions"]) / len(target_data)) < MINIMUM_NON_NAN_FRACTION:
+                raise ValueError(
+                    f"Too many NaN values in predictions! {len(extras['idx_valid_predictions'])} / {len(target_data)} samples have NaN values in predictions!!!"
+                )
+            idx_valid = extras["idx_valid_predictions"]
+            target_data = target_data[:, idx_valid]
+
+        metrics = self.evaluate(predicted_data, target_data, nan_safe=nan_safe)
+        return metrics["mse"]
+
+    def evaluate(
+        self,
+        prediction: np.ndarray,
+        target: np.ndarray,
+        nan_safe: bool = False,
+    ) -> dict[str, float]:
+        """Evaluate the model on the given prediction and target data.
+
+        Parameters
+        ----------
+        prediction : np.ndarray
+            The predicted data.
+        target : np.ndarray
+            The target data.
+        nan_safe : bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found. If False, will remove NaN samples from the prediction and target data.
+
+        Returns
+        -------
+        metrics : dict[str, float]
+            A dictionary with the metrics as keys and the values as the metrics.
+        """
+        # Check for NaN values in predictions
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                raise ValueError(f"{np.sum(idx_nan_samples)} / {len(idx_nan_samples)} samples have nan predictions!!!")
+        else:
+            prediction = prediction[:, ~idx_nan_samples]
+            target = target[:, ~idx_nan_samples]
+
+        # Evaluate with the desired metrics
+        metrics = dict(
+            mse=mse(prediction, target, reduce="mean", dim=None),
+            r2=measure_r2(prediction, target, reduce="mean", dim=None),
+        )
+
+        if nan_safe:
+            for metric in metrics.values():
+                if np.any(np.isnan(metric)):
+                    raise ValueError(f"NaN values in {metric}!!!")
+
+        return metrics
+
+    class Report(Generic[H]):
+        """A namedtuple-like class containing a full report of the model.
+
+        Parameters
+        ----------
+        metrics : dict[str, float]
+            A dictionary with the metrics as keys and the values as the metrics.
+        predicted_data : np.ndarray
+            The predicted data.
+        target_data : np.ndarray
+            The target data.
+        trained_model : Any
+            The trained model.
+        hyperparameters : H
+            The hyperparameters used for the model.
+        extras : dict[str, Any]
+            Any extras returned by the predict method.
+        """
+
+        metrics: dict[str, float]
+        predicted_data: np.ndarray
+        target_data: np.ndarray
+        trained_model: Any
+        hyperparameters: H
+        extras: dict[str, Any]
+
+        def __init__(
+            self,
+            metrics: dict[str, float],
+            predicted_data: np.ndarray,
+            target_data: np.ndarray,
+            trained_model: Any,
+            hyperparameters: H,
+            extras: dict[str, Any],
+        ):
+            self.metrics = metrics
+            self.predicted_data = predicted_data
+            self.target_data = target_data
+            self.trained_model = trained_model
+            self.hyperparameters = hyperparameters
+            self.extras = extras
+
+        def __repr__(self) -> str:
+            return (
+                f"Report(metrics={self.metrics!r}, predicted_data=..., "
+                f"target_data=..., trained_model=..., "
+                f"hyperparameters={self.hyperparameters!r}, extras={self.extras!r})"
+            )
+
+        def _asdict(self) -> dict:
+            """Return a dict representation of the Report."""
+            return {
+                "metrics": self.metrics,
+                "predicted_data": self.predicted_data,
+                "target_data": self.target_data,
+                "trained_model": self.trained_model,
+                "hyperparameters": self.hyperparameters,
+                "extras": self.extras,
+            }
+
+    def process(
         self,
         session: B2Session,
-        reduce: Literal["none"],
-        full_results: Literal[False],
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        test_split: Optional[SplitName] = "test",
+        train_split: Optional["SplitName"] = "train",
+        test_split: Optional["SplitName"] = "test",
         hyperparameters: Optional[H] = None,
-        nan_safe: bool = True,
-    ) -> np.ndarray: ...
-    @overload
-    def score(
-        self,
-        session: B2Session,
-        reduce: Literal["mean"],
-        full_results: Literal[True],
-        spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        test_split: Optional[SplitName] = "test",
-        hyperparameters: Optional[H] = None,
-        nan_safe: bool = True,
-    ) -> tuple[float, np.ndarray, np.ndarray, dict]: ...
-    @overload
-    def score(
-        self,
-        session: B2Session,
-        reduce: Literal["none"],
-        full_results: Literal[True],
-        spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        test_split: Optional[SplitName] = "test",
-        hyperparameters: Optional[H] = None,
-        nan_safe: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]: ...
-    def score(
-        self,
-        session: B2Session,
-        spks_type: Optional[SpksTypes] = None,
-        reduce: Literal["mean", "none"] = "mean",
-        train_split: Optional[SplitName] = "train",
-        test_split: Optional[SplitName] = "test",
-        hyperparameters: Optional[H] = None,
-        full_results: bool = False,
-        nan_safe: bool = True,
-    ) -> Union[float, np.ndarray, tuple[Union[float, np.ndarray], np.ndarray, np.ndarray, dict]]:
-        """Score the model on a session.
+        nan_safe: bool = False,
+    ) -> Report[H]:
+        """Process the model on a session and return a full report.
 
         Parameters
         ----------
@@ -224,33 +341,21 @@ class RegressionModel(ABC, Generic[H]):
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session
             provided as input.
-        reduce : Literal["mean", "none"]
-            The reduction to apply to the MSE. If "mean", the mean of the MSE
-            is returned. If "none", the MSE is returned without reduction. Default is "mean".
-        train_split: Optional[SplitName]
+        train_split: Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
-        test_split: Optional[SplitName]
+        test_split: Optional["SplitName"]
             The split to use for the scoring. If None, uses the split from the session
             provided as input. Default is "test".
         hyperparameters: Optional[Hyperparameters]
             The hyperparameters to use for the model. If None, uses the default hyperparameters for the model. Must be the appropriate subclass for the model.
-        full_results: bool = False
-            If True, will also return predicted data, target data, and any extras returned by the predict method.
-        nan_safe: bool = True
-            If True, will check for NaN values in predictions and MSE and raise errors if found.
+        nan_safe: bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
             If False, will skip all NaN checks and allow NaN values to pass through.
 
         Returns
         -------
-        mse : Union[float, np.ndarray]
-            The scaled mean squared error of the model on the session. If reduce is "mean", returns a float.
-            If reduce is "none", returns a numpy array with MSE for each neuron.
-        predicted_data : np.ndarray
-            The predicted data for the session. Only returned if full_results=True.
-        target_data : np.ndarray
-            The target data for the session. Only returned if full_results=True.
-        extras : dict
-            Any extras returned by the predict method. Only returned if full_results=True.
+        report : Report
+            A Report namedtuple containing a full report of the model.
         """
         # Train model and predict target activity
         hyperparameters = hyperparameters or self.hyperparameters
@@ -266,35 +371,36 @@ class RegressionModel(ABC, Generic[H]):
             spks_type,
             split=test_split,
             hyperparameters=hyperparameters,
+            nan_safe=nan_safe,
+        )
+        target_data = self.get_session_data(session, spks_type, test_split)[1]
+
+        # If nan_safe=False, filter target_data to match filtered predictions
+        if not nan_safe and "idx_valid_predictions" in extras:
+            idx_valid = extras["idx_valid_predictions"]
+            target_data = target_data[:, idx_valid]
+
+        metrics = self.evaluate(predicted_data, target_data, nan_safe=nan_safe)
+
+        report = self.Report(
+            metrics=metrics,
+            predicted_data=predicted_data,
+            target_data=target_data,
+            trained_model=trained_model,
+            hyperparameters=hyperparameters,
+            extras=extras,
         )
 
-        # Check for NaN values in predictions
-        if nan_safe:
-            idx_nan_samples = np.any(np.isnan(predicted_data), axis=0)
-            if np.any(idx_nan_samples):
-                raise ValueError(f"{np.sum(idx_nan_samples)} / {len(idx_nan_samples)} samples have nan predictions in {session.session_print()}!!!")
-
-        # Measure score (scaled mean squared error)
-        target_data = self.get_session_data(session, spks_type, test_split)[1]
-        score = mse(predicted_data, target_data, reduce=reduce, dim=1)
-        if reduce == "none":
-            score = np.array(score)
-        else:
-            score = score
-        if nan_safe:
-            if np.any(np.isnan(score)):
-                raise ValueError(f"NaN MSE values in {session.session_print()}!!!")
-        if full_results:
-            return score, predicted_data, np.array(target_data), extras
-        return score
+        return report
 
     def optimize(
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
         method: Literal["grid", "optuna"] = "grid",
+        nan_safe: bool = False,
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize the hyperparameters of the model.
 
@@ -304,29 +410,29 @@ class RegressionModel(ABC, Generic[H]):
             The session to optimize the hyperparameters for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
         method : Literal["grid", "optuna"]
             The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. Default is "grid".
+        nan_safe: bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+            If False, will skip all NaN checks and allow NaN values to pass through.
 
         Returns
         -------
-        best_params : Hyperparameters
+        best_params : dict
             The best hyperparameters for the model.
         best_score : float
             The best score for the model.
         results_df : pd.DataFrame
             A DataFrame with all the results from the optimization.
         """
-        # Use fixed hyperparameters for now which define the full search space
-        hyperparameters = self._model_hyperparameters()
-
         if method == "grid":
-            return self._optimize_grid(session, spks_type, train_split, validation_split, hyperparameters)
+            return self._optimize_grid(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
         elif method == "optuna":
-            return self._optimize_optuna(session, spks_type, train_split, validation_split, hyperparameters)
+            return self._optimize_optuna(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
         else:
             raise ValueError(f"Invalid method: {method}. Must be one of ['grid', 'optuna'].")
 
@@ -334,9 +440,9 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: SpksTypes,
-        train_split: SplitName,
-        validation_split: SplitName,
-        hyperparameters: H,
+        train_split: "SplitName",
+        validation_split: "SplitName",
+        nan_safe: bool = False,
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize the hyperparameters of the model using grid search.
 
@@ -346,12 +452,13 @@ class RegressionModel(ABC, Generic[H]):
             The session to optimize the hyperparameters for.
         spks_type : SpksTypes
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        train_split : SplitName
+        train_split : "SplitName"
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
-        validation_split : SplitName
+        validation_split : "SplitName"
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
-        hyperparameters : Hyperparameters
-            The hyperparameters to use for the model. If None, uses the default hyperparameters for the model.
+        nan_safe: bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+            If False, will skip all NaN checks and allow NaN values to pass through.
 
         Returns
         -------
@@ -362,75 +469,200 @@ class RegressionModel(ABC, Generic[H]):
         results_df : pd.DataFrame
             A DataFrame with all the results from the grid search.
         """
-        hyperparameter_grid = hyperparameters.generate_grid()
+        HyperparameterClass = self._model_hyperparameters()
+        independent_optimization = HyperparameterClass.independent_optimization
+        if independent_optimization:
+            search_space = HyperparameterClass.get_search_space()
+            training_grid = HyperparameterClass.generate_grid(search_space["training"])
+            prediction_grid = HyperparameterClass.generate_grid(search_space["prediction"])
+        else:
+            # If not independent, the search space will simply return the full space.
+            # So we make a training_grid to iterate in the outer loop, and then we make an
+            # empty prediction_grid so our inner loop just passes through the hyperparameters and runs once.
+            search_space = HyperparameterClass.get_search_space()
+            training_grid = HyperparameterClass.generate_grid(search_space)
+            prediction_grid = [{}]
+
         best_params = None
         best_score = float("inf")
         results = []
-        for params in tqdm(hyperparameter_grid, desc="Grid search", leave=False):
-            score = self.score(
-                session,
-                spks_type,
-                train_split=train_split,
-                test_split=validation_split,
-                hyperparameters=self._model_hyperparameters.from_dict(params),
-            )
-            result = params.copy()
-            result["score"] = score
-            results.append(result)
 
-            if score < best_score:
-                best_score = score
-                best_params = params
+        # Check overlap between training and prediction hyperparameters
+        for training_params in training_grid:
+            for prediction_params in prediction_grid:
+                if set(prediction_params) & set(training_params):
+                    raise ValueError(
+                        f"Overlap between training and prediction hyperparameters is not allowed: "
+                        f"choose where to put: {set(prediction_params) & set(training_params)}"
+                    )
+
+        # Make progress bars
+        if independent_optimization:
+            training_grid = tqdm(training_grid, desc="Grid search (training)", leave=False)
+            prediction_grid = tqdm(prediction_grid, desc="Grid search (prediction)", leave=False)
+        else:
+            training_grid = tqdm(training_grid, desc="Grid search", leave=False)
+
+        # Perform grid search
+        for training_params in training_grid:
+            hyperparameters = HyperparameterClass.from_dict(training_params)
+            trained_model = self.train(session, spks_type=spks_type, split=train_split, hyperparameters=hyperparameters)
+            for prediction_params in prediction_grid:
+                hyperparameters.update_from_dict(prediction_params)
+                score = self.score(
+                    session,
+                    trained_model,
+                    spks_type=spks_type,
+                    split=validation_split,
+                    hyperparameters=hyperparameters,
+                    nan_safe=nan_safe,
+                )
+                final_params = vars(hyperparameters)
+                result = final_params | dict(score=score)
+                results.append(result)
+                if score < best_score:
+                    best_score = score
+                    best_params = final_params
 
         # Create DataFrame with all results
         results_df = pd.DataFrame(results)
-
         return best_params, best_score, results_df
 
     def _optimize_optuna(
         self,
         session: B2Session,
         spks_type: SpksTypes,
-        train_split: SplitName,
-        validation_split: SplitName,
-        hyperparameters: H,
-    ) -> dict:
-        raise NotImplementedError("Optuna optimization is not implemented yet.")
+        train_split: "SplitName",
+        validation_split: "SplitName",
+        n_trials: int = 50,
+        timeout: float | None = None,
+        sampler: optuna.samplers.BaseSampler | None = None,
+        nan_safe: bool = False,
+    ) -> tuple[dict, float, pd.DataFrame]:
+        """Optimize the hyperparameters of the model using Optuna.
 
-    @overload
+        Parameters
+        ----------
+        session : B2Session
+            The session to optimize the hyperparameters for.
+        spks_type : SpksTypes
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        train_split : "SplitName"
+            The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
+        validation_split : "SplitName"
+            The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
+        n_trials : int
+            Number of Optuna trials.
+        timeout : float | None
+            Optional timeout in seconds (Optuna will stop once reached).
+        sampler : optuna.samplers.BaseSampler | None
+            Optional Optuna sampler; if None, defaults are used.
+        nan_safe: bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+            If False, will skip all NaN checks and allow NaN values to pass through.
+
+        Returns
+        -------
+        best_params : dict
+            The best hyperparameters for the model.
+        best_score : float
+            The best score for the model.
+        results_df : pd.DataFrame
+            A DataFrame with all the results from the Optuna optimization.
+        """
+        HyperparameterClass = self._model_hyperparameters
+        independent_optimization = HyperparameterClass.independent_optimization
+
+        if sampler is None:
+            sampler = TPESampler(seed=42)
+
+        results: list[dict] = []
+
+        def objective(trial: optuna.Trial) -> float:
+            if independent_optimization:
+                full_params = HyperparameterClass.get_optuna_space(trial)
+                training_params = full_params["training"]
+                prediction_space = full_params["prediction"]  # e.g. a dict for grid generation
+                prediction_grid = HyperparameterClass.generate_grid(prediction_space)
+            else:
+                training_params = HyperparameterClass.get_optuna_space(trial)
+                prediction_grid = [{}]
+
+            hyperparameters = HyperparameterClass.from_dict(training_params)
+            trained_model = self.train(
+                session,
+                spks_type=spks_type,
+                split=train_split,
+                hyperparameters=hyperparameters,
+            )
+
+            # Run a grid over prediction hyperparameters (if exists, otherwise will just run once with general suggestion)
+            best_score = float("inf")
+            best_params = None
+            for prediction_params in prediction_grid:
+                if set(prediction_params) & set(training_params):
+                    raise ValueError(
+                        f"Overlap between training and prediction hyperparameters is not allowed: "
+                        f"choose where to put: {set(prediction_params) & set(training_params)}"
+                    )
+                hyperparameters.update_from_dict(prediction_params)
+                score = self.score(
+                    session,
+                    trained_model,
+                    spks_type=spks_type,
+                    split=validation_split,
+                    hyperparameters=hyperparameters,
+                    nan_safe=nan_safe,
+                )
+                if np.isnan(score):
+                    # Invalidate the trial with infinite score just to be sure
+                    score = float("inf")
+
+                final_params = vars(hyperparameters)
+                result = final_params | dict(score=score)
+                results.append(result)
+                if score < best_score:
+                    best_score = score
+                    best_params = final_params
+
+            # Attach best params to the trial so we can recover them later
+            trial.set_user_attr("best_params", best_params)
+
+            # Optuna only sees a single scalar per trial: the best score for this training config
+            trial.set_user_attr("score", float(best_score))
+            return best_score
+
+        study = optuna.create_study(
+            study_name="my_model_optuna",
+            direction="minimize",
+            sampler=sampler,
+        )
+
+        with tqdm_async(total=n_trials, desc="Optuna search", leave=False) as pbar:
+            study.optimize(
+                objective,
+                n_trials=n_trials,
+                timeout=timeout,
+                callbacks=[lambda study, trial: pbar.update(1)],
+                gc_after_trial=True,
+            )
+
+        best_trial = study.best_trial
+        best_params = best_trial.user_attrs["best_params"]
+        best_score = best_trial.user_attrs["score"]
+        results_df = pd.DataFrame(results)
+
+        return best_params, best_score, results_df
+
     def get_best_hyperparameters(
         self,
         session: B2Session,
-        full_results: Literal[False],
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
         method: Literal["grid", "optuna"] = "grid",
         force_remake: bool = False,
-    ) -> H: ...
-
-    @overload
-    def get_best_hyperparameters(
-        self,
-        session: B2Session,
-        full_results: Literal[True],
-        spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
-        force_remake: bool = False,
-    ) -> tuple[H, float, pd.DataFrame]: ...
-
-    def get_best_hyperparameters(
-        self,
-        session: B2Session,
-        spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
-        full_results: bool = False,
-        force_remake: bool = False,
-    ) -> H:
+    ) -> tuple[H, float, pd.DataFrame]:
         """Get the best hyperparameters for the model.
 
         Parameters
@@ -439,15 +671,12 @@ class RegressionModel(ABC, Generic[H]):
             The session to get the best hyperparameters for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
         method : Literal["grid", "optuna"]
             The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. Default is "grid".
-        full_results: bool = False
-            Whether to return the full optimization results. If True, returns a dictionary with the best hyperparameters, best score,
-            and results DataFrame. If False, returns only the best hyperparameters. Default is False.
         force_remake: bool = False
             If True, will re-run optimization and save the results even if it already exists.
             (default is False)
@@ -479,23 +708,19 @@ class RegressionModel(ABC, Generic[H]):
                 dump(full_optimization_results, cache_path)
 
         hyperparameters = self._model_hyperparameters.from_dict(best_params)
-        if full_results:
-            return hyperparameters, best_score, results_df
-        else:
-            return hyperparameters
+        return hyperparameters, best_score, results_df
 
     def get_best_score(
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        reduce: Literal["mean", "none"] = "mean",
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
-        test_split: Optional[SplitName] = "test",
-        method: Literal["grid", "optuna"] = "grid",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
+        test_split: Optional["SplitName"] = "test",
+        method: Literal["grid", "optuna", "best"] = "grid",
         force_remake: bool = False,
         force_reoptimize: bool = False,
-    ) -> float:
+    ) -> dict[str, float]:
         """Get the best score for the model.
 
         Parameters
@@ -504,17 +729,14 @@ class RegressionModel(ABC, Generic[H]):
             The session to get the best score for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
-        reduce : Literal["mean", "none"]
-            The reduction to apply to the MSE. If "mean", the mean of the MSE
-            is returned. If "none", the MSE is returned without reduction. Default is "mean".
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
-        test_split : Optional[SplitName]
+        test_split : Optional["SplitName"]
             The split to use for the testing. If None, uses the split from the session provided as input. Default is "test".
-        method : Literal["grid", "optuna"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. Default is "grid".
+        method : Literal["grid", "optuna", "best"]
+            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "best", uses whichever method has the best score. Default is "grid".
         force_remake: bool = False
             If True, will re-measure the score and save the results even if it already exists.
             (default is False)
@@ -524,38 +746,100 @@ class RegressionModel(ABC, Generic[H]):
 
         Returns
         -------
-        best_score : float
-            The best score (MSE) for the model. Lower is better.
+        metrics : dict[str, float]
+            A dictionary with the metrics as keys and the values as the metrics.
         """
+        if spks_type is None:
+            spks_type = session.params.spks_type
+
+        # Handle "best" method by trying both grid and optuna
+        if method == "best":
+            grid_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, "grid")
+            optuna_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, "optuna")
+            grid_path = self.registry.registry_paths.score_path / f"{grid_key}.joblib"
+            optuna_path = self.registry.registry_paths.score_path / f"{optuna_key}.joblib"
+
+            # Check which exists and has better score
+            if grid_path.exists() and optuna_path.exists() and not force_remake and not force_reoptimize:
+                grid_metrics = load(grid_path)
+                optuna_metrics = load(optuna_path)
+                # Compare MSE scores (lower is better)
+                if grid_metrics.get("mse", float("inf")) <= optuna_metrics.get("mse", float("inf")):
+                    return grid_metrics
+                else:
+                    return optuna_metrics
+            elif grid_path.exists() and not force_remake and not force_reoptimize:
+                return load(grid_path)
+            elif optuna_path.exists() and not force_remake and not force_reoptimize:
+                return load(optuna_path)
+            else:
+                # Try both and return the best
+                grid_metrics = self.get_best_score(
+                    session,
+                    spks_type,
+                    train_split,
+                    validation_split,
+                    test_split,
+                    "grid",
+                    force_remake,
+                    force_reoptimize,
+                )
+                optuna_metrics = self.get_best_score(
+                    session,
+                    spks_type,
+                    train_split,
+                    validation_split,
+                    test_split,
+                    "optuna",
+                    force_remake,
+                    force_reoptimize,
+                )
+                if grid_metrics.get("mse", float("inf")) <= optuna_metrics.get("mse", float("inf")):
+                    return grid_metrics
+                else:
+                    return optuna_metrics
+
         # First get the cache key to identify a potential cached result
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
         cache_path = self.registry.registry_paths.score_path / f"{cache_key}.joblib"
 
         if cache_path.exists() and not force_remake and not force_reoptimize:
             # If a cache exists, load it and return the best score
-            scores = load(cache_path)
+            metrics = load(cache_path)
 
         else:
             # If no cache exists, get the best hyperparameters and score the model and save the results to the cache
-            hyperparameters = self.get_best_hyperparameters(session, spks_type, train_split, validation_split, method, force_remake=force_reoptimize)
-            # We always use reduce="none" because we want to save the full score array
-            scores = self.score(session, spks_type, reduce="none", train_split=train_split, test_split=test_split, hyperparameters=hyperparameters)
+            hyperparameters = self.get_best_hyperparameters(
+                session,
+                spks_type,
+                train_split,
+                validation_split,
+                method,
+                force_remake=force_reoptimize,
+            )[0]
+            report = self.process(
+                session,
+                spks_type,
+                train_split=train_split,
+                test_split=test_split,
+                hyperparameters=hyperparameters,
+            )
+            mse_roi = mse(report.predicted_data, report.target_data, reduce="none", dim=1)
+            r2_roi = measure_r2(report.predicted_data, report.target_data, reduce="none", dim=1)
+            report.metrics["mse_roi"] = np.array(mse_roi)
+            report.metrics["r2_roi"] = np.array(r2_roi)
+            metrics = report.metrics
             if self.autosave:
-                dump(scores, cache_path)
+                dump(metrics, cache_path)
 
-        if reduce == "mean":
-            return np.mean(scores)
-        elif reduce == "none":
-            return scores
-        else:
-            raise ValueError(f"Invalid reduction: {reduce}. Must be one of ['mean', 'none'].")
+        return metrics
 
     def check_existing_hyperparameters(
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
         method: Literal["grid", "optuna"] = "grid",
     ) -> bool:
         """Check if the hyperparameters for the model exist in the hyperparameter cache."""
@@ -567,9 +851,9 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
-        test_split: Optional[SplitName] = "test",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
+        test_split: Optional["SplitName"] = "test",
         method: Literal["grid", "optuna"] = "grid",
     ) -> bool:
         """Check if the score for the model exist in the score cache."""
@@ -581,8 +865,8 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
         method: Literal["grid", "optuna"] = "grid",
     ) -> str:
         """Get the cache key for the hyperparameters of the model.
@@ -604,9 +888,9 @@ class RegressionModel(ABC, Generic[H]):
             The session to get the cache key for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the spks_type from the session.
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for training. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
         method : Literal["grid", "optuna"]
             The optimization method. Default is "grid".
@@ -656,9 +940,9 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
-        test_split: Optional[SplitName] = "test",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
+        test_split: Optional["SplitName"] = "test",
         method: Literal["grid", "optuna"] = "grid",
     ) -> str:
         """Get the cache key for the score of the model.
@@ -674,11 +958,11 @@ class RegressionModel(ABC, Generic[H]):
             The session to get the cache key for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the spks_type from the session.
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for training. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
-        test_split : Optional[SplitName]
+        test_split : Optional["SplitName"]
             The split to use for testing. Default is "test".
         method : Literal["grid", "optuna"]
             The method used for optimization. Default is "grid".
@@ -699,8 +983,8 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
         method: Literal["grid", "optuna"] = "grid",
     ) -> None:
         """Clear the cached hyperparameter for the model.
@@ -711,9 +995,9 @@ class RegressionModel(ABC, Generic[H]):
             The session to clear the cached hyperparameter for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the spks_type from the session.
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for training. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
         method : Literal["grid", "optuna"]
             The method used for optimization. Default is "grid".
@@ -727,9 +1011,9 @@ class RegressionModel(ABC, Generic[H]):
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
-        train_split: Optional[SplitName] = "train",
-        validation_split: Optional[SplitName] = "validation",
-        test_split: Optional[SplitName] = "test",
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
+        test_split: Optional["SplitName"] = "test",
         method: Literal["grid", "optuna"] = "grid",
     ) -> None:
         """Clear the cached score for the model.
@@ -740,11 +1024,11 @@ class RegressionModel(ABC, Generic[H]):
             The session to clear the cached score for.
         spks_type : Optional[SpksTypes]
             The type of spike data to use. If None, uses the spks_type from the session.
-        train_split : Optional[SplitName]
+        train_split : Optional["SplitName"]
             The split to use for training. Default is "train".
-        validation_split : Optional[SplitName]
+        validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
-        test_split : Optional[SplitName]
+        test_split : Optional["SplitName"]
             The split to use for testing. Default is "test".
         method : Literal["grid", "optuna"]
             The method used for optimization. Default is "grid".
@@ -763,7 +1047,15 @@ class HyperparametersBase(ABC):
     for the hyperparameter. Supports both grid search (for discrete spaces) and Optuna (for continuous
     or high-dimensional spaces).
 
+    Attributes
+    ----------
+    independent_optimization: bool
+        Whether to optimize hyperparameters for training and prediction separately.
+        If True, the get_search_space and get_optuna_space methods should return a dictionary with two keys: "training" and "prediction".
+        If False, the get_search_space and get_optuna_space methods should return a single dictionary with the hyperparameters as keys and the search space for the hyperparameter as values.
     """
+
+    independent_optimization: bool = False
 
     @classmethod
     @abstractmethod
@@ -814,21 +1106,25 @@ class HyperparametersBase(ABC):
         raise NotImplementedError("This method must be implemented in the relevant subclass.")
 
     @classmethod
-    def generate_grid(cls) -> list[dict]:
+    def generate_grid(cls, search_space: dict[str, tuple[Any, ...]]) -> list[dict]:
         """Generate all combinations for grid search.
+
+        Parameters
+        ----------
+        search_space : dict[str, tuple[Any, ...]]
+            The search space for the hyperparameters.
 
         Returns
         -------
         grid : list[dict]
             List of all hyperparameter combinations for grid search.
         """
-        search_space = cls.get_search_space()
         keys = search_space.keys()
         values = search_space.values()
         return [dict(zip(keys, combo)) for combo in product(*values)]
 
     @classmethod
-    def from_dict(cls, params: dict):
+    def from_dict(cls, params: dict) -> "HyperparametersBase":
         """Create instance from dictionary.
 
         Parameters
@@ -841,4 +1137,30 @@ class HyperparametersBase(ABC):
         instance : HyperparametersBase
             Instance of the hyperparameters class with values from the dictionary.
         """
+        if "independent_optimization" in params:
+            params.pop("independent_optimization")
         return cls(**params)
+
+    def update_from_dict(self, params: dict) -> None:
+        """Update the hyperparameters from a dictionary.
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of hyperparameter values.
+        """
+        self.__dict__.update(params)
+
+    @classmethod
+    def from_optuna(cls, params: dict) -> "HyperparametersBase":
+        """Create instance from Optuna parameters.
+
+        Overwrite in cases where the Optuna parameters do not directly match
+        the hyperparameters (like use_smoothing for PlaceFieldHyperparameters).
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of hyperparameter values.
+        """
+        return params

@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import numpy as np
 import numba as nb
+import pandas as pd
 from .. import helpers
 from ..sessions.b2session import B2Session
 from .support import convert_position_to_bins, convolve_toeplitz, get_gauss_kernel, placefield_prediction_numba
@@ -212,6 +213,16 @@ class FrameBehavior:
     def __len__(self) -> int:
         return len(self.position)
 
+    def __getitem__(self, idx) -> "FrameBehavior":
+        """Allows indexing FrameBehavior like arrays to retrieve a subset of the data."""
+        data = {
+            "position": self.position[idx],
+            "speed": self.speed[idx],
+            "environment": self.environment[idx],
+            "trial": self.trial[idx],
+        }
+        return pd.DataFrame(data)
+
 
 def get_frame_behavior(session: B2Session, clear_one_cache: bool = True) -> FrameBehavior:
     """Get position and environment data for each imaging frame.
@@ -326,9 +337,18 @@ def get_placefield(
     smooth_width: Optional[float] = None,
     zero_to_nan: bool = False,
 ) -> Placefield:
-    """Get the place field for a given neuron and environment.
+    """Get the place field over spks for each frame in frame_behavior.
 
-    Assumes that the spks and frame_behavior are sorted in time.
+    Note that the shape of the resulting place field is (num_environments/num_trials, num_bins, num_rois).
+    The num_bins and num_rois are given by dist_edges and spks.shape[1], respectively. The first dimension
+    is determined based on the structure of frame_behavior: if average=True, then num_environments is the
+    number of unique environments in frame_behavior.environment, otherwise it is the number of unique trials
+    in frame_behavior.trial. The placefield.environment refers to the environment over each row (1st dim) of
+    the placefield.placefield array, whether it's an average across trials or each trial separately.
+
+    Critically, if frame_behavior.environment does not contain all environments in the session, then the placefield
+    will not be able to be computed for those environments and the shape might be not what you expect! Fixing shapes
+    is the responsibility of the caller where required to keep this function agnostic to the session structure.
 
     Parameters
     ----------

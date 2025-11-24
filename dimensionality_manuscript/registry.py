@@ -3,16 +3,17 @@ from typing import Optional, Literal, overload
 from pathlib import Path
 from joblib import dump, load
 import numpy as np
-import torch
 from vrAnalysis import files
 from vrAnalysis.helpers import stable_hash
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_frame_behavior, FrameBehavior
 from vrAnalysis.processors.support import convert_position_to_bins
 from dimilibi import Population
-from .base import RegressionModel
-from .models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
-from .hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
+from .regression_models.base import RegressionModel
+from .regression_models.models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
+from .regression_models.hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
+from .subspace_analysis.base import SubspaceModel
+from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace
 
 # Type alias for model names
 ModelName = Literal[
@@ -20,8 +21,29 @@ ModelName = Literal[
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
+    "rbfpos_decoder_only",
     "rbfpos",
+    "rbfpos_leak",
     "rrr",
+]
+
+# Type alias for subspace names
+SubspaceName = Literal[
+    "pca_subspace",
+    "cvpca_subspace",
+    "svca_subspace",
+]
+
+SplitName = Literal[
+    "train",
+    "train0",
+    "train1",
+    "validation",
+    "test",
+    "full",
+    "half0",
+    "half1",
+    "not_train",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -51,12 +73,18 @@ class RegistryPaths:
     hyperparameter_path: Path = cache_path / "hyperparameters"
     score_path: Path = cache_path / "scores"
     error_path: Path = cache_path / "errors"
+    subspace_hyperparameter_path: Path = cache_path / "subspace-hyperparameters"
+    subspace_score_path: Path = cache_path / "subspace-scores"
+    subspace_error_path: Path = cache_path / "subspace-errors"
 
     def __post_init__(self):
         self.registry_path.mkdir(parents=True, exist_ok=True)
         self.hyperparameter_path.mkdir(parents=True, exist_ok=True)
         self.score_path.mkdir(parents=True, exist_ok=True)
         self.error_path.mkdir(parents=True, exist_ok=True)
+        self.subspace_hyperparameter_path.mkdir(parents=True, exist_ok=True)
+        self.subspace_score_path.mkdir(parents=True, exist_ok=True)
+        self.subspace_error_path.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -102,6 +130,7 @@ class TimeSplit:
     full: tuple[int, int, int, int] = (0, 1, 2, 3)
     half0: tuple[int, int] = (0, 2)
     half1: tuple[int, int] = (1, 3)
+    not_train: tuple[int, int] = (2, 3)
 
     def __getitem__(self, name):
         """
@@ -249,6 +278,7 @@ class PopulationRegistry:
         idx_valid = frame_behavior.valid_frames() & fast_frame
         frame_behavior = frame_behavior.filter(idx_valid)
         idx_samples = np.where(idx_valid)[0]
+        environments = np.unique(frame_behavior.environment)
 
         # Compute idx_rois in a way that is independent of spks_type
         # because it usually filters out silent ROIs which might be different for different spks_types.
@@ -288,9 +318,13 @@ class PopulationRegistry:
                 idx_neurons=idx_neurons,
             )
 
-            # Check that each env/position combo is present in every split
-            environments = np.unique(frame_behavior.environment)
-
+            # Check that each env/position combo is present in every training split
+            # Note on the use of ["train0", "train1"], these are the smallest training splits we use -
+            # specifically in the rbfpos model where we break up training the encoder & decoder. If
+            # train0 & train1 have all environments & positions contained in the other splits, then
+            # the standard pipelines will be able to predict data from val / test splits based on
+            # the training splits. This procedure permits a testing split ("validation" or "test") to
+            # not contain all environments.
             splits = ["train0", "train1"]
             num_splits = len(splits)
             valid_split_positions = np.zeros((num_splits, len(environments), len(bin_edges) - 1), dtype=bool)
@@ -506,8 +540,16 @@ MODEL_NAMES: tuple[ModelName] = (
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
+    "rbfpos_decoder_only",
     "rbfpos",
+    "rbfpos_leak",
     "rrr",
+)
+
+SUBSPACE_NAMES: tuple[SubspaceName] = (
+    "pca_subspace",
+    "cvpca_subspace",
+    "svca_subspace",
 )
 
 
@@ -521,7 +563,7 @@ def get_model(
 
 @overload
 def get_model(
-    model_name: Literal["rbfpos"],
+    model_name: Literal["rbfpos", "rbfpos_decoder_only", "rbfpos_leak"],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
 ) -> RBFPosModel: ...
@@ -571,10 +613,66 @@ def get_model(
     if model_name == "internal_placefield_1d_gain":
         hyperparameters = hyperparameters or PlaceFieldHyperparameters()
         return PlaceFieldModel(population_registry, internal=True, gain=True, hyperparameters=PlaceFieldHyperparameters())
+    if model_name == "rbfpos_decoder_only":
+        return RBFPosModel(population_registry, split_train=False, predict_latents=False)
     if model_name == "rbfpos":
         return RBFPosModel(population_registry)
+    if model_name == "rbfpos_leak":
+        return RBFPosModel(population_registry, split_train=False, predict_latents=True)
     if model_name == "rrr":
         hyperparameters = hyperparameters or ReducedRankRegressionHyperparameters()
         return ReducedRankRegressionModel(population_registry, hyperparameters=hyperparameters)
 
     raise ValueError(f"Model {model_name} not found in registry.")
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["pca_subspace"],
+    population_registry: PopulationRegistry,
+) -> PCASubspace: ...
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["cvpca_subspace"],
+    population_registry: PopulationRegistry,
+) -> CVPCASubspace: ...
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["svca_subspace"],
+    population_registry: PopulationRegistry,
+) -> SVCASubspace: ...
+
+
+def get_subspace(
+    subspace_name: SubspaceName,
+    population_registry: PopulationRegistry,
+) -> SubspaceModel:
+    """Get a subspace model object for a subspace name.
+
+    Parameters
+    ----------
+    subspace_name : SubspaceName
+        The name of the subspace model to get.
+    population_registry : PopulationRegistry
+        The population registry to use for the subspace model.
+
+    Returns
+    -------
+    subspace_model : SubspaceModel
+        The subspace model object for the subspace name. The specific type depends on subspace_name.
+    """
+    if subspace_name not in SUBSPACE_NAMES:
+        raise ValueError(f"Subspace {subspace_name} not found in registry.")
+
+    if subspace_name == "pca_subspace":
+        return PCASubspace(population_registry)
+    if subspace_name == "cvpca_subspace":
+        return CVPCASubspace(population_registry)
+    if subspace_name == "svca_subspace":
+        return SVCASubspace(population_registry)
+
+    raise ValueError(f"Subspace {subspace_name} not found in registry.")
