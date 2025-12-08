@@ -86,6 +86,8 @@ class B2Registration(B2Session):
         If session directory does not exist.
     """
 
+    _for_registration: bool = True
+
     def __init__(
         self,
         mouse_name: str,
@@ -510,8 +512,8 @@ class B2Registration(B2Session):
             return
 
         # create RedCellProcessing object
-        b2session_of_self = B2Session.create(self.mouse_name, self.date, self.session_id)
-        red_cell_processing = RedCellProcessing(b2session_of_self)
+        # b2session_of_self = B2Session.create(self.mouse_name, self.date, self.session_id, for_registration=True)
+        red_cell_processing = RedCellProcessing(self)
 
         # compute red-features
         dot_parameters = {"lowcut": 12, "highcut": 250, "order": 3, "fs": 512}
