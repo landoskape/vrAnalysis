@@ -112,6 +112,7 @@ def cross_validate_trials(trial_environment: np.ndarray, fractions: list[float])
         The trials to include in each fold.
     """
     relative_fractions = np.array(fractions) / np.sum(fractions)
+    cumsum_fracs = np.cumsum(relative_fractions)
     num_folds = len(fractions)
     trials = [[] for _ in range(num_folds)]
     envs = np.unique(trial_environment)
@@ -119,7 +120,6 @@ def cross_validate_trials(trial_environment: np.ndarray, fractions: list[float])
         env_trials = np.where(trial_environment == env)[0]
         np.random.shuffle(env_trials)
         # Calculate cumulative split indices
-        cumsum_fracs = np.cumsum(relative_fractions)
         split_indices = (cumsum_fracs[:-1] * len(env_trials)).astype(int)
         # Split into independent chunks
         env_chunks = np.split(env_trials, split_indices)

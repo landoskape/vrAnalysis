@@ -5,7 +5,7 @@ from sklearn.decomposition import IncrementalPCA
 import torch
 from .. import faststats as fs
 from .indexing import cvFoldSplit
-from .wrangling import named_transpose
+from .wrangling import named_transpose, as_tensor
 from .signals import vectorCorrelation
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -65,6 +65,28 @@ def batch_cov(input, centered=True, correction=True):
     if was_numpy:
         return np.array(bcov)
     return bcov
+
+
+def matrix_root(matrix: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Measure the square root of a matrix (matrix root, not element-wise).
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        The matrix to measure the square root of.
+    eps : float
+        The epsilon value to clamp the eigenvalues to.
+
+    Returns
+    -------
+    torch.Tensor: The square root of the matrix.
+    """
+    matrix = as_tensor(matrix)
+    symmetric_matrix = 0.5 * (matrix + matrix.T)
+    evals, evecs = torch.linalg.eigh(symmetric_matrix)
+    evals_clamped = torch.clamp(evals, min=eps)
+    root = evecs @ torch.diag(torch.sqrt(evals_clamped)) @ evecs.T
+    return root
 
 
 def smart_pca(input, centered=True, use_rank=True, correction=True):

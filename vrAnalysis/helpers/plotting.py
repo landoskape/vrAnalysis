@@ -17,12 +17,14 @@ def batch_plot_context():
         plt.ion()
 
 
-def save_figure(fig: plt.Figure, path: Path, **kwargs) -> None:
+def save_figure(fig: plt.Figure, path: Path, parents: bool = True, **kwargs) -> None:
     """
     Save a figure with high resolution in png and svg formats
     """
     # Add the .fig extension to the path so it will replace the right suffix.
     path = path.parent / (path.name + ".fig")
+    if parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path.with_suffix(".png"), dpi=300, **kwargs)
     fig.savefig(path.with_suffix(".svg"), **kwargs)
 
@@ -183,6 +185,57 @@ def beeswarm(y, nbins=None):
     return x
 
 
+def insert_nans_at_gaps(data: np.ndarray, idx: np.ndarray, keep_idx: bool = False):
+    """
+    Insert NaN values in array data at positions where idx has gaps.
+    This prevents matplotlib from drawing lines across gaps.
+    If keep_idx is True, the indices will be returned as is, otherwise
+    they will be converted to range(len(data)).
+
+    Parameters:
+    -----------
+    data : np.ndarray
+        Array with len(data) == len(idx)
+    idx : np.ndarray
+        Array of consecutive indices with potential gaps
+    keep_idx : bool, optional
+        Whether to keep the indices as is, by default False.
+
+    Returns:
+    --------
+    data_with_gaps : np.ndarray
+        Array with NaN inserted at gap positions
+    idx_with_gaps : np.ndarray
+        Corresponding indices with NaN inserted at gap positions
+    """
+    if len(data) != len(idx):
+        raise ValueError(f"Length mismatch: len(data)={len(data)}, len(idx)={len(idx)}")
+
+    # Find where gaps occur (diff != 1)
+    diffs = np.diff(idx)
+    gap_mask = diffs != 1
+
+    if not np.any(gap_mask):
+        # No gaps, return as-is
+        return data.copy(), idx.copy()
+
+    # Build new arrays, inserting NaN between values where gaps occur
+    data_list = []
+    idx_list = []
+    idx_value = idx if keep_idx else np.arange(len(data))
+
+    for i in range(len(data)):
+        data_list.append(data[i])
+        idx_list.append(idx_value[i])
+
+        # If there's a gap after this position, insert NaN
+        if i < len(diffs) and gap_mask[i]:
+            data_list.append(np.nan)
+            idx_list.append(np.nan)
+
+    return np.array(data_list), np.array(idx_list)
+
+
 def clear_axis(ax):
     """use axis as empty space or something else without any of the default matplotlib stuff"""
     ax.clear()  # Clear all the artists (lines, patches, etc.)
@@ -273,12 +326,30 @@ def format_spines(
     # Move bottom spine down and left spine left
     x_lims = ax.get_xlim()
     y_lims = ax.get_ylim()
-    x_range = x_lims[1] - x_lims[0]
-    y_range = y_lims[1] - y_lims[0]
-    x_pos = x_pos * x_range + x_lims[0]
-    y_pos = y_pos * y_range + y_lims[0]
-    ax.spines["bottom"].set_position(("data", y_pos))
-    ax.spines["left"].set_position(("data", x_pos))
+    x_scale = ax.get_xscale()
+    y_scale = ax.get_yscale()
+
+    # Compute x-axis position (for left spine)
+    if x_scale == "log":
+        # For log scale: position = min * (max/min)^fractional
+        # This preserves the same relative positioning as linear scale
+        x_pos_computed = x_lims[0] * (x_lims[1] / x_lims[0]) ** x_pos
+    else:
+        # For linear scale: position = fractional * range + min
+        x_range = x_lims[1] - x_lims[0]
+        x_pos_computed = x_pos * x_range + x_lims[0]
+
+    # Compute y-axis position (for bottom spine)
+    if y_scale == "log":
+        # For log scale: position = min * (max/min)^fractional
+        y_pos_computed = y_lims[0] * (y_lims[1] / y_lims[0]) ** y_pos
+    else:
+        # For linear scale: position = fractional * range + min
+        y_range = y_lims[1] - y_lims[0]
+        y_pos_computed = y_pos * y_range + y_lims[0]
+
+    ax.spines["bottom"].set_position(("data", y_pos_computed))
+    ax.spines["left"].set_position(("data", x_pos_computed))
 
     # Set axis limits if provided
     if xbounds is not None:
