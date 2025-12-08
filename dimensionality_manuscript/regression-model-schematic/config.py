@@ -1,6 +1,6 @@
 """Configuration constants for the neuro-model schematic builder."""
 
-example_path = "C:/Users/Andrew/Documents/GitHub/vrAnalysis/dimensionality-manuscript/regression-model-schematic/test-figures"
+example_path = "C:/Users/Andrew/Documents/GitHub/vrAnalysis/dimensionality_manuscript/regression-model-schematic/test-figures"
 
 # Color palette (color-blind safe)
 PALETTE = {
@@ -28,7 +28,7 @@ SIZES = {
 FONTS = {
     "family": "DejaVu Sans",
     "size": 9,  # Default font size
-    "small": 8,  # Small text
+    "small": 12,  # Small text
     "title": 10,  # Panel titles
 }
 

@@ -310,6 +310,114 @@ def panel_internal_pf_gain(ax, ctx=None, opt=None):
     ctx.title("Internal PF + Gain")
 
 
+def panel_rbf(ax, ctx=None, opt=None):
+    """Panel 5.1: High-D PF (RBF decode→encode) - High-dimensional basis functions.
+
+    Equation: φ̂ = D y_src; ŷ = E φ̂
+    """
+    ctx = ctx or PanelContext(ax)
+    ctx.setup_panel()
+
+    # Track with position
+    track_y = LAYOUT["track_y"]
+    Track(ax, y=track_y)
+    track_x0 = LAYOUT["track_x0"]
+    track_x1 = LAYOUT["track_x1"]
+
+    # True position with gold dot
+    pos_x = 0.4
+    gold_point_y = track_y
+    x_t_y = gold_point_y - LAYOUT["x_label_offset_below"]
+    PositionDot(ax, x=pos_x, y=gold_point_y, color="external")
+    ctx.text_center(pos_x, x_t_y, r"$x(t)$", size="small")
+
+    # Calculate bar heights representing probability distribution
+    # Main peak at 0.375 (true position), smaller bump at 0.775
+    n_bins = 12
+
+    # Define bar heights
+    bar_indices = np.arange(n_bins)
+    main_peak_bar = bar_indices[4]
+    main_peak_height = 0.125
+    secondary_peak_bar = bar_indices[10]
+    secondary_peak_height = 0.065
+    base_peak_height = 0.02
+
+    # Calculate bar heights as probability distribution
+    bar_heights = [base_peak_height] * n_bins
+    bar_heights[main_peak_bar] = main_peak_height
+    bar_heights[main_peak_bar + 1] = secondary_peak_height
+    bar_heights[main_peak_bar - 1] = secondary_peak_height
+    bar_heights[secondary_peak_bar] = secondary_peak_height
+
+    # Calculate bar center positions (needed for arrows)
+    total_width = track_x1 - track_x0
+    bar_width = total_width / n_bins
+    bar_centers = [track_x0 + (i + 0.5) * bar_width for i in range(n_bins)]
+
+    # High-dimensional barplot emerging from track with probability distribution
+    HighDimBarplot(
+        ax,
+        track_y=track_y,
+        n_bins=n_bins,
+        max_height=0.15,
+        track_x0=track_x0,
+        track_x1=track_x1,
+        color="stroke",
+        bar_heights=bar_heights,
+    )
+
+    # Source neurons below track (left side)
+    source_neuron_x = 0.5 - LAYOUT["pf_width_highd"] / 2
+    source_neuron_y = track_y - LAYOUT["source_pf_spacing_above"] - LAYOUT["pf_width_highd"]
+
+    # Target neurons above track (right side)
+    target_neuron_x = 0.5 - LAYOUT["pf_width_highd"] / 2
+    target_neuron_y = track_y + LAYOUT["pf_offset_above_track"] + LAYOUT["pf_width_highd"]
+    NeuronBlock(ax, x=target_neuron_x, y=target_neuron_y, w=LAYOUT["pf_width_highd"], h=LAYOUT["pf_width_highd"], n_neurons=4, color="target")
+
+    # Draw lines from source neurons to bar centers at track (simple lines, no arrowheads)
+    # Calculate actual top of outer circle (center_y + outer_radius)
+    # Outer radius = 0.85 * min(w, h) / 2 = 0.85 * width / 2 (since w == h for square)
+    # Center_y = y + h / 2
+    # Top of circle = center_y + outer_radius = (y + h/2) + (0.85 * h / 2) = y + 0.925 * h
+    neuron_block_size = LAYOUT["pf_width_highd"]
+    source_neuron_x_center = source_neuron_x + neuron_block_size / 2
+    source_neuron_center_y = source_neuron_y + neuron_block_size / 2
+    outer_radius = 0.85 * neuron_block_size / 2
+    source_neuron_y_top = source_neuron_center_y + outer_radius  # Top of outer circle
+
+    # Number of segments per line for gradient effect
+    color = PALETTE.get("source", "gray")
+    n_segments = 100
+    alpha_exponent = 4.0  # Exponent for alpha decay (higher = faster drop-off)
+
+    # Draw lines from target neurons to bar centers at track with alpha gradient (opposite direction)
+    # Calculate actual bottom of outer circle for target neurons
+    color = PALETTE.get("target", "gray")
+    target_neuron_x_center = target_neuron_x + neuron_block_size / 2
+    target_neuron_center_y = target_neuron_y + neuron_block_size / 2
+    target_neuron_y_bottom = target_neuron_center_y - outer_radius  # Bottom of outer circle
+
+    for bar_center_x in bar_centers:
+        # Create gradient by dividing line into segments with decreasing alpha
+        x_start, y_start = target_neuron_x_center, target_neuron_y_bottom
+        x_end, y_end = bar_center_x, track_y
+
+        # Generate points along the line
+        x_points = np.linspace(x_start, x_end, n_segments + 1)
+        y_points = np.linspace(y_start, y_end, n_segments + 1)
+
+        # Draw segments with decreasing alpha (1.0 at neurons, 0.0 at track)
+        for i in range(n_segments):
+            # Alpha decreases from 1.0 (at neuron) to 0.0 (at track)
+            alpha = (1.0 - (i / (n_segments - 1)) if n_segments > 1 else 1.0) ** alpha_exponent
+            ax.plot([x_points[i], x_points[i + 1]], [y_points[i], y_points[i + 1]], color=color, linewidth=SIZES["lw"] * 0.3, alpha=alpha, zorder=0)
+
+    # Labels
+    ctx.title("High-D PF")
+
+
 def panel_rbf_internal(ax, ctx=None, opt=None):
     """Panel 5: High-D internal PF (RBF decode→encode) - High-dimensional basis functions.
 
@@ -531,6 +639,7 @@ PANEL_FUNCTIONS = {
     4: panel_internal_pf_gain,
     5: panel_rbf_internal,
     6: panel_rrr,
+    7: panel_rbf,
 }
 
 PANEL_NAMES = {
@@ -540,4 +649,5 @@ PANEL_NAMES = {
     4: "Internal PF + Gain",
     5: "High-D Internal PF",
     6: "RRR (Non-spatial)",
+    7: "High-D PF",
 }
