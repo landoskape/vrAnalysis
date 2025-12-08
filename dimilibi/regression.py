@@ -23,7 +23,7 @@ class RidgeRegression:
         self.fit_intercept = fit_intercept
         self._use_svd = use_svd
 
-    def fit(self, X: torch.Tensor, y: torch.Tensor):
+    def fit(self, X: torch.Tensor, y: torch.Tensor, precomputed_svd: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None):
         """
         Fit the RidgeRegression model to the provided data.
 
@@ -33,6 +33,8 @@ class RidgeRegression:
             The input data (num_samples, num_features).
         y : torch.Tensor
             The target data (num_samples, num_targets).
+        precomputed_svd : Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+            If provided, will use the precomputed SVD to solve the problem.
 
         Returns
         -------
@@ -43,7 +45,7 @@ class RidgeRegression:
             X = self._add_intercept(X)
 
         # store all of these matrices for easy testing of prediction with different ranks
-        self._beta_ols = self._solve_ols_ridge(X, y, self.alpha)
+        self._beta_ols = self._solve_ols_ridge(X, y, self.alpha, precomputed_svd=precomputed_svd)
 
         # return self for standard usage
         return self
@@ -74,7 +76,7 @@ class RidgeRegression:
 
         return prediction
 
-    def score(self, X: torch.Tensor, y: torch.Tensor, nonnegative: Optional[bool] = False) -> torch.Tensor:
+    def score(self, X: torch.Tensor, y: torch.Tensor, nonnegative: Optional[bool] = False, dim: Optional[int] = 0) -> torch.Tensor:
         """
         Score the RidgeRegression model on the provided data.
 
@@ -86,6 +88,8 @@ class RidgeRegression:
             The target data (num_samples, num_targets).
         nonnegative : Optional[bool]
             If True, will apply a ReLU to the prediction (default is False).
+        dim : Optional[int]
+            The dimension to score the model on (default is 0, which will score the model by features/targets).
 
         Returns
         -------
@@ -93,7 +97,7 @@ class RidgeRegression:
             The coefficient of determination (R^2) for the model.
         """
         y_pred = self.predict(X, nonnegative=nonnegative)
-        return measure_r2(y_pred, y)
+        return measure_r2(y_pred, y, dim=dim)
 
     def to(self, device):
         """
@@ -129,7 +133,38 @@ class RidgeRegression:
         """
         return torch.cat([X, torch.ones(X.size(0), 1, device=X.device)], dim=1)
 
-    def _solve_ols_ridge(self, X: torch.Tensor, y: torch.Tensor, alpha: float) -> torch.Tensor:
+    def compute_svd(self, X: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute the singular value decomposition of the input data.
+
+        This is made for precomputing SVDs when in an optimization setting where you might
+        want to try a bunch of alphas. You can then pass the precomputed SVD to the fit method.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            The input data (num_samples, num_features).
+
+        Returns
+        -------
+        U : torch.Tensor
+            The left singular vectors (num_features, num_features).
+        s : torch.Tensor
+            The singular values (num_features).
+        Vt : torch.Tensor
+            The right singular vectors (num_features, num_features).
+        """
+        if self.fit_intercept:
+            X = self._add_intercept(X)
+        U, s, Vt = torch.linalg.svd(X, full_matrices=False)
+        return U, s, Vt
+
+    def _solve_ols_ridge(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        alpha: float,
+        precomputed_svd: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         """
         Solve the ordinary least squares (OLS) problem with ridge regularization.
 
@@ -218,15 +253,22 @@ class RidgeRegression:
             Target data matrix of shape (num_samples, num_targets).
         alpha : float
             Ridge regularization parameter.
+        precomputed_svd : Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+            If provided, will use the precomputed SVD to solve the problem.
 
         Returns
         -------
         beta_ols : torch.Tensor
             The ridge-regularized OLS solution with shape (num_features, num_targets).
         """
-        if self._use_svd:
-            U, s, Vt = torch.linalg.svd(X, full_matrices=False)
-            idx = s > 1e-15  # same default value as scipy.linalg.pinv
+        if self._use_svd or precomputed_svd is not None:
+            if precomputed_svd is None:
+                U, s, Vt = torch.linalg.svd(X, full_matrices=False)
+            else:
+                U, s, Vt = precomputed_svd
+
+            # same default value as scipy.linalg.pinv
+            idx = s > 1e-15
             s_nnz = s[idx]
             d = torch.zeros((s.size(0)), dtype=X.dtype, device=X.device)
             d[idx] = s_nnz / (s_nnz**2 + alpha)

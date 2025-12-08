@@ -1,6 +1,139 @@
-from typing import Optional
-from sklearn.decomposition import PCA as skPCA
+from typing import Optional, Union
+import numpy as np
 import torch
+from sklearn.decomposition import PCA as skPCA
+
+
+def as_tensor(data: Union[np.ndarray, torch.Tensor, list, tuple], dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+    """
+    Convert input data to a torch tensor, handling multiple input types.
+
+    Parameters
+    ----------
+    data : Union[np.ndarray, torch.Tensor, list, tuple]
+        The data to convert to a torch tensor.
+    dtype : Optional[torch.dtype]
+        The dtype to convert the data to.
+        (default is None which corresponds to the dtype of the data)
+
+    Returns
+    -------
+    torch.Tensor
+        The data as a torch tensor.
+    """
+    if isinstance(data, np.ndarray):
+        data = torch.from_numpy(data)
+    elif not isinstance(data, torch.Tensor):
+        data = torch.tensor(data)
+    if dtype is not None:
+        data = data.to(dtype)
+    return data
+
+
+class PytorchPCA:
+    """
+    PytorchPCA is a wrapper of the torch SVD implementation for PCA built
+    to have the same interface as the sklearn PCA class.
+    """
+
+    def __init__(self, num_components: Optional[int] = None):
+        """
+        Initialize a PytorchPCA object.
+
+        Parameters
+        ----------
+        num_components : Optional[int]
+            Number of components to use in the PCA decomposition.
+            (default is None which corresponds to using all components)
+        """
+        self.num_components = num_components
+        self._components_ = None
+        self._singular_values_ = None
+        self._fitted = False
+
+    @torch.no_grad()
+    def fit(self, data: torch.Tensor):
+        """
+        Fit the PCA model to the provided data using SVD.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The data to be used for training a PCA model (num_samples, num_features).
+            Data is NOT centered before SVD.
+
+        Returns
+        -------
+        self : object
+            The PytorchPCA object with the fitted model.
+        """
+        data = as_tensor(data)
+
+        # U: (num_features, num_features), S: (min(num_features, num_samples)), V: (num_samples, num_samples)
+        U, S, _ = torch.linalg.svd(data.T, full_matrices=False)
+
+        # Store singular values
+        if self.num_components is not None:
+            S = S[: self.num_components]
+            # Components are the first num_components columns of U
+            # Transpose to match sklearn convention: (num_components, num_features)
+            U = U[:, : self.num_components]
+
+        self._singular_values_ = S
+        self._components_ = U.T
+        self._fitted = True
+        return self
+
+    @torch.no_grad()
+    def transform(self, data: torch.Tensor):
+        """
+        Transform the input data using the PCA model.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The data to be transformed (num_samples, num_features).
+
+        Returns
+        -------
+        torch.Tensor
+            The transformed data (num_samples, num_components).
+        """
+        if not self._fitted:
+            raise ValueError("PytorchPCA model must be fitted before transforming data.")
+
+        data = as_tensor(data)
+
+        # Project data onto components: components_ @ data
+        return data @ self.components_.T
+
+    @property
+    def components_(self):
+        """
+        Principal components (eigenvectors of the covariance matrix).
+
+        Returns
+        -------
+        torch.Tensor
+            Components of shape (num_components, num_features).
+        """
+        if not self._fitted:
+            raise ValueError("PytorchPCA model must be fitted before accessing components_.")
+        return self._components_
+
+    @property
+    def singular_values_(self):
+        """
+        Singular values corresponding to the principal components.
+
+        Returns
+        -------
+        torch.Tensor
+            Singular values of shape (num_components,).
+        """
+        if not self._fitted:
+            raise ValueError("PytorchPCA model must be fitted before accessing singular_values_.")
+        return self._singular_values_
 
 
 class PCA:
@@ -8,27 +141,36 @@ class PCA:
     Principal Component Analysis
 
     This class is a wrapper of the sklearn PCA implementation used for dimensionality reduction
-    and data analysis. It uses a torch API and has functionality to integrate with the rest
-    of the dimilibi library.
+    and data analysis. It uses a torch implementation and has functionality to integrate with the
+    rest of the dimilibi library.
     """
 
     @torch.no_grad()
-    def __init__(self, num_components: Optional[int] = None, verbose: Optional[bool] = False):
+    def __init__(
+        self,
+        num_components: Optional[int] = None,
+        verbose: Optional[bool] = False,
+        use_svd: Optional[bool] = False,
+    ):
         """
         Initialize a PCA object with the option of specifying supporting parameters.
 
         Parameters
         ----------
         num_components : Optional[int]
-            Number of components to use in the SVD decomposition.
-            (default is the minimum number of neurons in the two groups)
+            Number of components to use in the PCA decomposition.
+            (default is None which corresponds to using all components)
         verbose : Optional[bool]
             If True, will print updates and results as they are computed.
-            (default is True)
+            (default is False)
+        use_svd: Optional[bool]
+            If True, will use the torch SVD instead of the sklearn PCA decomposition.
+            (default is False)
         """
 
         self.num_components = num_components
         self.verbose = verbose
+        self.use_svd = use_svd
         self.fitted = False
 
     @torch.no_grad()
@@ -50,12 +192,14 @@ class PCA:
         self._validate_data(data)
         self._validate_components(data)
 
-        if not isinstance(data, torch.Tensor):
-            data = torch.tensor(data)
+        data = as_tensor(data)
 
         self.num_samples = data.size(1)
         self.dtype = data.dtype
-        self.model = skPCA(n_components=self.num_components).fit(data.T)
+        if self.use_svd:
+            self.model = PytorchPCA(num_components=self.num_components).fit(data.T)
+        else:
+            self.model = skPCA(n_components=self.num_components).fit(data.T)
 
         self.fitted = True
         return self
@@ -106,7 +250,7 @@ class PCA:
         components : torch.Tensor
             The components of the PCA model.
         """
-        return torch.tensor(self.model.components_, dtype=self.dtype).T
+        return as_tensor(self.model.components_, dtype=self.dtype).T
 
     @torch.no_grad()
     def get_singular_values(self):
@@ -118,7 +262,7 @@ class PCA:
         singular_values : torch.Tensor
             The singular values of the PCA model.
         """
-        return torch.tensor(self.model.singular_values_, dtype=self.dtype)
+        return as_tensor(self.model.singular_values_, dtype=self.dtype)
 
     @torch.no_grad()
     def get_eigenvalues(self):
