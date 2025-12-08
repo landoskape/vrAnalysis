@@ -211,6 +211,7 @@ class B2Session(SessionData):
     opts: B2RegistrationOpts = field(default_factory=B2RegistrationOpts, repr=False, init=False)
     preprocessing: list[str] = field(default_factory=list, repr=False, init=False)
     params: B2SessionParams = field(default_factory=B2SessionParams, repr=False)
+    _for_registration: bool = field(default=False, repr=False, init=True)
     spks_types: tuple[str, ...] = ("oasis", "deconvolved", "raw", "neuropil", "significant", "corrected", "sigbase", "sigrebase")
 
     @classmethod
@@ -220,6 +221,7 @@ class B2Session(SessionData):
         date: str,
         session_id: str,
         params: "B2SessionParams" | Dict[str, Any] | None = None,
+        for_registration: bool = False,
     ) -> "B2Session":
         """Create a B2Session object and (optionally) specify the parameters
 
@@ -239,6 +241,8 @@ class B2Session(SessionData):
                 - good_labels: list[str] (which labels to keep from the roicat classifier analysis)
                 - fraction_filled_threshold: float (threshold for the fraction of the ROI that is filled -- based on local concavity analysis)
                 - footprint_size_threshold: int (threshold for the size of the ROI)
+        for_registration: bool
+            Whether the session is being created for registration. If True, doesn't attempt to perform "additional loading" of the data.
         """
         if params is None:
             params = B2SessionParams()
@@ -248,7 +252,7 @@ class B2Session(SessionData):
             pass
         else:
             raise ValueError(f"params must be a B2SessionParams object or a dictionary")
-        return cls(mouse_name, date, session_id, params)
+        return cls(mouse_name, date, session_id, params, for_registration)
 
     @property
     def s2p_path(self) -> Path:
@@ -763,6 +767,9 @@ class B2Session(SessionData):
         ValueError
             If session JSON files are not found (session not registered).
         """
+        if self._for_registration:
+            return None
+
         super()._additional_loading()
         if not (self.data_path / "vrExperimentOptions.json").exists():
             raise ValueError("session json files were not found! you need to register the session first.")
@@ -775,6 +782,7 @@ class B2Session(SessionData):
         values = json.load(open(self.data_path / "vrExperimentValues.json"))
         for key, val in values.items():
             self.set_value(key, val)
+
         # Also load ROICaT Classifier Results if they exist
         results_path = get_classifier_results_path(self)
         if results_path.exists():
