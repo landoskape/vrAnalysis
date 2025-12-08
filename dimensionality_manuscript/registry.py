@@ -13,7 +13,7 @@ from .regression_models.base import RegressionModel
 from .regression_models.models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
 from .regression_models.hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
-from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace
+from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace, CovCovSubspace
 
 # Type alias for model names
 ModelName = Literal[
@@ -32,6 +32,7 @@ SubspaceName = Literal[
     "pca_subspace",
     "cvpca_subspace",
     "svca_subspace",
+    "covcov_subspace",
 ]
 
 SplitName = Literal[
@@ -68,6 +69,7 @@ class RegistryPaths:
     """Paths to the files used in the regression model analysis."""
 
     manuscript_path: Path = files.local_data_path() / "dimensionality-manuscript"
+    figure_path: Path = manuscript_path / "figures"
     cache_path: Path = manuscript_path / "cache"
     registry_path: Path = cache_path / "population-registry"
     hyperparameter_path: Path = cache_path / "hyperparameters"
@@ -76,8 +78,14 @@ class RegistryPaths:
     subspace_hyperparameter_path: Path = cache_path / "subspace-hyperparameters"
     subspace_score_path: Path = cache_path / "subspace-scores"
     subspace_error_path: Path = cache_path / "subspace-errors"
+    pf1d_internals_path: Path = cache_path / "pf1d_internals"
+    rrrlatents_to_rbfpos_path: Path = cache_path / "rrrlatents_to_rbfpos"
+    measure_cvpca_path: Path = cache_path / "measure_cvpca"
 
     def __post_init__(self):
+        self.manuscript_path.mkdir(parents=True, exist_ok=True)
+        self.figure_path.mkdir(parents=True, exist_ok=True)
+        self.cache_path.mkdir(parents=True, exist_ok=True)
         self.registry_path.mkdir(parents=True, exist_ok=True)
         self.hyperparameter_path.mkdir(parents=True, exist_ok=True)
         self.score_path.mkdir(parents=True, exist_ok=True)
@@ -85,6 +93,9 @@ class RegistryPaths:
         self.subspace_hyperparameter_path.mkdir(parents=True, exist_ok=True)
         self.subspace_score_path.mkdir(parents=True, exist_ok=True)
         self.subspace_error_path.mkdir(parents=True, exist_ok=True)
+        self.pf1d_internals_path.mkdir(parents=True, exist_ok=True)
+        self.rrrlatents_to_rbfpos_path.mkdir(parents=True, exist_ok=True)
+        self.measure_cvpca_path.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -550,7 +561,27 @@ SUBSPACE_NAMES: tuple[SubspaceName] = (
     "pca_subspace",
     "cvpca_subspace",
     "svca_subspace",
+    "covcov_subspace",
 )
+
+
+def short_model_name(model_name: ModelName) -> str:
+    if model_name == "external_placefield_1d":
+        return "PF-1D"
+    if model_name == "internal_placefield_1d":
+        return "Int. PF-1D"
+    if model_name == "external_placefield_1d_gain":
+        return "PF-1D (+Gain)"
+    if model_name == "internal_placefield_1d_gain":
+        return "Int. PF-1D (+Gain)"
+    if model_name == "rbfpos_decoder_only":
+        return "PF-HighD"
+    if model_name == "rbfpos":
+        return "Int. PF-HighD"
+    if model_name == "rbfpos_leak":
+        return "Int. PF-HighD"
+    if model_name == "rrr":
+        return "RRR"
 
 
 @overload
@@ -630,6 +661,7 @@ def get_model(
 def get_subspace(
     subspace_name: Literal["pca_subspace"],
     population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
 ) -> PCASubspace: ...
 
 
@@ -637,6 +669,7 @@ def get_subspace(
 def get_subspace(
     subspace_name: Literal["cvpca_subspace"],
     population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
 ) -> CVPCASubspace: ...
 
 
@@ -644,12 +677,22 @@ def get_subspace(
 def get_subspace(
     subspace_name: Literal["svca_subspace"],
     population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
 ) -> SVCASubspace: ...
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["covcov_subspace"],
+    population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
+) -> CovCovSubspace: ...
 
 
 def get_subspace(
     subspace_name: SubspaceName,
     population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
 ) -> SubspaceModel:
     """Get a subspace model object for a subspace name.
 
@@ -659,6 +702,8 @@ def get_subspace(
         The name of the subspace model to get.
     population_registry : PopulationRegistry
         The population registry to use for the subspace model.
+    match_dimensions : bool
+        Whether to match the dimensions of the activity and placefields. Default is True.
 
     Returns
     -------
@@ -669,10 +714,12 @@ def get_subspace(
         raise ValueError(f"Subspace {subspace_name} not found in registry.")
 
     if subspace_name == "pca_subspace":
-        return PCASubspace(population_registry)
+        return PCASubspace(population_registry, match_dimensions=match_dimensions)
     if subspace_name == "cvpca_subspace":
-        return CVPCASubspace(population_registry)
+        return CVPCASubspace(population_registry, match_dimensions=match_dimensions)
     if subspace_name == "svca_subspace":
-        return SVCASubspace(population_registry)
+        return SVCASubspace(population_registry, match_dimensions=match_dimensions)
+    if subspace_name == "covcov_subspace":
+        return CovCovSubspace(population_registry, match_dimensions=match_dimensions)
 
     raise ValueError(f"Subspace {subspace_name} not found in registry.")

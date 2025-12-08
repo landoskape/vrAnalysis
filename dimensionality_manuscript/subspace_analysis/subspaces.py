@@ -6,30 +6,25 @@
 #     ): ...  # Returns the frobenius norm of the difference between the test data and the reconstructed data for each expanding subspace
 #     def get_scores(): ...  # A similar cache method for getting scores without dealing with refitting which is slow
 
-from typing import NamedTuple, Any, Union, TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional
 import torch
+from vrAnalysis.helpers.linear_algebra import matrix_root
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield
 from dimilibi import PCA, SVCA
-from .base import SubspaceModel
+from .base import SubspaceModel, Subspace
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 
 if TYPE_CHECKING:
     from ..registry import SplitName
 
 
-class Subspace(NamedTuple):
-    subspace_activity: Union[PCA, SVCA]
-    subspace_placefields: Union[PCA, SVCA]
-    extras: dict[str, Any]
-
-
 class PCASubspace(SubspaceModel):
     def fit(
         self,
         session: B2Session,
-        spks_type: SpksTypes,
-        split: "SplitName",
+        spks_type: SpksTypes = "oasis",
+        split: "SplitName" = "train",
         hyperparameters: Optional[PlaceFieldHyperparameters] = None,
         nan_safe: bool = False,
     ):
@@ -53,7 +48,10 @@ class PCASubspace(SubspaceModel):
         placefield_extended, train_data = self._check_and_filter_nans(placefield_extended, train_data, nan_safe=nan_safe)
 
         num_components = self._compute_num_components(self.max_components, train_data.shape, placefield_extended.shape)
-        pca_activity = PCA(num_components=num_components).fit(train_data)
+        if self.match_dimensions:
+            pca_activity = PCA(num_components=num_components).fit(train_data)
+        else:
+            pca_activity = PCA().fit(train_data)
         pca_placefields = PCA(num_components=num_components).fit(placefield_extended)
 
         return Subspace(
@@ -84,15 +82,18 @@ class PCASubspace(SubspaceModel):
 
     def _get_model_name(self) -> str:
         """Get the name of the model."""
-        return "pca_subspace"
+        base_name = "pca_subspace"
+        if not self.match_dimensions:
+            return f"{base_name}_without_match"
+        return base_name
 
 
 class CVPCASubspace(SubspaceModel):
     def fit(
         self,
         session: B2Session,
-        spks_type: SpksTypes,
-        split: "SplitName",
+        spks_type: SpksTypes = "oasis",
+        split: "SplitName" = "train",
         hyperparameters: Optional[PlaceFieldHyperparameters] = None,
         nan_safe: bool = False,
     ):
@@ -182,7 +183,10 @@ class CVPCASubspace(SubspaceModel):
             placefield1_extended.shape,
         )
 
-        svca_activity = SVCA(centered=self.centered, num_components=num_components)
+        if self.match_dimensions:
+            svca_activity = SVCA(centered=self.centered, num_components=num_components)
+        else:
+            svca_activity = SVCA(centered=self.centered)
         svca_activity = svca_activity.fit(train0_data, train1_data)
         svca_placefields = SVCA(centered=self.centered, num_components=num_components)
         svca_placefields = svca_placefields.fit(placefield0_extended, placefield1_extended)
@@ -214,7 +218,10 @@ class CVPCASubspace(SubspaceModel):
 
     def _get_model_name(self) -> str:
         """Get the name of the model."""
-        return "cvpca_subspace"
+        base_name = "cvpca_subspace"
+        if not self.match_dimensions:
+            return f"{base_name}_without_match"
+        return base_name
 
 
 class SVCASubspace(SubspaceModel):
@@ -280,7 +287,10 @@ class SVCASubspace(SubspaceModel):
             placefield_target_extended.shape,
         )
 
-        svca_activity = SVCA(centered=self.centered, num_components=num_components)
+        if self.match_dimensions:
+            svca_activity = SVCA(centered=self.centered, num_components=num_components)
+        else:
+            svca_activity = SVCA(centered=self.centered)
         svca_activity = svca_activity.fit(train_source, train_target)
         svca_placefields = SVCA(centered=self.centered, num_components=num_components)
         svca_placefields = svca_placefields.fit(placefield_source_extended, placefield_target_extended)
@@ -309,4 +319,90 @@ class SVCASubspace(SubspaceModel):
 
     def _get_model_name(self) -> str:
         """Get the name of the model."""
-        return "svca_subspace"
+        base_name = "svca_subspace"
+        if not self.match_dimensions:
+            return f"{base_name}_without_match"
+        return base_name
+
+
+class CovCovSubspace(SubspaceModel):
+    def fit(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes = "oasis",
+        split: "SplitName" = "train",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        nan_safe: bool = False,
+    ):
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        train_data, frame_behavior_train, num_neurons = self.get_session_data(session, spks_type, split, use_cell_split=False)
+        train_data = self._center_data(train_data, self.centered)
+
+        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        placefield = get_placefield(
+            train_data.T.numpy(),
+            frame_behavior_train,
+            dist_edges=dist_edges,
+            average=True,
+            smooth_width=hyperparameters.smooth_width,
+        )
+        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T
+
+        # Check for NaNs and filter if needed
+        placefield_extended, train_data = self._check_and_filter_nans(placefield_extended, train_data, nan_safe=nan_safe)
+
+        num_components = self._compute_num_components(self.max_components, train_data.shape, placefield_extended.shape)
+        if self.match_dimensions:
+            pca_activity = PCA(num_components=num_components).fit(train_data)
+        else:
+            pca_activity = PCA().fit(train_data)
+        pca_placefields = PCA(num_components=num_components).fit(placefield_extended)
+
+        return Subspace(
+            subspace_activity=pca_activity,
+            subspace_placefields=pca_placefields,
+            extras=dict(placefield=placefield),
+        )
+
+    def score(
+        self,
+        session: B2Session,
+        subspace: Subspace,
+        spks_type: SpksTypes = "oasis",
+        split: "SplitName" = "not_train",
+    ):
+        test_data, _, _ = self.get_session_data(session, spks_type, split, use_cell_split=False)
+        test_data = self._center_data(test_data, self.centered)
+
+        test_data_cov = torch.cov(test_data)
+
+        # We're looking for train_cov^{1/2} @ test_cov @ train_cov^{1/2}
+        # We can use the eigenvalues of the inner block:
+        # train_eval^{1/2} @ train_evecs.T @ test_cov @ train_evecs @ train_eval^{1/2}
+        # The outer train_evecs don't affect the eigenvalues and make it a bigger matrix
+        train_evecs_activity = subspace.subspace_activity.get_components()
+        train_eval_activity_root = torch.diag(torch.sqrt(subspace.subspace_activity.get_eigenvalues()))
+        train_evecs_placefields = subspace.subspace_placefields.get_components()
+        train_eval_placefields_root = torch.diag(torch.sqrt(subspace.subspace_placefields.get_eigenvalues()))
+
+        inner_block_activity = train_eval_activity_root @ train_evecs_activity.T @ test_data_cov @ train_evecs_activity @ train_eval_activity_root
+        inner_block_placefields = (
+            train_eval_placefields_root @ train_evecs_placefields.T @ test_data_cov @ train_evecs_placefields @ train_eval_placefields_root
+        )
+
+        variance_activity = torch.sqrt(torch.flipud(torch.linalg.eigvalsh(inner_block_activity)))
+        variance_placefields = torch.sqrt(torch.flipud(torch.linalg.eigvalsh(inner_block_placefields)))
+
+        return dict(
+            variance_activity=variance_activity,
+            variance_placefields=variance_placefields,
+        )
+
+    def _get_model_name(self) -> str:
+        """Get the name of the model."""
+        base_name = "covcov_subspace"
+        if not self.match_dimensions:
+            return f"{base_name}_without_match"
+        return base_name

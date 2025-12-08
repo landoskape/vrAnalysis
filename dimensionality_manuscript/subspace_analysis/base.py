@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional, Literal
+from typing import TYPE_CHECKING, Optional, Literal, NamedTuple, Union, Any
 from joblib import dump, load
 from tqdm import tqdm
 import numpy as np
@@ -14,12 +14,18 @@ from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 
 if TYPE_CHECKING:
     from ..registry import PopulationRegistry, SplitName
-    from .subspaces import Subspace
     from optuna import Trial
+    from dimilibi import PCA, SVCA
     from vrAnalysis.processors.placefields import FrameBehavior
 
 # Suppress Optuna logging
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+
+class Subspace(NamedTuple):
+    subspace_activity: Union["PCA", "SVCA", "torch.Tensor"]
+    subspace_placefields: Union["PCA", "SVCA", "torch.Tensor"]
+    extras: dict[str, Any]
 
 
 class SubspaceModel(ABC):
@@ -31,6 +37,7 @@ class SubspaceModel(ABC):
         centered: bool = False,
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         max_components: int = 300,
+        match_dimensions: bool = True,
         autosave: bool = True,
     ):
         """Initialize the subspace model.
@@ -45,6 +52,8 @@ class SubspaceModel(ABC):
             The hyperparameters for placefield calculation. Default is PlaceFieldHyperparameters().
         max_components : int
             Maximum number of components to use. Default is 300.
+        match_dimensions : bool
+            Whether to match the dimensions of the activity and placefields. Default is True.
         autosave : bool
             Whether to automatically save optimization results to cache. Default is True.
         """
@@ -52,6 +61,7 @@ class SubspaceModel(ABC):
         self.centered = centered
         self.hyperparameters = hyperparameters
         self.max_components = max_components
+        self.match_dimensions = match_dimensions
         self.autosave = autosave
 
     def get_session_data(
@@ -273,7 +283,11 @@ class SubspaceModel(ABC):
         float
             The evaluation score.
         """
-        return torch.sum(variance["variance_activity"] - variance["variance_placefields"]) / torch.sum(variance["variance_activity"])
+        variance_activity = variance["variance_activity"]
+        variance_placefields = variance["variance_placefields"]
+        if not self.match_dimensions:
+            variance_activity = variance_activity[: len(variance_placefields)]
+        return torch.sum(variance_activity - variance_placefields) / torch.sum(variance_activity)
 
     def reconstruction_score(
         self,
@@ -413,7 +427,7 @@ class SubspaceModel(ABC):
         spks_type: SpksTypes,
         train_split: "SplitName",
         validation_split: "SplitName",
-        n_trials: int = 25,
+        n_trials: int = 15,
         timeout: float | None = None,
         sampler: optuna.samplers.BaseSampler | None = None,
     ) -> tuple[dict, float, pd.DataFrame]:
@@ -643,44 +657,257 @@ class SubspaceModel(ABC):
                 else:
                     return optuna_metrics
 
-        # First get the cache key to identify a potential cached result
-        cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
-        cache_path = self.registry.registry_paths.subspace_score_path / f"{cache_key}.joblib"
+        # Get the best hyperparameters from optimization
+        hyperparameters = self.get_best_hyperparameters(
+            session,
+            spks_type,
+            train_split,
+            validation_split,
+            method,
+            force_remake=force_reoptimize,
+        )[0]
 
-        if cache_path.exists() and not force_remake and not force_reoptimize:
-            # If a cache exists, load it and return the best score
-            metrics = load(cache_path)
+        # Get cache key based on optimization method
+        cache_key = self._get_score_cache_key(
+            session,
+            spks_type,
+            train_split,
+            validation_split,
+            test_split,
+            method,
+        )
 
-        else:
-            # If no cache exists, get the best hyperparameters and score the model and save the results to the cache
-            hyperparameters = self.get_best_hyperparameters(
-                session,
-                spks_type,
-                train_split,
-                validation_split,
-                method,
-                force_remake=force_reoptimize,
-            )[0]
-            subspace = self.fit(session, spks_type=spks_type, split=train_split, hyperparameters=hyperparameters)
-            variance = self.score(session, subspace, spks_type=spks_type, split=test_split)
-            evaluation_score = self.evaluate(variance)
-            metrics = {
-                "evaluation_score": float(evaluation_score),
-                "variance_activity": (
-                    variance["variance_activity"].cpu().numpy()
-                    if isinstance(variance["variance_activity"], torch.Tensor)
-                    else variance["variance_activity"]
-                ),
-                "variance_placefields": (
-                    variance["variance_placefields"].cpu().numpy()
-                    if isinstance(variance["variance_placefields"], torch.Tensor)
-                    else variance["variance_placefields"]
-                ),
-            }
-            if self.autosave:
-                dump(metrics, cache_path)
+        # Use shared backend to compute and cache score
+        # If force_reoptimize is True, we've already forced reoptimization above, so use force_remake for scoring
+        return self._compute_and_cache_score(
+            session,
+            spks_type,
+            train_split,
+            test_split,
+            hyperparameters,
+            cache_key,
+            force_remake,
+        )
 
-        return metrics
+    def get_score(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        test_split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        source_model: Optional["SubspaceModel"] = None,
+        source_method: Optional[Literal["grid", "optuna", "best"]] = None,
+        source_validation_split: Optional["SplitName"] = None,
+        force_remake: bool = False,
+    ) -> dict[str, float]:
+        """Get the score for the model with explicitly provided hyperparameters.
+
+        This method allows scoring with hyperparameters that are either:
+        1. Directly provided via the `hyperparameters` parameter, or
+        2. Retrieved from another model's optimization via `source_model` and `source_method`.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to get the score for.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        train_split : Optional["SplitName"]
+            The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
+        test_split : Optional["SplitName"]
+            The split to use for the testing. If None, uses the split from the session provided as input. Default is "test".
+        hyperparameters : Optional[PlaceFieldHyperparameters]
+            The hyperparameters to use for scoring. If provided, these will be used directly.
+        source_model : Optional[SubspaceModel]
+            Another SubspaceModel instance to get hyperparameters from. Must be used with `source_method`.
+            If provided, will retrieve the best hyperparameters from that model's optimization.
+        source_method : Optional[Literal["grid", "optuna", "best"]]
+            The optimization method to use when retrieving hyperparameters from `source_model`.
+            Required if `source_model` is provided. If "best", will use whichever method (grid or optuna)
+            has the better score from the source model.
+        source_validation_split : Optional["SplitName"]
+            The validation split that was used in the source model's optimization.
+            Required if `source_model` is provided. Default is "validation".
+        force_remake: bool = False
+            If True, will re-measure the score and save the results even if it already exists.
+            (default is False)
+
+        Returns
+        -------
+        metrics : dict[str, float]
+            A dictionary with the metrics as keys and the values as the metrics.
+
+        Raises
+        ------
+        ValueError
+            If both `hyperparameters` and `source_model` are provided, or if neither is provided,
+            or if `source_model` is provided but `source_method` is not, or if the source model
+            doesn't have cached hyperparameters.
+        """
+        if spks_type is None:
+            spks_type = session.params.spks_type
+
+        # Validate that exactly one of hyperparameters or source_model is provided
+        if hyperparameters is not None and source_model is not None:
+            raise ValueError("Cannot provide both 'hyperparameters' and 'source_model'. Please provide only one.")
+        if hyperparameters is None and source_model is None:
+            raise ValueError("Must provide either 'hyperparameters' or 'source_model' (with 'source_method').")
+
+        # Get hyperparameters from source model if needed
+        if source_model is not None:
+            if source_method is None:
+                raise ValueError("'source_method' is required when 'source_model' is provided.")
+            if source_validation_split is None:
+                source_validation_split = "validation"
+
+            # Handle "best" method by trying both grid and optuna
+            if source_method == "best":
+                grid_exists = source_model.check_existing_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method="grid",
+                )
+                optuna_exists = source_model.check_existing_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method="optuna",
+                )
+
+                if not grid_exists and not optuna_exists:
+                    raise ValueError(
+                        f"Source model does not have cached hyperparameters for "
+                        f"session={session.session_print()}, spks_type={spks_type}, "
+                        f"train_split={train_split}, validation_split={source_validation_split} "
+                        f"for either grid or optuna method. Please run optimization on the source model first."
+                    )
+
+                # Try to get scores for both methods and return the best one
+                grid_score = None
+                optuna_score = None
+
+                if grid_exists:
+                    grid_hyperparameters = source_model.get_best_hyperparameters(
+                        session,
+                        spks_type=spks_type,
+                        train_split=train_split,
+                        validation_split=source_validation_split,
+                        method="grid",
+                    )[0]
+                    grid_cache_key = self._get_score_from_hyps_cache_key(
+                        session,
+                        spks_type,
+                        train_split,
+                        test_split,
+                        grid_hyperparameters,
+                    )
+                    grid_cache_path = self.registry.registry_paths.subspace_score_path / f"{grid_cache_key}.joblib"
+                    if grid_cache_path.exists() and not force_remake:
+                        grid_score = load(grid_cache_path)
+                    else:
+                        # Compute score for grid hyperparameters
+                        grid_score = self._compute_and_cache_score(
+                            session,
+                            spks_type,
+                            train_split,
+                            test_split,
+                            grid_hyperparameters,
+                            grid_cache_key,
+                            force_remake,
+                        )
+
+                if optuna_exists:
+                    optuna_hyperparameters = source_model.get_best_hyperparameters(
+                        session,
+                        spks_type=spks_type,
+                        train_split=train_split,
+                        validation_split=source_validation_split,
+                        method="optuna",
+                    )[0]
+                    optuna_cache_key = self._get_score_from_hyps_cache_key(
+                        session,
+                        spks_type,
+                        train_split,
+                        test_split,
+                        optuna_hyperparameters,
+                    )
+                    optuna_cache_path = self.registry.registry_paths.subspace_score_path / f"{optuna_cache_key}.joblib"
+                    if optuna_cache_path.exists() and not force_remake:
+                        optuna_score = load(optuna_cache_path)
+                    else:
+                        # Compute score for optuna hyperparameters
+                        optuna_score = self._compute_and_cache_score(
+                            session,
+                            spks_type,
+                            train_split,
+                            test_split,
+                            optuna_hyperparameters,
+                            optuna_cache_key,
+                            force_remake,
+                        )
+
+                # Return the best score (lower evaluation_score is better)
+                if grid_score is not None and optuna_score is not None:
+                    if grid_score.get("evaluation_score", float("inf")) <= optuna_score.get("evaluation_score", float("inf")):
+                        return grid_score
+                    else:
+                        return optuna_score
+                elif grid_score is not None:
+                    return grid_score
+                elif optuna_score is not None:
+                    return optuna_score
+                else:
+                    # This shouldn't happen due to the check above, but just in case
+                    raise ValueError("Could not retrieve scores from source model.")
+
+            else:
+                # Check if source model has cached hyperparameters
+                if not source_model.check_existing_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method=source_method,
+                ):
+                    raise ValueError(
+                        f"Source model does not have cached hyperparameters for "
+                        f"session={session.session_print()}, spks_type={spks_type}, "
+                        f"train_split={train_split}, validation_split={source_validation_split}, method={source_method}. "
+                        f"Please run optimization on the source model first."
+                    )
+
+                # Get hyperparameters from source model
+                hyperparameters = source_model.get_best_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method=source_method,
+                )[0]
+
+        # Get cache key based on hyperparameters
+        cache_key = self._get_score_from_hyps_cache_key(
+            session,
+            spks_type,
+            train_split,
+            test_split,
+            hyperparameters,
+        )
+
+        # Use shared backend to compute and cache score
+        return self._compute_and_cache_score(
+            session,
+            spks_type,
+            train_split,
+            test_split,
+            hyperparameters,
+            cache_key,
+            force_remake,
+        )
 
     def check_existing_hyperparameters(
         self,
@@ -710,6 +937,163 @@ class SubspaceModel(ABC):
         if spks_type is None:
             spks_type = session.params.spks_type
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
+        cache_path = self.registry.registry_paths.subspace_score_path / f"{cache_key}.joblib"
+        return cache_path.exists()
+
+    def check_existing_score_from_hyps(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        test_split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        source_model: Optional["SubspaceModel"] = None,
+        source_method: Optional[Literal["grid", "optuna", "best"]] = None,
+        source_validation_split: Optional["SplitName"] = None,
+    ) -> bool:
+        """Check if the score for the model exists in the score cache.
+
+        This method allows checking for cached scores with hyperparameters that are either:
+        1. Directly provided via the `hyperparameters` parameter, or
+        2. Retrieved from another model's optimization via `source_model` and `source_method`.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to check the score for.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        train_split : Optional["SplitName"]
+            The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
+        test_split : Optional["SplitName"]
+            The split to use for the testing. If None, uses the split from the session provided as input. Default is "test".
+        hyperparameters : Optional[PlaceFieldHyperparameters]
+            The hyperparameters to check for. If provided, these will be used directly.
+        source_model : Optional[SubspaceModel]
+            Another SubspaceModel instance to get hyperparameters from. Must be used with `source_method`.
+            If provided, will retrieve the best hyperparameters from that model's optimization.
+        source_method : Optional[Literal["grid", "optuna", "best"]]
+            The optimization method to use when retrieving hyperparameters from `source_model`.
+            Required if `source_model` is provided.
+        source_validation_split : Optional["SplitName"]
+            The validation split that was used in the source model's optimization.
+            Required if `source_model` is provided. Default is "validation".
+
+        Returns
+        -------
+        bool
+            True if the score exists in the cache, False otherwise.
+
+        Raises
+        ------
+        ValueError
+            If both `hyperparameters` and `source_model` are provided, or if neither is provided,
+            or if `source_model` is provided but `source_method` is not.
+        """
+        if spks_type is None:
+            spks_type = session.params.spks_type
+
+        # Validate that exactly one of hyperparameters or source_model is provided
+        if hyperparameters is not None and source_model is not None:
+            raise ValueError("Cannot provide both 'hyperparameters' and 'source_model'. Please provide only one.")
+        if hyperparameters is None and source_model is None:
+            raise ValueError("Must provide either 'hyperparameters' or 'source_model' (with 'source_method').")
+
+        # Get hyperparameters from source model if needed
+        if source_model is not None:
+            if source_method is None:
+                raise ValueError("'source_method' is required when 'source_model' is provided.")
+            if source_validation_split is None:
+                source_validation_split = "validation"
+
+            # Handle "best" method by checking both grid and optuna
+            if source_method == "best":
+                # Check both grid and optuna methods
+                grid_exists = source_model.check_existing_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method="grid",
+                )
+                optuna_exists = source_model.check_existing_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method="optuna",
+                )
+
+                # Check if score exists for either method
+                if grid_exists:
+                    grid_hyperparameters = source_model.get_best_hyperparameters(
+                        session,
+                        spks_type=spks_type,
+                        train_split=train_split,
+                        validation_split=source_validation_split,
+                        method="grid",
+                    )[0]
+                    grid_cache_key = self._get_score_from_hyps_cache_key(
+                        session,
+                        spks_type,
+                        train_split,
+                        test_split,
+                        grid_hyperparameters,
+                    )
+                    grid_cache_path = self.registry.registry_paths.subspace_score_path / f"{grid_cache_key}.joblib"
+                    if grid_cache_path.exists():
+                        return True
+
+                if optuna_exists:
+                    optuna_hyperparameters = source_model.get_best_hyperparameters(
+                        session,
+                        spks_type=spks_type,
+                        train_split=train_split,
+                        validation_split=source_validation_split,
+                        method="optuna",
+                    )[0]
+                    optuna_cache_key = self._get_score_from_hyps_cache_key(
+                        session,
+                        spks_type,
+                        train_split,
+                        test_split,
+                        optuna_hyperparameters,
+                    )
+                    optuna_cache_path = self.registry.registry_paths.subspace_score_path / f"{optuna_cache_key}.joblib"
+                    if optuna_cache_path.exists():
+                        return True
+
+                # Neither exists
+                return False
+            else:
+                # Check if source model has cached hyperparameters
+                if not source_model.check_existing_hyperparameters(
+                    session,
+                    spks_type=spks_type,
+                    train_split=train_split,
+                    validation_split=source_validation_split,
+                    method=source_method,
+                ):
+                    # If source model doesn't have cached hyperparameters, the score can't exist
+                    return False
+
+            # Get hyperparameters from source model
+            hyperparameters = source_model.get_best_hyperparameters(
+                session,
+                spks_type=spks_type,
+                train_split=train_split,
+                validation_split=source_validation_split,
+                method=source_method,
+            )[0]
+
+        # Get cache key based on hyperparameters
+        cache_key = self._get_score_from_hyps_cache_key(
+            session,
+            spks_type,
+            train_split,
+            test_split,
+            hyperparameters,
+        )
         cache_path = self.registry.registry_paths.subspace_score_path / f"{cache_key}.joblib"
         return cache_path.exists()
 
@@ -824,6 +1208,143 @@ class SubspaceModel(ABC):
             test_split,
         ]
         return "_".join(cache_params)
+
+    def _get_score_from_hyps_cache_key(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        train_split: "SplitName",
+        test_split: "SplitName",
+        hyperparameters: PlaceFieldHyperparameters,
+    ) -> str:
+        """Get the cache key for the score based on explicit hyperparameters.
+
+        The cache key is a string used to identify the score of the model in the score cache files
+        when hyperparameters are explicitly provided (not from optimization). It is a combination of:
+        - model_name
+        - session_name (mouse/date/session_id)
+        - spks_type
+        - hash(registry_params) (determines the population object and cell/time splits)
+        - train_split (which train set to use for training)
+        - test_split (which test set to use for testing)
+        - hash(hyperparameters) (the actual hyperparameter values)
+        - hash(model_params) (centered, max_components)
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to get the cache key for.
+        spks_type : SpksTypes
+            The type of spike data to use.
+        train_split : "SplitName"
+            The split to use for training.
+        test_split : "SplitName"
+            The split to use for testing.
+        hyperparameters : PlaceFieldHyperparameters
+            The hyperparameters to use for scoring.
+
+        Returns
+        -------
+        str
+            The cache key string for the score of the model.
+        """
+        # Get model name
+        model_name = self._get_model_name()
+
+        # Get session name (following pattern from registry._get_unique_id)
+        session_name = ".".join(session.session_name)
+
+        # Get registry params hash (following pattern from registry._get_unique_id)
+        registry_params_hash = stable_hash(self.registry.registry_params)
+
+        # Hyperparameters hash
+        hyperparameters_hash = stable_hash(vars(hyperparameters))
+
+        # Model params hash
+        model_params_hash = stable_hash(
+            (
+                self.centered,
+                self.max_components,
+            )
+        )
+
+        # Combine all components into cache key
+        cache_params = [
+            model_name,
+            session_name,
+            spks_type,
+            registry_params_hash,
+            train_split,
+            test_split,
+            hyperparameters_hash,
+            model_params_hash,
+        ]
+        return "_".join(cache_params)
+
+    def _compute_and_cache_score(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        train_split: "SplitName",
+        test_split: "SplitName",
+        hyperparameters: PlaceFieldHyperparameters,
+        cache_key: str,
+        force_remake: bool = False,
+    ) -> dict[str, float]:
+        """Compute and cache the score for the model with given hyperparameters.
+
+        This is a shared backend method used by both get_best_score() and get_score().
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to score the model on.
+        spks_type : SpksTypes
+            The type of spike data to use.
+        train_split : "SplitName"
+            The split to use for training.
+        test_split : "SplitName"
+            The split to use for testing.
+        hyperparameters : PlaceFieldHyperparameters
+            The hyperparameters to use for scoring.
+        cache_key : str
+            The cache key to use for storing/retrieving the score.
+        force_remake : bool
+            If True, will re-measure the score and save the results even if it already exists.
+            Default is False.
+
+        Returns
+        -------
+        metrics : dict[str, float]
+            A dictionary with the metrics as keys and the values as the metrics.
+        """
+        cache_path = self.registry.registry_paths.subspace_score_path / f"{cache_key}.joblib"
+
+        if cache_path.exists() and not force_remake:
+            # If a cache exists, load it and return the score
+            metrics = load(cache_path)
+        else:
+            # If no cache exists, fit the model and score it, then save the results to the cache
+            subspace = self.fit(session, spks_type=spks_type, split=train_split, hyperparameters=hyperparameters)
+            variance = self.score(session, subspace, spks_type=spks_type, split=test_split)
+            evaluation_score = self.evaluate(variance)
+            metrics = {
+                "evaluation_score": float(evaluation_score),
+                "variance_activity": (
+                    variance["variance_activity"].cpu().numpy()
+                    if isinstance(variance["variance_activity"], torch.Tensor)
+                    else variance["variance_activity"]
+                ),
+                "variance_placefields": (
+                    variance["variance_placefields"].cpu().numpy()
+                    if isinstance(variance["variance_placefields"], torch.Tensor)
+                    else variance["variance_placefields"]
+                ),
+            }
+            if self.autosave:
+                dump(metrics, cache_path)
+
+        return metrics
 
     def clear_cached_hyperparameter(
         self,
