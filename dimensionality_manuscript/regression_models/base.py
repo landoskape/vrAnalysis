@@ -208,12 +208,12 @@ class RegressionModel(ABC, Generic[H]):
         target_data = self.get_session_data(session, spks_type, split)[1]
 
         # If nan_safe=False, filter target_data to match filtered predictions
-        if not nan_safe and "idx_valid_predictions" in extras:
-            if (len(extras["idx_valid_predictions"]) / len(target_data)) < MINIMUM_NON_NAN_FRACTION:
-                raise ValueError(
-                    f"Too many NaN values in predictions! {len(extras['idx_valid_predictions'])} / {len(target_data)} samples have NaN values in predictions!!!"
-                )
+        if not nan_safe and extras.get("predictions_were_filtered", False):
             idx_valid = extras["idx_valid_predictions"]
+            if (len(idx_valid) / len(target_data)) < MINIMUM_NON_NAN_FRACTION:
+                raise ValueError(
+                    f"Too many NaN values in predictions! {len(idx_valid)} / {len(target_data)} samples have NaN values in predictions!!!"
+                )
             target_data = target_data[:, idx_valid]
 
         metrics = self.evaluate(predicted_data, target_data, nan_safe=nan_safe)
@@ -373,14 +373,17 @@ class RegressionModel(ABC, Generic[H]):
             hyperparameters=hyperparameters,
             nan_safe=nan_safe,
         )
-        target_data = self.get_session_data(session, spks_type, test_split)[1]
+        source_data, target_data, _ = self.get_session_data(session, spks_type, test_split)
 
         # If nan_safe=False, filter target_data to match filtered predictions
-        if not nan_safe and "idx_valid_predictions" in extras:
+        if not nan_safe and extras.get("predictions_were_filtered", False):
             idx_valid = extras["idx_valid_predictions"]
             target_data = target_data[:, idx_valid]
 
         metrics = self.evaluate(predicted_data, target_data, nan_safe=nan_safe)
+
+        extras["source_data"] = source_data
+        extras["trained_model"] = trained_model
 
         report = self.Report(
             metrics=metrics,
@@ -399,7 +402,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
         nan_safe: bool = False,
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize the hyperparameters of the model.
@@ -414,8 +417,8 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
-        method : Literal["grid", "optuna"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. Default is "grid".
+        method : Literal["grid", "optuna", "golden"]
+            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "golden", uses golden section search (for single-parameter optimization). Default is "grid".
         nan_safe: bool = False
             If True, will check for NaN values in predictions and metrics and raise errors if found.
             If False, will skip all NaN checks and allow NaN values to pass through.
@@ -433,8 +436,10 @@ class RegressionModel(ABC, Generic[H]):
             return self._optimize_grid(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
         elif method == "optuna":
             return self._optimize_optuna(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
+        elif method == "golden":
+            return self._optimize_golden(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
         else:
-            raise ValueError(f"Invalid method: {method}. Must be one of ['grid', 'optuna'].")
+            raise ValueError(f"Invalid method: {method}. Must be one of ['grid', 'optuna', 'golden'].")
 
     def _optimize_grid(
         self,
@@ -654,13 +659,59 @@ class RegressionModel(ABC, Generic[H]):
 
         return best_params, best_score, results_df
 
+    def _optimize_golden(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        train_split: "SplitName",
+        validation_split: "SplitName",
+        nan_safe: bool = False,
+    ) -> tuple[dict, float, pd.DataFrame]:
+        """Optimize the hyperparameters of the model using golden section search.
+
+        This method should be implemented by subclasses that support golden section search
+        optimization. It uses golden section search which is efficient for near-convex
+        1D optimization problems.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to optimize the hyperparameters for.
+        spks_type : SpksTypes
+            The type of spike data to use for the population.
+        train_split : "SplitName"
+            The split to use for the training.
+        validation_split : "SplitName"
+            The split to use for the validation.
+        nan_safe: bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+            If False, will skip all NaN checks and allow NaN values to pass through.
+
+        Returns
+        -------
+        best_params : dict
+            The best hyperparameters for the model.
+        best_score : float
+            The best score for the model.
+        results_df : pd.DataFrame
+            A DataFrame with all the results from the golden section search optimization.
+
+        Raises
+        ------
+        NotImplementedError
+            If not implemented by the subclass.
+        """
+        raise NotImplementedError(
+            f"Golden section search is not implemented for {self.__class__.__name__}. " "Override _optimize_golden() to enable golden section search."
+        )
+
     def get_best_hyperparameters(
         self,
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden", "best"] = "grid",
         force_remake: bool = False,
     ) -> tuple[H, float, pd.DataFrame]:
         """Get the best hyperparameters for the model.
@@ -675,8 +726,8 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
-        method : Literal["grid", "optuna"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. Default is "grid".
+        method : Literal["grid", "optuna", "golden", "best"]
+            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "golden", uses golden section search. If "best", tries all methods and returns the one with the best score. Default is "grid".
         force_remake: bool = False
             If True, will re-run optimization and save the results even if it already exists.
             (default is False)
@@ -690,6 +741,76 @@ class RegressionModel(ABC, Generic[H]):
         results_df : pd.DataFrame
             The full optimization results. (Only returned if full_results is True.)
         """
+        # Handle "best" method by trying grid, optuna, and golden
+        if method == "best":
+            grid_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, "grid")
+            optuna_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, "optuna")
+            golden_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, "golden")
+            grid_path = self.registry.registry_paths.hyperparameter_path / f"{grid_key}.joblib"
+            optuna_path = self.registry.registry_paths.hyperparameter_path / f"{optuna_key}.joblib"
+            golden_path = self.registry.registry_paths.hyperparameter_path / f"{golden_key}.joblib"
+
+            # Collect available results
+            available_results = []
+            if grid_path.exists() and not force_remake:
+                available_results.append(("grid", load(grid_path)))
+            if optuna_path.exists() and not force_remake:
+                available_results.append(("optuna", load(optuna_path)))
+            if golden_path.exists() and not force_remake:
+                available_results.append(("golden", load(golden_path)))
+
+            # If we have cached results, compare them
+            if available_results:
+                # Find best from cached results
+                best_method, best_results = min(available_results, key=lambda x: x[1].get("best_score", float("inf")))
+                best_params = best_results["best_params"]
+                best_score = best_results["best_score"]
+                results_df = best_results["results_df"]
+            else:
+                # Try all methods and return the best
+                grid_hyperparameters, grid_score, grid_df = self.get_best_hyperparameters(
+                    session,
+                    spks_type,
+                    train_split,
+                    validation_split,
+                    "grid",
+                    force_remake,
+                )
+                optuna_hyperparameters, optuna_score, optuna_df = self.get_best_hyperparameters(
+                    session,
+                    spks_type,
+                    train_split,
+                    validation_split,
+                    "optuna",
+                    force_remake,
+                )
+                try:
+                    golden_hyperparameters, golden_score, golden_df = self.get_best_hyperparameters(
+                        session,
+                        spks_type,
+                        train_split,
+                        validation_split,
+                        "golden",
+                        force_remake,
+                    )
+                except (NotImplementedError, ValueError):
+                    # Golden section not supported or invalid for this model
+                    golden_hyperparameters, golden_score, golden_df = None, float("inf"), None
+
+                # Compare best_score (lower is better)
+                candidates = [
+                    (grid_hyperparameters, grid_score, grid_df),
+                    (optuna_hyperparameters, optuna_score, optuna_df),
+                ]
+                if golden_hyperparameters is not None:
+                    candidates.append((golden_hyperparameters, golden_score, golden_df))
+
+                best_hyperparameters, best_score, best_df = min(candidates, key=lambda x: x[1])
+                return best_hyperparameters, best_score, best_df
+
+            hyperparameters = self._model_hyperparameters.from_dict(best_params)
+            return hyperparameters, best_score, results_df
+
         # First get the cache key to identify a potential cached result
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
         cache_path = self.registry.registry_paths.hyperparameter_path / f"{cache_key}.joblib"
@@ -717,7 +838,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna", "best"] = "grid",
+        method: Literal["grid", "optuna", "golden", "best"] = "best",
         force_remake: bool = False,
         force_reoptimize: bool = False,
     ) -> dict[str, float]:
@@ -735,8 +856,8 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
         test_split : Optional["SplitName"]
             The split to use for the testing. If None, uses the split from the session provided as input. Default is "test".
-        method : Literal["grid", "optuna", "best"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "best", uses whichever method has the best score. Default is "grid".
+        method : Literal["grid", "optuna", "golden", "best"]
+            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "golden", uses golden section search. If "best", uses whichever method has the best score. Default is "best".
         force_remake: bool = False
             If True, will re-measure the score and save the results even if it already exists.
             (default is False)
@@ -752,28 +873,31 @@ class RegressionModel(ABC, Generic[H]):
         if spks_type is None:
             spks_type = session.params.spks_type
 
-        # Handle "best" method by trying both grid and optuna
+        # Handle "best" method by trying grid, optuna, and golden
         if method == "best":
             grid_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, "grid")
             optuna_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, "optuna")
+            golden_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, "golden")
             grid_path = self.registry.registry_paths.score_path / f"{grid_key}.joblib"
             optuna_path = self.registry.registry_paths.score_path / f"{optuna_key}.joblib"
+            golden_path = self.registry.registry_paths.score_path / f"{golden_key}.joblib"
 
-            # Check which exists and has better score
-            if grid_path.exists() and optuna_path.exists() and not force_remake and not force_reoptimize:
-                grid_metrics = load(grid_path)
-                optuna_metrics = load(optuna_path)
-                # Compare MSE scores (lower is better)
-                if grid_metrics.get("mse", float("inf")) <= optuna_metrics.get("mse", float("inf")):
-                    return grid_metrics
-                else:
-                    return optuna_metrics
-            elif grid_path.exists() and not force_remake and not force_reoptimize:
-                return load(grid_path)
-            elif optuna_path.exists() and not force_remake and not force_reoptimize:
-                return load(optuna_path)
+            # Collect available results
+            available_metrics = []
+            if grid_path.exists() and not force_remake and not force_reoptimize:
+                available_metrics.append(("grid", load(grid_path)))
+            if optuna_path.exists() and not force_remake and not force_reoptimize:
+                available_metrics.append(("optuna", load(optuna_path)))
+            if golden_path.exists() and not force_remake and not force_reoptimize:
+                available_metrics.append(("golden", load(golden_path)))
+
+            # If we have cached results, compare them
+            if available_metrics:
+                # Find best from cached results (lower MSE is better)
+                best_method, best_metrics = min(available_metrics, key=lambda x: x[1].get("mse", float("inf")))
+                return best_metrics
             else:
-                # Try both and return the best
+                # Try all methods and return the best
                 grid_metrics = self.get_best_score(
                     session,
                     spks_type,
@@ -794,10 +918,31 @@ class RegressionModel(ABC, Generic[H]):
                     force_remake,
                     force_reoptimize,
                 )
-                if grid_metrics.get("mse", float("inf")) <= optuna_metrics.get("mse", float("inf")):
-                    return grid_metrics
-                else:
-                    return optuna_metrics
+                try:
+                    golden_metrics = self.get_best_score(
+                        session,
+                        spks_type,
+                        train_split,
+                        validation_split,
+                        test_split,
+                        "golden",
+                        force_remake,
+                        force_reoptimize,
+                    )
+                except (NotImplementedError, ValueError):
+                    # Golden section not supported or invalid for this model
+                    golden_metrics = {"mse": float("inf")}
+
+                # Compare MSE scores (lower is better)
+                candidates = [
+                    ("grid", grid_metrics),
+                    ("optuna", optuna_metrics),
+                ]
+                if golden_metrics.get("mse", float("inf")) < float("inf"):
+                    candidates.append(("golden", golden_metrics))
+
+                best_method, best_metrics = min(candidates, key=lambda x: x[1].get("mse", float("inf")))
+                return best_metrics
 
         # First get the cache key to identify a potential cached result
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
@@ -840,7 +985,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> bool:
         """Check if the hyperparameters for the model exist in the hyperparameter cache."""
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
@@ -854,7 +999,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> bool:
         """Check if the score for the model exist in the score cache."""
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
@@ -867,7 +1012,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> str:
         """Get the cache key for the hyperparameters of the model.
 
@@ -879,7 +1024,7 @@ class RegressionModel(ABC, Generic[H]):
         - hash(registry_params) (determines the population object and cell/time splits)
         - train_split (which train set to use for training)
         - validation_split (which validation set to use for validation)
-        - optimization method (grid or optuna)
+        - optimization method (grid, optuna, or golden)
         - hash(scaling_params) (determines the scaling parameters)
 
         Parameters
@@ -892,7 +1037,7 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for training. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
-        method : Literal["grid", "optuna"]
+        method : Literal["grid", "optuna", "golden"]
             The optimization method. Default is "grid".
 
         Returns
@@ -943,7 +1088,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> str:
         """Get the cache key for the score of the model.
 
@@ -964,7 +1109,7 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for validation. Default is "validation".
         test_split : Optional["SplitName"]
             The split to use for testing. Default is "test".
-        method : Literal["grid", "optuna"]
+        method : Literal["grid", "optuna", "golden"]
             The method used for optimization. Default is "grid".
 
         Returns
@@ -985,7 +1130,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> None:
         """Clear the cached hyperparameter for the model.
 
@@ -999,7 +1144,7 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for training. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
-        method : Literal["grid", "optuna"]
+        method : Literal["grid", "optuna", "golden"]
             The method used for optimization. Default is "grid".
         """
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
@@ -1014,7 +1159,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna"] = "grid",
+        method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> None:
         """Clear the cached score for the model.
 
@@ -1030,7 +1175,7 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for validation. Default is "validation".
         test_split : Optional["SplitName"]
             The split to use for testing. Default is "test".
-        method : Literal["grid", "optuna"]
+        method : Literal["grid", "optuna", "golden"]
             The method used for optimization. Default is "grid".
         """
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
@@ -1139,7 +1284,21 @@ class HyperparametersBase(ABC):
         """
         if "independent_optimization" in params:
             params.pop("independent_optimization")
+        params = cls._process_params(params)
         return cls(**params)
+
+    @classmethod
+    def _process_params(cls, params: dict) -> dict:
+        """Process the parameters from the dictionary.
+
+        (If a model needs to do something do it here, otherwise leave it transparent).
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of hyperparameter values.
+        """
+        return params
 
     def update_from_dict(self, params: dict) -> None:
         """Update the hyperparameters from a dictionary.

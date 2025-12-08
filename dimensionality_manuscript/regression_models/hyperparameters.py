@@ -122,6 +122,23 @@ class RBFPosHyperparameters(HyperparametersBase):
             "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-2, 1e2, log=True),
         }
 
+    @classmethod
+    def _process_params(cls, params: dict) -> dict:
+        """Process the parameters from the dictionary.
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of hyperparameter values.
+        """
+        if "alpha" in params:
+            if "alpha_encoder" not in params:
+                params["alpha_encoder"] = params["alpha"]
+            if "alpha_decoder" not in params:
+                params["alpha_decoder"] = params["alpha"]
+            params.pop("alpha")
+        return params
+
 
 @dataclass(frozen=True)
 class ReducedRankRegressionHyperparameters(HyperparametersBase):
