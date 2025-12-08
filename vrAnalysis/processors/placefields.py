@@ -309,6 +309,7 @@ class Placefield:
     placefield: np.ndarray
     dist_edges: np.ndarray
     environment: np.ndarray
+    count: np.ndarray
 
     def __repr__(self) -> str:
         pfshape = self.placefield.shape
@@ -456,7 +457,7 @@ def get_placefield(
     if zero_to_nan:
         placefields[idx_nan] = np.nan
 
-    return Placefield(placefield=placefields, dist_edges=dist_edges, environment=environment)
+    return Placefield(placefield=placefields, dist_edges=dist_edges, environment=environment, count=counts)
 
 
 def get_placefield_prediction(placefield: Placefield, frame_behavior: FrameBehavior) -> tuple[np.ndarray, dict]:
@@ -478,10 +479,14 @@ def get_placefield_prediction(placefield: Placefield, frame_behavior: FrameBehav
         The predicted activity array with shape (frames, rois). NaN for frames where prediction is not possible.
     """
     idx_valid_frames = frame_behavior.valid_frames()
-    frame_position_indices = convert_position_to_bins(frame_behavior.position, placefield.dist_edges, check_invalid=True)
-    if np.any(~np.isin(frame_behavior.environment, placefield.environment)):
+    num_frames = len(frame_behavior)
+    frame_behavior_valid = frame_behavior.filter(idx_valid_frames)
+    frame_position_indices = np.full(num_frames, -10000, dtype=int)
+    frame_position_indices[idx_valid_frames] = convert_position_to_bins(frame_behavior_valid.position, placefield.dist_edges, check_invalid=True)
+    if np.any(~np.isin(frame_behavior_valid.environment, placefield.environment)):
         raise ValueError(f"frame_behavior.environment contains environments that are not in the placefield.environment!!!")
-    frame_environment_indices = np.searchsorted(placefield.environment, frame_behavior.environment)
+    frame_environment_indices = np.full(num_frames, -10000, dtype=int)
+    frame_environment_indices[idx_valid_frames] = np.searchsorted(placefield.environment, frame_behavior_valid.environment)
     num_rois = placefield.shape[2]
 
     # Use a numba speed up to get the placefield prediction (single pass simple algorithm)
