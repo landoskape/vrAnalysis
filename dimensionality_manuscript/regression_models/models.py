@@ -1,8 +1,11 @@
 from typing import Optional, Union, TYPE_CHECKING, Type
+from copy import copy
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import norm, linregress
 import torch
-from vrAnalysis.helpers import edge2center
+import pandas as pd
+from vrAnalysis.helpers import edge2center, vectorCorrelation
+from vrAnalysis.helpers.optimization import golden_section_search
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, Placefield, FrameBehavior
 from dimilibi import RidgeRegression, ReducedRankRegression
@@ -156,6 +159,8 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         num_samples_prediction = len(frame_behavior)
         idx_valid_prediction = np.arange(num_samples_prediction, dtype=np.int64)  # Track which original indices are still valid
 
+        extras = {"frame_behavior": copy(frame_behavior)}
+
         # Get the source data to predict the internal position estimates
         if self.internal:
             error = torch.mean((source_data[None, None] - torch.tensor(source_placefield.placefield[..., None])) ** 2, dim=2)
@@ -167,6 +172,8 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             dist_centers = edge2center(source_placefield.dist_edges)
             frame_behavior.position = dist_centers[idx_pos.numpy()]
             frame_behavior.environment = source_placefield.environment[idx_env.numpy()]
+
+            extras["frame_behavior_internal"] = frame_behavior
 
         if self.gain:
             # If the model has a gain component, we need to fit the a scalar gain value for
@@ -202,8 +209,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
                     raise ValueError(f"{np.sum(np.isnan(gain))} / {len(gain)} gains have nan values in {session.session_print()}!!!")
 
         # Get prediction for the test timepoints
-        prediction, extras = get_placefield_prediction(target_placefield, frame_behavior)
-        extras["frame_behavior"] = frame_behavior
+        prediction = get_placefield_prediction(target_placefield, frame_behavior)[0]
 
         if self.gain:
             # Apply the gain to the prediction
@@ -224,15 +230,23 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         else:
             # Filter out NaN samples
             idx_valid_final = ~idx_nan_samples
-            prediction = prediction[:, idx_valid_final]
-            if "frame_behavior" in extras:
-                extras["frame_behavior"] = extras["frame_behavior"].filter(np.where(idx_valid_final)[0])
-            if "gain" in extras:
-                # Filter gain to match filtered prediction
-                extras["gain"] = extras["gain"][idx_valid_final]
+            if np.any(idx_nan_samples):
+                # Filtering occurred
+                prediction = prediction[:, idx_valid_final]
+                if "frame_behavior" in extras:
+                    extras["frame_behavior"] = extras["frame_behavior"].filter(np.where(idx_valid_final)[0])
+                if "frame_behavior_internal" in extras:
+                    extras["frame_behavior_internal"] = extras["frame_behavior_internal"].filter(np.where(idx_valid_final)[0])
+                if "gain" in extras:
+                    # Filter gain to match filtered prediction
+                    extras["gain"] = extras["gain"][idx_valid_final]
 
-            # Update tracking: idx_valid_final is relative to current data, map back to original
-            extras["idx_valid_predictions"] = idx_valid_prediction[idx_valid_final]
+                # Update tracking: idx_valid_final is relative to current data, map back to original
+                extras["idx_valid_predictions"] = idx_valid_prediction[idx_valid_final]
+                extras["predictions_were_filtered"] = True
+            else:
+                # No NaNs, no filtering needed
+                extras["predictions_were_filtered"] = False
 
         return prediction, extras
 
@@ -260,6 +274,102 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         gain_suffix = "_gain" if self.gain else ""
         model_name = f"{model_type}_placefield_1d{gain_suffix}"
         return model_name
+
+    def measure_internals(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        test_split: Optional["SplitName"] = "test",
+        dev_bin_edges: np.ndarray = np.linspace(-100, 100, 101),
+    ) -> tuple[np.ndarray, float, float, float]:
+        """Measure the internals of the model.
+
+        Specifically, we measure the deviation of the internal position from the true position whenever the internal
+        estimate is for the correct environment (on a histogram with bins set in kwargs). We also measure the fraction
+        of samples that switch environment. Lastly, we measure the R2 of the activity variance (of population sum)
+        vs. internal gain estimate for the target and source neurons.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to measure the internals of.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        train_split : Optional["SplitName"]
+            The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
+        test_split : Optional["SplitName"]
+            The split to use for the measurement. If None, uses the split from the session provided as input. Default is "test".
+        dev_bin_edges : np.ndarray
+            The edges of the bins to use for the measurement. Default is np.linspace(-100, 100, 101).
+
+        Returns
+        -------
+        dev_bin_counts : np.ndarray
+            The number of samples in each bin of the deviation between true and internal position.
+        fraction_switch_env : float
+            The fraction of samples that switch environment.
+        r2_gain_target : float
+            The R2 of the activity variance (of population sum) vs. internal gain estimate for the target neurons.
+        r2_gain_source : float
+            The R2 of the activity variance (of population sum) vs. internal gain estimate for the source neurons.
+        """
+        if not self.internal or not self.gain:
+            raise ValueError("Can only measure internals for internal+gain models!")
+
+        # Model internals for internal placefield model & gain model
+        hyperparameters = self.get_best_hyperparameters(
+            session,
+            spks_type=spks_type,
+            method="best",
+        )[0]
+        report = self.process(
+            session,
+            spks_type=spks_type,
+            train_split=train_split,
+            test_split=test_split,
+            hyperparameters=hyperparameters,
+        )
+
+        # Get position by environment from true behavior and internal estimate
+        position_by_environment = report.extras["frame_behavior"].position_by_environment()
+        position_by_environment_internal = report.extras["frame_behavior_internal"].position_by_environment()
+
+        # Measure deviation between true and internal position within / across environments
+        deviation_internal = position_by_environment_internal - position_by_environment
+        env_switch_internal = np.all(np.isnan(deviation_internal), axis=0)
+        truedev_internal = np.nansum(deviation_internal, axis=0)[~env_switch_internal]
+
+        dev_bin_counts = np.histogram(truedev_internal, bins=dev_bin_edges)[0]
+        fraction_switch_env = np.sum(env_switch_internal) / len(env_switch_internal)
+
+        # Measure R2 of activity variance (of population sum) vs. internal gain estimate
+        source_population_sum = torch.sum(report.extras["source_data"], axis=0)
+        source_population_zscore = (source_population_sum - source_population_sum.mean()) / source_population_sum.std()
+        target_population_sum = torch.sum(report.target_data, axis=0)
+        target_population_zscore = (target_population_sum - target_population_sum.mean()) / target_population_sum.std()
+        r2_gain_source = vectorCorrelation(np.array(source_population_zscore), np.array(report.extras["gain"]))
+        r2_gain_target = vectorCorrelation(np.array(target_population_zscore), np.array(report.extras["gain"]))
+
+        regression = linregress(np.array(source_population_zscore), np.array(report.extras["gain"]))
+        slope_source = regression.slope
+        yint_source = regression.intercept
+        regression = linregress(np.array(target_population_zscore), np.array(report.extras["gain"]))
+        slope_target = regression.slope
+        yint_target = regression.intercept
+
+        internals = {
+            "dev_bin_counts": dev_bin_counts,
+            "fraction_switch_env": fraction_switch_env,
+            "r2_gain_target": r2_gain_target,
+            "r2_gain_source": r2_gain_source,
+            "slope_gain_source": slope_source,
+            "yint_gain_source": yint_source,
+            "slope_gain_target": slope_target,
+            "yint_gain_target": yint_target,
+        }
+
+        return internals
 
 
 class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
@@ -425,14 +535,20 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         else:
             # Filter out NaN samples
             idx_valid = ~idx_nan_samples
-            prediction = prediction[:, idx_valid]
-            if "position_basis" in extras:
-                extras["position_basis"] = extras["position_basis"][idx_valid]
-            if "position_basis_predicted" in extras:
-                extras["position_basis_predicted"] = extras["position_basis_predicted"][idx_valid]
+            if np.any(idx_nan_samples):
+                # Filtering occurred
+                prediction = prediction[:, idx_valid]
+                if "position_basis" in extras:
+                    extras["position_basis"] = extras["position_basis"][idx_valid]
+                if "position_basis_predicted" in extras:
+                    extras["position_basis_predicted"] = extras["position_basis_predicted"][idx_valid]
 
-            # Track which original samples are valid
-            extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+                # Track which original samples are valid
+                extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+                extras["predictions_were_filtered"] = True
+            else:
+                # No NaNs, no filtering needed
+                extras["predictions_were_filtered"] = False
 
         return prediction, extras
 
@@ -633,12 +749,18 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         else:
             # Filter out NaN samples
             idx_valid = ~idx_nan_samples
-            prediction = prediction[:, idx_valid]
-            if "latents" in extras:
-                extras["latents"] = extras["latents"][:, idx_valid]
+            if np.any(idx_nan_samples):
+                # Filtering occurred
+                prediction = prediction[:, idx_valid]
+                if "latents" in extras:
+                    extras["latents"] = extras["latents"][:, idx_valid]
 
-            # Track which original samples are valid
-            extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+                # Track which original samples are valid
+                extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+                extras["predictions_were_filtered"] = True
+            else:
+                # No NaNs, no filtering needed
+                extras["predictions_were_filtered"] = False
 
         return prediction, extras
 
@@ -662,3 +784,129 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
             The model name identifier, always "rrr" for ReducedRankRegressionModel.
         """
         return "rrr"
+
+    def _optimize_golden(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        train_split: "SplitName",
+        validation_split: "SplitName",
+        nan_safe: bool = False,
+    ) -> tuple[dict, float, pd.DataFrame]:
+        """Optimize hyperparameters using golden section search.
+
+        First optimizes alpha (with rank=200 fixed), then optimizes rank (with best alpha).
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to optimize the hyperparameters for.
+        spks_type : SpksTypes
+            The type of spike data to use for the population.
+        train_split : "SplitName"
+            The split to use for the training.
+        validation_split : "SplitName"
+            The split to use for the validation.
+        nan_safe: bool = False
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+
+        Returns
+        -------
+        best_params : dict
+            The best hyperparameters for the model.
+        best_score : float
+            The best score for the model.
+        results_df : pd.DataFrame
+            A DataFrame with all the results from the golden section search optimization.
+        """
+        # Get data to determine max rank
+        source_data, target_data, _ = self.get_session_data(session, spks_type, train_split)
+        max_rank = int(min(*source_data.shape, *target_data.shape))
+
+        results: list[dict] = []
+
+        # Step 1: Optimize alpha with rank=200 fixed
+        def evaluate_alpha(alpha: float) -> float:
+            """Evaluate alpha with rank=200."""
+            hyperparameters = ReducedRankRegressionHyperparameters(alpha=alpha, rank=200)
+            trained_model = self.train(
+                session,
+                spks_type=spks_type,
+                split=train_split,
+                hyperparameters=hyperparameters,
+            )
+            score = self.score(
+                session,
+                trained_model,
+                spks_type=spks_type,
+                split=validation_split,
+                hyperparameters=hyperparameters,
+                nan_safe=nan_safe,
+            )
+            if np.isnan(score):
+                score = float("inf")
+
+            # Record result
+            result = {"alpha": alpha, "rank": 200, "score": score}
+            results.append(result)
+
+            return score
+
+        best_alpha, best_alpha_score, alpha_history = golden_section_search(
+            func=evaluate_alpha,
+            a=1e-2,
+            b=1e6,
+            tolerance_param=1e-2,
+            tolerance_score=1e-3,
+            max_iterations=25,
+            minimize=True,
+            logspace=True,
+        )
+
+        # Step 2: Optimize rank with best alpha
+        def evaluate_rank(rank: float) -> float:
+            """Evaluate rank with best alpha."""
+            rank = int(rank)
+            hyperparameters = ReducedRankRegressionHyperparameters(alpha=best_alpha, rank=rank)
+            trained_model = self.train(
+                session,
+                spks_type=spks_type,
+                split=train_split,
+                hyperparameters=hyperparameters,
+            )
+            score = self.score(
+                session,
+                trained_model,
+                spks_type=spks_type,
+                split=validation_split,
+                hyperparameters=hyperparameters,
+                nan_safe=nan_safe,
+            )
+            if np.isnan(score):
+                score = float("inf")
+
+            # Record result
+            result = {"alpha": best_alpha, "rank": rank, "score": score}
+            results.append(result)
+
+            return score
+
+        best_rank, best_rank_score, rank_history = golden_section_search(
+            func=evaluate_rank,
+            a=1.0,
+            b=float(max_rank),
+            tolerance_param=1.0,  # Tolerance of 1 rank unit
+            tolerance_score=1e-3,
+            max_iterations=25,
+            minimize=True,
+            logspace=False,
+        )
+        best_rank = int(best_rank)
+
+        # Find overall best from all results
+        best_result = min(results, key=lambda x: x["score"])
+        best_params = {"alpha": best_result["alpha"], "rank": best_result["rank"]}
+        best_score = best_result["score"]
+
+        results_df = pd.DataFrame(results)
+        return best_params, best_score, results_df
