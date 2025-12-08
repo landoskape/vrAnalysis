@@ -395,8 +395,6 @@ class NewEntryGUI(QWidget):
         placeholder = str(self.data_type[entry])
         if self.nullable[entry]:
             placeholder += " (nullable)"
-        if self.size[entry] is not None:
-            placeholder += f" max characters: {self.size[entry]}"
         if self.defaults[entry] is not None:
             placeholder += f" default={self.defaults[entry]}"
         return placeholder
