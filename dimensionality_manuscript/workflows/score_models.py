@@ -8,7 +8,7 @@ from dimensionality_manuscript.registry import ModelName, PopulationRegistry, ge
 clear_hyperparameters = False  # Clears hyperparameter cache
 clear_scores = False  # Clears score cache
 
-score_models = True  # Scores models``
+score_models = True  # Scores models
 force_remake = False  # Remakes even if existing
 force_reoptimize = False  # Re-optimizes even if existing
 
@@ -18,14 +18,14 @@ check_existing_scores = False  # Checks if scores already exist
 # which are the primary ones used for the manuscript. Non-defaults are primarly for testing and exploratory analysis.
 
 MODEL_NAMES: list[ModelName] = [
-    "external_placefield_1d",
+    # "external_placefield_1d",
     # "internal_placefield_1d",
-    "external_placefield_1d_gain",
+    # "external_placefield_1d_gain",
     # "internal_placefield_1d_gain",
     # "rbfpos_decoder_only",
     # "rbfpos",
     # "rbfpos_leak",
-    # "rrr",
+    "rrr",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -34,7 +34,7 @@ SPKS_TYPES: tuple[SpksTypes] = (
     # "deconvolved",
 )
 
-METHOD = "optuna"
+METHOD = "golden"
 
 if __name__ == "__main__":
     sessiondb = get_database("vrSessions")
