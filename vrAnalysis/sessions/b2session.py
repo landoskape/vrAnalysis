@@ -579,6 +579,13 @@ class B2Session(SessionData):
 
         return idx_rois
 
+    @property
+    def env_stats(self) -> dict:
+        """
+        Get the environment stats for the session.
+        """
+        return {env: np.sum(self.trial_environment == env) for env in self.environments}
+
     def valid_plane_idx(self) -> np.ndarray:
         """
         Boolean indices of ROIs in the specified planes.
@@ -1006,6 +1013,36 @@ class B2Session(SessionData):
         Custom repr that excludes spks_types class variable.
         """
         return f"B2Session(mouse_name='{self.mouse_name}', date='{self.date}', session_id='{self.session_id}', spks_type='{self.params.spks_type}')"
+
+    def to_old_session(self):
+        """
+        Convert B2Session to old vrExperiment format for compatibility with legacy code.
+
+        This method creates a vrExperiment object that can be used with legacy analysis
+        code (e.g., placeCellSingleSession). The old format requires JSON files to exist
+        from the old registration system. If these files don't exist, this will raise
+        an AssertionError.
+
+        Returns
+        -------
+        vrExperiment
+            A vrExperiment object that wraps this B2Session, providing the old API
+            interface for compatibility with legacy analysis code.
+
+        Raises
+        ------
+        AssertionError
+            If the session folder doesn't exist or if the required JSON files from
+            the old registration system are not found.
+        """
+        from _old_vrAnalysis.session import vrExperiment
+
+        # Create a vrExperiment object using the 3-string constructor
+        # This will load from JSON files (vrExperimentOptions.json, etc.)
+        # which must exist from the old registration system
+        vrexp = vrExperiment(self.mouse_name, self.date, self.session_id)
+
+        return vrexp
 
 
 SpksTypes = Literal[*B2Session.spks_types]
