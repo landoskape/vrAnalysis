@@ -35,6 +35,7 @@ class SubspaceModel(ABC):
         self,
         registry: "PopulationRegistry",
         centered: bool = False,
+        correlation: bool = False,
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         max_components: int = 300,
         match_dimensions: bool = True,
@@ -48,6 +49,8 @@ class SubspaceModel(ABC):
             The registry to use for getting population data.
         centered : bool
             Whether to center the data. Default is False.
+        correlation : bool
+            Whether to use correlation instead of covariance. Default is False.
         hyperparameters : PlaceFieldHyperparameters
             The hyperparameters for placefield calculation. Default is PlaceFieldHyperparameters().
         max_components : int
@@ -59,10 +62,25 @@ class SubspaceModel(ABC):
         """
         self.registry = registry
         self.centered = centered
+        self.correlation = correlation
         self.hyperparameters = hyperparameters
         self.max_components = max_components
         self.match_dimensions = match_dimensions
         self.autosave = autosave
+
+        # How to scale the population data for the subspace analysis
+        if correlation:
+            self.population_parameters = {
+                "scale": True,
+                "scale_type": "max",
+                "pre_split": True,
+            }
+        else:
+            self.population_parameters = {
+                "scale": False,
+                "scale_type": None,
+                "pre_split": False,
+            }
 
     def get_session_data(
         self,
@@ -102,7 +120,7 @@ class SubspaceModel(ABC):
 
         if use_cell_split:
             # For SVCASubspace - returns source and target separately
-            source_data, target_data = population.get_split_data(split_idx)
+            source_data, target_data = population.get_split_data(split_idx, **self.population_parameters)
             frame_behavior_filtered = frame_behavior.filter(population.get_split_times(split_idx, within_idx_samples=False))
             num_source_neurons = len(population.cell_split_indices[0])
             num_target_neurons = len(population.cell_split_indices[1])
@@ -110,7 +128,7 @@ class SubspaceModel(ABC):
         else:
             # For PCASubspace and CVPCASubspace - returns all neurons together
             num_neurons = len(population.idx_neurons)
-            data = population.apply_split(population.data[population.idx_neurons], split_idx, prefiltered=False)
+            data = population.apply_split(population.data[population.idx_neurons], split_idx, prefiltered=False, **self.population_parameters)
             frame_behavior_filtered = frame_behavior.filter(population.get_split_times(split_idx, within_idx_samples=False))
             return data, frame_behavior_filtered, num_neurons
 

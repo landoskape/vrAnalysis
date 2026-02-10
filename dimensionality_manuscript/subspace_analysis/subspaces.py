@@ -8,7 +8,6 @@
 
 from typing import TYPE_CHECKING, Optional
 import torch
-from vrAnalysis.helpers.linear_algebra import matrix_root
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield
 from dimilibi import PCA, SVCA
@@ -83,8 +82,10 @@ class PCASubspace(SubspaceModel):
     def _get_model_name(self) -> str:
         """Get the name of the model."""
         base_name = "pca_subspace"
+        if self.correlation:
+            base_name += "_correlation"
         if not self.match_dimensions:
-            return f"{base_name}_without_match"
+            base_name += "_without_match"
         return base_name
 
 
@@ -219,8 +220,10 @@ class CVPCASubspace(SubspaceModel):
     def _get_model_name(self) -> str:
         """Get the name of the model."""
         base_name = "cvpca_subspace"
+        if self.correlation:
+            base_name += "_correlation"
         if not self.match_dimensions:
-            return f"{base_name}_without_match"
+            base_name += "_without_match"
         return base_name
 
 
@@ -320,8 +323,10 @@ class SVCASubspace(SubspaceModel):
     def _get_model_name(self) -> str:
         """Get the name of the model."""
         base_name = "svca_subspace"
+        if self.correlation:
+            base_name += "_correlation"
         if not self.match_dimensions:
-            return f"{base_name}_without_match"
+            base_name += "_without_match"
         return base_name
 
 
@@ -392,8 +397,8 @@ class CovCovSubspace(SubspaceModel):
             train_eval_placefields_root @ train_evecs_placefields.T @ test_data_cov @ train_evecs_placefields @ train_eval_placefields_root
         )
 
-        variance_activity = torch.sqrt(torch.flipud(torch.linalg.eigvalsh(inner_block_activity)))
-        variance_placefields = torch.sqrt(torch.flipud(torch.linalg.eigvalsh(inner_block_placefields)))
+        variance_activity = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_activity)), 0.0))
+        variance_placefields = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_placefields)), 0.0))
 
         return dict(
             variance_activity=variance_activity,
@@ -403,6 +408,173 @@ class CovCovSubspace(SubspaceModel):
     def _get_model_name(self) -> str:
         """Get the name of the model."""
         base_name = "covcov_subspace"
+        if self.correlation:
+            base_name += "_correlation"
         if not self.match_dimensions:
-            return f"{base_name}_without_match"
+            base_name += "_without_match"
+        return base_name
+
+
+class CovCovCrossvalidatedSubspace(SubspaceModel):
+    def fit(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes = "oasis",
+        split: "SplitName" = "train",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        nan_safe: bool = False,
+        split_train: bool = True,
+    ):
+        if split_train and split == "train":
+            split0 = "train0"
+            split1 = "train1"
+            train0_data, frame_behavior_train0, num_neurons = self.get_session_data(session, spks_type, split0, use_cell_split=False)
+            train1_data, _, _ = self.get_session_data(session, spks_type, split1, use_cell_split=False)
+            train0_data = self._center_data(train0_data, self.centered)
+            train1_data = self._center_data(train1_data, self.centered)
+        else:
+            # If any other split name or not split_train, we just divide the samples in half randomly
+            train_data, frame_behavior_train, num_neurons = self.get_session_data(session, spks_type, split, use_cell_split=False)
+            train_data = self._center_data(train_data, self.centered)
+            num_samples = train_data.shape[1]
+            num_samples_split0 = num_samples // 2
+            perm = torch.randperm(num_samples)
+            idx_split0 = torch.sort(perm[:num_samples_split0]).values
+            idx_split1 = torch.sort(perm[num_samples_split0:]).values
+            train0_data = train_data[:, idx_split0]
+            train1_data = train_data[:, idx_split1]
+            frame_behavior_train0 = frame_behavior_train.filter(idx_split0)
+
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        placefield0 = get_placefield(
+            train0_data.T.numpy(),
+            frame_behavior_train0,
+            dist_edges=dist_edges,
+            average=True,
+            smooth_width=hyperparameters.smooth_width,
+        )
+        placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T
+
+        # Check for NaNs and filter if needed
+        placefield0_extended, train0_data = self._check_and_filter_nans(placefield0_extended, train0_data, nan_safe=nan_safe)
+
+        num_components = self._compute_num_components(self.max_components, train0_data.shape, train1_data.shape, placefield0_extended.shape)
+
+        # Get the root covariance matrices for activity in each split
+        if self.match_dimensions:
+            pca_activity0 = PCA(num_components=num_components).fit(train0_data)
+            pca_activity1 = PCA(num_components=num_components).fit(train1_data)
+        else:
+            pca_activity0 = PCA().fit(train0_data)
+            pca_activity1 = PCA().fit(train1_data)
+        components0 = pca_activity0.get_components()
+        components1 = pca_activity1.get_components()
+        eigenvalues0 = pca_activity0.get_eigenvalues()
+        eigenvalues1 = pca_activity1.get_eigenvalues()
+        root_cov_activity0 = components0 @ torch.diag(torch.sqrt(eigenvalues0)) @ components0.T
+        root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
+
+        # Get the root covariance matrices for place fields in the first half split
+        pca_placefields0 = PCA(num_components=num_components).fit(placefield0_extended)
+        pf_components0 = pca_placefields0.get_components()
+        pf_eigenvalues0 = pca_placefields0.get_eigenvalues()
+        root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
+
+        # Measure SVD on activity vs activity or PFs vs activity
+        SVCA_activity = SVCA(centered=False, num_components=num_components).fit(root_cov_activity0, root_cov_activity1)
+        SVCA_placefields = SVCA(centered=False, num_components=num_components).fit(root_cov_placefields0, root_cov_activity1)
+
+        return Subspace(
+            subspace_activity=SVCA_activity,
+            subspace_placefields=SVCA_placefields,
+            extras=dict(placefield0=placefield0),
+        )
+
+    def score(
+        self,
+        session: B2Session,
+        subspace: Subspace,
+        spks_type: SpksTypes = "oasis",
+        split: "SplitName" = "not_train",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        nan_safe: bool = False,
+        split_not_train: bool = True,
+    ):
+        if split_not_train and split == "not_train":
+            split0 = "validation"
+            split1 = "test"
+            test0_data, frame_behavior_test0, num_neurons = self.get_session_data(session, spks_type, split0, use_cell_split=False)
+            test1_data, _, _ = self.get_session_data(session, spks_type, split1, use_cell_split=False)
+            test0_data = self._center_data(test0_data, self.centered)
+            test1_data = self._center_data(test1_data, self.centered)
+        else:
+            # If any other split name or not split_train, we just divide the samples in half randomly
+            test_data, frame_behavior_test, num_neurons = self.get_session_data(session, spks_type, split, use_cell_split=False)
+            test_data = self._center_data(test_data, self.centered)
+            num_samples = test_data.shape[1]
+            num_samples_split0 = num_samples // 2
+            perm = torch.randperm(num_samples)
+            idx_test0 = torch.sort(perm[:num_samples_split0]).values
+            idx_test1 = torch.sort(perm[num_samples_split0:]).values
+            test0_data = test_data[:, idx_test0]
+            test1_data = test_data[:, idx_test1]
+            frame_behavior_test0 = frame_behavior_test.filter(idx_test0)
+
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        placefield0 = get_placefield(
+            test0_data.T.numpy(),
+            frame_behavior_test0,
+            dist_edges=dist_edges,
+            average=True,
+            smooth_width=hyperparameters.smooth_width,
+        )
+        placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T
+
+        # Check for NaNs and filter if needed
+        placefield0_extended, test0_data = self._check_and_filter_nans(placefield0_extended, test0_data, nan_safe=nan_safe)
+
+        num_components = self._compute_num_components(self.max_components, test0_data.shape, test1_data.shape, placefield0_extended.shape)
+
+        # Get the root covariance matrices for activity in each split
+        if self.match_dimensions:
+            pca_activity0 = PCA(num_components=num_components).fit(test0_data)
+            pca_activity1 = PCA(num_components=num_components).fit(test1_data)
+        else:
+            pca_activity0 = PCA().fit(test0_data)
+            pca_activity1 = PCA().fit(test1_data)
+        components0 = pca_activity0.get_components()
+        components1 = pca_activity1.get_components()
+        eigenvalues0 = pca_activity0.get_eigenvalues()
+        eigenvalues1 = pca_activity1.get_eigenvalues()
+        root_cov_activity0 = components0 @ torch.diag(torch.sqrt(eigenvalues0)) @ components0.T
+        root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
+
+        # Get the root covariance matrices for place fields in the first half split
+        pca_placefields0 = PCA(num_components=num_components).fit(placefield0_extended)
+        pf_components0 = pca_placefields0.get_components()
+        pf_eigenvalues0 = pca_placefields0.get_eigenvalues()
+        root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
+
+        # variance activity
+        variance_activity = subspace.subspace_activity.score(root_cov_activity0, root_cov_activity1, normalize=False)[0]
+        variance_placefields = subspace.subspace_placefields.score(root_cov_placefields0, root_cov_activity1, normalize=False)[0]
+
+        return dict(
+            variance_activity=variance_activity,
+            variance_placefields=variance_placefields,
+        )
+
+    def _get_model_name(self) -> str:
+        """Get the name of the model."""
+        base_name = "covcov_crossvalidated_subspace"
+        if self.correlation:
+            base_name += "_correlation"
+        if not self.match_dimensions:
+            base_name += "_without_match"
         return base_name
