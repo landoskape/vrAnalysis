@@ -9,10 +9,12 @@ from vrAnalysis.database import get_database
 from vrAnalysis.helpers import cross_validate_trials
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield
+from vrAnalysis.processors.support import convolve_toeplitz, get_gauss_kernel
 from dimilibi import gaussian_filter
 from dimilibi.pca import PCA
-from dimilibi.cvpca import RegularizedCVPCA, CVPCA
+from dimilibi.cvpca import RegularizedCVPCA, CVPCA, LegacyCVPCA
 from dimensionality_manuscript.registry import PopulationRegistry
+from dimensionality_manuscript.workflows.compare_old_cvpca import get_legacy_cvpca
 
 # get session database
 sessiondb = get_database("vrSessions")
@@ -25,12 +27,6 @@ def nanmax(tensor: torch.Tensor, dim: Optional[int] = None, keepdim: bool = Fals
     min_value = torch.finfo(tensor.dtype).min
     output = tensor.nan_to_num(min_value).max(dim=dim, keepdim=keepdim).values
     return output
-
-
-def normalize_by_max(tensor: torch.Tensor, dim: Optional[int] = None, keepdim: bool = False) -> torch.Tensor:
-    max_value = nanmax(tensor, dim=dim, keepdim=keepdim)
-    max_value[max_value == 0] = 1
-    return tensor / max_value
 
 
 def process_session(session: B2Session, spks_type: SpksTypes, num_bins: int = 100, use_svd: bool = True, normalize: bool = True):
@@ -58,7 +54,9 @@ def process_session(session: B2Session, spks_type: SpksTypes, num_bins: int = 10
             torch_pfs = [torch_pf[:, good_idx] for torch_pf in torch_pfs]
 
     if normalize:
-        torch_pfs = [normalize_by_max(pf, dim=1, keepdim=True) for pf in torch_pfs]
+        _max_neuron = nanmax(torch.concatenate(torch_pfs, dim=1), dim=1, keepdim=True)
+        _max_neuron[_max_neuron == 0] = 1
+        torch_pfs = [pf / _max_neuron for pf in torch_pfs]
 
     if any([torch.any(torch.isnan(pf)) for pf in torch_pfs]):
         print("Some placefields have NaNs!")
@@ -69,6 +67,8 @@ def process_session(session: B2Session, spks_type: SpksTypes, num_bins: int = 10
     reg_covariances = []
     org_covariances = []
     org_smooth_covariances = []
+    leg_covariances = []
+    leg_smooth_covariances = []
     for ref_fold in range(len(trial_folds)):
         c_repeat_0 = torch_pfs[ref_fold]
         c_repeat_1 = torch_pfs[(ref_fold + 1) % len(trial_folds)]
@@ -102,6 +102,27 @@ def process_session(session: B2Session, spks_type: SpksTypes, num_bins: int = 10
         pca_smooth = PCA(use_svd=use_svd).fit(c_repeat_0_smooth)
         pca_smooth_covariances.append(pca_smooth.get_eigenvalues())
 
+        # Legacy CVPCA
+        leg_cvpca = LegacyCVPCA(use_svd=use_svd, shuffle_fraction=0.5)
+        leg_covariance = leg_cvpca.fit_score(c_repeat_0, c_repeat_1)
+        leg_covariances.append(leg_covariance)
+
+        # Legacy CVPCA with smoothing (ignoring rCVPCA estimates)
+        smooth_width = 0.1
+        kernel = get_gauss_kernel(dist_edges, smooth_width)
+        c_repeat_0_smooth = convolve_toeplitz(c_repeat_0, kernel, axis=1)
+        c_repeat_1_smooth = convolve_toeplitz(c_repeat_1, kernel, axis=1)
+        leg_cvpca_smooth = LegacyCVPCA(use_svd=use_svd, shuffle_fraction=0.5)
+        leg_covariance_smooth = leg_cvpca_smooth.fit_score(c_repeat_0_smooth, c_repeat_1_smooth)
+        leg_smooth_covariances.append(leg_covariance_smooth)
+
+    # Get Saved Legacy CVPCA results as well
+    try:
+        saved_leg_result = get_legacy_cvpca(session, best_env_idx=best_env_idx)
+    except Exception as e:
+        print(f"Error getting saved legacy CVPCA results for session {session.session_print()}: {e}")
+        saved_leg_result = None
+
     result = {
         "trial_folds": trial_folds,
         "reg_covariances": np.mean(np.stack(reg_covariances, axis=0), axis=0),
@@ -109,6 +130,9 @@ def process_session(session: B2Session, spks_type: SpksTypes, num_bins: int = 10
         "org_smooth_covariances": np.mean(np.stack(org_smooth_covariances, axis=0), axis=0),
         "pca_covariances": np.mean(np.stack(pca_covariances, axis=0), axis=0),
         "pca_smooth_covariances": np.mean(np.stack(pca_smooth_covariances, axis=0), axis=0),
+        "leg_covariances": np.mean(np.stack(leg_covariances, axis=0), axis=0),
+        "leg_smooth_covariances": np.mean(np.stack(leg_smooth_covariances, axis=0), axis=0),
+        "saved_leg_covariances": saved_leg_result["cv_by_env_all"] if saved_leg_result is not None else None,
     }
     return result
 
@@ -152,7 +176,7 @@ def _process_single_session(session: B2Session, spks_type: SpksTypes, num_bins: 
 process_sessions = True
 force_remake = False
 clear_cache = False
-validate_results = False
+validate_results = True
 
 n_jobs = 4
 spks_type = "oasis"
@@ -181,6 +205,9 @@ if __name__ == "__main__":
                             "org_smooth_covariances",
                             "pca_covariances",
                             "pca_smooth_covariances",
+                            "leg_covariances",
+                            "leg_smooth_covariances",
+                            "saved_leg_covariances",
                         ]
                         results_valid = all(key in results for key in required_keys)
                         if not results_valid:

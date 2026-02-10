@@ -39,7 +39,8 @@ SUBSPACE_NAMES: list[SubspaceName] = [
     # "pca_subspace",
     # # # # "cvpca_subspace", # This is bad and doesn't make sense!!!
     # "svca_subspace",
-    "covcov_subspace",
+    # "covcov_subspace",
+    "covcov_crossvalidated_subspace",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -50,12 +51,14 @@ SPKS_TYPES: tuple[SpksTypes] = (
 
 METHOD = "optuna"
 
+correlation = False
+
 if __name__ == "__main__":
     sessiondb = get_database("vrSessions")
     registry = PopulationRegistry()
 
     for subspace_name in tqdm(SUBSPACE_NAMES, desc="Testing different subspace types"):
-        subspace_model = get_subspace(subspace_name, registry)
+        subspace_model = get_subspace(subspace_name, registry, correlation=correlation)
 
         for spks_type in SPKS_TYPES:
             for isession, session in enumerate(tqdm(sessiondb.iter_sessions(imaging=True, session_params=dict(spks_type=spks_type)))):
@@ -90,7 +93,7 @@ if __name__ == "__main__":
 
                     finally:
                         # Make sure any stored data is cleared (not actually sure if torch is saving things but better clear in case)
-                        if _clear_cache:
+                        if _clear_cache or force_remake:
                             session.clear_cache()
                             torch.cuda.empty_cache()
                             gc.collect()
@@ -123,7 +126,7 @@ if __name__ == "__main__":
 
                     finally:
                         # Make sure any stored data is cleared (not actually sure if torch is saving things but better clear in case)
-                        if _clear_cache:
+                        if _clear_cache or force_remake:
                             session.clear_cache()
                             torch.cuda.empty_cache()
                             gc.collect()
@@ -153,7 +156,7 @@ if __name__ == "__main__":
 
                         finally:
                             # Make sure any stored data is cleared (not actually sure if torch is saving things but better clear in case)
-                            if _clear_cache:
+                            if _clear_cache or force_remake:
                                 session.clear_cache()
                                 torch.cuda.empty_cache()
                                 gc.collect()
@@ -187,8 +190,8 @@ if __name__ == "__main__":
                             spks_type=spks_type,
                             hyperparameters=specific_hyperparameter,
                         ):
-                            # print(f"{isession} Score for subspace {subspace_name} on session {session.session_print()} already exists")
+                            print(f"{isession} Score for subspace {subspace_name} on session {session.session_print()} already exists")
                             pass
                         else:
-                            print(f"{isession} !!!!! Score for subspace {subspace_name} on session {session.session_print()} does not exist")
+                            # print(f"{isession} !!!!! Score for subspace {subspace_name} on session {session.session_print()} does not exist")
                             pass

@@ -22,10 +22,12 @@ MODEL_NAMES: list[ModelName] = [
     # "internal_placefield_1d",
     # "external_placefield_1d_gain",
     # "internal_placefield_1d_gain",
+    "external_placefield_1d_vector_gain",
+    "internal_placefield_1d_vector_gain",
     # "rbfpos_decoder_only",
     # "rbfpos",
     # "rbfpos_leak",
-    "rrr",
+    # "rrr",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -34,7 +36,7 @@ SPKS_TYPES: tuple[SpksTypes] = (
     # "deconvolved",
 )
 
-METHOD = "golden"
+METHOD = "optuna"
 
 if __name__ == "__main__":
     sessiondb = get_database("vrSessions")
