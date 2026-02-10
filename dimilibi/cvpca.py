@@ -1,10 +1,12 @@
-from typing import Optional, Union
-import torch
+from typing import Optional
 import numpy as np
+import torch
 from tqdm import tqdm
 from .pca import PCA
 from .helpers import vector_correlation, gaussian_filter, VectorizedGoldenSectionSearch
 from .metrics import mse
+
+from _old_vrAnalysis import helpers as old_helpers
 
 
 class CVPCA:
@@ -408,3 +410,107 @@ class RegularizedCVPCA:
         result[active_indices] = mse_r1_r2_active + mse_r1_r3_active
 
         return result
+
+
+class LegacyCVPCA:
+    """
+    Legacy Cross-Validated Principal Component Analysis
+
+    This is from the Stringer et al 2019 nature paper, and uses shuffle methods
+    inherited from some of their code (which was used in the _old_vrAnalysis library).
+
+    This is here to compare because the methods produce different results, so this
+    will test the data on like-to-like conditions to identify which parts create the difference.
+
+    Fits PCA on repeat 1, then scores between repeat 1 and repeat 2.
+    No smoothing is applied.
+    """
+
+    @torch.no_grad()
+    def __init__(
+        self,
+        num_components: Optional[int] = None,
+        shuffle_fraction: Optional[float] = 0.0,
+        use_svd: Optional[bool] = False,
+        fraction_nan_permitted: Optional[float] = 0.1,
+        true_legacy: Optional[bool] = False,
+        verbose: Optional[bool] = False,
+    ):
+        """
+        Initialize a CVPCA object with the option of specifying supporting parameters.
+
+        Note: PCA is implemented with sklearn.decomposition.PCA, which learns and implements
+        centering by default (without the option to turn it off). This means that the PCA model that
+        is learned on the first repeat will be centered *on the first repeat*, and the scoring will
+        use the centering from repeat 1. Therefore, you don't really need to center data before training,
+        but should understand how this works for interpreting the model.
+
+        Parameters
+        ----------
+        num_components : Optional[int]
+            Number of components to use in the SVD decomposition.
+            (default is the minimum number of neurons in the two groups)
+        shuffle_fraction: Optional[float]
+            The fraction of trials to shuffle across repeat1 & repeat2.
+            (default is 0.0)
+        use_svd: Optional[bool]
+            If True, will use the torch SVD instead of the sklearn PCA decomposition.
+            (default is False)
+        true_legacy: Optional[bool]
+            If True, will use the true legacy cvPCA method, which will shuffle the data across repeats.
+            (default is False)
+        verbose : Optional[bool]
+            If True, will print updates and results as they are computed.
+            (default is False)
+        """
+
+        self.num_components = num_components
+        self.shuffle_fraction = shuffle_fraction
+        self.use_svd = use_svd
+        self.verbose = verbose
+        self.true_legacy = true_legacy
+
+    @torch.no_grad()
+    def fit_score(
+        self,
+        data_repeat1: torch.Tensor,
+        data_repeat2: torch.Tensor,
+    ):
+        """
+        Fit the CVPCA model to the provided data. The provided data should be (neurons x stimuli)
+        for the first and second repeats of stimuli.
+
+        Parameters
+        ----------
+        data_repeat1 : torch.Tensor
+            The data to be used for training (num_neurons, num_stimuli).
+        data_repeat2 : torch.Tensor
+            The data to be used for scoring (num_neurons, num_stimuli).
+
+        Returns
+        -------
+        covariance : torch.Tensor
+            The covariance between the first and second repeats of data on each dimension of the fitted model.
+        """
+        num_stimuli = data_repeat1.shape[1]
+        if data_repeat1.shape != data_repeat2.shape:
+            raise ValueError("Data repeats must have the same shape.")
+
+        if self.true_legacy:
+            covariance = old_helpers.shuff_cvPCA(data_repeat1.T.numpy(), data_repeat2.T.numpy(), nshuff=1, center=not self.use_svd)
+            covariance = np.nanmean(covariance, axis=0)
+            return covariance
+
+        data_repeat1_flipped = data_repeat1.clone()
+        data_repeat2_flipped = data_repeat2.clone()
+        if self.shuffle_fraction > 0.0:
+            idx_flip = torch.rand(num_stimuli) < self.shuffle_fraction
+            data_repeat1_flipped[:, idx_flip] = data_repeat2[:, idx_flip]
+            data_repeat2_flipped[:, idx_flip] = data_repeat1[:, idx_flip]
+
+        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, use_svd=self.use_svd).fit(data_repeat1_flipped)
+
+        repeat1_proj = self.pca.model.transform(data_repeat1_flipped.T)
+        repeat2_proj = self.pca.model.transform(data_repeat2_flipped.T)
+
+        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=0)
