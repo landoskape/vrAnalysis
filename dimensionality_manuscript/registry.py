@@ -13,7 +13,7 @@ from .regression_models.base import RegressionModel
 from .regression_models.models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
 from .regression_models.hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
-from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace, CovCovSubspace
+from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace
 
 # Type alias for model names
 ModelName = Literal[
@@ -21,6 +21,8 @@ ModelName = Literal[
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
+    "external_placefield_1d_vector_gain",
+    "internal_placefield_1d_vector_gain",
     "rbfpos_decoder_only",
     "rbfpos",
     "rbfpos_leak",
@@ -33,6 +35,7 @@ SubspaceName = Literal[
     "cvpca_subspace",
     "svca_subspace",
     "covcov_subspace",
+    "covcov_crossvalidated_subspace",
 ]
 
 SplitName = Literal[
@@ -81,6 +84,7 @@ class RegistryPaths:
     pf1d_internals_path: Path = cache_path / "pf1d_internals"
     rrrlatents_to_rbfpos_path: Path = cache_path / "rrrlatents_to_rbfpos"
     measure_cvpca_path: Path = cache_path / "measure_cvpca"
+    compare_cvpca_path: Path = cache_path / "compare_cvpca"
 
     def __post_init__(self):
         self.manuscript_path.mkdir(parents=True, exist_ok=True)
@@ -96,6 +100,7 @@ class RegistryPaths:
         self.pf1d_internals_path.mkdir(parents=True, exist_ok=True)
         self.rrrlatents_to_rbfpos_path.mkdir(parents=True, exist_ok=True)
         self.measure_cvpca_path.mkdir(parents=True, exist_ok=True)
+        self.compare_cvpca_path.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -551,6 +556,8 @@ MODEL_NAMES: tuple[ModelName] = (
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
+    "external_placefield_1d_vector_gain",
+    "internal_placefield_1d_vector_gain",
     "rbfpos_decoder_only",
     "rbfpos",
     "rbfpos_leak",
@@ -562,6 +569,7 @@ SUBSPACE_NAMES: tuple[SubspaceName] = (
     "cvpca_subspace",
     "svca_subspace",
     "covcov_subspace",
+    "covcov_crossvalidated_subspace",
 )
 
 
@@ -574,6 +582,10 @@ def short_model_name(model_name: ModelName) -> str:
         return "PF-1D (+Gain)"
     if model_name == "internal_placefield_1d_gain":
         return "Int. PF-1D (+Gain)"
+    if model_name == "external_placefield_1d_vector_gain":
+        return "PF-1D (+Vec. Gain)"
+    if model_name == "internal_placefield_1d_vector_gain":
+        return "Int. PF-1D (+Vec. Gain)"
     if model_name == "rbfpos_decoder_only":
         return "PF-HighD"
     if model_name == "rbfpos":
@@ -586,7 +598,14 @@ def short_model_name(model_name: ModelName) -> str:
 
 @overload
 def get_model(
-    model_name: Literal["external_placefield_1d", "internal_placefield_1d", "external_placefield_1d_gain", "internal_placefield_1d_gain"],
+    model_name: Literal[
+        "external_placefield_1d",
+        "internal_placefield_1d",
+        "external_placefield_1d_gain",
+        "internal_placefield_1d_gain",
+        "external_placefield_1d_vector_gain",
+        "internal_placefield_1d_vector_gain",
+    ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
 ) -> PlaceFieldModel: ...
@@ -644,6 +663,12 @@ def get_model(
     if model_name == "internal_placefield_1d_gain":
         hyperparameters = hyperparameters or PlaceFieldHyperparameters()
         return PlaceFieldModel(population_registry, internal=True, gain=True, hyperparameters=PlaceFieldHyperparameters())
+    if model_name == "external_placefield_1d_vector_gain":
+        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
+        return PlaceFieldModel(population_registry, internal=False, gain=True, vector_gain=True, hyperparameters=PlaceFieldHyperparameters())
+    if model_name == "internal_placefield_1d_vector_gain":
+        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
+        return PlaceFieldModel(population_registry, internal=True, gain=True, vector_gain=True, hyperparameters=PlaceFieldHyperparameters())
     if model_name == "rbfpos_decoder_only":
         return RBFPosModel(population_registry, split_train=False, predict_latents=False)
     if model_name == "rbfpos":
@@ -662,6 +687,7 @@ def get_subspace(
     subspace_name: Literal["pca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = True,
+    correlation: bool = False,
 ) -> PCASubspace: ...
 
 
@@ -670,6 +696,7 @@ def get_subspace(
     subspace_name: Literal["cvpca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = True,
+    correlation: bool = False,
 ) -> CVPCASubspace: ...
 
 
@@ -678,6 +705,7 @@ def get_subspace(
     subspace_name: Literal["svca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = True,
+    correlation: bool = False,
 ) -> SVCASubspace: ...
 
 
@@ -686,13 +714,24 @@ def get_subspace(
     subspace_name: Literal["covcov_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = True,
+    correlation: bool = False,
 ) -> CovCovSubspace: ...
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["covcov_crossvalidated_subspace"],
+    population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
+    correlation: bool = False,
+) -> CovCovCrossvalidatedSubspace: ...
 
 
 def get_subspace(
     subspace_name: SubspaceName,
     population_registry: PopulationRegistry,
     match_dimensions: bool = True,
+    correlation: bool = False,
 ) -> SubspaceModel:
     """Get a subspace model object for a subspace name.
 
@@ -704,6 +743,8 @@ def get_subspace(
         The population registry to use for the subspace model.
     match_dimensions : bool
         Whether to match the dimensions of the activity and placefields. Default is True.
+    correlation : bool
+        Whether to use correlation instead of covariance. Default is False.
 
     Returns
     -------
@@ -714,12 +755,14 @@ def get_subspace(
         raise ValueError(f"Subspace {subspace_name} not found in registry.")
 
     if subspace_name == "pca_subspace":
-        return PCASubspace(population_registry, match_dimensions=match_dimensions)
+        return PCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "cvpca_subspace":
-        return CVPCASubspace(population_registry, match_dimensions=match_dimensions)
+        return CVPCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "svca_subspace":
-        return SVCASubspace(population_registry, match_dimensions=match_dimensions)
+        return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "covcov_subspace":
-        return CovCovSubspace(population_registry, match_dimensions=match_dimensions)
+        return CovCovSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+    if subspace_name == "covcov_crossvalidated_subspace":
+        return CovCovCrossvalidatedSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
 
     raise ValueError(f"Subspace {subspace_name} not found in registry.")

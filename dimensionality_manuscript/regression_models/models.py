@@ -2,6 +2,7 @@ from typing import Optional, Union, TYPE_CHECKING, Type
 from copy import copy
 import numpy as np
 from scipy.stats import norm, linregress
+from sklearn.decomposition import randomized_svd
 import torch
 import pandas as pd
 from vrAnalysis.helpers import edge2center, vectorCorrelation
@@ -22,6 +23,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         registry: "PopulationRegistry",
         internal: bool = False,
         gain: bool = False,
+        vector_gain: bool = False,
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
@@ -33,6 +35,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         )
         self.internal = internal
         self.gain = gain
+        self.vector_gain = vector_gain
         self.hyperparameters = hyperparameters
 
     def train(
@@ -41,7 +44,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         spks_type: Optional[SpksTypes] = None,
         split: Optional["SplitName"] = "train",
         hyperparameters: Optional[PlaceFieldHyperparameters] = None,
-    ) -> Union[Placefield, tuple[Placefield, Placefield]]:
+    ) -> Union[Placefield, tuple[Placefield, Placefield], tuple[Placefield, Placefield, tuple[np.ndarray, np.ndarray]]]:
         """Train the model by predicting the place field activity on train timepoints.
 
         Parameters
@@ -57,9 +60,10 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
 
         Returns
         -------
-        Placefield or tuple[Placefield, Placefield]
+        Placefield or tuple[Placefield, Placefield] or tuple[Placefield, Placefield, tuple[np.ndarray, np.ndarray]]
             - When internal=False, returns a single Placefield object corresponding to the target cells.
             - When internal=True, returns a tuple of Placefield objects corresponding to the target and source cells.
+            - When gain=True and vector_gain=True, returns a tuple of Placefield objects corresponding to the target and source cells, and a tuple of arousal coefficients for the target and source cells.
         """
         if hyperparameters is None:
             hyperparameters = self.hyperparameters
@@ -98,6 +102,26 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
                 smooth_width=hyperparameters.smooth_width,
                 zero_to_nan=True,
             )
+
+        if self.gain and self.vector_gain:
+            # We need to extract arousal coefficients for the source and target neurons
+            # We do it together using a rank 1 decomposition of the deviation between prediction and true activity
+            source_prediction = get_placefield_prediction(train_source_placefield, frame_behavior)[0].T
+            target_prediction = get_placefield_prediction(train_target_placefield, frame_behavior)[0].T
+            source_deviation = source_data.numpy() - source_prediction
+            target_deviation = target_data.numpy() - target_prediction
+            full_deviation = np.concatenate([source_deviation, target_deviation], axis=0)
+            U = randomized_svd(full_deviation, n_components=1, n_iter=100)[0]
+
+            num_source = source_data.shape[0]
+            arousal_coefficients_source = U[:num_source, 0]
+            arousal_coefficients_target = U[num_source:, 0]
+            arousal_coefficients = (arousal_coefficients_target, arousal_coefficients_source)
+
+        if self.gain and self.vector_gain:
+            return train_target_placefield, train_source_placefield, arousal_coefficients
+
+        if self.internal or self.gain:
             return train_target_placefield, train_source_placefield
 
         return train_target_placefield
@@ -105,7 +129,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
     def predict(
         self,
         session: B2Session,
-        coefficients: Union[Placefield, tuple[Placefield, Placefield]],
+        coefficients: Union[Placefield, tuple[Placefield, Placefield], tuple[Placefield, Placefield, tuple[np.ndarray, np.ndarray]]],
         spks_type: Optional[SpksTypes] = None,
         split: Optional["SplitName"] = "test",
         hyperparameters: Optional[PlaceFieldHyperparameters] = None,
@@ -117,11 +141,12 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         ----------
         session : B2Session
             The session to predict the target place field activity for.
-        coefficients : Union[Placefield, tuple[Placefield, Placefield]]
+        coefficients : Union[Placefield, tuple[Placefield, Placefield], tuple[Placefield, Placefield, tuple[np.ndarray, np.ndarray]]]
             The "coefficients" for making a prediction, in the form of Placefield objects.
             If internal=False, coefficients should be a single Placefield object corresponding to the target cells.
             If internal=True, coefficients should be a tuple of Placefield objects corresponding to the target and source cells.
-            Either way it is the output of self.train() given the self.internal flag.
+            If gain=True and vector_gain=True, coefficients should be a tuple of Placefield objects corresponding to the target and source cells, and a tuple of arousal coefficients for the target and source cells.
+            Either way it is the output of self.train() given the self.internal and self.gain and self.vector_gain flags.
         spks_type : Optional[SpksTypes]
             The type of spike data to use for the population. If None, uses the spks_type from the session
             provided as input.
@@ -147,7 +172,9 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             hyperparameters = self.hyperparameters
 
         # If internal=True or gain=True, coefficients is a tuple of Placefield objects corresponding to the target and source cells
-        if self.internal or self.gain:
+        if self.gain and self.vector_gain:
+            target_placefield, source_placefield, (arousal_coefficients_target, arousal_coefficients_source) = coefficients
+        elif self.internal or self.gain:
             target_placefield, source_placefield = coefficients
         else:
             target_placefield = coefficients
@@ -176,13 +203,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             extras["frame_behavior_internal"] = frame_behavior
 
         if self.gain:
-            # If the model has a gain component, we need to fit the a scalar gain value for
-            # each sample. To do this, we minimize the MSE loss between the predicted and target
-            # data ***for the source neurons*** which were recorded at the same time as the
-            # target neurons. We assume that the gain value is the same for the whole brain.
-            # This way the estimator is cross-validated by neurons.
-            # -----------------------------------------------------
-            # First get the prediction for the source neurons, and target source data
+            # Either gain or vector gain, we need to get the prediction for the source neurons
             source_prediction = torch.tensor(get_placefield_prediction(source_placefield, frame_behavior)[0].T)
 
             # Check for NaNs in source_prediction and source_data
@@ -200,21 +221,41 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
                 # Update tracking of valid indices from original
                 idx_valid_prediction = idx_valid_prediction[idx_valid_gain.numpy()]
 
-            with torch.no_grad():
-                gain = torch.sum(source_prediction * source_data, dim=0) / torch.sum(source_prediction**2, dim=0)
-                gain = gain.numpy()
+            if self.vector_gain:
+                # If the model has a vector gain component, we need to estimate the "arousal" estimates for each sample
+                # by multiplying the deviation of source neuron activity from prediction by their arousal coefficients
+                # Then multiplying the arousal estimate by target neuron arousal coefficients
+                # Then adding that to the prediction for the target neurons
+                source_deviation = source_data.numpy() - source_prediction.numpy()
+                arousal_estimate = arousal_coefficients_source @ source_deviation
+                arousal_activity_target = np.reshape(arousal_coefficients_target, (-1, 1)) * np.reshape(arousal_estimate, (1, -1))
 
-            if nan_safe:
-                if np.any(np.isnan(gain)):
-                    raise ValueError(f"{np.sum(np.isnan(gain))} / {len(gain)} gains have nan values in {session.session_print()}!!!")
+            else:
+                # If the model has a gain component, we need to fit the a scalar gain value for
+                # each sample. To do this, we minimize the MSE loss between the predicted and target
+                # data ***for the source neurons*** which were recorded at the same time as the
+                # target neurons. We assume that the gain value is the same for the whole brain.
+                # This way the estimator is cross-validated by neurons.
+                # -----------------------------------------------------
+                with torch.no_grad():
+                    gain = torch.sum(source_prediction * source_data, dim=0) / torch.sum(source_prediction**2, dim=0)
+                    gain = gain.numpy()
+
+                if nan_safe:
+                    if np.any(np.isnan(gain)):
+                        raise ValueError(f"{np.sum(np.isnan(gain))} / {len(gain)} gains have nan values in {session.session_print()}!!!")
 
         # Get prediction for the test timepoints
         prediction = get_placefield_prediction(target_placefield, frame_behavior)[0]
 
         if self.gain:
-            # Apply the gain to the prediction
-            prediction = prediction * gain.reshape(-1, 1)
-            extras["gain"] = gain
+            if self.vector_gain:
+                prediction = prediction + arousal_activity_target.T
+                extras["arousal_activity_target"] = arousal_activity_target
+            else:
+                # Apply the gain to the prediction
+                prediction = prediction * gain.reshape(-1, 1)
+                extras["gain"] = gain
 
         # Convert to numpy for consistency
         prediction = np.array(prediction.T)
@@ -271,7 +312,10 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         """
         # Get model name from internal and gain attributes
         model_type = "internal" if self.internal else "external"
-        gain_suffix = "_gain" if self.gain else ""
+        if self.gain:
+            gain_suffix = "_vector_gain" if self.vector_gain else "_gain"
+        else:
+            gain_suffix = ""
         model_name = f"{model_type}_placefield_1d{gain_suffix}"
         return model_name
 
