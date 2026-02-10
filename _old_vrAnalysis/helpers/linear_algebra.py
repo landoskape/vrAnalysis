@@ -125,6 +125,7 @@ def smart_pca(input, centered=True, use_rank=True, correction=True):
     # return eigenvalues and eigenvectors
     if was_numpy:
         return np.array(w), np.array(v)
+
     return w, v
 
 
@@ -237,13 +238,14 @@ def fast_rank(input):
     return int(torch.linalg.matrix_rank(input))
 
 
-def cvPCA(X1, X2, nc=None):
+def cvPCA(X1, X2, nc=None, center=True):
     """X is stimuli x neurons"""
     S, N = X1.shape
     assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
     nc = get_num_components(nc, (S, N))
-    X1 = X1 - X1.mean(axis=0, keepdims=True)
-    X2 = X2 - X2.mean(axis=0, keepdims=True)
+    if center:
+        X1 = X1 - X1.mean(axis=0, keepdims=True)
+        X2 = X2 - X2.mean(axis=0, keepdims=True)
     u = smart_pca(X1.T, centered=False)[1][:, :nc]
 
     cproj0 = X1 @ u
@@ -258,7 +260,7 @@ def get_num_components(nc, shape, maxnc=80):
     return nc if nc is not None else min(maxnc, min(shape))
 
 
-def shuff_cvPCA(X1, X2, nshuff=5):
+def shuff_cvPCA(X1, X2, nshuff=5, center=True):
     """X is stimuli x neurons"""
     S, N = X1.shape
     assert X2.shape == (S, N), "shape of X1 and X2 is not the same"
@@ -270,7 +272,7 @@ def shuff_cvPCA(X1, X2, nshuff=5):
         X2c = X2.copy()
         X1c[iflip] = X2[iflip]
         X2c[iflip] = X1[iflip]
-        ss[k] = cvPCA(X1c, X2c, nc)
+        ss[k] = cvPCA(X1c, X2c, nc, center=center)
     return ss
 
 
@@ -340,7 +342,6 @@ def _prepare_cv(spkmap, extra=None, by_trial=False, noise_corr=False, center=Tru
         if noise_corr:
             print("note: noise_corr set to True, but only used when by_trial=True")
 
-        # average across trials
         spk_train = fs.nanmean(spk_train, axis=1)
         spk_test = fs.nanmean(spk_test, axis=1)
 
@@ -369,7 +370,7 @@ def _prepare_cv(spkmap, extra=None, by_trial=False, noise_corr=False, center=Tru
     return spk_train, spk_test
 
 
-def cvpca(spkmap, by_trial=False, noise_corr=False, center=True, max_trials=None, max_neurons=None, nshuff=3, cvshuff=1):
+def cvpca(spkmap, by_trial=False, noise_corr=False, center=True, max_trials=None, max_neurons=None, do_shuffle=True, nshuff=3, cvshuff=1):
     """
     cvpca method -- run cvPCA on spkmap with various options and repeats of train/test set and cv-shuffling
 
@@ -394,9 +395,13 @@ def cvpca(spkmap, by_trial=False, noise_corr=False, center=True, max_trials=None
         )
 
         # do cvPCA (with optional cv shuffling) for this train/test set
-        c_ss = shuff_cvPCA(spk_train.T, spk_test.T, nshuff=cvshuff)
-        c_ss = np.nanmean(c_ss, axis=0)
-        ss.append(c_ss)
+        if do_shuffle:
+            c_ss = shuff_cvPCA(spk_train.T, spk_test.T, nshuff=cvshuff, center=center)
+            c_ss = np.nanmean(c_ss, axis=0)
+            ss.append(c_ss)
+        else:
+            c_ss = cvPCA(spk_train.T, spk_test.T, center=center)
+            ss.append(c_ss)
 
     # return average of all shuffles
     return np.nanmean(np.stack(ss), axis=0)

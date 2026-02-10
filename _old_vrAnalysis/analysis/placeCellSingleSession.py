@@ -363,7 +363,7 @@ class placeCellSingleSession(standardAnalysis):
         self.onefile = onefile
         self.vrexp = vrexp
         self.distStep = distStep
-        self.speedThreshold = speedThreshold
+        self.speedThreshold = speedThreshold or 0.0
         self.numcv = numcv
         self.standardizeSpks = standardizeSpks
         self.smoothWidth = smoothWidth
@@ -700,7 +700,14 @@ class placeCellSingleSession(standardAnalysis):
                 rawspkmap = self.rawspkmap
 
         # get occupancy and rawspkmap from requested trials (or across environments)
-        if trials == "full":
+        if isinstance(trials, np.ndarray):
+            # Convert trial array to list of lists by environment
+            env_of_trial = self.trial_envnum[trials]
+            trials_by_env = [trials[env_of_trial == env] for env in self.environments]
+            env_occmap = [occmap[trials_by_env[ei]] for ei in envidx]
+            env_spkmap = [rawspkmap[trials_by_env[ei]] for ei in envidx]
+
+        elif trials == "full":
             env_occmap = [occmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
             env_spkmap = [rawspkmap[self.idxFullTrialEachEnv[ei]] for ei in envidx]
 
@@ -725,7 +732,7 @@ class placeCellSingleSession(standardAnalysis):
         # remove positions with nans in any spkmap if requested
         if pop_nan:
             marginal_axis = 0 if average else (0, 1)
-            nan_positions = np.any(np.stack([np.any(np.isnan(esm), axis=marginal_axis) for esm in env_spkmap]), axis=0)
+            nan_positions = np.any(np.stack([np.all(np.isnan(esm), axis=marginal_axis) for esm in env_spkmap]), axis=0)
             env_spkmap = [esm[..., ~nan_positions] for esm in env_spkmap]
 
         # return spkmap
@@ -746,8 +753,8 @@ class placeCellSingleSession(standardAnalysis):
 
         # average (sum, because divide happens later) across trials if requested
         if average:
-            occmap = fs.sum(occmap, axis=0, keepdims=True)
-            spkmap = fs.sum(spkmap, axis=0, keepdims=True)
+            occmap = fs.nansum(occmap, axis=0, keepdims=True)
+            spkmap = fs.nansum(spkmap, axis=0, keepdims=True)
 
         # do smoothing across spatial positions if requested
         if smooth is not None:
