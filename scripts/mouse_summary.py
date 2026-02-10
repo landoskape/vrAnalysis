@@ -61,8 +61,8 @@ def analyze_spectra(pcm, args):
                 spectra_data,
                 color_by_session=color_by_session,
                 normalize=normalize,
-                with_show=False,
-                with_save=True,
+                with_show=True,
+                with_save=False,
             )
     #     for covariance in [False, True]:
     #         plot_fourier_data(pcm, spectra_data, color_by_session=color_by_session, covariance=covariance, with_show=False, with_save=True)
