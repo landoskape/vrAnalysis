@@ -547,7 +547,7 @@ class PopulationRegistry:
             The unique id for the population.
         """
         session_name = ".".join(session.session_name)
-        params_hash = stable_hash(RegistryParameters())
+        params_hash = stable_hash(self.registry_params)
         return f"{session_name}_{params_hash}"
 
 
