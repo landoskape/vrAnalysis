@@ -948,7 +948,7 @@ def _prepare_row_indices(average: bool, sample_behavior: FrameBehavior, idx_vali
         environments, confirmed = _get_env_of_each_trial(
             sample_behavior.trial,
             sample_behavior.environment,
-            np.ones(len(sample_behavior), dtype=bool),
+            idx_valid_samples,
             trials,
         )
 
@@ -985,7 +985,7 @@ def _get_env_of_each_trial(
 
         _trial_index = trial_indices[int(_trial_number)]
 
-        if confirmed[_trial_index]:
+        if confirmed[_trial_index] or _trial_index < 0:
             continue
 
         _environment_number = frame_environment[idx]
