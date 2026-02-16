@@ -1,3 +1,4 @@
+import warnings
 from typing import Optional, Union
 import numpy as np
 import torch
@@ -150,7 +151,8 @@ class PCA:
         self,
         num_components: Optional[int] = None,
         verbose: Optional[bool] = False,
-        use_svd: Optional[bool] = False,
+        use_svd: Optional[bool] = None,
+        center: Optional[bool] = True,
     ):
         """
         Initialize a PCA object with the option of specifying supporting parameters.
@@ -163,15 +165,29 @@ class PCA:
         verbose : Optional[bool]
             If True, will print updates and results as they are computed.
             (default is False)
-        use_svd: Optional[bool]
-            If True, will use the torch SVD instead of the sklearn PCA decomposition.
-            (default is False)
+        use_svd : Optional[bool], deprecated
+            If True, use torch SVD; if False, use sklearn PCA. Default is True.
+            Deprecated: prefer not passing this; the torch SVD path is the default
+            and has fewer hidden steps. When False, sklearn is used and supersedes
+            ``center`` (sklearn always centers internally).
+        center : Optional[bool]
+            If True, center the data before decomposition. Default is True.
+            Ignored when use_svd=False (sklearn always centers).
         """
+        if use_svd is not None:
+            warnings.warn(
+                "use_svd is deprecated and will be removed. The torch SVD path is now " "the default. Use center=False for uncentered PCA.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.use_svd = use_svd
+        else:
+            self.use_svd = True
 
         self.num_components = num_components
         self.verbose = verbose
-        self.use_svd = use_svd
         self.fitted = False
+        self.center = center
 
     @torch.no_grad()
     def fit(self, data: torch.Tensor):
@@ -193,6 +209,9 @@ class PCA:
         self._validate_components(data)
 
         data = as_tensor(data)
+        if self.center:
+            self._mean = data.mean(dim=1, keepdim=True)
+            data = data - self._mean
 
         self.num_samples = data.size(1)
         self.dtype = data.dtype
@@ -229,6 +248,9 @@ class PCA:
             raise ValueError("PCA model must be fitted before transforming data.")
 
         self._validate_data(data)
+
+        if self.center:
+            data = data - self._mean
 
         if whiten:
             zca = self.get_zca(k, k=k)

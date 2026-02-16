@@ -24,16 +24,10 @@ class CVPCA:
         self,
         num_components: Optional[int] = None,
         verbose: Optional[bool] = False,
-        use_svd: Optional[bool] = False,
+        center: Optional[bool] = True,
     ):
         """
         Initialize a CVPCA object with the option of specifying supporting parameters.
-
-        Note: PCA is implemented with sklearn.decomposition.PCA, which learns and implements
-        centering by default (without the option to turn it off). This means that the PCA model that
-        is learned on the first repeat will be centered *on the first repeat*, and the scoring will
-        use the centering from repeat 1. Therefore, you don't really need to center data before training,
-        but should understand how this works for interpreting the model.
 
         Parameters
         ----------
@@ -43,14 +37,13 @@ class CVPCA:
         verbose : Optional[bool]
             If True, will print updates and results as they are computed.
             (default is False)
-        use_svd: Optional[bool]
-            If True, will use the torch SVD instead of the sklearn PCA decomposition.
-            (default is False)
+        center : Optional[bool]
+            If True, center the data before PCA. Default is True.
         """
 
         self.num_components = num_components
         self.verbose = verbose
-        self.use_svd = use_svd
+        self.center = center
         self.fitted = False
 
     @torch.no_grad()
@@ -75,7 +68,7 @@ class CVPCA:
         self.fitted = False
         self._validate_data(data_repeat1)
 
-        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, use_svd=self.use_svd).fit(data_repeat1)
+        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1)
         self.fitted = True
         return self
 
@@ -128,16 +121,10 @@ class RegularizedCVPCA:
         self,
         num_components: Optional[int] = None,
         verbose: Optional[bool] = False,
-        use_svd: Optional[bool] = False,
+        center: Optional[bool] = True,
     ):
         """
         Initialize a RegularizedCVPCA object with the option of specifying supporting parameters.
-
-        Note: PCA is implemented with sklearn.decomposition.PCA, which learns and implements
-        centering by default (without the option to turn it off). This means that the PCA model that
-        is learned on the first repeat will be centered *on the first repeat*, and the scoring will
-        use the centering from repeat 1. Therefore, you don't really need to center data before training,
-        but should understand how this works for interpreting the model.
 
         Parameters
         ----------
@@ -147,9 +134,8 @@ class RegularizedCVPCA:
         verbose : Optional[bool]
             If True, will print updates and results as they are computed.
             (default is True)
-        use_svd: Optional[bool]
-            If True, will use the torch SVD instead of the sklearn PCA decomposition.
-            (default is False)
+        center : Optional[bool]
+            If True, center the data before PCA. Default is True.
         """
 
         self.num_components = num_components
@@ -157,7 +143,7 @@ class RegularizedCVPCA:
         self.fitted = False
         self.smoothing_fitted = False
         self.smoothing_widths = None
-        self.use_svd = use_svd
+        self.center = center
 
     @torch.no_grad()
     def fit_smoothing(
@@ -302,7 +288,7 @@ class RegularizedCVPCA:
         if self.smoothing_fitted and not disable_smoothing and self.smoothing_widths is not None:
             data_repeat1 = gaussian_filter(data_repeat1, self.smoothing_widths, axis=1)
 
-        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, use_svd=self.use_svd).fit(data_repeat1)
+        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1)
         self.fitted = True
         return self
 
@@ -431,19 +417,13 @@ class LegacyCVPCA:
         self,
         num_components: Optional[int] = None,
         shuffle_fraction: Optional[float] = 0.0,
-        use_svd: Optional[bool] = False,
+        center: Optional[bool] = True,
         fraction_nan_permitted: Optional[float] = 0.1,
         true_legacy: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
         """
         Initialize a CVPCA object with the option of specifying supporting parameters.
-
-        Note: PCA is implemented with sklearn.decomposition.PCA, which learns and implements
-        centering by default (without the option to turn it off). This means that the PCA model that
-        is learned on the first repeat will be centered *on the first repeat*, and the scoring will
-        use the centering from repeat 1. Therefore, you don't really need to center data before training,
-        but should understand how this works for interpreting the model.
 
         Parameters
         ----------
@@ -453,9 +433,8 @@ class LegacyCVPCA:
         shuffle_fraction: Optional[float]
             The fraction of trials to shuffle across repeat1 & repeat2.
             (default is 0.0)
-        use_svd: Optional[bool]
-            If True, will use the torch SVD instead of the sklearn PCA decomposition.
-            (default is False)
+        center : Optional[bool]
+            If True, center the data before PCA. Default is True.
         true_legacy: Optional[bool]
             If True, will use the true legacy cvPCA method, which will shuffle the data across repeats.
             (default is False)
@@ -466,7 +445,7 @@ class LegacyCVPCA:
 
         self.num_components = num_components
         self.shuffle_fraction = shuffle_fraction
-        self.use_svd = use_svd
+        self.center = center
         self.verbose = verbose
         self.true_legacy = true_legacy
 
@@ -497,7 +476,7 @@ class LegacyCVPCA:
             raise ValueError("Data repeats must have the same shape.")
 
         if self.true_legacy:
-            covariance = old_helpers.shuff_cvPCA(data_repeat1.T.numpy(), data_repeat2.T.numpy(), nshuff=1, center=not self.use_svd)
+            covariance = old_helpers.shuff_cvPCA(data_repeat1.T.numpy(), data_repeat2.T.numpy(), nshuff=1, center=self.center)
             covariance = np.nanmean(covariance, axis=0)
             return covariance
 
@@ -508,7 +487,7 @@ class LegacyCVPCA:
             data_repeat1_flipped[:, idx_flip] = data_repeat2[:, idx_flip]
             data_repeat2_flipped[:, idx_flip] = data_repeat1[:, idx_flip]
 
-        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, use_svd=self.use_svd).fit(data_repeat1_flipped)
+        self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1_flipped)
 
         repeat1_proj = self.pca.model.transform(data_repeat1_flipped.T)
         repeat2_proj = self.pca.model.transform(data_repeat2_flipped.T)

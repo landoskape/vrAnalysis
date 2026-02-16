@@ -167,19 +167,19 @@ def cvpca_integrated_comparison(
         c_repeat_2 = pf_data[(ref_fold + 2) % len(trial_folds)]
 
         # Original CVPCA
-        cvpca = CVPCA(use_svd=not center).fit(c_repeat_0)
+        cvpca = CVPCA(center=center).fit(c_repeat_0)
         org_covariance_1 = cvpca.score(c_repeat_0, c_repeat_1)
         org_covariance_2 = cvpca.score(c_repeat_0, c_repeat_2)
         org_covariance = np.mean(np.stack([org_covariance_1, org_covariance_2], axis=0), axis=0)
         org_covariances.append(org_covariance)
 
         # Legacy CVPCA
-        leg_cvpca = LegacyCVPCA(use_svd=not center, shuffle_fraction=shuffle_fraction)
+        leg_cvpca = LegacyCVPCA(center=center, shuffle_fraction=shuffle_fraction)
         leg_covariance = leg_cvpca.fit_score(c_repeat_0, c_repeat_1)
         leg_covariances.append(leg_covariance)
 
         # True Legacy CVPCA
-        true_leg_cvpca = LegacyCVPCA(use_svd=not center, shuffle_fraction=shuffle_fraction, true_legacy=True)
+        true_leg_cvpca = LegacyCVPCA(center=center, shuffle_fraction=shuffle_fraction, true_legacy=True)
         true_leg_covariance = true_leg_cvpca.fit_score(c_repeat_0, c_repeat_1)
         true_leg_covariances.append(true_leg_covariance)
 
@@ -325,14 +325,14 @@ def gather_cvpca_comparisons(
             c_repeat_2 = pfd[(ref_fold + 2) % len(trial_folds)]
 
             # Original CVPCA
-            cvpca = CVPCA(use_svd=not center).fit(c_repeat_0)
+            cvpca = CVPCA(center=center).fit(c_repeat_0)
             org_covariance_1 = cvpca.score(c_repeat_0, c_repeat_1)
             org_covariance_2 = cvpca.score(c_repeat_0, c_repeat_2)
             org_covariance = np.mean(np.stack([org_covariance_1, org_covariance_2], axis=0), axis=0)
             org_covariances.append(org_covariance)
 
             # Legacy CVPCA
-            leg_cvpca = LegacyCVPCA(use_svd=not center, shuffle_fraction=shuffle_fraction)
+            leg_cvpca = LegacyCVPCA(center=center, shuffle_fraction=shuffle_fraction)
             leg_covariance = leg_cvpca.fit_score(c_repeat_0, c_repeat_1)
             leg_covariances.append(leg_covariance)
 

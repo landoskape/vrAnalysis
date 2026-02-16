@@ -7,7 +7,12 @@ from .svca import SVCA
 
 
 class CrossCompare:
-    def __init__(self, num_components: Optional[int] = None, verbose: bool = False):
+    def __init__(
+        self,
+        num_components: Optional[int] = None,
+        verbose: bool = False,
+        center: bool = True,
+    ):
         """
         Initialize the CrossCompare model.
 
@@ -17,9 +22,12 @@ class CrossCompare:
             The number of components to use in the PCA and SVCA models (default is None).
         verbose : bool
             If True, will print updates and results as they are computed (default is False).
+        center : bool
+            If True, center the data before PCA. Default is True.
         """
         self.num_components = num_components
         self.verbose = verbose
+        self.center = center
 
     def fit(self, source: torch.Tensor, target: torch.Tensor):
         """
@@ -37,9 +45,9 @@ class CrossCompare:
         self : object
             The CrossCompare object with the fitted model.
         """
-        self.pca_source = PCA(num_components=self.num_components, verbose=self.verbose).fit(source)
-        self.pca_target = PCA(num_components=self.num_components, verbose=self.verbose).fit(target)
-        self.svca = SVCA(num_components=self.num_components, centered=True, verbose=self.verbose).fit(source, target)
+        self.pca_source = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(source)
+        self.pca_target = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(target)
+        self.svca = SVCA(num_components=self.num_components, centered=self.center, verbose=self.verbose).fit(source, target)
 
         # build a map from the SVCA modes to the PCA components
         self.pc_to_u = torch.linalg.lstsq(self.pca_source.get_components(), self.svca.U)[0]

@@ -48,10 +48,10 @@ class PCASubspace(SubspaceModel):
 
         num_components = self._compute_num_components(self.max_components, train_data.shape, placefield_extended.shape)
         if self.match_dimensions:
-            pca_activity = PCA(num_components=num_components).fit(train_data)
+            pca_activity = PCA(num_components=num_components, center=self.centered).fit(train_data)
         else:
-            pca_activity = PCA().fit(train_data)
-        pca_placefields = PCA(num_components=num_components).fit(placefield_extended)
+            pca_activity = PCA(center=self.centered).fit(train_data)
+        pca_placefields = PCA(num_components=num_components, center=self.centered).fit(placefield_extended)
 
         return Subspace(
             subspace_activity=pca_activity,
@@ -360,10 +360,10 @@ class CovCovSubspace(SubspaceModel):
 
         num_components = self._compute_num_components(self.max_components, train_data.shape, placefield_extended.shape)
         if self.match_dimensions:
-            pca_activity = PCA(num_components=num_components).fit(train_data)
+            pca_activity = PCA(num_components=num_components, center=self.centered).fit(train_data)
         else:
-            pca_activity = PCA().fit(train_data)
-        pca_placefields = PCA(num_components=num_components).fit(placefield_extended)
+            pca_activity = PCA(center=self.centered).fit(train_data)
+        pca_placefields = PCA(num_components=num_components, center=self.centered).fit(placefield_extended)
 
         return Subspace(
             subspace_activity=pca_activity,
@@ -465,11 +465,11 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
 
         # Get the root covariance matrices for activity in each split
         if self.match_dimensions:
-            pca_activity0 = PCA(num_components=num_components).fit(train0_data)
-            pca_activity1 = PCA(num_components=num_components).fit(train1_data)
+            pca_activity0 = PCA(num_components=num_components, center=self.centered).fit(train0_data)
+            pca_activity1 = PCA(num_components=num_components, center=self.centered).fit(train1_data)
         else:
-            pca_activity0 = PCA().fit(train0_data)
-            pca_activity1 = PCA().fit(train1_data)
+            pca_activity0 = PCA(center=self.centered).fit(train0_data)
+            pca_activity1 = PCA(center=self.centered).fit(train1_data)
         components0 = pca_activity0.get_components()
         components1 = pca_activity1.get_components()
         eigenvalues0 = pca_activity0.get_eigenvalues()
@@ -478,7 +478,7 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
         root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
 
         # Get the root covariance matrices for place fields in the first half split
-        pca_placefields0 = PCA(num_components=num_components).fit(placefield0_extended)
+        pca_placefields0 = PCA(num_components=num_components, center=self.centered).fit(placefield0_extended)
         pf_components0 = pca_placefields0.get_components()
         pf_eigenvalues0 = pca_placefields0.get_eigenvalues()
         root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
@@ -543,11 +543,11 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
 
         # Get the root covariance matrices for activity in each split
         if self.match_dimensions:
-            pca_activity0 = PCA(num_components=num_components).fit(test0_data)
-            pca_activity1 = PCA(num_components=num_components).fit(test1_data)
+            pca_activity0 = PCA(num_components=num_components, center=self.centered).fit(test0_data)
+            pca_activity1 = PCA(num_components=num_components, center=self.centered).fit(test1_data)
         else:
-            pca_activity0 = PCA().fit(test0_data)
-            pca_activity1 = PCA().fit(test1_data)
+            pca_activity0 = PCA(center=self.centered).fit(test0_data)
+            pca_activity1 = PCA(center=self.centered).fit(test1_data)
         components0 = pca_activity0.get_components()
         components1 = pca_activity1.get_components()
         eigenvalues0 = pca_activity0.get_eigenvalues()
@@ -556,7 +556,7 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
         root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
 
         # Get the root covariance matrices for place fields in the first half split
-        pca_placefields0 = PCA(num_components=num_components).fit(placefield0_extended)
+        pca_placefields0 = PCA(num_components=num_components, center=self.centered).fit(placefield0_extended)
         pf_components0 = pca_placefields0.get_components()
         pf_eigenvalues0 = pca_placefields0.get_eigenvalues()
         root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
