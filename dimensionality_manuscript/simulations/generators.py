@@ -1,8 +1,318 @@
 from dataclasses import dataclass, replace
 from typing import Callable, Optional, Mapping, Any
+
 import numpy as np
 import numpy.typing as npt
-from .utilities import generate_orthonormal, get_orthogonal_direction
+import optuna
+
+from .operators import sqrtm_spd
+from .utilities import generate_orthonormal, get_orthogonal_direction, rotate_subspace_by_angle
+
+
+@dataclass
+class SharedSpaceConfig:
+    """Configuration for shared/private subspace data generation."""
+
+    num_neurons: int
+    shared_dimensions: int
+    private_dimensions: tuple[int, int]
+
+    alpha_shared_1: float = 0.5
+    alpha_shared_2: float = 0.5
+    shuffle_shared: bool = True
+    alpha_private_1: float = 0.001
+    alpha_private_2: float = 0.001
+    private_ratio: float = 5.0
+
+    rng: Optional[np.random.Generator] = None
+
+
+class SharedSpaceGenerator:
+    """
+    Generator for two datasets sharing a common subspace with separate private subspaces.
+
+    Shared and private subspaces are orthonormal; private spaces are orthogonal to
+    the shared space (and private2 is orthogonal to shared + private1). Data is
+    generated with power-law spectra and optional scaling/shuffling of shared
+    spectra between conditions.
+    """
+
+    def __init__(self, config: SharedSpaceConfig):
+        self.config = config
+        rng = config.rng if config.rng is not None else np.random.default_rng()
+
+        n_shared = config.shared_dimensions
+        n_priv1, n_priv2 = config.private_dimensions
+
+        if n_shared + n_priv1 + n_priv2 > config.num_neurons:
+            raise ValueError(f"Total dimensions {n_shared + n_priv1 + n_priv2} > num_neurons {config.num_neurons}")
+
+        self.shared_space = generate_orthonormal(config.num_neurons, n_shared, rng=rng)
+        self.private_space1 = generate_orthonormal(config.num_neurons, n_priv1, kernel=self.shared_space, rng=rng)
+        self.private_space2 = generate_orthonormal(
+            config.num_neurons,
+            n_priv2,
+            kernel=np.concatenate([self.shared_space, self.private_space1], axis=1),
+            rng=rng,
+        )
+
+        shared_spectrum1 = np.arange(1, n_shared + 1, dtype=float) ** (-config.alpha_shared_1)
+        shared_spectrum2 = np.arange(1, n_shared + 1, dtype=float) ** (-config.alpha_shared_2)
+        if config.shuffle_shared:
+            shared_spectrum2 = rng.permutation(shared_spectrum2)
+
+        self.shared_spectrum1 = shared_spectrum1
+        self.shared_spectrum2 = shared_spectrum2
+        self.private_spectrum1 = np.arange(1, n_priv1 + 1, dtype=float) ** (-config.alpha_private_1)
+        self.private_spectrum2 = np.arange(1, n_priv2 + 1, dtype=float) ** (-config.alpha_private_2)
+
+    def true_covariance(self) -> npt.NDArray[np.floating]:
+        """
+        Return the true covariance matrix.
+        """
+        shared_cov = self.shared_space @ np.diag(self.shared_spectrum1) @ self.shared_space.T
+        private_cov1 = self.private_space1 @ np.diag(self.private_spectrum1) @ self.private_space1.T
+        private_cov2 = self.private_space2 @ np.diag(self.private_spectrum2) @ self.private_space2.T
+
+        true_cov1 = shared_cov + self.config.private_ratio**2 * private_cov1
+        true_cov2 = shared_cov + self.config.private_ratio**2 * private_cov2
+        return true_cov1, true_cov2
+
+    def generate(
+        self,
+        num_samples: int,
+        noise_variance: float = 0.0,
+        rotation_angle: float = 0.0,
+        rng: Optional[np.random.Generator] = None,
+        return_extras: bool = False,
+    ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], ...]:
+        """
+        Generate two datasets (num_neurons x num_samples) with shared and private structure.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples (time points) per dataset.
+        noise_variance : float, optional
+            Variance of iid Gaussian noise added to each neuron. Default 0.0.
+        rotation_angle : float, optional
+            Angle to rotate the shared subspace by. Default 0.0.
+        rng : np.random.Generator, optional
+            Random number generator for loadings and noise. Uses config rng if None.
+        return_extras : bool, optional
+            If True, also return an extras dict with subspaces and spectra. Default False.
+
+        Returns
+        -------
+        data1 : npt.NDArray[np.floating]
+            First dataset, shape (num_neurons, num_samples).
+        data2 : npt.NDArray[np.floating]
+            Second dataset, shape (num_neurons, num_samples).
+        extras : dict, optional
+            When return_extras=True, dict with keys: shared1, shared2, private1, private2
+            (subspaces used, possibly rotated), shared_spectrum1, shared_spectrum2,
+            private_spectrum1, private_spectrum2 (power-law eigenspectra).
+        """
+        rng = rng if rng is not None else self.config.rng
+        rng = np.random.default_rng() if rng is None else rng
+
+        n_shared = self.config.shared_dimensions
+        n_priv1, n_priv2 = self.config.private_dimensions
+        N = self.config.num_neurons
+        ratio = self.config.private_ratio
+
+        loading_shared1 = np.diag(np.sqrt(self.shared_spectrum1)) @ rng.standard_normal((n_shared, num_samples))
+        loading_shared2 = np.diag(np.sqrt(self.shared_spectrum2)) @ rng.standard_normal((n_shared, num_samples))
+        loading_private1 = np.diag(np.sqrt(self.private_spectrum1)) @ rng.standard_normal((n_priv1, num_samples))
+        loading_private2 = np.diag(np.sqrt(self.private_spectrum2)) @ rng.standard_normal((n_priv2, num_samples))
+
+        shared1 = self.shared_space.copy()
+        shared2 = self.shared_space.copy()
+        private1 = self.private_space1
+        private2 = self.private_space2
+        if rotation_angle != 0.0:
+            shared1 = rotate_subspace_by_angle(shared1, rotation_angle, rng)
+            shared2 = rotate_subspace_by_angle(shared2, rotation_angle, rng)
+            private1 = rotate_subspace_by_angle(private1, rotation_angle, rng)
+            private2 = rotate_subspace_by_angle(private2, rotation_angle, rng)
+
+        data1 = shared1 @ loading_shared1 + ratio * private1 @ loading_private1 + noise_variance * rng.standard_normal((N, num_samples))
+        data2 = shared2 @ loading_shared2 + ratio * private2 @ loading_private2 + noise_variance * rng.standard_normal((N, num_samples))
+
+        if return_extras:
+            extras: dict[str, Any] = {
+                "shared1": shared1,
+                "shared2": shared2,
+                "private1": private1,
+                "private2": private2,
+                "shared_spectrum1": self.shared_spectrum1.copy(),
+                "shared_spectrum2": self.shared_spectrum2.copy(),
+                "private_spectrum1": self.private_spectrum1.copy(),
+                "private_spectrum2": self.private_spectrum2.copy(),
+            }
+            return data1, data2, extras
+        return data1, data2
+
+    @classmethod
+    def optuna_study_fraction_negative_svals(
+        cls,
+        num_neurons: int,
+        shared_dimensions: int,
+        private_dimensions: tuple[int, int],
+        n_trials: int = 100,
+        rng: Optional[np.random.Generator] = None,
+        seed: Optional[int] = None,
+        sampler: Optional["optuna.samplers.BaseSampler"] = None,
+        exploration: float = 0.5,
+        fixed_params: Optional[dict[str, Any]] = None,
+    ) -> "optuna.Study":
+        """
+        Run an Optuna study to maximize the fraction of negative values in svals_xy_test.
+
+        Varies all SharedSpaceConfig parameters except num_neurons, shared_dimensions,
+        and private_dimensions. Also varies num_samples, rotation_angle, and noise_variance
+        used in the train/test generation. The objective computes svals_xy_test as in
+        the SVD-XY analysis (Uroot.T @ rAtest @ rBtest @ Vtroot.T diagonal) and returns
+        the fraction of entries that are negative.
+
+        Parameters
+        ----------
+        num_neurons : int
+            Fixed number of neurons.
+        shared_dimensions : int
+            Fixed shared subspace dimension.
+        private_dimensions : tuple[int, int]
+            Fixed private subspace dimensions (priv1, priv2).
+        n_trials : int, optional
+            Number of Optuna trials. Default 100.
+        rng : np.random.Generator, optional
+            RNG for data generation. Uses default_rng(seed) if None.
+        seed : int, optional
+            Random seed when rng is None.
+        sampler : optuna.samplers.BaseSampler, optional
+            Optuna sampler. If provided, overrides exploration. Defaults to TPESampler
+            with exploration-based tuning.
+        exploration : float, optional
+            Controls sampler entropy/variance in [0, 1]. Higher values promote more
+            diverse sampling (exploration); lower values focus on promising regions
+            (exploitation). At 1.0 uses RandomSampler; at 0.0 uses TPESampler with
+            minimal exploration; intermediate values interpolate n_startup_trials and
+            prior_weight. Default 0.5.
+        fixed_params : dict[str, Any], optional
+            Fixed parameters to use for the study. If provided, overrides the default values.
+
+        Returns
+        -------
+        optuna.Study
+            Completed study. Best params and value via study.best_params, study.best_value.
+        """
+        if rng is None:
+            rng = np.random.default_rng(seed)
+
+        def _get_estimate(gen: SharedSpaceGenerator, num_samples: int, noise_variance: float, rotation_angle: float) -> float:
+            data1, data2 = gen.generate(num_samples, noise_variance=noise_variance)
+            test1, test2 = gen.generate(
+                num_samples,
+                noise_variance=noise_variance,
+                rotation_angle=rotation_angle,
+            )
+
+            A = np.cov(data1)
+            B = np.cov(data2)
+            rA = sqrtm_spd(A)
+            rB = sqrtm_spd(B)
+            Uroot, _, Vtroot = np.linalg.svd(rA @ rB)
+
+            Atest = np.cov(test1)
+            Btest = np.cov(test2)
+            rAtest = sqrtm_spd(Atest)
+            rBtest = sqrtm_spd(Btest)
+            svals_xy_test = np.diag(Uroot.T @ rAtest @ rBtest @ Vtroot.T)
+
+            fraction_negative = float(np.mean(svals_xy_test < 0))
+            return fraction_negative
+
+        def objective(trial: optuna.Trial) -> float:
+            fixed = fixed_params or {}
+            if "alpha_shared_1" not in fixed:
+                alpha_shared_1 = trial.suggest_float("alpha_shared_1", 1e-3, 2.0, log=True)
+            else:
+                alpha_shared_1 = fixed["alpha_shared_1"]
+
+            if "alpha_shared_2" not in fixed:
+                alpha_shared_2 = trial.suggest_float("alpha_shared_2", 1e-3, 2.0, log=True)
+            else:
+                alpha_shared_2 = fixed["alpha_shared_2"]
+
+            if "shuffle_shared" not in fixed:
+                shuffle_shared = trial.suggest_categorical("shuffle_shared", [True, False])
+            else:
+                shuffle_shared = fixed["shuffle_shared"]
+
+            if "alpha_private_1" not in fixed:
+                alpha_private_1 = trial.suggest_float("alpha_private_1", 1e-3, 2.0, log=True)
+            else:
+                alpha_private_1 = fixed["alpha_private_1"]
+
+            if "alpha_private_2" not in fixed:
+                alpha_private_2 = trial.suggest_float("alpha_private_2", 1e-3, 2.0, log=True)
+            else:
+                alpha_private_2 = fixed["alpha_private_2"]
+
+            if "private_ratio" not in fixed:
+                private_ratio = trial.suggest_float("private_ratio", 1e-3, 1.0, log=True)
+            else:
+                private_ratio = fixed["private_ratio"]
+
+            if "num_samples" not in fixed:
+                n_samples = trial.suggest_int("num_samples", 1e2, 1e5, log=True)
+            else:
+                n_samples = fixed["num_samples"]
+
+            if "rotation_angle" not in fixed:
+                rotation_angle = trial.suggest_float("rotation_angle", 0.0, np.pi / 2, log=False)
+            else:
+                rotation_angle = fixed["rotation_angle"]
+
+            if "noise_variance" not in fixed:
+                noise_variance = trial.suggest_float("noise_variance", 1e-4, 2.0, log=True)
+            else:
+                noise_variance = fixed["noise_variance"]
+
+            cfg = SharedSpaceConfig(
+                num_neurons=num_neurons,
+                shared_dimensions=shared_dimensions,
+                private_dimensions=private_dimensions,
+                alpha_shared_1=alpha_shared_1,
+                alpha_shared_2=alpha_shared_2,
+                shuffle_shared=shuffle_shared,
+                alpha_private_1=alpha_private_1,
+                alpha_private_2=alpha_private_2,
+                private_ratio=private_ratio,
+                rng=rng,
+            )
+            gen = cls(cfg)
+
+            num_estimates = 5
+            estimates = [_get_estimate(gen, n_samples, noise_variance, rotation_angle) for _ in range(num_estimates)]
+            return np.mean(estimates)
+
+        if sampler is None:
+            exploration = max(0.0, min(1.0, float(exploration)))
+            if exploration >= 0.999:
+                sampler = optuna.samplers.RandomSampler(seed=seed)
+            else:
+                n_startup = int(5 + (min(50, n_trials // 2) - 5) * exploration)
+                prior_weight = 0.5 + 4.5 * exploration
+                sampler = optuna.samplers.TPESampler(
+                    seed=seed,
+                    n_startup_trials=max(5, n_startup),
+                    prior_weight=prior_weight,
+                )
+
+        study = optuna.create_study(direction="maximize", sampler=sampler)
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+        return study
 
 
 Transform = Callable[["CovarianceGenerator", np.random.Generator, dict[str, Any]], tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]]

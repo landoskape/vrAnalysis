@@ -1,0 +1,9 @@
+/* Center the Dash app container and set max-width to 800px */
+._dash-app-content,
+#react-entry-point,
+body > div {
+    max-width: 800px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    width: 100% !important;
+}
