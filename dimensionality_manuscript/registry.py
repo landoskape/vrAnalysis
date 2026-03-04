@@ -85,6 +85,7 @@ class RegistryPaths:
     rrrlatents_to_rbfpos_path: Path = cache_path / "rrrlatents_to_rbfpos"
     measure_cvpca_path: Path = cache_path / "measure_cvpca"
     compare_cvpca_path: Path = cache_path / "compare_cvpca"
+    em_path: Path = cache_path / "em"
 
     def __post_init__(self):
         self.manuscript_path.mkdir(parents=True, exist_ok=True)
@@ -99,6 +100,7 @@ class RegistryPaths:
         self.subspace_error_path.mkdir(parents=True, exist_ok=True)
         self.pf1d_internals_path.mkdir(parents=True, exist_ok=True)
         self.rrrlatents_to_rbfpos_path.mkdir(parents=True, exist_ok=True)
+        self.em_path.mkdir(parents=True, exist_ok=True)
         self.measure_cvpca_path.mkdir(parents=True, exist_ok=True)
         self.compare_cvpca_path.mkdir(parents=True, exist_ok=True)
 
