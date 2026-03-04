@@ -1,9 +1,9 @@
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 import numpy as np
 import torch
 from torch.nn.functional import conv1d
-from scipy.linalg import convolution_matrix
-from tqdm import tqdm
+from scipy.optimize import curve_fit
+from vrAnalysis.helpers.signals import fivePointDer
 
 
 @torch.no_grad()
@@ -223,6 +223,100 @@ def gaussian_filter(
     smoothed = torch.moveaxis(smoothed_reshaped, -1, axis)
 
     return smoothed
+
+
+def fit_powerlaw_derivatives(eigenspectrum: torch.Tensor, width: int = 1, axis: int = 0, eps: float = 1e-8) -> float:
+    """
+    Fit powerlaw decay as a smoothed derivative of the eigenspectrum using a five-point stencil.
+
+    Parameters
+    ----------
+    eigenspectrum : torch.Tensor
+        The eigenspectrum to fit. Shape: (..., num_dimensions, ...)
+    width : int, default=1
+        The width of the smoothing window for the derivative.
+    axis : int, default=0
+        The axis along which to compute the derivative.
+    eps : float, default=1e-8
+        The epsilon value to add to the eigenspectrum to avoid log(0).
+
+    Returns
+    -------
+    torch.Tensor
+        The smoothed derivative of the eigenspectrum. Shape: (..., num_dimensions, ...)
+    slice
+        The slice of the eigenspectrum used for the fit.
+    """
+    lam = np.asarray(eigenspectrum)
+
+    # mask invalid
+    pos = lam > 0
+    loglam = np.full_like(lam, np.nan, dtype=float)
+    loglam[pos] = np.log(lam[pos] + eps)
+
+    dloglam_dk, idx_slice = fivePointDer(loglam, width, axis=axis, returnIndex=True)
+
+    # Build k (1-based) aligned to the derivative output slice along `axis`
+    # Suppose axis=0 and idx_slice is a slice selecting the "center" k’s.
+    k_full = np.arange(lam.shape[axis]) + 1  # 1..N
+    k = k_full[idx_slice]  # centers used by derivative
+
+    # reshape k to broadcast along other dims
+    shape = [1] * lam.ndim
+    shape[axis] = -1
+    k = k.reshape(shape)
+
+    alpha_local = -k * dloglam_dk  # ≈ alpha if power law holds
+    return alpha_local, idx_slice
+
+
+def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx: int = None) -> Tuple[float, float]:
+    """
+    Fit a powerlaw decay to the eigenspectrum. Returns the alpha value for n^(-alpha) decay.
+
+    Parameters
+    ----------
+    eigenspectrum : torch.Tensor
+        The eigenspectrum to fit. Shape: (num_dimensions,)
+    start_idx : int, default=0
+        The index of the first dimension to fit.
+    end_idx : int, default=None
+        The index of the last dimension to fit. If None, will fit until the end of the eigenspectrum.
+
+    Returns
+    -------
+    float
+        The alpha value for the powerlaw decay.
+    float
+        The amplitude value for the powerlaw decay.
+    """
+    if end_idx is None:
+        end_idx = eigenspectrum.shape[0]
+
+    if start_idx < 0 or start_idx >= eigenspectrum.shape[0]:
+        raise ValueError(f"start_idx must be between 0 and {eigenspectrum.shape[0]}")
+    if end_idx < 0 or end_idx > eigenspectrum.shape[0]:
+        raise ValueError(f"end_idx must be between 0 and {eigenspectrum.shape[0]}")
+    if start_idx >= end_idx:
+        raise ValueError(f"start_idx must be less than end_idx")
+
+    eigenspectrum = np.array(eigenspectrum[start_idx:end_idx])
+
+    idx_positive = eigenspectrum > 0
+    if not np.all(idx_positive):
+        print(f"Warning: some eigenspectrum values are negative or zero! Setting them to 0.")
+
+    x = np.log(np.arange(start_idx, end_idx)[idx_positive] + 1)
+    y = np.log(eigenspectrum[idx_positive])  # log(n^(-1)) = -log(n)
+
+    def _powerlaw(x, alpha, amplitude):
+        # lambda = A * n^(-alpha)
+        # in log space
+        # log(lambda) = log(A) - alpha * log(n)
+        return np.log(amplitude) - alpha * x
+
+    popt, _ = curve_fit(_powerlaw, x, y)
+    return popt[0], popt[1]
 
 
 class VectorizedGoldenSectionSearch:

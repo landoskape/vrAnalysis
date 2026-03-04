@@ -257,6 +257,7 @@ class RegularizedCVPCA:
         self,
         data_repeat1: torch.Tensor,
         disable_smoothing: bool = False,
+        smoothing_factor: float = 1.0,
     ):
         """
         Fit the RegularizedCVPCA model to the provided data. The provided data should be (neurons x stimuli)
@@ -271,6 +272,8 @@ class RegularizedCVPCA:
             The data to be used for training (num_neurons, num_stimuli).
         disable_smoothing : bool, default=False
             If True, no smoothing will be performed even if smoothing_widths are available.
+        smoothing_factor: float, default=1.0
+            Factor by which to multiply the smoothing widths.
 
         Returns
         -------
@@ -286,7 +289,7 @@ class RegularizedCVPCA:
 
         # Apply smoothing if available and not disabled
         if self.smoothing_fitted and not disable_smoothing and self.smoothing_widths is not None:
-            data_repeat1 = gaussian_filter(data_repeat1, self.smoothing_widths, axis=1)
+            data_repeat1 = gaussian_filter(data_repeat1, self.smoothing_widths * smoothing_factor, axis=1)
 
         self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1)
         self.fitted = True
