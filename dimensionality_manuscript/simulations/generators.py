@@ -37,8 +37,9 @@ class SharedSpaceGenerator:
     spectra between conditions.
     """
 
-    def __init__(self, config: SharedSpaceConfig):
+    def __init__(self, config: SharedSpaceConfig, dtype: np.dtype = np.float64):
         self.config = config
+        self.dtype = dtype
         rng = config.rng if config.rng is not None else np.random.default_rng()
 
         n_shared = config.shared_dimensions
@@ -47,24 +48,24 @@ class SharedSpaceGenerator:
         if n_shared + n_priv1 + n_priv2 > config.num_neurons:
             raise ValueError(f"Total dimensions {n_shared + n_priv1 + n_priv2} > num_neurons {config.num_neurons}")
 
-        self.shared_space = generate_orthonormal(config.num_neurons, n_shared, rng=rng)
-        self.private_space1 = generate_orthonormal(config.num_neurons, n_priv1, kernel=self.shared_space, rng=rng)
+        self.shared_space = generate_orthonormal(config.num_neurons, n_shared, rng=rng).astype(self.dtype)
+        self.private_space1 = generate_orthonormal(config.num_neurons, n_priv1, kernel=self.shared_space, rng=rng).astype(self.dtype)
         self.private_space2 = generate_orthonormal(
             config.num_neurons,
             n_priv2,
             kernel=np.concatenate([self.shared_space, self.private_space1], axis=1),
             rng=rng,
-        )
+        ).astype(self.dtype)
 
-        shared_spectrum1 = np.arange(1, n_shared + 1, dtype=float) ** (-config.alpha_shared_1)
-        shared_spectrum2 = np.arange(1, n_shared + 1, dtype=float) ** (-config.alpha_shared_2)
+        shared_spectrum1 = np.arange(1, n_shared + 1, dtype=self.dtype) ** (-config.alpha_shared_1)
+        shared_spectrum2 = np.arange(1, n_shared + 1, dtype=self.dtype) ** (-config.alpha_shared_2)
         if config.shuffle_shared:
             shared_spectrum2 = rng.permutation(shared_spectrum2)
 
         self.shared_spectrum1 = shared_spectrum1
         self.shared_spectrum2 = shared_spectrum2
-        self.private_spectrum1 = np.arange(1, n_priv1 + 1, dtype=float) ** (-config.alpha_private_1)
-        self.private_spectrum2 = np.arange(1, n_priv2 + 1, dtype=float) ** (-config.alpha_private_2)
+        self.private_spectrum1 = np.arange(1, n_priv1 + 1, dtype=self.dtype) ** (-config.alpha_private_1)
+        self.private_spectrum2 = np.arange(1, n_priv2 + 1, dtype=self.dtype) ** (-config.alpha_private_2)
 
     def true_covariance(self) -> npt.NDArray[np.floating]:
         """
@@ -121,10 +122,10 @@ class SharedSpaceGenerator:
         N = self.config.num_neurons
         ratio = self.config.private_ratio
 
-        loading_shared1 = np.diag(np.sqrt(self.shared_spectrum1)) @ rng.standard_normal((n_shared, num_samples))
-        loading_shared2 = np.diag(np.sqrt(self.shared_spectrum2)) @ rng.standard_normal((n_shared, num_samples))
-        loading_private1 = np.diag(np.sqrt(self.private_spectrum1)) @ rng.standard_normal((n_priv1, num_samples))
-        loading_private2 = np.diag(np.sqrt(self.private_spectrum2)) @ rng.standard_normal((n_priv2, num_samples))
+        loading_shared1 = np.diag(np.sqrt(self.shared_spectrum1)) @ rng.standard_normal((n_shared, num_samples)).astype(self.dtype)
+        loading_shared2 = np.diag(np.sqrt(self.shared_spectrum2)) @ rng.standard_normal((n_shared, num_samples)).astype(self.dtype)
+        loading_private1 = np.diag(np.sqrt(self.private_spectrum1)) @ rng.standard_normal((n_priv1, num_samples)).astype(self.dtype)
+        loading_private2 = np.diag(np.sqrt(self.private_spectrum2)) @ rng.standard_normal((n_priv2, num_samples)).astype(self.dtype)
 
         shared1 = self.shared_space.copy()
         shared2 = self.shared_space.copy()
@@ -136,8 +137,16 @@ class SharedSpaceGenerator:
             private1 = rotate_subspace_by_angle(private1, rotation_angle, rng)
             private2 = rotate_subspace_by_angle(private2, rotation_angle, rng)
 
-        data1 = shared1 @ loading_shared1 + ratio * private1 @ loading_private1 + noise_variance * rng.standard_normal((N, num_samples))
-        data2 = shared2 @ loading_shared2 + ratio * private2 @ loading_private2 + noise_variance * rng.standard_normal((N, num_samples))
+        data1 = (
+            shared1 @ loading_shared1
+            + ratio * private1 @ loading_private1
+            + noise_variance * rng.standard_normal((N, num_samples)).astype(self.dtype)
+        )
+        data2 = (
+            shared2 @ loading_shared2
+            + ratio * private2 @ loading_private2
+            + noise_variance * rng.standard_normal((N, num_samples)).astype(self.dtype)
+        )
 
         if return_extras:
             extras: dict[str, Any] = {
