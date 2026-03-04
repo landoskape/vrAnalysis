@@ -8,6 +8,11 @@ and orthonormal bases.
 from typing import Optional
 import numpy as np
 import numpy.typing as npt
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def get_orthogonal_direction(vector: npt.NDArray[np.floating], eps: float = 1e-12) -> npt.NDArray[np.floating]:
@@ -228,3 +233,117 @@ def rotate_subspace_by_angle(Q: np.ndarray, theta: float, rng=np.random.default_
     U = random_orthonormal_complement(Q, k, rng)
     O = random_orthogonal(k, rng)
     return Q * np.cos(theta) + (U @ O) * np.sin(theta)
+
+
+def find_commute_space_gated(A, B, K=50, num_steps=2000, lr=1e-2, lambda_gate=1e-3, prune_every=200, prune_thr=1e-2, min_dims=1, device="cuda"):
+    A = torch.as_tensor(A, dtype=torch.float32, device=device)
+    B = torch.as_tensor(B, dtype=torch.float32, device=device)
+    n = A.shape[0]
+    M = A @ B - B @ A
+
+    W = torch.randn(n, K, device=device, requires_grad=True)
+    log_g = torch.zeros(K, device=device, requires_grad=True)  # gates in R
+
+    opt = torch.optim.Adam([W, log_g], lr=lr)
+
+    alive = torch.ones(K, dtype=torch.bool, device=device)
+
+    for t in tqdm(range(num_steps)):
+        opt.zero_grad(set_to_none=True)
+
+        # Orthonormal directions (economy QR). Keep only alive cols.
+        W_alive = W[:, alive]
+        Q, _ = torch.linalg.qr(W_alive, mode="reduced")  # n x k_alive
+
+        g = F.softplus(log_g[alive])  # k_alive, positive
+        V = Q * g.unsqueeze(0)  # n x k_alive (scaled)
+
+        # Your energies (note: you're maximizing A,B energy while minimizing commutator)
+        dot_A = (A @ V).pow(2).sum(dim=0)
+        dot_B = (B @ V).pow(2).sum(dim=0)
+        dot_M = (M @ V).pow(2).sum(dim=0)
+
+        # Objective: maximize dot_A + dot_B, minimize dot_M, plus sparsity on g
+        total = dot_A.sum() + dot_B.sum() - dot_M.sum() - lambda_gate * g.sum()
+
+        # (Optional) small regularizer to prevent g blowing up if scale is free:
+        # total = total - 1e-4 * (g.pow(2).sum())
+
+        loss = -total
+        loss.backward()
+        opt.step()
+
+        # Periodic hard prune
+        if (t + 1) % prune_every == 0 and alive.sum() > min_dims:
+            with torch.no_grad():
+                g_full = torch.zeros_like(log_g)
+                g_full[alive] = F.softplus(log_g[alive])
+
+                # prune smallest gates
+                to_prune = (g_full < prune_thr) & alive
+                # keep at least min_dims
+                if alive.sum() - to_prune.sum() < min_dims:
+                    # keep top min_dims gates
+                    vals = g_full[alive]
+                    k_alive = vals.numel()
+                    keep_k = min_dims
+                    thresh = torch.topk(vals, keep_k, largest=True).values.min()
+                    to_prune = (g_full < thresh) & alive
+
+                alive[to_prune] = False
+
+    # Final basis in data space (orthonormal Q, not scaled) and diagnostics
+    with torch.no_grad():
+        Q, _ = torch.linalg.qr(W[:, alive], mode="reduced")
+        g = F.softplus(log_g[alive])
+        V = Q  # return the subspace directions; keep g separately if you want
+        props = {
+            "gates": g.detach().cpu().numpy(),
+            "k": int(alive.sum().item()),
+            "comm_energy": (M @ V).pow(2).sum(dim=0).detach().cpu().numpy(),
+            "A_energy": (A @ V).pow(2).sum(dim=0).detach().cpu().numpy(),
+            "B_energy": (B @ V).pow(2).sum(dim=0).detach().cpu().numpy(),
+        }
+
+    return V.detach().cpu().numpy(), props
+
+
+def find_commute_space(A, B, num_dims, num_steps=1000, learning_rate=0.01):
+    A = torch.from_numpy(A).float().to(device)
+    B = torch.from_numpy(B).float().to(device)
+    n = A.shape[0]
+
+    raw_V = torch.randn(n, num_dims, device=device, requires_grad=True)
+    raw_V.data /= raw_V.norm(dim=0, keepdim=True)
+
+    subtracted = A @ B - B @ A
+    for _ in tqdm(range(num_steps)):
+        V = raw_V / raw_V.norm(dim=0, keepdim=True)
+
+        # Squared norms per column: ||M @ v||^2 as ((M @ V) ** 2).sum(dim=0)
+        dot_A = ((A @ V) ** 2).sum(dim=0)
+        dot_B = ((B @ V) ** 2).sum(dim=0)
+        dot_subtraction = ((subtracted @ V) ** 2).sum(dim=0)
+        # Gram matrix G[i,j] = v_i · v_j; orth penalty = sum of (v_i · v_j)^2 for i > j
+        G = V.T @ V
+        orth = torch.tril(G**2, diagonal=-1).sum()
+
+        total = dot_A.sum() + dot_B.sum() - dot_subtraction.sum() - orth
+        total.backward()
+        raw_V.data.add_(raw_V.grad, alpha=learning_rate)
+        raw_V.grad = None
+
+    # Measure final properties
+    candidates = raw_V / raw_V.norm(dim=0, keepdim=True)
+
+    # Subspace projections
+    proj_commute = torch.sum(candidates * (subtracted @ candidates), dim=0).cpu().detach().numpy()
+    proj_A = torch.sum(candidates * (A @ candidates), dim=0).cpu().detach().numpy()
+    proj_B = torch.sum(candidates * (B @ candidates), dim=0).cpu().detach().numpy()
+
+    properties = dict(
+        proj_commute=proj_commute,
+        proj_A=proj_A,
+        proj_B=proj_B,
+    )
+    return candidates.cpu().detach().numpy(), properties

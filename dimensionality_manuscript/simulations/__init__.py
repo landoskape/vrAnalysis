@@ -14,7 +14,7 @@ from .generators import (
 )
 from .operators import sqrtm_spd, invsqrtm_spd, geometric_mean_spd, root_sandwich
 from .plotting import plot_ellipse
-from .utilities import get_orthogonal_direction, generate_orthonormal
+from .utilities import get_orthogonal_direction, generate_orthonormal, find_commute_space, find_commute_space_gated
 
 __all__ = [
     "CovarianceGenerator",
@@ -29,4 +29,6 @@ __all__ = [
     "plot_ellipse",
     "get_orthogonal_direction",
     "generate_orthonormal",
+    "find_commute_space",
+    "find_commute_space_torch",
 ]
