@@ -655,7 +655,7 @@ def get_placefield(
 
         # True frame indices of full session might not map to indices in frame_behavior if frame_behavior comes pre-filtered.
         # Therefore, we need to convert it with a lookup.
-        bad_value = -1000
+        bad_value = -1  # this will always index into idx_valid_frames, but we know it's a bad value so can rule out these frames
         max_frame_idx = max(np.max(mapping.idx_behave_to_frame), np.max(frame_behavior.idx))
         lookup = np.full(max_frame_idx + 1, bad_value, dtype=int)
 
@@ -666,8 +666,9 @@ def get_placefield(
         idx_behave_to_frame = lookup[mapping.idx_behave_to_frame]
 
         # Get valid fast samples
-        idx_valid_fast_samples = fast_behavior.valid_frames() & (idx_behave_to_frame != bad_value)
+        idx_valid_fast_samples = fast_behavior.valid_frames()
         idx_valid_fast_samples &= idx_valid_frames[idx_behave_to_frame]
+        idx_valid_fast_samples &= idx_behave_to_frame != bad_value
 
         environments, trials, row_indices, num_rows = _prepare_row_indices(average, fast_behavior, idx_valid_fast_samples)
 
@@ -754,6 +755,9 @@ def get_placefield_prediction(placefield: Placefield, frame_behavior: FrameBehav
     -------
     np.ndarray
         The predicted activity array with shape (frames, rois). NaN for frames where prediction is not possible.
+    extras : dict
+        A dictionary containing additional information:
+        - idx_valid : Boolean array indicating valid predictions
     """
     idx_valid_frames = frame_behavior.valid_frames()
     num_frames = len(frame_behavior)
