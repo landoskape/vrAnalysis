@@ -75,7 +75,7 @@ def process_session(
             idx_keep = idx_keep & _idx_fraction_active
 
         # Filter neurons
-        data = data[idx_keep]
+        data = data[:, idx_keep]
 
     # Compute placefields for each fold to run cvPCA on
     placefields = [
@@ -141,9 +141,7 @@ def process_session(
         reg_covariances.append(reg_covariance)
 
         cvpca = CVPCA(center=center).fit(c_repeat_0)
-        org_covariance_1 = cvpca.score(c_repeat_0, c_repeat_1)
-        org_covariance_2 = cvpca.score(c_repeat_0, c_repeat_2)
-        org_covariance = np.mean(np.stack([org_covariance_1, org_covariance_2], axis=0), axis=0)
+        org_covariance = cvpca.score(c_repeat_1, c_repeat_2)
         org_covariances.append(org_covariance)
 
         c_repeat_0_smooth = gaussian_filter(c_repeat_0, reg_cvpca.smoothing_widths, axis=1)
@@ -151,15 +149,11 @@ def process_session(
         c_repeat_2_smooth = gaussian_filter(c_repeat_2, reg_cvpca.smoothing_widths, axis=1)
 
         cvpca_smooth = CVPCA(center=center).fit(c_repeat_0_smooth)
-        org_smooth_covariance_1 = cvpca_smooth.score(c_repeat_0_smooth, c_repeat_1_smooth)
-        org_smooth_covariance_2 = cvpca_smooth.score(c_repeat_0_smooth, c_repeat_2_smooth)
-        org_smooth_covariance = np.mean(np.stack([org_smooth_covariance_1, org_smooth_covariance_2], axis=0), axis=0)
+        org_smooth_covariance = cvpca_smooth.score(c_repeat_1_smooth, c_repeat_2_smooth)
         org_smooth_covariances.append(org_smooth_covariance)
 
         cvpca_fixed_smooth = CVPCA(center=center).fit(c_repeat_0_fixed_smooth)
-        org_fixed_smooth_covariance_1 = cvpca_fixed_smooth.score(c_repeat_0_fixed_smooth, c_repeat_1_fixed_smooth)
-        org_fixed_smooth_covariance_2 = cvpca_fixed_smooth.score(c_repeat_0_fixed_smooth, c_repeat_2_fixed_smooth)
-        org_fixed_smooth_covariance = np.mean(np.stack([org_fixed_smooth_covariance_1, org_fixed_smooth_covariance_2], axis=0), axis=0)
+        org_fixed_smooth_covariance = cvpca_fixed_smooth.score(c_repeat_1_fixed_smooth, c_repeat_2_fixed_smooth)
         org_fixed_smooth_covariances.append(org_fixed_smooth_covariance)
 
         pca = PCA(center=center).fit(c_repeat_0)
@@ -275,9 +269,9 @@ def _process_single_session(
         gc.collect()
 
 
-process_sessions = True
+process_sessions = False
 force_remake = False
-clear_cache = False
+clear_cache = True
 validate_results = True
 
 n_jobs = 4
@@ -292,7 +286,8 @@ if __name__ == "__main__":
                 for reliability_threshold in [None, 0.2]:
                     for fraction_active_threshold in [None, 0.05]:
                         sessions_to_process = []
-                        for session in tqdm(sessiondb.iter_sessions(imaging=True), desc=f"Checking sessions for center={center}"):
+                        msg = f"Pre-checking sessions for center={center}, fast_sampling={use_fast_sampling}, normalize={normalize}, reliability_threshold={reliability_threshold}, fraction_active_threshold={fraction_active_threshold}"
+                        for session in tqdm(sessiondb.iter_sessions(imaging=True), desc=f"{msg}"):
                             results_path = get_filepath(
                                 session,
                                 center=center,
