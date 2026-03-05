@@ -6,10 +6,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 _PATHS_FILE = _REPO_ROOT / "paths.toml"
 
 if not _PATHS_FILE.exists():
-    raise FileNotFoundError(
-        f"paths.toml not found at {_PATHS_FILE}. "
-        "Copy paths.toml.example to paths.toml and fill in your local paths."
-    )
+    raise FileNotFoundError(f"paths.toml not found at {_PATHS_FILE}. " "Copy paths.toml.example to paths.toml and fill in your local paths.")
 
 with open(_PATHS_FILE, "rb") as _f:
     _paths = tomllib.load(_f)["paths"]
@@ -20,7 +17,8 @@ def repo_path() -> Path:
 
 
 def local_data_path() -> Path:
-    return Path(_paths["local_data"])
+    # Used to be _paths["local_data"], but have transferred to storage path
+    return storage_path()
 
 
 def literature_data_path() -> Path:
