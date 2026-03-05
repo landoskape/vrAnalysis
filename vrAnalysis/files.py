@@ -30,7 +30,7 @@ def storage_path() -> Path:
 
 
 def odbc_driver() -> str:
-    return _paths.get("odbc_driver", "Microsoft Access Driver (*.mdb, *.accdb)")
+    return _paths["odbc_driver"]
 
 
 def analysis_path() -> Path:
