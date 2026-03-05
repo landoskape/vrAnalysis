@@ -2,7 +2,7 @@ from typing import Union, Any, Dict, Type, TypeVar, Union
 from typing import Any, Protocol, Type, runtime_checkable, get_type_hints
 from dataclasses import is_dataclass
 from argparse import ArgumentTypeError
-from datetime import datetime
+from datetime import datetime, date
 
 
 def cutoff_type(cutoff):
@@ -73,6 +73,8 @@ class PrettyDatetime(datetime):
         """Convert a datetime object to PrettyDatetime"""
         if isinstance(dt, datetime):
             return cls.fromtimestamp(dt.timestamp())
+        elif isinstance(dt, date):
+            return cls(dt.year, dt.month, dt.day)
         elif isinstance(dt, str):
             return cls.strptime(dt, "%Y-%m-%d")
         elif isinstance(dt, float):
