@@ -17,7 +17,7 @@ from copy import copy
 from subprocess import run, CompletedProcess
 from typing import Union, List, Tuple, Optional, Any, Dict, Generator
 
-from .files import s2p_targets, local_data_path, storage_path
+from .files import s2p_targets, local_data_path, storage_path, odbc_driver
 from .helpers import readable_bytes, error_print
 from .sessions import B2Session
 from .sessions.b2session import B2RegistrationOpts
@@ -283,7 +283,7 @@ class BaseDatabase:
 
         See https://www.connectionstrings.com/ for driver string examples.
         """
-        driver_string = {"access": r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};" + rf"DBQ={self.get_dbfile()};"}
+        driver_string = {"access": rf"DRIVER={{{odbc_driver()}}};DBQ={self.get_dbfile()};"}
 
         # Make sure connections are possible for this hosttype
         failure_message = (

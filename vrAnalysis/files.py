@@ -31,6 +31,10 @@ def storage_path() -> Path:
     return Path(_paths["storage"])
 
 
+def odbc_driver() -> str:
+    return _paths["odbc_driver"]
+
+
 def analysis_path() -> Path:
     return local_data_path() / "analysis"
 

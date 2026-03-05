@@ -6,3 +6,8 @@ repo        = "C:/Users/Andrew/Documents/GitHub/vrAnalysis"
 local_data  = "C:/Users/andrew/Documents/localData"
 literature  = "C:/Users/andrew/Documents/literatureData"
 storage     = "D:/localData"
+
+# ODBC driver name for Microsoft Access databases.
+# Windows: "Microsoft Access Driver (*.mdb, *.accdb)"
+# Linux/WSL (requires mdbtools): "MDBTools"
+odbc_driver = "Microsoft Access Driver (*.mdb, *.accdb)"
