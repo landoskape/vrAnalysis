@@ -81,7 +81,7 @@ force_remake = False
 clear_cache = False
 validate_results = True
 
-n_jobs = 1
+n_jobs = 4
 config = ExpMaxConfig()
 
 REQUIRED_KEYS = [
