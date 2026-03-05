@@ -19,6 +19,25 @@ from dimilibi import measure_r2, measure_rms, mse
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _huber_irls_weights_from_pred(
+    spks: np.ndarray,
+    pred: np.ndarray,
+    k: float = 2.5,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """Compute per-frame Huber IRLS weights from prediction residuals."""
+    r = np.sqrt(np.sum((spks - pred) ** 2, axis=1))
+    med = np.median(r)
+    mad = np.median(np.abs(r - med))
+    sigma = 1.4826 * mad + eps
+
+    u = r / (k * sigma)
+    weights = np.ones_like(u)
+    mask = u > 1.0
+    weights[mask] = 1.0 / (u[mask] + eps)
+    return np.clip(weights, 0.0, 1.0)
+
+
 def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavior) -> FrameBehavior:
     """E-Step: Use placefields to predict latent variables (mouse's internal estimate)
 
@@ -61,7 +80,13 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
     return frame_behavior
 
 
-def _mstep(spks: np.ndarray, frame_behavior: FrameBehavior, dist_edges: np.ndarray, smooth_width: float) -> Placefield:
+def _mstep(
+    spks: np.ndarray,
+    frame_behavior: FrameBehavior,
+    dist_edges: np.ndarray,
+    smooth_width: float,
+    weights: np.ndarray | None = None,
+) -> Placefield:
     """M-Step: Update placefields to minimize the error between the activity and the predicted activity.
 
     Parameters
@@ -74,13 +99,23 @@ def _mstep(spks: np.ndarray, frame_behavior: FrameBehavior, dist_edges: np.ndarr
         The edges of the distance bins. (N_bins + 1)
     smooth_width : float
         The width of the Gaussian kernel to use for smoothing the place field.
+    weights : np.ndarray | None
+        Optional per-frame IRLS weights aligned to frame_behavior.
 
     Returns
     -------
     placefield : Placefield
         The updated placefield object.
     """
-    placefield = get_placefield(spks, frame_behavior, dist_edges=dist_edges, average=True, use_fast_sampling=False, smooth_width=smooth_width)
+    placefield = get_placefield(
+        spks,
+        frame_behavior,
+        dist_edges=dist_edges,
+        average=True,
+        use_fast_sampling=False,
+        smooth_width=smooth_width,
+        weights=weights,
+    )
     return placefield
 
 
@@ -96,6 +131,9 @@ class ExpMaxConfig:
     smooth_width: float | None = 0.25
     num_steps: int = 10
     reliability_cutoff: float = 0.1
+    use_huber_irls: bool = True
+    huber_k: float = 2.5
+    huber_eps: float = 1e-8
 
 
 def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -> dict:
@@ -146,8 +184,14 @@ def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -
     fb_e = [frame_behavior_tr]
     pf_m = [placefield_tr]
     for _ in tqdm(range(num_steps - 1)):
-        fb_e.append(_estep(spks_tr, pf_m[-1], fb_e[-1]))
-        pf_m.append(_mstep(spks_tr, fb_e[-1], dist_edges, config.smooth_width))
+        fb_next = _estep(spks_tr, pf_m[-1], fb_e[-1])
+        weights = None
+        if config.use_huber_irls:
+            pred_curr = get_placefield_prediction(pf_m[-1], fb_next)[0]
+            weights = _huber_irls_weights_from_pred(spks_tr, pred_curr, k=config.huber_k, eps=config.huber_eps)
+        pf_next = _mstep(spks_tr, fb_next, dist_edges, config.smooth_width, weights=weights)
+        fb_e.append(fb_next)
+        pf_m.append(pf_next)
 
     # Measure improvement in performance of EM model over iterations
     step_mse = []

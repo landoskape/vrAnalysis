@@ -555,6 +555,7 @@ def get_placefield(
     use_fast_sampling: bool = False,
     by_sample_duration: bool = True,
     session: Optional[B2Session] = None,
+    weights: Optional[np.ndarray] = None,
 ) -> Placefield:
     """Get the place field over spks for each frame in frame_behavior.
 
@@ -602,6 +603,10 @@ def get_placefield(
     session : Optional[B2Session]
         Required when use_fast_sampling=True. Used to load behavioral data for fast sampling mode.
         Default is None.
+    weights : Optional[np.ndarray]
+        Optional per-frame non-negative weights aligned to frame_behavior. If None, all frames
+        receive weight 1. In fast-sampling mode, each behavioral sample inherits the weight of
+        its mapped imaging frame.
 
     Returns
     -------
@@ -619,6 +624,19 @@ def get_placefield(
         raise ValueError("spks must have at least one ROI (spks.shape[1] > 0)")
     if use_fast_sampling and session is None:
         raise ValueError("session parameter is required when use_fast_sampling=True")
+
+    if weights is None:
+        weights = np.ones(len(frame_behavior), dtype=spks.dtype)
+    else:
+        weights = np.asarray(weights, dtype=spks.dtype)
+        if weights.ndim != 1:
+            raise ValueError("weights must be a 1D array")
+        if len(weights) != len(frame_behavior):
+            raise ValueError("weights must have the same length as frame_behavior")
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("weights must be finite")
+        if np.any(weights < 0):
+            raise ValueError("weights must be non-negative")
 
     if idx_to_spks is None:
         idx_to_spks = np.arange(len(spks))
@@ -690,6 +708,7 @@ def get_placefield(
             sample_duration,
             by_sample_duration,
             idx_to_spks,
+            weights,
         )
 
     else:
@@ -712,6 +731,7 @@ def get_placefield(
             fast_frame,
             idx_valid_frames,
             idx_to_spks,
+            weights,
         )
 
     if smooth_width is not None and smooth_width > 0:
@@ -798,6 +818,7 @@ def _get_placefield(
     fast: np.ndarray,
     idx_valid_frames: np.ndarray,
     idx_to_spks: np.ndarray,
+    weights: np.ndarray,
 ) -> None:
     """Get the average place field for a given neuron and environment.
 
@@ -811,8 +832,11 @@ def _get_placefield(
             frame_bin = position_bin[sample]
             if frame_bin < 0 or frame_bin >= placefield.shape[1]:
                 continue
-            placefield[row_idx, frame_bin] += spks[idx_to_spks[sample]]
-            counts[row_idx, frame_bin] += 1
+            weight = weights[sample]
+            if weight <= 0:
+                continue
+            placefield[row_idx, frame_bin] += spks[idx_to_spks[sample]] * weight
+            counts[row_idx, frame_bin] += weight
 
 
 @nb.njit(parallel=True)
@@ -843,6 +867,7 @@ def _get_placefield_fast_sampling(
     sample_duration: np.ndarray,
     by_sample_duration: bool,
     idx_to_spks: np.ndarray,
+    weights: np.ndarray,
 ) -> None:
     """Get the average place field using fast sampling (iterating over behavioral samples).
 
@@ -879,6 +904,9 @@ def _get_placefield_fast_sampling(
         If True, weight accumulation by sample_duration. If False, use equal weighting.
     idx_to_spks : np.ndarray
         Mapping from frame indices to spks array indices.
+    weights : np.ndarray
+        Per-frame weights aligned to frame_behavior. Each behavioral sample inherits the weight
+        of its mapped imaging frame.
     """
     for sample in nb.prange(len(behave_position_bin)):
         # Skip if sample is not valid
@@ -911,15 +939,18 @@ def _get_placefield_fast_sampling(
 
         # Get spike data for the associated frame
         spk_idx = idx_to_spks[frame_idx]
+        frame_weight = weights[frame_idx]
+        if frame_weight <= 0:
+            continue
 
         # Accumulate spikes and counts
         if by_sample_duration:
-            weight = sample_duration[sample]
+            weight = sample_duration[sample] * frame_weight
             placefield[row_idx, pos_bin] += spks[spk_idx] * weight
             counts[row_idx, pos_bin] += weight
         else:
-            placefield[row_idx, pos_bin] += spks[spk_idx]
-            counts[row_idx, pos_bin] += 1
+            placefield[row_idx, pos_bin] += spks[spk_idx] * frame_weight
+            counts[row_idx, pos_bin] += frame_weight
 
 
 def _prepare_row_indices(average: bool, sample_behavior: FrameBehavior, idx_valid_samples: np.ndarray):
