@@ -1,22 +1,34 @@
+import tomllib
 from pathlib import Path
 from tkinter import Tk
 
+_REPO_ROOT = Path(__file__).parent.parent
+_PATHS_FILE = _REPO_ROOT / "paths.toml"
+
+if not _PATHS_FILE.exists():
+    raise FileNotFoundError(
+        f"paths.toml not found at {_PATHS_FILE}. "
+        "Copy paths.toml.example to paths.toml and fill in your local paths."
+    )
+
+with open(_PATHS_FILE, "rb") as _f:
+    _paths = tomllib.load(_f)["paths"]
+
 
 def repo_path() -> Path:
-    return Path("C:/Users/Andrew/Documents/GitHub/vrAnalysis")
+    return Path(_paths["repo"])
 
 
 def local_data_path() -> Path:
-    # return Path("C:/Users/andrew/Documents/localData")
-    return storage_path()
+    return Path(_paths["local_data"])
 
 
 def literature_data_path() -> Path:
-    return Path("C:/Users/andrew/Documents/literatureData")
+    return Path(_paths["literature"])
 
 
 def storage_path() -> Path:
-    return Path("D:/localData")
+    return Path(_paths["storage"])
 
 
 def analysis_path() -> Path:

@@ -1,3 +1,6 @@
+# User-specific path config (copy paths.toml.example to create your own)
+paths.toml
+
 # VSCODE
 .vscode/
 

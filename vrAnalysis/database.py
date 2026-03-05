@@ -17,7 +17,7 @@ from copy import copy
 from subprocess import run, CompletedProcess
 from typing import Union, List, Tuple, Optional, Any, Dict, Generator
 
-from .files import s2p_targets
+from .files import s2p_targets, local_data_path, storage_path
 from .helpers import readable_bytes, error_print
 from .sessions import B2Session
 from .sessions.b2session import B2RegistrationOpts
@@ -74,12 +74,12 @@ def get_database_metadata(db_name: str) -> dict:
 
     dbdict = {
         "vrSessions": {
-            "db_path": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
+            "db_path": local_data_path() / "vrDatabaseManagement",
             "db_name": "vrDatabase",
             "db_ext": ".accdb",
             "table_name": "sessiondb",
             "uid": "uSessionID",
-            "backup_path": r"D:\localData\vrDatabaseManagement",
+            "backup_path": storage_path() / "vrDatabaseManagement",
             "unique_fields": [("mouseName", str), ("sessionDate", datetime), ("sessionID", int)],
             "default_conditions": {
                 "sessionQC": True,
@@ -87,12 +87,12 @@ def get_database_metadata(db_name: str) -> dict:
             "constructor": SessionDatabase,
         },
         "vrMice": {
-            "db_path": r"C:\Users\andrew\Documents\localData\vrDatabaseManagement",
+            "db_path": local_data_path() / "vrDatabaseManagement",
             "db_name": "vrDatabase",
             "db_ext": ".accdb",
             "table_name": "mousedb",
             "uid": "uMouseID",
-            "backup_path": r"D:\localData\vrDatabaseManagement",
+            "backup_path": storage_path() / "vrDatabaseManagement",
             "unique_fields": [("mouseName", str)],
             "default_conditions": {},
             "constructor": BaseDatabase,

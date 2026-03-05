@@ -1,0 +1,8 @@
+# Copy this file to paths.toml and fill in your local paths.
+# paths.toml is gitignored — each user maintains their own copy.
+
+[paths]
+repo        = "C:/Users/Andrew/Documents/GitHub/vrAnalysis"
+local_data  = "C:/Users/andrew/Documents/localData"
+literature  = "C:/Users/andrew/Documents/literatureData"
+storage     = "D:/localData"
