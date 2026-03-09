@@ -269,9 +269,9 @@ def _process_single_session(
         gc.collect()
 
 
-process_sessions = False
+process_sessions = True
 force_remake = False
-clear_cache = True
+clear_cache = False
 validate_results = True
 
 n_jobs = 4
