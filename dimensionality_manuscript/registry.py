@@ -86,6 +86,8 @@ class RegistryPaths:
     measure_cvpca_path: Path = cache_path / "measure_cvpca"
     compare_cvpca_path: Path = cache_path / "compare_cvpca"
     em_path: Path = cache_path / "em"
+    pipeline_v2_path: Path = cache_path / "pipeline_v2"
+    pipeline_v2_db_path: Path = pipeline_v2_path / "results.db"
 
     def __post_init__(self):
         self.manuscript_path.mkdir(parents=True, exist_ok=True)
@@ -103,6 +105,7 @@ class RegistryPaths:
         self.em_path.mkdir(parents=True, exist_ok=True)
         self.measure_cvpca_path.mkdir(parents=True, exist_ok=True)
         self.compare_cvpca_path.mkdir(parents=True, exist_ok=True)
+        self.pipeline_v2_path.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)

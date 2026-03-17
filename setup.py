@@ -24,6 +24,7 @@ deps_core = [
     "speedystats",
     "joblib",
     "syd",
+    "freezedry",
 ]
 
 # Extra code for performing registration (these things are extras specifically for oasis)
