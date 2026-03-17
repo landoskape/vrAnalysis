@@ -1,6 +1,6 @@
 from pathlib import Path
 from dataclasses import dataclass, field, fields
-from typing import Optional, Dict, Any, Union, Literal
+from typing import Optional, Dict, Any, Union, Literal, TypeAlias
 import joblib
 import numpy as np
 import json
@@ -1045,4 +1045,13 @@ class B2Session(SessionData):
         return vrexp
 
 
-SpksTypes = Literal[*B2Session.spks_types]
+SpksTypes: TypeAlias = Literal[
+    "oasis",
+    "deconvolved",
+    "raw",
+    "neuropil",
+    "significant",
+    "corrected",
+    "sigbase",
+    "sigrebase",
+]

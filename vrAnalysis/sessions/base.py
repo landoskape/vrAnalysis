@@ -237,6 +237,16 @@ class SessionData(ABC):
         """
         return joinby.join(self.session_name)
 
+    @property
+    def session_uid(self) -> str:
+        """Generate a unique session identifier string.
+
+        This is almost identical to session_print but defaults the separator to "."
+        for use in file naming and is explicitly used as an identifier. (Having it
+        just makes the caller intent clearer and simplifies the API).
+        """
+        return ".".join(self.session_name)
+
     def get_value(self, key: str) -> Any:
         """
         Get value from the session stored in the values namespace.
