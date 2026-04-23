@@ -1,9 +1,9 @@
-"""Tests for dimensionality_manuscript_v2 pipeline."""
+"""Tests for dimensionality_manuscript pipeline."""
 
 import pathlib
 import tempfile
 
-from dimensionality_manuscript_v2 import (
+from dimensionality_manuscript import (
     AnalysisPlan,
     CVPCAConfig,
     DataConfig,

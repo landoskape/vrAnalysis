@@ -3,8 +3,8 @@ from tqdm import tqdm
 import torch
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import SpksTypes
-from dimensionality_manuscript.registry import SubspaceName, PopulationRegistry, get_subspace
-from dimensionality_manuscript.regression_models.hyperparameters import PlaceFieldHyperparameters
+from ..registry import SubspaceName, PopulationRegistry, get_subspace
+from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 
 # only works on the "optimized" route, not on specific hyperparameters
 clear_hyperparameters = False  # Clears hyperparameter cache

@@ -11,6 +11,8 @@ from .generators import (
     RotatedEigenbasisGenerator,
     SharedSpaceConfig,
     SharedSpaceGenerator,
+    StimFullConfig,
+    StimFullGenerator,
 )
 from .operators import sqrtm_spd, invsqrtm_spd, geometric_mean_spd, root_sandwich
 from .plotting import plot_ellipse
@@ -22,6 +24,8 @@ __all__ = [
     "RotatedEigenbasisGenerator",
     "SharedSpaceConfig",
     "SharedSpaceGenerator",
+    "StimFullConfig",
+    "StimFullGenerator",
     "sqrtm_spd",
     "invsqrtm_spd",
     "geometric_mean_spd",

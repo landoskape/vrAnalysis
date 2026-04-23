@@ -27,6 +27,124 @@ def _ensure_tensor(data: Union[np.ndarray, torch.Tensor, list, tuple]) -> torch.
         return torch.tensor(data)
 
 
+def _chunk_indices(indices: torch.Tensor, num_chunks: int, num_buffer: int, force_even: bool = False) -> List[torch.Tensor]:
+    """Chunk indices into groups with buffer gaps between each chunk.
+
+    Parameters
+    ----------
+    indices : torch.Tensor
+        A tensor of indices to split into chunks.
+    num_chunks : int
+        Number of chunks to split the indices into.
+        If positive, chunks are as large as possible given the other parameters.
+        If negative, chunks have exactly ``abs(num_chunks)`` samples each.
+    num_buffer : int
+        Number of buffer indices between each chunk.
+    force_even : bool
+        If True, all chunks have equal size (later chunks are clipped if needed).
+
+    Returns
+    -------
+    List[torch.Tensor]
+        Chunk tensors (every other bin starting from 0; buffer bins are discarded).
+    """
+    assert num_buffer >= 0, "num_buffer must be greater than or equal to 0"
+    assert num_chunks != 0 and isinstance(num_chunks, int), "num_chunks must be a non-zero integer"
+
+    if num_chunks > 0:
+        num_buffered_samples = num_buffer * (num_chunks - 1)
+
+        if force_even:
+            each_chunk_size = (len(indices) - num_buffered_samples) // num_chunks
+            chunk_sizes = [each_chunk_size] * num_chunks
+            drop_buffer = len(indices) - (sum(chunk_sizes) + num_buffered_samples)
+        else:
+            num_chunked_indices = len(indices) - num_buffered_samples
+            minimum_chunk_size = num_chunked_indices // num_chunks
+            num_remainder = num_chunked_indices - minimum_chunk_size * num_chunks
+            chunk_sizes = [minimum_chunk_size + 1 * (i < num_remainder) for i in range(num_chunks)]
+            drop_buffer = 0
+
+    else:
+        number_of_chunks = len(indices) // (-num_chunks + num_buffer)
+        chunk_sizes = [-num_chunks] * number_of_chunks
+        samples_in_chunks = len(chunk_sizes) * -num_chunks
+        drop_buffer = len(indices) - samples_in_chunks - (len(chunk_sizes) - 1) * num_buffer
+        num_chunks = len(chunk_sizes)
+
+    bin_size = []
+    for ichunk, chunk_size in enumerate(chunk_sizes):
+        bin_size.append(chunk_size)
+        if ichunk < (num_chunks - 1):
+            bin_size.append(num_buffer)
+        else:
+            bin_size.append(drop_buffer)
+
+    bin_indices = torch.split(indices, bin_size)
+    return bin_indices[::2]
+
+
+def make_time_splits(
+    num_samples: int,
+    num_groups: int = 2,
+    relative_size: Optional[tuple] = None,
+    chunks_per_group: int = 5,
+    num_buffer: int = 10,
+    force_even: bool = False,
+) -> List[torch.Tensor]:
+    """Split sample indices into cross-validation groups with buffer gaps.
+
+    Chunks are separated by ``num_buffer`` samples so that temporally
+    autocorrelated data is not trivially cross-validated via even/odd splits.
+    Chunks are randomly permuted before being assigned to groups.
+
+    Parameters
+    ----------
+    num_samples : int
+        Total number of samples to split.
+    num_groups : int
+        Number of groups to split the samples into.
+    relative_size : tuple of int, optional
+        Relative size of each group. Length must equal ``num_groups``.
+        If None, all groups are equal size.
+    chunks_per_group : int
+        Number of chunks per group (scaled by ``relative_size``).
+        If positive, chunks are as large as possible given the other parameters.
+        If negative, each chunk contains exactly ``abs(chunks_per_group)`` samples.
+    num_buffer : int
+        Number of buffer samples between consecutive chunks.
+    force_even : bool
+        If True, all chunks have equal size (later indices are clipped if needed).
+
+    Returns
+    -------
+    List[torch.Tensor]
+        One tensor per group containing the sorted sample indices assigned to it.
+    """
+    if relative_size is None:
+        relative_size = [1] * num_groups
+    else:
+        assert len(relative_size) == num_groups, "relative_size must have the same length as num_groups"
+        assert all(isinstance(size, int) for size in relative_size), "relative_size must be a tuple of integers"
+
+    indices = torch.arange(num_samples)
+    time_chunks = _chunk_indices(indices, chunks_per_group * sum(relative_size), num_buffer, force_even=force_even)
+
+    # randomize order of chunks
+    time_chunks = [time_chunks[i] for i in torch.randperm(len(time_chunks))]
+
+    if chunks_per_group < 0:
+        num_chunks = len(time_chunks)
+        chunks_per_group = num_chunks // sum(relative_size)
+
+    start_stop_index = torch.cumsum(_ensure_tensor([0] + [rs * chunks_per_group for rs in relative_size]), dim=0)
+    time_split_indices: List[torch.Tensor] = []
+    for i in range(num_groups):
+        time_split_indices.append(torch.sort(torch.cat(time_chunks[start_stop_index[i] : start_stop_index[i + 1]])).values)
+
+    return time_split_indices
+
+
 class Population:
     """
     Population is a class that holds and manipulates a dataset of neurons by timepoints for use in dimensionality analyses.
@@ -467,96 +585,10 @@ class Population:
             If number of timepoints isn't divisible by number of groups, will clip timepoints of later groups.
             (default is False)
         """
-        if relative_size is None:
-            relative_size = [1] * num_groups
-        else:
-            assert len(relative_size) == num_groups, "relative_size must have the same length as num_groups"
-            assert all(isinstance(size, int) for size in relative_size), "relative_size must be a tuple of integers"
-
-        indices = torch.arange(self.num_timepoints)
-        time_chunks = self._chunk_indices(indices, chunks_per_group * sum(relative_size), num_buffer, force_even=force_even)
-
-        # randomize order of chunks
-        time_chunks = [time_chunks[i] for i in torch.randperm(len(time_chunks))]
-
-        if chunks_per_group < 0:
-            # if chunks_per_group is negative, then the number of chunks is fixed and the chunks are the size of the number provided
-            # this can cause uneven group sizes -- so we just clip whatever chunks are leftover
-            num_chunks = len(time_chunks)
-            chunks_per_group = num_chunks // sum(relative_size)
-
-        # consolidate chunks into groups
-        start_stop_index = torch.cumsum(_ensure_tensor([0] + [rs * chunks_per_group for rs in relative_size]), dim=0)
-        time_split_indices: list[torch.Tensor] = []
-        for i in range(num_groups):
-            time_split_indices.append(torch.sort(torch.cat(time_chunks[start_stop_index[i] : start_stop_index[i + 1]])).values)
-
-        self.time_split_indices = time_split_indices
+        self.time_split_indices = make_time_splits(self.num_timepoints, num_groups, relative_size, chunks_per_group, num_buffer, force_even)
 
     def _chunk_indices(self, indices, num_chunks, num_buffer, force_even: bool = False):
-        """
-        Chunks indices into num_chunks with a buffer of num_buffer between chunks.
-
-        Parameters
-        ----------
-        indices : torch.Tensor
-            A tensor of indices to split into chunks.
-        num_chunks : int
-            Number of chunks to split the indices into.
-            > If positive, will make chunks as big as possible given the other parameters such that the
-            total number of chunks match the request.
-            > If negative, will instead make chunks have the number of samples corresponding to the number provided.
-        num_buffer : int
-            Number of buffer indices between each chunk.
-        force_even : bool
-            If True, will ensure that the number of indices in each chunk is equal to each other.
-            If number of indices isn't divisible by number of chunks, will clip indices of later chunks.
-            (default is False)
-
-        Returns
-        -------
-        List[torch.Tensor]
-            A list of tensors representing the chunked indices.
-        """
-        assert num_buffer >= 0, "num_buffer must be greater than or equal to 0"
-        assert num_chunks != 0 and isinstance(num_chunks, int), "num_chunks must be a non-zero integer"
-
-        if num_chunks > 0:
-            num_buffered_samples = num_buffer * (num_chunks - 1)
-
-            # Clip indices to be divisible by num_chunks if requested by user (clip the later indices)
-            # drop_buffer is the number of additional indices that have to be dropped when even chunks are requested
-            if force_even:
-                each_chunk_size = (len(indices) - num_buffered_samples) // num_chunks
-                chunk_sizes = [each_chunk_size] * num_chunks
-                drop_buffer = len(indices) - (sum(chunk_sizes) + num_buffered_samples)
-            else:
-                num_chunked_indices = len(indices) - num_buffered_samples
-                minimum_chunk_size = num_chunked_indices // num_chunks
-                num_remainder = num_chunked_indices - minimum_chunk_size * num_chunks
-                chunk_sizes = [minimum_chunk_size + 1 * (i < num_remainder) for i in range(num_chunks)]
-                drop_buffer = 0
-
-        else:
-            # All chunks are the same size
-            number_of_chunks = len(indices) // (-num_chunks + num_buffer)
-            chunk_sizes = [-num_chunks] * number_of_chunks
-            samples_in_chunks = len(chunk_sizes) * -num_chunks
-            drop_buffer = len(indices) - samples_in_chunks - (len(chunk_sizes) - 1) * num_buffer
-            num_chunks = len(chunk_sizes)
-
-        # Assign the size to each group (chunk / buffer / chunk / buffer / ... / chunk / drop_buffer)
-        bin_size = []
-        for ichunk, chunk_size in enumerate(chunk_sizes):
-            bin_size.append(chunk_size)
-            if ichunk < (num_chunks - 1):
-                bin_size.append(num_buffer)
-            else:
-                bin_size.append(drop_buffer)
-
-        bin_indices = torch.split(indices, bin_size)
-        chunk_indices = bin_indices[::2]
-        return chunk_indices
+        return _chunk_indices(indices, num_chunks, num_buffer, force_even)
 
     def _check_datatype(self, data: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
         if isinstance(data, np.ndarray):

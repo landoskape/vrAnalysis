@@ -13,7 +13,7 @@ from .regression_models.base import RegressionModel
 from .regression_models.models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
 from .regression_models.hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
-from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace
+from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
 
 # Type alias for model names
 ModelName = Literal[
@@ -32,8 +32,6 @@ ModelName = Literal[
 # Type alias for subspace names
 SubspaceName = Literal[
     "pca_subspace",
-    "cvpca_subspace",
-    "svca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
 ]
@@ -73,6 +71,7 @@ class RegistryPaths:
 
     manuscript_path: Path = files.local_data_path() / "dimensionality-manuscript"
     figure_path: Path = manuscript_path / "figures"
+    dataclub_260330_path: Path = manuscript_path / "dataclub-260330"
     cache_path: Path = manuscript_path / "cache"
     registry_path: Path = cache_path / "population-registry"
     hyperparameter_path: Path = cache_path / "hyperparameters"
@@ -571,10 +570,9 @@ MODEL_NAMES: tuple[ModelName] = (
 
 SUBSPACE_NAMES: tuple[SubspaceName] = (
     "pca_subspace",
-    "cvpca_subspace",
-    "svca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
+    "svca_subspace",
 )
 
 
@@ -698,24 +696,6 @@ def get_subspace(
 
 @overload
 def get_subspace(
-    subspace_name: Literal["cvpca_subspace"],
-    population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
-    correlation: bool = False,
-) -> CVPCASubspace: ...
-
-
-@overload
-def get_subspace(
-    subspace_name: Literal["svca_subspace"],
-    population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
-    correlation: bool = False,
-) -> SVCASubspace: ...
-
-
-@overload
-def get_subspace(
     subspace_name: Literal["covcov_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = True,
@@ -730,6 +710,15 @@ def get_subspace(
     match_dimensions: bool = True,
     correlation: bool = False,
 ) -> CovCovCrossvalidatedSubspace: ...
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["svca_subspace"],
+    population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
+    correlation: bool = False,
+) -> SVCASubspace: ...
 
 
 def get_subspace(
@@ -761,13 +750,10 @@ def get_subspace(
 
     if subspace_name == "pca_subspace":
         return PCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
-    if subspace_name == "cvpca_subspace":
-        return CVPCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
-    if subspace_name == "svca_subspace":
-        return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "covcov_subspace":
         return CovCovSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "covcov_crossvalidated_subspace":
         return CovCovCrossvalidatedSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
-
+    if subspace_name == "svca_subspace":
+        return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     raise ValueError(f"Subspace {subspace_name} not found in registry.")

@@ -134,6 +134,24 @@ class SVCA:
         return shared_variance, total_variance
 
     @torch.no_grad()
+    def get_components(self, left: bool = True):
+        """
+        Get the fitted components of the SVCA model.
+
+        Parameters
+        ----------
+        left : bool
+            If True, will return the left singular vectors (U). If False, will return the right singular vectors (V).
+
+        Returns
+        -------
+        components : torch.Tensor
+            The fitted components of the SVCA model.
+        """
+        assert self.fitted, "Model must be fitted before getting components."
+        return self.U if left else self.V
+
+    @torch.no_grad()
     def _validate_data(self, source: torch.Tensor, target: torch.Tensor):
         """Check if source and target data are valid"""
         if self.fitted:

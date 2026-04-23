@@ -270,7 +270,13 @@ def fit_powerlaw_derivatives(eigenspectrum: torch.Tensor, width: int = 1, axis: 
     return alpha_local, idx_slice
 
 
-def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx: int = None) -> Tuple[float, float]:
+def fit_powerlaw_decay(
+    eigenspectrum: torch.Tensor,
+    start_idx: int = 0,
+    end_idx: int = None,
+    ignore_nans: bool = False,
+    verbose: bool = True,
+) -> Tuple[float, float]:
     """
     Fit a powerlaw decay to the eigenspectrum. Returns the alpha value for n^(-alpha) decay.
 
@@ -282,6 +288,10 @@ def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx:
         The index of the first dimension to fit.
     end_idx : int, default=None
         The index of the last dimension to fit. If None, will fit until the end of the eigenspectrum.
+    ignore_nans : bool, default=False
+        If True, will ignore NaN values in the fit. If False, will raise an error if there are NaNs in the selected range.
+    verbose : bool, default=True
+        If True, will print warnings about ignored values. Set to False to suppress warnings.
 
     Returns
     -------
@@ -302,12 +312,26 @@ def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx:
 
     eigenspectrum = np.array(eigenspectrum[start_idx:end_idx])
 
-    idx_positive = eigenspectrum > 0
-    if not np.all(idx_positive):
-        print(f"Warning: some eigenspectrum values are negative or zero! Setting them to 0.")
+    idx_use = eigenspectrum > 0
+    if not np.all(idx_use) and verbose:
+        print(f"Warning: some eigenspectrum values are negative or zero! Ignoring them.")
 
-    x = np.log(np.arange(start_idx, end_idx)[idx_positive] + 1)
-    y = np.log(eigenspectrum[idx_positive])  # log(n^(-1)) = -log(n)
+    idx_not_nan = ~np.isnan(eigenspectrum)
+    if not np.all(idx_not_nan):
+        if ignore_nans:
+            if verbose:
+                print(f"Warning: some eigenspectrum values are NaN! Ignoring them.")
+            idx_use = idx_use & idx_not_nan
+        else:
+            raise ValueError("Eigenspectrum contains NaN values in the selected range. Set ignore_nans=True to ignore them.")
+
+    if not np.any(idx_use) and ignore_nans:
+        if verbose:
+            print("Warning: no valid eigenspectrum values to fit after ignoring NaNs and non-positive values! Returning NaN.")
+        return np.nan, np.nan
+
+    x = np.log(np.arange(start_idx, end_idx)[idx_use] + 1)
+    y = np.log(eigenspectrum[idx_use])  # log(n^(-1)) = -log(n)
 
     def _powerlaw(x, alpha, amplitude):
         # lambda = A * n^(-alpha)

@@ -84,9 +84,10 @@ class SharedSpaceGenerator:
         num_samples: int,
         noise_variance: float = 0.0,
         rotation_angle: float = 0.0,
+        suppress_shared: bool = False,
         rng: Optional[np.random.Generator] = None,
         return_extras: bool = False,
-    ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], ...]:
+    ) -> tuple[npt.NDArray[np.floating], ...]:
         """
         Generate two datasets (num_neurons x num_samples) with shared and private structure.
 
@@ -98,6 +99,9 @@ class SharedSpaceGenerator:
             Variance of iid Gaussian noise added to each neuron. Default 0.0.
         rotation_angle : float, optional
             Angle to rotate the shared subspace by. Default 0.0.
+        suppress_shared : bool, optional
+            If True, suppress the shared component in the generated data (for testing).
+            Default False.
         rng : np.random.Generator, optional
             Random number generator for loadings and noise. Uses config rng if None.
         return_extras : bool, optional
@@ -137,13 +141,14 @@ class SharedSpaceGenerator:
             private1 = rotate_subspace_by_angle(private1, rotation_angle, rng)
             private2 = rotate_subspace_by_angle(private2, rotation_angle, rng)
 
+        shared_scale = 0.0 if suppress_shared else 1.0
         data1 = (
-            shared1 @ loading_shared1
+            shared_scale * shared1 @ loading_shared1
             + ratio * private1 @ loading_private1
             + noise_variance * rng.standard_normal((N, num_samples)).astype(self.dtype)
         )
         data2 = (
-            shared2 @ loading_shared2
+            shared_scale * shared2 @ loading_shared2
             + ratio * private2 @ loading_private2
             + noise_variance * rng.standard_normal((N, num_samples)).astype(self.dtype)
         )
@@ -322,6 +327,174 @@ class SharedSpaceGenerator:
         study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
         return study
+
+
+@dataclass
+class StimFullConfig:
+    """Configuration for x = g(s) + h + eps data generation."""
+
+    num_neurons: int
+    num_stimuli: int
+    stim_dim: int  # dimension of stimulus representation; must be <= num_stimuli
+    alpha_stim: float  # power-law exponent for stimulus spectrum
+    h_dim: int  # dimension of stimulus-independent h subspace
+    alpha_h: float  # power-law exponent for h spectrum
+
+    noise_scale: float = 1.0  # scale for per-neuron eps variance: sigma_n^2 ~ Exp(noise_scale)
+    h_scale: float = 1.0  # multiplicative scale for h component
+    orthogonal_gh: bool = True  # if True, h subspace is orthogonal to stim subspace
+
+    rng: Optional[np.random.Generator] = None
+
+
+class StimFullGenerator:
+    """
+    Generator for x_t = g(s_t) + h_t + eps_t following the shared-variance model.
+
+    g(s): stimulus-driven component. Each of num_stimuli stimuli has a fixed response
+    g(s) = stim_space @ z_s, where stim_space is (num_neurons, stim_dim) orthonormal
+    and z_s ~ N(0, diag(stim_spectrum)) are fixed per-stimulus latent codes.
+
+    h_t: stimulus-independent component with power-law covariance, generated as
+    h_t = h_scale * h_space @ diag(sqrt(h_spectrum)) @ noise_t. h_space is optionally
+    orthogonal to stim_space.
+
+    eps_t: per-neuron private noise where neuron n has variance sigma_n^2 ~ Exp(noise_scale).
+    """
+
+    def __init__(self, config: StimFullConfig, dtype: np.dtype = np.float64):
+        self.config = config
+        self.dtype = dtype
+        rng = config.rng if config.rng is not None else np.random.default_rng()
+
+        N = config.num_neurons
+        S = config.num_stimuli
+        D = config.stim_dim
+        H = config.h_dim
+
+        if D > S:
+            raise ValueError(f"stim_dim {D} > num_stimuli {S}")
+        if D > N:
+            raise ValueError(f"stim_dim {D} > num_neurons {N}")
+        if H > N:
+            raise ValueError(f"h_dim {H} > num_neurons {N}")
+        if config.orthogonal_gh and D + H > N:
+            raise ValueError(f"stim_dim + h_dim ({D} + {H}) > num_neurons {N} (required for orthogonal_gh=True)")
+
+        # Stimulus subspace: (N, D) orthonormal
+        self.stim_space = generate_orthonormal(N, D, rng=rng).astype(self.dtype)
+        self.stim_spectrum = np.arange(1, D + 1, dtype=self.dtype) ** (-config.alpha_stim)
+
+        # Fixed per-stimulus latents z_s ~ N(0, diag(stim_spectrum)), shape (D, S)
+        self._stim_latents = (np.diag(np.sqrt(self.stim_spectrum)) @ rng.standard_normal((D, S))).astype(self.dtype)
+        # Neural responses per stimulus: g(s) = stim_space @ z_s, shape (N, S)
+        self.stim_responses = self.stim_space @ self._stim_latents
+
+        # h subspace: (N, H) orthonormal, optionally orthogonal to stim_space
+        kernel = self.stim_space if config.orthogonal_gh else None
+        self.h_space = generate_orthonormal(N, H, kernel=kernel, rng=rng).astype(self.dtype)
+        self.h_spectrum = np.arange(1, H + 1, dtype=self.dtype) ** (-config.alpha_h)
+
+        # Per-neuron eps standard deviations: sigma_n = sqrt(Exp(noise_scale))
+        self.eps_scales = np.sqrt(rng.exponential(config.noise_scale, N)).astype(self.dtype)
+
+    def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """
+        Return population-level Sigma_stim and Sigma_full.
+
+        Returns
+        -------
+        sigma_stim : ndarray, shape (num_neurons, num_neurons)
+            stim_space @ diag(stim_spectrum) @ stim_space.T
+        sigma_full : ndarray, shape (num_neurons, num_neurons)
+            sigma_stim + sigma_h + diag(eps_scales^2)
+        """
+        sigma_stim = self.stim_space @ np.diag(self.stim_spectrum) @ self.stim_space.T
+        sigma_h = (self.config.h_scale**2) * self.h_space @ np.diag(self.h_spectrum) @ self.h_space.T
+        sigma_eps = np.diag(self.eps_scales**2)
+        return sigma_stim, sigma_stim + sigma_h + sigma_eps
+
+    def generate(
+        self,
+        num_samples: int,
+        noise_variance: float = 0.0,
+        rotation_angle: float = 0.0,
+        rng: Optional[np.random.Generator] = None,
+        return_extras: bool = False,
+    ) -> tuple[npt.NDArray[np.floating], ...]:
+        """
+        Generate data following x_t = g(s_t) + h_t + eps_t.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of time samples T.
+        noise_variance : float, optional
+            Variance of additional iid Gaussian noise added to full data. Default 0.0.
+        rotation_angle : float, optional
+            Angle to rotate stim and h subspaces. Simulates session-to-session
+            representation drift. Requires num_neurons >= 2 * max(stim_dim, h_dim).
+            Default 0.0.
+        rng : np.random.Generator, optional
+            Random number generator. Uses config rng if None.
+        return_extras : bool, optional
+            If True, also return an extras dict. Default False.
+
+        Returns
+        -------
+        data : ndarray, shape (num_neurons, num_samples)
+            Full data: g(s_t) + h_t + eps_t [+ noise].
+        stim_data : ndarray, shape (num_neurons, num_samples)
+            Stimulus-only component: g(s_t).
+        extras : dict, optional
+            When return_extras=True. Keys: stim_indices, stim_responses, stim_space,
+            h_space, stim_spectrum, h_spectrum, eps_scales, h_component, eps_component.
+        """
+        rng = rng if rng is not None else self.config.rng
+        rng = np.random.default_rng() if rng is None else rng
+
+        N = self.config.num_neurons
+        S = self.config.num_stimuli
+        H = self.config.h_dim
+
+        stim_space = self.stim_space.copy()
+        h_space = self.h_space.copy()
+        if rotation_angle != 0.0:
+            stim_space = rotate_subspace_by_angle(stim_space, rotation_angle, rng)
+            h_space = rotate_subspace_by_angle(h_space, rotation_angle, rng)
+
+        # Reconstruct stimulus responses in (possibly rotated) stim_space
+        stim_responses = stim_space @ self._stim_latents  # (N, S)
+
+        # Sample random stimulus indices
+        stim_indices = rng.integers(0, S, size=num_samples)
+        stim_data = stim_responses[:, stim_indices]  # (N, T)
+
+        # h component: h_scale * h_space @ diag(sqrt(h_spectrum)) @ z
+        h_loadings = self.config.h_scale * np.diag(np.sqrt(self.h_spectrum)) @ rng.standard_normal((H, num_samples)).astype(self.dtype)
+        h_component = h_space @ h_loadings  # (N, T)
+
+        # eps component: per-neuron private noise
+        eps_component = self.eps_scales[:, None] * rng.standard_normal((N, num_samples)).astype(self.dtype)
+
+        data = stim_data + h_component + eps_component
+        if noise_variance > 0.0:
+            data = data + np.sqrt(noise_variance) * rng.standard_normal((N, num_samples)).astype(self.dtype)
+
+        if return_extras:
+            extras: dict[str, Any] = {
+                "stim_indices": stim_indices,
+                "stim_responses": stim_responses,
+                "stim_space": stim_space,
+                "h_space": h_space,
+                "stim_spectrum": self.stim_spectrum.copy(),
+                "h_spectrum": self.h_spectrum.copy(),
+                "eps_scales": self.eps_scales.copy(),
+                "h_component": h_component,
+                "eps_component": eps_component,
+            }
+            return data, stim_data, extras
+        return data, stim_data
 
 
 Transform = Callable[["CovarianceGenerator", np.random.Generator, dict[str, Any]], tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]]

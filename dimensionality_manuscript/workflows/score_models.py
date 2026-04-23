@@ -3,7 +3,7 @@ from tqdm import tqdm
 import torch
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import SpksTypes
-from dimensionality_manuscript.registry import ModelName, PopulationRegistry, get_model
+from ..registry import ModelName, PopulationRegistry, get_model
 
 clear_hyperparameters = False  # Clears hyperparameter cache
 clear_scores = False  # Clears score cache

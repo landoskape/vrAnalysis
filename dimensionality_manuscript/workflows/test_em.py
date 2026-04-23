@@ -8,7 +8,7 @@ from tqdm import tqdm
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import B2Session
 from vrAnalysis.processors.em import process_session, ExpMaxConfig
-from dimensionality_manuscript.registry import PopulationRegistry
+from ..registry import PopulationRegistry
 
 sessiondb = get_database("vrSessions")
 registry = PopulationRegistry()

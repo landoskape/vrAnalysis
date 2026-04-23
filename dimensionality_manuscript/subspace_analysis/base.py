@@ -1346,19 +1346,9 @@ class SubspaceModel(ABC):
             subspace = self.fit(session, spks_type=spks_type, split=train_split, hyperparameters=hyperparameters)
             variance = self.score(session, subspace, spks_type=spks_type, split=test_split)
             evaluation_score = self.evaluate(variance)
-            metrics = {
-                "evaluation_score": float(evaluation_score),
-                "variance_activity": (
-                    variance["variance_activity"].cpu().numpy()
-                    if isinstance(variance["variance_activity"], torch.Tensor)
-                    else variance["variance_activity"]
-                ),
-                "variance_placefields": (
-                    variance["variance_placefields"].cpu().numpy()
-                    if isinstance(variance["variance_placefields"], torch.Tensor)
-                    else variance["variance_placefields"]
-                ),
-            }
+            metrics = {"evaluation_score": float(evaluation_score)}
+            for key, val in variance.items():
+                metrics[key] = val.cpu().numpy() if isinstance(val, torch.Tensor) else val
             if self.autosave:
                 dump(metrics, cache_path)
 
@@ -1423,6 +1413,38 @@ class SubspaceModel(ABC):
         if spks_type is None:
             spks_type = session.params.spks_type
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
+        cache_path = self.registry.registry_paths.subspace_score_path / f"{cache_key}.joblib"
+        if cache_path.exists():
+            cache_path.unlink()
+
+    def clear_cached_score_from_hyps(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        test_split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+    ) -> None:
+        """Clear the cached score for the model scored with explicit hyperparameters.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to clear the cached score for.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        train_split : Optional["SplitName"]
+            The split to use for training. Default is "train".
+        test_split : Optional["SplitName"]
+            The split to use for testing. Default is "test".
+        hyperparameters : Optional[PlaceFieldHyperparameters]
+            The hyperparameters to use. If None, uses self.hyperparameters.
+        """
+        if spks_type is None:
+            spks_type = session.params.spks_type
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        cache_key = self._get_score_from_hyps_cache_key(session, spks_type, train_split, test_split, hyperparameters)
         cache_path = self.registry.registry_paths.subspace_score_path / f"{cache_key}.joblib"
         if cache_path.exists():
             cache_path.unlink()

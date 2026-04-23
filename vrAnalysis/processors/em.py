@@ -62,14 +62,28 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
     num_positions = placefield.shape[1]
     dist_centers = edge2center(placefield.dist_edges)
 
-    # Do this in torch on GPU
-    spks_torch = torch.from_numpy(spks).to(device)
-    pf_torch = torch.from_numpy(placefield.placefield).to(device)
-    pf_torch = pf_torch.permute(2, 0, 1)
-    error_torch = torch.sum((spks_torch[..., None, None] - pf_torch[None, ...]) ** 2, dim=1)
-    min_idx_torch = torch.argmin(torch.reshape(error_torch, (num_frames, -1)), dim=1)
-    env_idx = (min_idx_torch // num_positions).cpu().numpy()
-    pos_idx = (min_idx_torch % num_positions).cpu().numpy()
+    def _compute_on(dev):
+        spks_t = torch.from_numpy(spks).to(dev)
+        pf_t = torch.from_numpy(placefield.placefield).to(dev).permute(2, 0, 1)
+        # ||x - y||^2 = ||x||^2 + ||y||^2 - 2<x,y>
+        spks_sq = (spks_t**2).sum(dim=1)[:, None, None]
+        pf_sq = (pf_t**2).sum(dim=0)[None, ...]
+        cross_term = torch.einsum("ij,jkl->ikl", spks_t, pf_t)
+        error = spks_sq + pf_sq - 2 * cross_term
+        min_idx = torch.argmin(error.reshape(num_frames, -1), dim=1)
+        env_idx = (min_idx // num_positions).cpu().numpy()
+        pos_idx = (min_idx % num_positions).cpu().numpy()
+        del spks_t, pf_t, spks_sq, pf_sq, cross_term, error, min_idx
+        return env_idx, pos_idx
+
+    try:
+        env_idx, pos_idx = _compute_on(device)
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    except RuntimeError:
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        env_idx, pos_idx = _compute_on(torch.device("cpu"))
 
     frame_behavior = FrameBehavior(
         position=dist_centers[pos_idx],
@@ -136,7 +150,27 @@ class ExpMaxConfig:
     huber_eps: float = 1e-8
 
 
-def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -> dict:
+def process_session(
+    session: B2Session,
+    config: ExpMaxConfig = ExpMaxConfig(),
+) -> tuple[dict[str, np.ndarray], dict[str, list[FrameBehavior | Placefield]]]:
+    """
+    Process a session using the EM procedure to estimate the mouse's internal representation of the environment and internal placefields.
+
+
+    Parameters
+    ----------
+    session : B2Session
+    config : ExpMaxConfig
+        The configuration for the EM procedure.
+
+    Returns
+    -------
+    results : dict[str, np.ndarray]
+        A dictionary containing the results of the EM procedure, including performance metrics.
+    models : dict[str, list[FrameBehavior | Placefield]]
+        A dictionary containing the estimated models (frame behaviors and placefields) at each step of the EM procedure.
+    """
     # Select reliable cells
     spkmap = SpkmapProcessor(session)
     reliability = spkmap.get_reliability(use_session_filters=False)
@@ -216,11 +250,11 @@ def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -
     em_test_mse = mse(_test_pred, spks_te, dim=0, reduce="mean")
     em_null_mse = mse(_null_pred, spks_te, dim=0, reduce="mean")
 
-    print(f"EM test R2: {em_test_r2:.2f}, EM test RMS: {em_test_rms:.2f}, EM test MSE: {em_test_mse:.2f}")
-    print(f"EM null R2: {em_null_r2:.2f}, EM null RMS: {em_null_rms:.2f}, EM null MSE: {em_null_mse:.2f}")
+    print(f"EM test R2: {100*em_test_r2:.2f}, EM test RMS: {1e3*em_test_rms:.2f}, EM test MSE: {1e3*em_test_mse:.2f}")
+    print(f"EM null R2: {100*em_null_r2:.2f}, EM null RMS: {1e3*em_null_rms:.2f}, EM null MSE: {1e3*em_null_mse:.2f}")
 
-    for step in tqdm(range(num_steps)):
-        print(f"{step} MSE: {step_mse[step]:.2f}, R2: {step_r2[step]:.2f}, RMS: {step_rms[step]:.2f}")
+    for step in range(num_steps):
+        print(f"{step} MSE: {1e3*step_mse[step]:.2f}, R2: {100*step_r2[step]:.1f}, RMS: {1e3*step_rms[step]:.1f}")
 
     results = dict(
         em_test_r2=em_test_r2,
@@ -233,4 +267,9 @@ def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -
         step_r2=step_r2,
         step_rms=step_rms,
     )
-    return results
+    extras = dict(
+        frame_behavior_est=fb_e,
+        placefield_est=pf_m,
+        idx_keep_rois=idx_keep_rois,
+    )
+    return results, extras
