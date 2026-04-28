@@ -11,10 +11,19 @@ from vrAnalysis.sessions import B2Session
 from ..registry import PopulationRegistry
 from vrAnalysis.processors import SpkmapProcessor
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, get_frame_behavior, convert_position_to_bins
-from vrAnalysis.processors.em import _estep, _huber_irls_weights_from_pred, _mstep
+from vrAnalysis.processors.support import smooth
+from vrAnalysis.processors.em import _estep, _mstep, _compute_ce_score
 from vrAnalysis.helpers import cross_validate_trials, uniq_val_filter
 from dimilibi.metrics import mse, measure_r2, measure_rms
 from ..pipeline.base import AnalysisConfigBase
+
+
+def _true_position_bins(frame_behavior, placefield) -> np.ndarray:
+    num_bins = len(placefield.dist_edges) - 1
+    env_to_idx = {env: i for i, env in enumerate(placefield.environment)}
+    true_env_idx = np.array([env_to_idx[e] for e in frame_behavior.environment])
+    true_pos_idx = convert_position_to_bins(frame_behavior.position, placefield.dist_edges, check_invalid=False)
+    return true_env_idx * num_bins + true_pos_idx
 
 
 @dataclass(frozen=True)
@@ -38,13 +47,9 @@ class ExpMaxConfig(AnalysisConfigBase):
         Number of EM steps to run.
     reliability_cutoff : float
         Minimum reliability for including cells in the analysis.
-    use_huber_irls : bool
-        Whether to use Huber IRLS weighting during the M-step. If True, this can
-        improve robustness to outliers but will increase runtime.
-    huber_k : float
-        The k parameter for Huber IRLS weighting. Higher values are less robust to outliers.
-    huber_eps : float
-        The epsilon parameter for Huber IRLS weighting. Higher values will prevent very small weights.
+    objective : str
+        E-step objective for position assignment. "mse" uses expanded ||x-y||^2; "angle" uses
+        negative cosine similarity (minimum angle between spike vector and placefield vector).
     uniq_val_window : int
         Window size for counting unique values in assigned position bins. This is used to measure the diversity
         of assigned positions across EM steps. Larger values will count more bins as the same "unique value".
@@ -62,9 +67,7 @@ class ExpMaxConfig(AnalysisConfigBase):
     smooth_width: float | None = 0.25
     num_steps: int = 10
     reliability_cutoff: float = 0.1
-    use_huber_irls: bool = False
-    huber_k: float = 2.5
-    huber_eps: float = 1e-6
+    objective: str = "mse"
     uniq_val_window: int = 501
     uniq_val_interp_points: int = 201
 
@@ -84,9 +87,7 @@ class ExpMaxConfig(AnalysisConfigBase):
             f"smooth_width={self.smooth_width}",
             f"num_steps={self.num_steps}",
             f"reliability_cutoff={self.reliability_cutoff}",
-            f"use_huber_irls={self.use_huber_irls}",
-            f"huber_k={self.huber_k}",
-            f"huber_eps={self.huber_eps}",
+            f"objective={self.objective}",
             f"uniq_val_window={self.uniq_val_window}",
             f"uniq_val_interp_points={self.uniq_val_interp_points}",
             self.schema_version,
@@ -95,20 +96,12 @@ class ExpMaxConfig(AnalysisConfigBase):
 
     def process(self, session: B2Session, registry: PopulationRegistry, return_models: bool = False, verbose: bool = False) -> dict:
         """Run Expectation Maximization analysis on a session."""
-        import sys
-
-        def _log(msg):
-            tqdm.write(f"  [{session.session_uid}] {msg}")
-            sys.stdout.flush()
-
         # Select reliable cells
-        _log("reliability")
         spkmap = SpkmapProcessor(session)
         reliability = spkmap.get_reliability(use_session_filters=False)
         idx_reliable = np.any(reliability.values > self.reliability_cutoff, axis=0)
         idx_keep_rois = session.idx_rois & idx_reliable
 
-        _log("load data")
         frame_behavior = get_frame_behavior(session)
         spks = session.spks[:, idx_keep_rois]
 
@@ -135,7 +128,6 @@ class ExpMaxConfig(AnalysisConfigBase):
         frame_behavior_te = frame_behavior.filter(idx_test)
 
         # Make training and testing placefields
-        _log(f"initial placefields (spks_tr={spks_tr.shape})")
         dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
         placefield_kwargs = dict(
             dist_edges=dist_edges,
@@ -145,19 +137,14 @@ class ExpMaxConfig(AnalysisConfigBase):
             session=session,
         )
         placefield_tr = get_placefield(spks_tr, frame_behavior_tr, average=True, **placefield_kwargs)
-        placefield_te = get_placefield(spks_te, frame_behavior_te, average=False, **placefield_kwargs)
+        placefield_te = get_placefield(spks_te, frame_behavior_te, average=True, **placefield_kwargs)
 
         num_steps = self.num_steps
         fb_e = [frame_behavior_tr]
         pf_m = [placefield_tr]
         for i in tqdm(range(num_steps - 1), desc="EM steps", disable=not verbose):
-            _log(f"EM step {i}")
-            fb_next = _estep(spks_tr, pf_m[-1], fb_e[-1])
-            weights = None
-            if self.use_huber_irls:
-                pred_curr = get_placefield_prediction(pf_m[-1], fb_next)[0]
-                weights = _huber_irls_weights_from_pred(spks_tr, pred_curr, k=self.huber_k, eps=self.huber_eps)
-            pf_next = _mstep(spks_tr, fb_next, dist_edges, self.smooth_width, weights=weights)
+            fb_next = _estep(spks_tr, pf_m[-1], fb_e[-1], objective=self.objective)
+            pf_next = _mstep(spks_tr, fb_next, dist_edges, self.smooth_width)
             fb_e.append(fb_next)
             pf_m.append(pf_next)
 
@@ -166,7 +153,6 @@ class ExpMaxConfig(AnalysisConfigBase):
         step_r2 = []
         step_rms = []
         for step in tqdm(range(num_steps), desc="Performance steps", disable=not verbose):
-            _log(f"perf step {step}")
             _step_pred = get_placefield_prediction(pf_m[step], fb_e[step])[0]
             step_mse.append(mse(_step_pred, spks_tr, dim=0, reduce="mean"))
             step_r2.append(measure_r2(_step_pred, spks_tr, dim=0, reduce="mean"))
@@ -175,7 +161,6 @@ class ExpMaxConfig(AnalysisConfigBase):
         best_step = np.argmin(step_mse)
 
         # Compare EM model to null model (empirical placefield) on testing timepoints
-        _log("test evaluation")
         _test_pred = get_placefield_prediction(pf_m[best_step], frame_behavior_te)[0]
         _null_pred = get_placefield_prediction(placefield_te, frame_behavior_te)[0]
         em_test_r2 = measure_r2(_test_pred, spks_te, dim=0, reduce="mean")
@@ -185,15 +170,25 @@ class ExpMaxConfig(AnalysisConfigBase):
         em_test_mse = mse(_test_pred, spks_te, dim=0, reduce="mean")
         em_null_mse = mse(_null_pred, spks_te, dim=0, reduce="mean")
 
+        # Cross-entropy: empirical placefield decoded on test data using objective
+        true_bins_te = _true_position_bins(frame_behavior_te, placefield_tr)
+        pred_bins_te, ce_score = _compute_ce_score(spks_te, placefield_tr, true_bins_te, self.objective)
+
         # Measure diversity of assigned positions
-        _log("diversity steps")
         step_uniq_val_count = []
+        step_pos_est_delta = []
+        step_pos_envswap_fraction = []
         uniq_val_centers = None
+        pos_by_env0 = fb_e[0].position_by_environment()
+        pbe_bins0 = convert_position_to_bins(pos_by_env0, pf_m[0].dist_edges, check_invalid=False) * 1.0
+        pbe_bins0[np.isnan(pos_by_env0)] = np.nan
+        offset = np.arange(pbe_bins0.shape[0])[:, None] * (np.nanmax(pbe_bins0) + 1)
+        pbe_bins0 = pbe_bins0 + offset
+
         for step in tqdm(range(num_steps), desc="Diversity steps", disable=not verbose):
             _step_pos_by_env = fb_e[step].position_by_environment()
             pbe_bins = convert_position_to_bins(_step_pos_by_env, pf_m[step].dist_edges, check_invalid=False) * 1.0
             pbe_bins[np.isnan(_step_pos_by_env)] = np.nan
-            offset = np.arange(pbe_bins.shape[0])[:, None] * (np.nanmax(pbe_bins) + 1)
             pbe_bins = pbe_bins + offset
             pbe_bins_1d = np.nansum(pbe_bins, axis=0)
             _uniq_val, _uniq_centers = uniq_val_filter(pbe_bins_1d, width=self.uniq_val_window)
@@ -203,10 +198,24 @@ class ExpMaxConfig(AnalysisConfigBase):
                 if not np.array_equal(uniq_val_centers, _uniq_centers):
                     raise ValueError("Unique value centers should be the same across steps")
 
+            pbe_difference = pbe_bins - pbe_bins0
+            _idx_nan_diff = np.all(np.isnan(pbe_difference), axis=0)
+            pbe_difference = np.abs(np.nansum(pbe_difference, axis=0))
+            pbe_difference[_idx_nan_diff] = np.nan
+
+            # filter pbe_difference
+            pbe_difference_smooth = smooth(pbe_difference, range(len(pbe_difference)), width=self.uniq_val_window)
+            idx_nan_filtered = smooth(_idx_nan_diff * 1.0, range(len(pbe_difference)), width=self.uniq_val_window)
+
             steps_norm = np.linspace(0, 1, len(_uniq_centers))
+            steps_full = np.linspace(0, 1, len(pbe_difference_smooth))
             xi = np.linspace(0, 1, self.uniq_val_interp_points)
             uniq_val_interp = np.interp(xi, steps_norm, _uniq_val)
+            pbe_difference_smooth_interp = np.interp(xi, steps_full, pbe_difference_smooth)
+            idx_nan_filtered_interp = np.interp(xi, steps_full, idx_nan_filtered)
             step_uniq_val_count.append(uniq_val_interp)
+            step_pos_est_delta.append(pbe_difference_smooth_interp)
+            step_pos_envswap_fraction.append(idx_nan_filtered_interp)
 
         results = dict(
             em_test_r2=em_test_r2,
@@ -219,6 +228,11 @@ class ExpMaxConfig(AnalysisConfigBase):
             step_r2=np.array(step_r2),
             step_rms=np.array(step_rms),
             step_uniq_val_count=np.stack(step_uniq_val_count),
+            step_pos_est_delta=np.stack(step_pos_est_delta),
+            step_pos_envswap_fraction=np.stack(step_pos_envswap_fraction),
+            true_position_bins_te=true_bins_te,
+            pred_position_bins_te=pred_bins_te,
+            ce_score=ce_score,
         )
 
         if return_models:

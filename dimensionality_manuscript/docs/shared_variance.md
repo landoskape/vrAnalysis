@@ -180,3 +180,7 @@ But we don't need to look at SigA ^ {1/2}, we can look at the gram matrix of the
 In this setting, we can use G0 and G1 as independent splits to make it cross-validated. It has the right expectation, but is unbiased! The denominator can be the same. We lose the fraction of variance, but of course we do get an expected value for fraction of variance :)
 
 I want to simulate this with a better simulator for stimulus within full variance. 
+
+$$\kappa_i(\Sigma_{\text{stim}}^{\text{train}}, \Sigma_{\text{full}}^{\text{test}}) = \sqrt{\lambda_i(\Sigma_{\text{stim}}^{1/2} \Sigma_{\text{full}} \Sigma_{\text{stim}}^{1/2})}$$
+
+$$\kappa_i(\Sigma_{\text{full}}^{\text{train}}, \Sigma_{\text{full}}^{\text{test}}) = \sqrt{\lambda_i(\Sigma_{\text{full}}^{1/2} \Sigma_{\text{full}} \Sigma_{\text{full}}^{1/2})}$$

@@ -5,6 +5,7 @@ from .regression import RegressionConfig
 from .subspace import SubspaceConfig
 from .svca import SVCAConfig
 from .expmax import ExpMaxConfig
+from .locprediction import LocPredConfig
 
 __all__ = [
     "CVPCAConfig",
@@ -14,6 +15,7 @@ __all__ = [
     "SubspaceConfig",
     "SVCAConfig",
     "ExpMaxConfig",
+    "LocPredConfig",
     "get_data_config",
     "list_data_configs",
 ]

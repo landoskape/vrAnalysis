@@ -16,8 +16,6 @@ from vrAnalysis.processors import SpkmapProcessor
 from vrAnalysis.sessions import B2Session
 from dimilibi import measure_r2, measure_rms, mse
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 def _huber_irls_weights_from_pred(
     spks: np.ndarray,
@@ -38,7 +36,29 @@ def _huber_irls_weights_from_pred(
     return np.clip(weights, 0.0, 1.0)
 
 
-def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavior) -> FrameBehavior:
+def _mse_scores(spks_t: torch.Tensor, pf_t: torch.Tensor) -> torch.Tensor:
+    """MSE scores via expanded ||x-y||^2 = ||x||^2 + ||y||^2 - 2<x,y>. Lower = better."""
+    spks_sq = (spks_t**2).sum(dim=1)[:, None, None]
+    pf_sq = (pf_t**2).sum(dim=0)[None, ...]
+    cross_term = torch.einsum("ij,jkl->ikl", spks_t, pf_t)
+    return spks_sq + pf_sq - 2 * cross_term
+
+
+def _angle_scores(spks_t: torch.Tensor, pf_t: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Negative cosine similarity scores. Lower = better (= smaller angle)."""
+    cross = torch.einsum("ij,jkl->ikl", spks_t, pf_t)
+    spks_norm = torch.sqrt((spks_t**2).sum(dim=1))[:, None, None]
+    pf_norm = torch.sqrt((pf_t**2).sum(dim=0))[None, ...]
+    return -(cross / (spks_norm * pf_norm + eps))
+
+
+_OBJECTIVE_SCORES: dict[str, callable] = {
+    "mse": _mse_scores,
+    "angle": _angle_scores,
+}
+
+
+def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavior, objective: str = "mse") -> FrameBehavior:
     """E-Step: Use placefields to predict latent variables (mouse's internal estimate)
 
     Parameters
@@ -49,6 +69,8 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
         The placefield object used for predicting latent variables.
     frame_behavior : FrameBehavior
         The frame behavior object with the true latent variables.
+    objective : str
+        Objective for finding the best position. One of "mse" or "angle".
 
     Returns
     -------
@@ -57,33 +79,22 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
     """
     if placefield.trials is not None:
         raise ValueError("Provided placefield object is not averaged over trials. Use average=True when getting placefield.")
+    if objective not in _OBJECTIVE_SCORES:
+        raise ValueError(f"Unknown objective '{objective}'. Must be one of {list(_OBJECTIVE_SCORES)}")
 
     num_frames = len(spks)
     num_positions = placefield.shape[1]
     dist_centers = edge2center(placefield.dist_edges)
+    score_fn = _OBJECTIVE_SCORES[objective]
 
-    def _compute_on(dev):
-        spks_t = torch.from_numpy(spks).to(dev)
-        pf_t = torch.from_numpy(placefield.placefield).to(dev).permute(2, 0, 1)
-        # ||x - y||^2 = ||x||^2 + ||y||^2 - 2<x,y>
-        spks_sq = (spks_t**2).sum(dim=1)[:, None, None]
-        pf_sq = (pf_t**2).sum(dim=0)[None, ...]
-        cross_term = torch.einsum("ij,jkl->ikl", spks_t, pf_t)
-        error = spks_sq + pf_sq - 2 * cross_term
-        min_idx = torch.argmin(error.reshape(num_frames, -1), dim=1)
-        env_idx = (min_idx // num_positions).cpu().numpy()
-        pos_idx = (min_idx % num_positions).cpu().numpy()
-        del spks_t, pf_t, spks_sq, pf_sq, cross_term, error, min_idx
-        return env_idx, pos_idx
-
-    try:
-        env_idx, pos_idx = _compute_on(device)
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-    except RuntimeError:
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        env_idx, pos_idx = _compute_on(torch.device("cpu"))
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    spks_t = torch.from_numpy(spks).to(dev)
+    pf_t = torch.from_numpy(placefield.placefield).to(dev).permute(2, 0, 1)
+    scores = score_fn(spks_t, pf_t)
+    min_idx = torch.argmin(scores.reshape(num_frames, -1), dim=1)
+    env_idx = (min_idx // num_positions).cpu().numpy()
+    pos_idx = (min_idx % num_positions).cpu().numpy()
+    del spks_t, pf_t, scores, min_idx
 
     frame_behavior = FrameBehavior(
         position=dist_centers[pos_idx],
@@ -92,6 +103,62 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
         trial=frame_behavior.trial,
     )
     return frame_behavior
+
+
+def _compute_ce_score(
+    spks: np.ndarray,
+    placefield: Placefield,
+    true_bin_idx: np.ndarray,
+    objective: str = "mse",
+) -> tuple[np.ndarray, float]:
+    """Compute cross-entropy between predicted position distribution and true position bins.
+
+    Scores are converted to log-probabilities via log_softmax(-scores) over all (env, position)
+    bins. CE = -mean(log_prob[true_bin]) over frames.
+
+    Parameters
+    ----------
+    spks : np.ndarray
+        Spike counts. (Frames x ROIs)
+    placefield : Placefield
+        Averaged placefield used to score positions.
+    true_bin_idx : np.ndarray
+        Flat bin index per frame: env_idx * num_positions + pos_idx. Shape (Frames,).
+    objective : str
+        One of "mse" or "angle".
+
+    Returns
+    -------
+    pred_bin_idx : np.ndarray
+        Predicted flat bin index (argmin of scores) per frame. Shape (Frames,).
+    ce_score : float
+        Mean cross-entropy over frames.
+    """
+    if placefield.trials is not None:
+        raise ValueError("Placefield must be averaged over trials.")
+    if objective not in _OBJECTIVE_SCORES:
+        raise ValueError(f"Unknown objective '{objective}'. Must be one of {list(_OBJECTIVE_SCORES)}")
+
+    num_frames = len(spks)
+    num_positions = placefield.shape[1]
+    score_fn = _OBJECTIVE_SCORES[objective]
+
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    spks_t = torch.from_numpy(spks).to(dev)
+    pf_t = torch.from_numpy(placefield.placefield).to(dev).permute(2, 0, 1)
+    scores_flat = score_fn(spks_t, pf_t).reshape(num_frames, -1)
+    log_probs = torch.nn.functional.log_softmax(-scores_flat.float(), dim=1)
+    min_idx = torch.argmin(scores_flat, dim=1)
+    tb = torch.from_numpy(true_bin_idx).long().to(dev)
+    ce = -log_probs[torch.arange(num_frames, device=dev), tb].mean().item()
+    env_idx = (min_idx // num_positions).cpu().numpy()
+    pos_idx = (min_idx % num_positions).cpu().numpy()
+
+    # Clean up torch variables to free GPU memory (safe move)
+    del spks_t, pf_t, scores_flat, log_probs, min_idx, tb
+
+    pred_bin_idx = env_idx * num_positions + pos_idx
+    return pred_bin_idx, ce
 
 
 def _mstep(

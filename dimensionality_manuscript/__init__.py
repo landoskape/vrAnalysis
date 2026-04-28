@@ -6,6 +6,7 @@ from .configs import (
     SubspaceConfig,
     SVCAConfig,
     ExpMaxConfig,
+    LocPredConfig,
     get_data_config,
     list_data_configs,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "SubspaceConfig",
     "SVCAConfig",
     "ExpMaxConfig",
+    "LocPredConfig",
     "get_data_config",
     "list_data_configs",
     "AnalysisPlan",
