@@ -1,7 +1,6 @@
 from typing import Optional
 import numpy as np
 import torch
-from tqdm import tqdm
 from .pca import PCA
 from .helpers import vector_correlation, gaussian_filter, VectorizedGoldenSectionSearch
 from .metrics import mse
@@ -217,41 +216,10 @@ class RegularizedCVPCA:
         # Initialize golden section search
         gss = VectorizedGoldenSectionSearch(a, b, tolerance=tolerance, max_iterations=max_iterations)
 
-        # Evaluate initial points c and d
-        c, d = gss.c, gss.d
+        def objective(widths: torch.Tensor, active_mask: torch.Tensor) -> torch.Tensor:
+            return self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, widths, active_mask)
 
-        # Evaluate function at initial points (all neurons are active initially)
-        active_mask = torch.ones(num_neurons, dtype=torch.bool, device=data_repeat1.device)
-        fc = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, c, active_mask)
-        fd = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, d, active_mask)
-
-        # Main optimization loop with progress bar
-        pbar = tqdm(total=max_iterations, desc="Optimizing smoothing widths", disable=not self.verbose, leave=False)
-        try:
-            while not gss.is_converged() and gss.iteration < max_iterations:
-                # Update search intervals
-                c, d = gss.update(fc, fd)
-
-                # Evaluate at new points (only for active optimizations)
-                active_mask = gss.get_active_mask()
-                if torch.any(active_mask):
-                    fc_active = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, c, active_mask)
-                    fd_active = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, d, active_mask)
-                    # Only update active elements
-                    fc = torch.where(active_mask, fc_active, fc)
-                    fd = torch.where(active_mask, fd_active, fd)
-
-                # Update progress bar
-                pbar.update(1)
-                pbar.set_postfix({"active_neurons": active_mask.sum().item()})
-        finally:
-            # Jump to end if converged early
-            if gss.is_converged():
-                pbar.n = max_iterations
-            pbar.close()
-
-        # Get optimal smoothing widths
-        self.smoothing_widths = gss.get_best_points()
+        self.smoothing_widths = gss.run(objective, verbose=self.verbose)
         self.smoothing_fitted = True
 
         if self.verbose:
