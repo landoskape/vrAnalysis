@@ -337,26 +337,26 @@ class StimFullConfig:
     num_stimuli: int
     stim_dim: int  # dimension of stimulus representation; must be <= num_stimuli
     alpha_stim: float  # power-law exponent for stimulus spectrum
-    h_dim: int  # dimension of stimulus-independent h subspace
-    alpha_h: float  # power-law exponent for h spectrum
+    nuisance_dim: int  # dimension of stimulus-independent nuisance subspace
+    alpha_nuisance: float  # power-law exponent for nuisance spectrum
 
+    nuisance_scale: float = 1.0  # multiplicative scale for nuisance component
+    orthogonal_gh: bool = True  # if True, nuisance subspace is orthogonal to stim subspace
     noise_scale: float = 1.0  # scale for per-neuron eps variance: sigma_n^2 ~ Exp(noise_scale)
-    h_scale: float = 1.0  # multiplicative scale for h component
-    orthogonal_gh: bool = True  # if True, h subspace is orthogonal to stim subspace
 
     rng: Optional[np.random.Generator] = None
 
 
 class StimFullGenerator:
     """
-    Generator for x_t = g(s_t) + h_t + eps_t following the shared-variance model.
+    Generator for x_t = g(s_t) + h(n_t) + eps_t following the shared-variance model.
 
     g(s): stimulus-driven component. Each of num_stimuli stimuli has a fixed response
     g(s) = stim_space @ z_s, where stim_space is (num_neurons, stim_dim) orthonormal
     and z_s ~ N(0, diag(stim_spectrum)) are fixed per-stimulus latent codes.
 
-    h_t: stimulus-independent component with power-law covariance, generated as
-    h_t = h_scale * h_space @ diag(sqrt(h_spectrum)) @ noise_t. h_space is optionally
+    h(n): nuisance component with power-law covariance, generated as
+    h(n) = nuisance_scale * nuisance_space @ diag(sqrt(nuisance_spectrum)) @ noise_n. nuisance_space is optionally
     orthogonal to stim_space.
 
     eps_t: per-neuron private noise where neuron n has variance sigma_n^2 ~ Exp(noise_scale).
@@ -370,30 +370,31 @@ class StimFullGenerator:
         N = config.num_neurons
         S = config.num_stimuli
         D = config.stim_dim
-        H = config.h_dim
+        H = config.nuisance_dim
 
         if D > S:
             raise ValueError(f"stim_dim {D} > num_stimuli {S}")
         if D > N:
             raise ValueError(f"stim_dim {D} > num_neurons {N}")
         if H > N:
-            raise ValueError(f"h_dim {H} > num_neurons {N}")
+            raise ValueError(f"nuisance_dim {H} > num_neurons {N}")
         if config.orthogonal_gh and D + H > N:
-            raise ValueError(f"stim_dim + h_dim ({D} + {H}) > num_neurons {N} (required for orthogonal_gh=True)")
+            raise ValueError(f"stim_dim + nuisance_dim ({D} + {H}) > num_neurons {N} (required for orthogonal_gh=True)")
 
-        # Stimulus subspace: (N, D) orthonormal
+        # Stimulus subspace: (N, D) orthonormal, optionally lower dimensional than number of stimuli. Fixed code per stimulus.
         self.stim_space = generate_orthonormal(N, D, rng=rng).astype(self.dtype)
         self.stim_spectrum = np.arange(1, D + 1, dtype=self.dtype) ** (-config.alpha_stim)
+        # Tight frame (D, S): rows orthonormal, scaled by sqrt(S) so L @ L.T = S * I_D.
+        # Guarantees stim_responses @ stim_responses.T / S = stim_space @ diag(stim_spectrum) @ stim_space.T exactly.
+        if D == S:
+            self.stim_latents = np.eye(D, dtype=self.dtype)
+        else:
+            self.stim_latents = np.sqrt(S) * generate_orthonormal(S, D, rng=rng).T.astype(self.dtype)
 
-        # Fixed per-stimulus latents z_s ~ N(0, diag(stim_spectrum)), shape (D, S)
-        self._stim_latents = (np.diag(np.sqrt(self.stim_spectrum)) @ rng.standard_normal((D, S))).astype(self.dtype)
-        # Neural responses per stimulus: g(s) = stim_space @ z_s, shape (N, S)
-        self.stim_responses = self.stim_space @ self._stim_latents
-
-        # h subspace: (N, H) orthonormal, optionally orthogonal to stim_space
-        kernel = self.stim_space if config.orthogonal_gh else None
-        self.h_space = generate_orthonormal(N, H, kernel=kernel, rng=rng).astype(self.dtype)
-        self.h_spectrum = np.arange(1, H + 1, dtype=self.dtype) ** (-config.alpha_h)
+        # nuisance subspace: (N, H) orthonormal, optionally orthogonal to stim_space
+        null_kernel = self.stim_space if config.orthogonal_gh else None
+        self.nuisance_space = generate_orthonormal(N, H, kernel=null_kernel, rng=rng).astype(self.dtype)
+        self.nuisance_spectrum = np.arange(1, H + 1, dtype=self.dtype) ** (-config.alpha_nuisance)
 
         # Per-neuron eps standard deviations: sigma_n = sqrt(Exp(noise_scale))
         self.eps_scales = np.sqrt(rng.exponential(config.noise_scale, N)).astype(self.dtype)
@@ -406,13 +407,16 @@ class StimFullGenerator:
         -------
         sigma_stim : ndarray, shape (num_neurons, num_neurons)
             stim_space @ diag(stim_spectrum) @ stim_space.T
-        sigma_full : ndarray, shape (num_neurons, num_neurons)
-            sigma_stim + sigma_h + diag(eps_scales^2)
+        sigma_nuisance : ndarray, shape (num_neurons, num_neurons)
+            nuisance_space @ diag(nuisance_spectrum) @ nuisance_space.T
+        sigma_eps : ndarray, shape (num_neurons, num_neurons)
+            diag(eps_scales^2)
         """
-        sigma_stim = self.stim_space @ np.diag(self.stim_spectrum) @ self.stim_space.T
-        sigma_h = (self.config.h_scale**2) * self.h_space @ np.diag(self.h_spectrum) @ self.h_space.T
+        stim_responses = self.stim_space @ np.diag(np.sqrt(self.stim_spectrum)) @ self.stim_latents  # (N, S)
+        sigma_stim = np.cov(stim_responses, rowvar=True)
+        sigma_nuisance = (self.config.nuisance_scale**2) * self.nuisance_space @ np.diag(self.nuisance_spectrum) @ self.nuisance_space.T
         sigma_eps = np.diag(self.eps_scales**2)
-        return sigma_stim, sigma_stim + sigma_h + sigma_eps
+        return sigma_stim, sigma_nuisance, sigma_eps
 
     def generate(
         self,
@@ -432,8 +436,8 @@ class StimFullGenerator:
         noise_variance : float, optional
             Variance of additional iid Gaussian noise added to full data. Default 0.0.
         rotation_angle : float, optional
-            Angle to rotate stim and h subspaces. Simulates session-to-session
-            representation drift. Requires num_neurons >= 2 * max(stim_dim, h_dim).
+            Angle to rotate stim and nuisance subspaces. Simulates session-to-session
+            representation drift. Requires num_neurons >= 2 * max(stim_dim, nuisance_dim).
             Default 0.0.
         rng : np.random.Generator, optional
             Random number generator. Uses config rng if None.
@@ -448,36 +452,38 @@ class StimFullGenerator:
             Stimulus-only component: g(s_t).
         extras : dict, optional
             When return_extras=True. Keys: stim_indices, stim_responses, stim_space,
-            h_space, stim_spectrum, h_spectrum, eps_scales, h_component, eps_component.
+            nuisance_space, stim_spectrum, nuisance_spectrum, eps_scales, nuisance_component, eps_component.
         """
         rng = rng if rng is not None else self.config.rng
         rng = np.random.default_rng() if rng is None else rng
 
         N = self.config.num_neurons
         S = self.config.num_stimuli
-        H = self.config.h_dim
+        H = self.config.nuisance_dim
 
         stim_space = self.stim_space.copy()
-        h_space = self.h_space.copy()
+        nuisance_space = self.nuisance_space.copy()
         if rotation_angle != 0.0:
             stim_space = rotate_subspace_by_angle(stim_space, rotation_angle, rng)
-            h_space = rotate_subspace_by_angle(h_space, rotation_angle, rng)
+            nuisance_space = rotate_subspace_by_angle(nuisance_space, rotation_angle, rng)
 
         # Reconstruct stimulus responses in (possibly rotated) stim_space
-        stim_responses = stim_space @ self._stim_latents  # (N, S)
+        stim_responses = stim_space @ np.diag(np.sqrt(self.stim_spectrum)) @ self.stim_latents  # (N, S)
 
         # Sample random stimulus indices
         stim_indices = rng.integers(0, S, size=num_samples)
         stim_data = stim_responses[:, stim_indices]  # (N, T)
 
-        # h component: h_scale * h_space @ diag(sqrt(h_spectrum)) @ z
-        h_loadings = self.config.h_scale * np.diag(np.sqrt(self.h_spectrum)) @ rng.standard_normal((H, num_samples)).astype(self.dtype)
-        h_component = h_space @ h_loadings  # (N, T)
+        # nuisance component: nuisance_scale * nuisance_space @ diag(sqrt(nuisance_spectrum)) @ z
+        nuisance_loadings = (
+            self.config.nuisance_scale * np.diag(np.sqrt(self.nuisance_spectrum)) @ rng.standard_normal((H, num_samples)).astype(self.dtype)
+        )
+        nuisance_component = nuisance_space @ nuisance_loadings  # (N, T)
 
         # eps component: per-neuron private noise
         eps_component = self.eps_scales[:, None] * rng.standard_normal((N, num_samples)).astype(self.dtype)
 
-        data = stim_data + h_component + eps_component
+        data = stim_data + nuisance_component + eps_component
         if noise_variance > 0.0:
             data = data + np.sqrt(noise_variance) * rng.standard_normal((N, num_samples)).astype(self.dtype)
 
@@ -486,11 +492,11 @@ class StimFullGenerator:
                 "stim_indices": stim_indices,
                 "stim_responses": stim_responses,
                 "stim_space": stim_space,
-                "h_space": h_space,
+                "nuisance_space": nuisance_space,
                 "stim_spectrum": self.stim_spectrum.copy(),
-                "h_spectrum": self.h_spectrum.copy(),
+                "nuisance_spectrum": self.nuisance_spectrum.copy(),
                 "eps_scales": self.eps_scales.copy(),
-                "h_component": h_component,
+                "nuisance_component": nuisance_component,
                 "eps_component": eps_component,
             }
             return data, stim_data, extras
