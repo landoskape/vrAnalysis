@@ -47,8 +47,6 @@ class RegressionConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(MODEL_NAMES),
-            "spks_type": ["oasis"],
-            "method": ["best"],
         }
 
     def validate(self):

@@ -55,8 +55,6 @@ class SVCAConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "subspace_name": list(_SVCA_SUBSPACE_NAMES),
-            "spks_type": ["oasis"],
-            "num_bins": [100],
             "smooth_width": [5.0, None],
         }
 

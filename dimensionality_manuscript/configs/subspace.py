@@ -58,8 +58,6 @@ class SubspaceConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "subspace_name": ["pca_subspace", "covcov_subspace", "covcov_crossvalidated_subspace"],
-            "spks_type": ["oasis"],
-            "num_bins": [100],
             "smooth_width": [5.0, None],
         }
 
