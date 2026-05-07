@@ -178,6 +178,8 @@ class FrameBehavior:
     speed: np.ndarray
     environment: np.ndarray
     trial: np.ndarray
+    reward_delivery: np.ndarray
+    reward_omitted: np.ndarray
     idx: Optional[np.ndarray] = None
 
     def __post_init__(self):
@@ -205,6 +207,8 @@ class FrameBehavior:
             speed=self.speed[idx],
             environment=self.environment[idx],
             trial=self.trial[idx],
+            reward_delivery=self.reward_delivery[idx],
+            reward_omitted=self.reward_omitted[idx],
             idx=self.idx[idx],
         )
 
@@ -234,9 +238,117 @@ class FrameBehavior:
             "speed": self.speed[idx],
             "environment": self.environment[idx],
             "trial": self.trial[idx],
+            "reward_delivery": self.reward_delivery[idx],
+            "reward_omitted": self.reward_omitted[idx],
             "idx": self.idx[idx],
         }
         return pd.DataFrame(data)
+
+
+@dataclass
+class FrameBehaviorEstimate:
+    """Distributional frame behavior: each frame carries a posterior over (env, position) bins.
+
+    The posterior has shape (frames, total_bins) where total_bins = num_envs * num_bins,
+    using environment-major flattening: flat_idx = env_idx * num_bins + pos_idx.
+    This matches the convention in locprediction._true_position_bins.
+
+    Parameters
+    ----------
+    posterior : np.ndarray
+        Shape (frames, total_bins). Each row is a distribution over all (env, pos) bins.
+        Rows should sum to ~1 for normalized posteriors, but this is not enforced.
+    dist_edges : np.ndarray
+        Spatial bin edges. Shape (num_bins + 1,). Same for all environments.
+    environments : np.ndarray
+        Sorted unique environment indices. Shape (num_envs,).
+    speed : np.ndarray
+        Per-frame speed. Shape (frames,).
+    trial : np.ndarray
+        Per-frame trial number. Shape (frames,).
+    idx : np.ndarray or None
+        Original frame indices. Auto-initialized to np.arange(frames) if None.
+    """
+
+    posterior: np.ndarray
+    dist_edges: np.ndarray
+    environments: np.ndarray
+    speed: np.ndarray
+    trial: np.ndarray
+    idx: Optional[np.ndarray] = None
+
+    def __post_init__(self):
+        if self.idx is None:
+            self.idx = np.arange(len(self.posterior))
+
+    def __len__(self) -> int:
+        return len(self.posterior)
+
+    @property
+    def num_bins(self) -> int:
+        return len(self.dist_edges) - 1
+
+    @property
+    def num_envs(self) -> int:
+        return len(self.environments)
+
+    @property
+    def total_bins(self) -> int:
+        return self.num_envs * self.num_bins
+
+    @property
+    def bin_centers(self) -> np.ndarray:
+        return (self.dist_edges[:-1] + self.dist_edges[1:]) / 2.0
+
+    def env_posterior(self, env_idx: int) -> np.ndarray:
+        """Posterior slice for environment at index env_idx. Shape (frames, num_bins)."""
+        start = env_idx * self.num_bins
+        return self.posterior[:, start : start + self.num_bins]
+
+    def posterior_by_environment(self) -> np.ndarray:
+        """Posterior reshaped to (frames, num_envs, num_bins)."""
+        return self.posterior.reshape(len(self.posterior), self.num_envs, self.num_bins)
+
+    def argmax_flat(self) -> np.ndarray:
+        """Flat bin index of max posterior per frame. Shape (frames,)."""
+        return np.argmax(self.posterior, axis=1)
+
+    def argmax_env_idx(self) -> np.ndarray:
+        """Environment index (into self.environments) of argmax per frame. Shape (frames,)."""
+        return self.argmax_flat() // self.num_bins
+
+    def argmax_pos_idx(self) -> np.ndarray:
+        """Position bin index of argmax per frame. Shape (frames,)."""
+        return self.argmax_flat() % self.num_bins
+
+    def argmax_environment(self) -> np.ndarray:
+        """Environment value of argmax per frame. Shape (frames,)."""
+        return self.environments[self.argmax_env_idx()]
+
+    def argmax_position(self) -> np.ndarray:
+        """Bin-center position of argmax per frame. Shape (frames,)."""
+        return self.bin_centers[self.argmax_pos_idx()]
+
+    def to_frame_behavior(self) -> "FrameBehavior":
+        """Convert to FrameBehavior using argmax position/environment assignment."""
+        raise NotImplementedError("to_frame_behavior is not implemented because it doesn't handle reward_* yet!!!")
+        return FrameBehavior(
+            position=self.argmax_position(),
+            speed=self.speed,
+            environment=self.argmax_environment(),
+            trial=self.trial,
+            idx=self.idx,
+        )
+
+    def filter(self, idx: np.ndarray) -> "FrameBehaviorEstimate":
+        return FrameBehaviorEstimate(
+            posterior=self.posterior[idx],
+            dist_edges=self.dist_edges,
+            environments=self.environments,
+            speed=self.speed[idx],
+            trial=self.trial[idx],
+            idx=self.idx[idx],
+        )
 
 
 @dataclass
@@ -327,6 +439,21 @@ def get_frame_behavior(session: B2Session, clear_one_cache: bool = True) -> Fram
     frame_trial[idx_get_position] = trial_numbers[idx_frame_to_behave[idx_get_position]]
     frame_trial[count == 0] = np.nan
 
+    # Include reward delivery and reward omission frames
+    reward_position = session.loadone("trials.rewardPosition")
+    reward_tolerance = session.loadone("trials.rewardZoneHalfwidth")
+    # This is the position tracking frame upon delivery, and -1 if no reward delivered
+    # (aligned to position tracking -- not imaging!!!)
+    # more useful than trials.rewardAvailability, because availability doesn't include probabilistic reward omissions!
+    reward_delivered = session.loadone("trials.rewardPositionTracking") >= 0
+
+    # Measure reward start position (tolerance is +/- halfwidth around reward position)
+    reward_start = reward_position - reward_tolerance
+    reward_delivery = np.zeros(len(frame_timestamps), dtype=bool)
+    reward_omitted = np.zeros(len(frame_timestamps), dtype=bool)
+    trial_reward_assigned = np.zeros(len(reward_start), dtype=bool)
+    _assign_reward_frames(reward_start, reward_delivered, reward_delivery, reward_omitted, trial_reward_assigned, frame_trial, frame_position)
+
     # Compute speed only on in trial frames
     idx_valid = np.where(count != 0)[0]
     sub_in_trial = np.diff(frame_trial[idx_valid]) == 0
@@ -344,6 +471,8 @@ def get_frame_behavior(session: B2Session, clear_one_cache: bool = True) -> Fram
         speed=frame_speed,
         environment=frame_environment,
         trial=frame_trial,
+        reward_delivery=reward_delivery,
+        reward_omitted=reward_omitted,
     )
 
 
@@ -393,6 +522,21 @@ def get_session_behavior(session: B2Session, clear_one_cache: bool = True) -> Tu
     sample_duration = sample_duration * within_trial  # Zero out last sample without valid duration
     speed = speed * within_trial  # Zero out speed for last sample of each trial
 
+    # Include reward delivery and reward omission frames
+    reward_position = session.loadone("trials.rewardPosition")
+    reward_tolerance = session.loadone("trials.rewardZoneHalfwidth")
+    # This is the position tracking frame upon delivery, and -1 if no reward delivered
+    # (aligned to position tracking -- not imaging!!!)
+    # more useful than trials.rewardAvailability, because availability doesn't include probabilistic reward omissions!
+    reward_delivered = session.loadone("trials.rewardPositionTracking") >= 0
+
+    # Measure reward start position (tolerance is +/- halfwidth around reward position)
+    reward_start = reward_position - reward_tolerance
+    reward_delivery = np.zeros(len(timestamps), dtype=bool)
+    reward_omitted = np.zeros(len(timestamps), dtype=bool)
+    trial_reward_assigned = np.zeros(len(reward_start), dtype=bool)
+    _assign_reward_frames(reward_start, reward_delivered, reward_delivery, reward_omitted, trial_reward_assigned, trial_numbers_behave, position)
+
     if clear_one_cache:
         session.clear_cache()
 
@@ -402,6 +546,8 @@ def get_session_behavior(session: B2Session, clear_one_cache: bool = True) -> Tu
             speed=speed,
             environment=trial_environment_behave,
             trial=trial_numbers_behave,
+            reward_delivery=reward_delivery,
+            reward_omitted=reward_omitted,
         ),
         sample_duration,
     )
@@ -758,6 +904,80 @@ def get_placefield(
     return Placefield(placefield=placefields, dist_edges=dist_edges, environment=environments, count=counts, trials=trials)
 
 
+def get_placefield_from_distribution(
+    spks: np.ndarray,
+    fb_est: FrameBehaviorEstimate,
+    speed_threshold: Optional[float] = None,
+    smooth_width: Optional[float] = None,
+) -> Placefield:
+    """Compute a place field using a distributional (soft) position estimate.
+
+    Each frame t contributes to bin (env_idx, pos_idx) with weight posterior[t, flat_idx]
+    where flat_idx = env_idx * num_bins + pos_idx. The result is the posterior-weighted
+    average activity per bin, analogous to get_placefield but with soft instead of hard
+    position assignment.
+
+    Parameters
+    ----------
+    spks : np.ndarray
+        Spike counts. Shape (frames, rois).
+    fb_est : FrameBehaviorEstimate
+        Distributional frame behavior. posterior shape must be (frames, num_envs * num_bins).
+    speed_threshold : float or None
+        If provided, frames with speed below threshold contribute zero weight.
+    smooth_width : float or None
+        Gaussian smoothing width in spatial units. Same convention as get_placefield.
+
+    Returns
+    -------
+    Placefield
+        Shape (num_envs, num_bins, rois), same structure as get_placefield with average=True.
+    """
+    if len(spks) != len(fb_est):
+        raise ValueError("spks and fb_est must have the same number of frames")
+    if spks.shape[0] == 0:
+        raise ValueError("spks array cannot be empty")
+    if fb_est.posterior.shape[1] != fb_est.total_bins:
+        raise ValueError(f"posterior.shape[1]={fb_est.posterior.shape[1]} != total_bins={fb_est.total_bins}")
+
+    posterior = fb_est.posterior  # (frames, total_bins)
+
+    if speed_threshold is not None:
+        mask = (fb_est.speed < speed_threshold) | np.isnan(fb_est.speed)
+        if np.any(mask):
+            posterior = posterior.copy()
+            posterior[mask] = 0.0
+
+    # Weighted accumulation via matrix multiply — no explicit loop needed.
+    # posterior.T: (total_bins, frames)  @  spks: (frames, rois)  →  (total_bins, rois)
+    placefields_flat = posterior.T @ spks  # (total_bins, rois)
+    counts_flat = posterior.sum(axis=0)  # (total_bins,)
+
+    # Unflatten: (total_bins, ...) → (num_envs, num_bins, ...)
+    num_envs = fb_est.num_envs
+    num_bins = fb_est.num_bins
+    num_rois = spks.shape[1]
+    placefields = placefields_flat.reshape(num_envs, num_bins, num_rois)
+    counts = counts_flat.reshape(num_envs, num_bins)
+
+    if smooth_width is not None and smooth_width > 0:
+        kernel = get_gauss_kernel(helpers.edge2center(fb_est.dist_edges), smooth_width)
+        _correct_placefield(placefields, counts)
+        valid = (counts > 0).astype(float)
+        placefields = convolve_toeplitz(placefields, kernel, axis=1)
+        counts = convolve_toeplitz(valid, kernel, axis=1)
+
+    _correct_placefield(placefields, counts)
+
+    return Placefield(
+        placefield=placefields,
+        dist_edges=fb_est.dist_edges,
+        environment=fb_est.environments,
+        count=counts,
+        trials=None,
+    )
+
+
 def get_placefield_prediction(placefield: Placefield, frame_behavior: FrameBehavior) -> tuple[np.ndarray, dict]:
     """Predict neural activity from place field maps.
 
@@ -951,6 +1171,35 @@ def _get_placefield_fast_sampling(
         else:
             placefield[row_idx, pos_bin] += spks[spk_idx] * frame_weight
             counts[row_idx, pos_bin] += frame_weight
+
+
+@nb.njit
+def _assign_reward_frames(
+    reward_start: np.ndarray,
+    reward_delivered: np.ndarray,
+    reward_delivery: np.ndarray,
+    reward_omitted: np.ndarray,
+    trial_reward_assigned: np.ndarray,
+    frame_trial: np.ndarray,
+    frame_position: np.ndarray,
+):
+    for iframe in range(len(frame_trial)):
+        # Sometimes current frame_trial is NaN if couldn't assign a trial to that frame
+        if np.isnan(frame_trial[iframe]):
+            continue
+        # Only attempt to assign if not already assigned for this trial
+        c_trial = int(frame_trial[iframe])
+        if not trial_reward_assigned[c_trial]:
+            # Check if the current position is within reward zone (first past reward start)
+            c_position = frame_position[iframe]
+            if c_position >= reward_start[c_trial]:
+                # If in reward zone, then check if reward was delivered or omitted and assign accordingly
+                if reward_delivered[c_trial]:
+                    reward_delivery[iframe] = True
+                else:
+                    reward_omitted[iframe] = True
+                # Mark this trial as assigned to avoid multiple reward frames for the same trial
+                trial_reward_assigned[c_trial] = True
 
 
 def _prepare_row_indices(average: bool, sample_behavior: FrameBehavior, idx_valid_samples: np.ndarray):

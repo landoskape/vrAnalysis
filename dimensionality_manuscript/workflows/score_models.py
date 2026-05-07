@@ -3,7 +3,7 @@ from tqdm import tqdm
 import torch
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import SpksTypes
-from ..registry import ModelName, PopulationRegistry, get_model
+from dimensionality_manuscript.registry import ModelName, PopulationRegistry, get_model
 
 clear_hyperparameters = False  # Clears hyperparameter cache
 clear_scores = False  # Clears score cache
@@ -22,12 +22,28 @@ MODEL_NAMES: list[ModelName] = [
     # "internal_placefield_1d",
     # "external_placefield_1d_gain",
     # "internal_placefield_1d_gain",
-    "external_placefield_1d_vector_gain",
-    "internal_placefield_1d_vector_gain",
+    # "external_placefield_1d_vector_gain",
+    # "internal_placefield_1d_vector_gain",
     # "rbfpos_decoder_only",
     # "rbfpos",
     # "rbfpos_leak",
-    # "rrr",
+    # "pos_speed_decoder_only",
+    # "pos_speed",
+    # "pos_speed_leak",
+    # "fullregressor_decoder_only",
+    # "fullregressor",
+    # "fullregressor_leak",
+    # "rrr",  # NOTE use GOLDEN only - not optuna
+    "rbfpos_decoder_only_no_intercept",
+    "rbfpos_no_intercept",
+    "rbfpos_leak_no_intercept",
+    "pos_speed_decoder_only_no_intercept",
+    "pos_speed_no_intercept",
+    "pos_speed_leak_no_intercept",
+    "fullregressor_decoder_only_no_intercept",
+    "fullregressor_no_intercept",
+    "fullregressor_leak_no_intercept",
+    # "rrr_no_intercept", # NOTE use GOLDEN only - not optuna
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -54,6 +70,7 @@ if __name__ == "__main__":
                     model.clear_cached_score(session, spks_type=spks_type, method=METHOD)
 
                 if score_models:
+                    _clear_cache = False
                     try:
                         _clear_cache = not model.check_existing_score(
                             session,
@@ -76,9 +93,9 @@ if __name__ == "__main__":
                         continue
 
                     finally:
-                        # Make sure any stored data is cleared (not actually sure if torch is saving things but better clear in case)
                         if _clear_cache:
                             session.clear_cache()
+                            registry.clear_population_cache()
                             torch.cuda.empty_cache()
                             gc.collect()
 

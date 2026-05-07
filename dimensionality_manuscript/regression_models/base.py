@@ -164,7 +164,7 @@ class RegressionModel(ABC, Generic[H]):
         )
         idx = np.array(population.get_split_times(self.registry.time_split[split], within_idx_samples=False))
         frame_behavior = frame_behavior.filter(idx)
-        return source_data, target_data, frame_behavior
+        return source_data.float(), target_data.float(), frame_behavior
 
     def score(
         self,
@@ -542,7 +542,9 @@ class RegressionModel(ABC, Generic[H]):
         n_trials: int = 50,
         timeout: float | None = None,
         sampler: optuna.samplers.BaseSampler | None = None,
+        sampler_seed: int = 42,
         nan_safe: bool = False,
+        return_study: bool = False,
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize the hyperparameters of the model using Optuna.
 
@@ -562,9 +564,14 @@ class RegressionModel(ABC, Generic[H]):
             Optional timeout in seconds (Optuna will stop once reached).
         sampler : optuna.samplers.BaseSampler | None
             Optional Optuna sampler; if None, defaults are used.
+        sampler_seed : int
+            Random seed for the Optuna sampler (if applicable). Default is 42.
+            Note: unused if sampler is provided!
         nan_safe: bool = False
             If True, will check for NaN values in predictions and metrics and raise errors if found.
             If False, will skip all NaN checks and allow NaN values to pass through.
+        return_study: bool = False
+            If True, will return the Optuna study object along with the results.
 
         Returns
         -------
@@ -579,7 +586,7 @@ class RegressionModel(ABC, Generic[H]):
         independent_optimization = HyperparameterClass.independent_optimization
 
         if sampler is None:
-            sampler = TPESampler(seed=42)
+            sampler = TPESampler(seed=sampler_seed)
 
         results: list[dict] = []
 
@@ -656,6 +663,9 @@ class RegressionModel(ABC, Generic[H]):
         best_params = best_trial.user_attrs["best_params"]
         best_score = best_trial.user_attrs["score"]
         results_df = pd.DataFrame(results)
+
+        if return_study:
+            return best_params, best_score, results_df, study
 
         return best_params, best_score, results_df
 
@@ -988,6 +998,8 @@ class RegressionModel(ABC, Generic[H]):
         method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> bool:
         """Check if the hyperparameters for the model exist in the hyperparameter cache."""
+        if method not in ["grid", "optuna", "golden"]:
+            raise ValueError(f"Invalid method: {method}. Must be one of ['grid', 'optuna', 'golden'].")
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
         cache_path = self.registry.registry_paths.hyperparameter_path / f"{cache_key}.joblib"
         return cache_path.exists()
@@ -1002,6 +1014,8 @@ class RegressionModel(ABC, Generic[H]):
         method: Literal["grid", "optuna", "golden"] = "grid",
     ) -> bool:
         """Check if the score for the model exist in the score cache."""
+        if method not in ["grid", "optuna", "golden"]:
+            raise ValueError(f"Invalid method: {method}. Must be one of ['grid', 'optuna', 'golden'].")
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
         cache_path = self.registry.registry_paths.score_path / f"{cache_key}.joblib"
         return cache_path.exists()

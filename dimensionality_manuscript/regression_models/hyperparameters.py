@@ -141,6 +141,99 @@ class RBFPosHyperparameters(HyperparametersBase):
 
 
 @dataclass(frozen=True)
+class FullRegressorHyperparameters(HyperparametersBase):
+    """Hyperparameters for the FullRegressorModel.
+
+    Parameters
+    ----------
+    num_basis : int, default=10
+        Number of position basis functions for the full regressor model.
+    basis_width : float, default=10.0
+        Width of the Gaussian basis functions for the full regressor model.
+    speed_num_basis : int, default=10
+        Number of speed basis functions for the full regressor model.
+    reward_num_basis_lags : int, default=11
+        Number of lags on reward basis functions for the full regressor model.
+        (Note - it'll be symmetric for reward delivery, so num_basis=num_lags*2 + 1)
+        but it'll be only "responsive" for reward omission, so it'll be num_basis=num_lags + 1.
+    reward_basis_width : float, default=5.0
+        Width of the Gaussian basis functions for the reward regressor in the full regressor model.
+    alpha_encoder : float, default=1e0
+        The ridge regularization parameter for the encoder.
+    alpha_decoder : float, default=1e0
+        The ridge regularization parameter for the decoder.
+    """
+
+    num_basis: int = field(default=100, init=True, repr=True)
+    basis_width: float = field(default=5.0, init=True, repr=True)
+    speed_num_basis: int = field(default=10, init=True, repr=True)
+    reward_num_basis_lags: int = field(default=11, init=True, repr=True)
+    reward_basis_width: int = field(default=5, init=True, repr=True)
+    alpha_encoder: float = field(default=1e0, init=True, repr=True)
+    alpha_decoder: float = field(default=1e0, init=True, repr=True)
+
+    @classmethod
+    def get_search_space(cls) -> dict[str, tuple[Any, ...]]:
+        """Get the search space for grid search.
+
+        Returns
+        -------
+        search_space : dict[str, tuple[Any, ...]]
+            Dictionary with hyperparameter names as keys and tuples of possible values.
+        """
+        return {
+            "num_basis": (100, 40, 25, 10),
+            "basis_width": (5.0, 15.0, 40.0),
+            "speed_num_basis": (10, 5, 3),
+            "reward_num_basis_lags": (11, 5, 3),
+            "reward_basis_width": (5, 10),
+            "alpha_encoder": tuple(torch.logspace(-2, 2, 9).tolist()),
+            "alpha_decoder": tuple(torch.logspace(-2, 2, 9).tolist()),
+        }
+
+    @classmethod
+    def get_optuna_space(cls, trial: "Trial") -> dict[str, Any]:
+        """Get the Optuna search space for the RBFPosModel.
+
+        Parameters
+        ----------
+        trial : optuna.Trial
+            The Optuna trial object to suggest hyperparameters from.
+
+        Returns
+        -------
+        search_space : dict[str, Any]
+            Dictionary with hyperparameter names as keys and the suggested values.
+        """
+        return {
+            "num_basis": trial.suggest_int("num_basis", 10, 100, log=True),
+            "basis_width": trial.suggest_float("basis_width", 1.0, 50.0, log=True),
+            "speed_num_basis": trial.suggest_int("speed_num_basis", 2, 20),
+            "reward_num_basis_lags": trial.suggest_int("reward_num_basis_lags", 1, 21),
+            "reward_basis_width": trial.suggest_float("reward_basis_width", 1.0, 50.0),
+            "alpha_encoder": trial.suggest_float("alpha_encoder", 1e-3, 1e3, log=True),
+            "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-3, 1e3, log=True),
+        }
+
+    @classmethod
+    def _process_params(cls, params: dict) -> dict:
+        """Process the parameters from the dictionary.
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of hyperparameter values.
+        """
+        if "alpha" in params:
+            if "alpha_encoder" not in params:
+                params["alpha_encoder"] = params["alpha"]
+            if "alpha_decoder" not in params:
+                params["alpha_decoder"] = params["alpha"]
+            params.pop("alpha")
+        return params
+
+
+@dataclass(frozen=True)
 class ReducedRankRegressionHyperparameters(HyperparametersBase):
     """Hyperparameters for the ReducedRankRegressionModel.
 
