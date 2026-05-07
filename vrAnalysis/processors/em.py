@@ -101,6 +101,8 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
         speed=frame_behavior.speed,
         environment=placefield.environment[env_idx],
         trial=frame_behavior.trial,
+        reward_delivery=frame_behavior.reward_delivery,
+        reward_omitted=frame_behavior.reward_omitted,
     )
     return frame_behavior
 

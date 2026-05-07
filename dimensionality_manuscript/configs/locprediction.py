@@ -10,7 +10,7 @@ import torch
 from scipy.special import log_softmax
 from vrAnalysis.sessions import B2Session, SpksTypes
 from ..registry import PopulationRegistry
-from vrAnalysis.processors.placefields import get_placefield, get_frame_behavior, convert_position_to_bins
+from vrAnalysis.processors.placefields import get_placefield, convert_position_to_bins
 from vrAnalysis.processors.placefields import Placefield, FrameBehavior
 from vrAnalysis.helpers import reliability_loo
 from vrAnalysis.metrics import FractionActive
@@ -62,6 +62,30 @@ def _estimate_residual_variance(
     residuals = spks_tr - mu_train
     variance = np.var(residuals, axis=0, ddof=1)
     return np.maximum(variance, min_variance)
+
+
+def _hard_e_step(
+    spks: np.ndarray,
+    placefield: Placefield,
+    likelihood_fn: "LikelihoodBase",
+    dist_edges: np.ndarray,
+    frame_behavior: FrameBehavior,
+) -> tuple[FrameBehavior, np.ndarray]:
+    """Assign positions by argmax likelihood. Returns (new FrameBehavior, flat bin indices)."""
+    ll = likelihood_fn(spks, placefield)  # (frames, total_bins)
+    pred_bin_idx = np.argmax(ll, axis=1)  # (frames,)
+    num_bins = len(dist_edges) - 1
+    pred_env_idx = pred_bin_idx // num_bins
+    pred_pos_idx = pred_bin_idx % num_bins
+    bin_centers = (dist_edges[:-1] + dist_edges[1:]) / 2.0
+    new_fb = FrameBehavior(
+        position=bin_centers[pred_pos_idx],
+        speed=frame_behavior.speed,
+        environment=placefield.environment[pred_env_idx],
+        trial=frame_behavior.trial,
+        idx=frame_behavior.idx,
+    )
+    return new_fb, pred_bin_idx
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +319,6 @@ class RankOrderingMetric(LossBase):
         traj = ranks.astype(float)
         scalars = {
             "mean_rank": float(np.mean(traj)),
-            "median_rank": float(np.median(traj)),
-            "mrr": float(np.mean(1.0 / traj)),
             "top1": float(np.mean(traj <= 1)),
             "top5": float(np.mean(traj <= 5)),
             "top10": float(np.mean(traj <= 10)),
@@ -431,15 +453,21 @@ class LocPredFit:
     Parameters
     ----------
     placefield : Placefield
-        Averaged place field built from training data.
+        Averaged place field from the last iteration (= iteration_placefields[-1]).
     diag_gaussian_variance : np.ndarray
-        Per-ROI residual variance estimated on training data. Shape (num_kept_rois,).
+        Per-ROI residual variance from the last iteration (= iteration_diag_variances[-1]).
     idx_keep_rois : np.ndarray
         Boolean mask over neurons in the population selecting reliable, active ROIs.
     dist_edges : np.ndarray
         Spatial bin edges. Shape (num_bins + 1,).
     norm_value : np.ndarray or None
         Per-ROI normalization constants from training data. None when norm_method="none".
+    iteration_placefields : list[Placefield]
+        Placefield from each EM iteration. Length = fit_iterations.
+    iteration_diag_variances : list[np.ndarray]
+        Per-ROI residual variance from each EM iteration. Length = fit_iterations.
+    iteration_position_bins_tr : list[np.ndarray]
+        Flat bin assignments on training data after each iteration. Length = fit_iterations.
     """
 
     placefield: Placefield
@@ -447,6 +475,9 @@ class LocPredFit:
     idx_keep_rois: np.ndarray
     dist_edges: np.ndarray
     norm_value: np.ndarray | None
+    iteration_placefields: list[Placefield]
+    iteration_diag_variances: list[np.ndarray]
+    iteration_position_bins_tr: list[np.ndarray]
 
 
 # ---------------------------------------------------------------------------
@@ -497,12 +528,17 @@ class LocPredConfig(AnalysisConfigBase):
     fraction_active_cutoff: float = 0.1
     spks_type: SpksTypes = "oasis"
     likelihood_methods: tuple[str, ...] = ("poisson", "gaussian", "diag_gaussian", "von_mises_fisher")
-    loss_methods: tuple[str, ...] = ("cross_entropy", "rank_loss_logistic_mean", "rank_metric", "distance_error", "env_swap")
+    loss_methods: tuple[str, ...] = ("cross_entropy", "rank_loss_logistic_mean", "rank_loss_hinge_mean", "rank_metric", "distance_error", "env_swap")
+    fit_iterations: int = 4
+    predict_likelihood: str = "diag_gaussian"
     display_name: ClassVar[str] = "locprediction"
 
     @staticmethod
     def _param_grid() -> dict:
-        return {}
+        return {
+            "norm_scale": [1.0, 50.0],
+            "smooth_width": [None, 5.0],
+        }
 
     def summary(self) -> str:
         parts = [
@@ -516,6 +552,8 @@ class LocPredConfig(AnalysisConfigBase):
             f"spks_type={self.spks_type}",
             f"likelihood_methods={','.join(self.likelihood_methods)}",
             f"loss_methods={','.join(self.loss_methods)}",
+            f"fit_iterations={self.fit_iterations}",
+            f"predict_likelihood={self.predict_likelihood}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -578,6 +616,7 @@ class LocPredConfig(AnalysisConfigBase):
         session: B2Session,
         registry: PopulationRegistry,
         split: "SplitName" = "train",
+        idx_rois: np.ndarray | None = None,
     ) -> LocPredFit:
         """Build place fields and estimate residual variance from a training split.
 
@@ -587,6 +626,9 @@ class LocPredConfig(AnalysisConfigBase):
         registry : PopulationRegistry
         split : SplitName
             Registry split to use as training data. Default "train".
+        idx_rois : np.ndarray or None
+            Boolean mask over neurons to use. If None, ROIs are selected via reliability and
+            activity criteria. Pass a precomputed mask to skip the selection step.
 
         Returns
         -------
@@ -597,10 +639,14 @@ class LocPredConfig(AnalysisConfigBase):
         spks_tr = self._apply_norm(spks_tr, norm_value)
 
         dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
-        idx_keep_rois = self._select_rois(session, spks_tr, frame_behavior_tr, dist_edges)
+        if idx_rois is None:
+            idx_keep_rois = self._select_rois(session, spks_tr, frame_behavior_tr, dist_edges)
+        else:
+            idx_keep_rois = idx_rois
         spks_tr_roi = spks_tr[:, idx_keep_rois]
 
-        placefield_tr = get_placefield(
+        # Iteration 0: standard placefield fit
+        current_pf = get_placefield(
             spks_tr_roi,
             frame_behavior_tr,
             dist_edges,
@@ -609,14 +655,41 @@ class LocPredConfig(AnalysisConfigBase):
             use_fast_sampling=True,
             session=session,
         )
-        diag_var = _estimate_residual_variance(spks_tr_roi, frame_behavior_tr, placefield_tr)
+        current_fb = frame_behavior_tr
+        current_var = _estimate_residual_variance(spks_tr_roi, current_fb, current_pf)
+        current_bins = _true_position_bins(current_fb, current_pf)
+
+        iteration_placefields = [current_pf]
+        iteration_diag_variances = [current_var]
+        iteration_position_bins_tr = [current_bins]
+
+        # Iterations 1..fit_iterations-1: E-step (argmax) then M-step (refit placefield)
+        for _ in range(self.fit_iterations - 1):
+            lik_fn = _get_likelihood_methods((self.predict_likelihood,), current_var)[self.predict_likelihood]
+            current_fb, current_bins = _hard_e_step(spks_tr_roi, current_pf, lik_fn, dist_edges, current_fb)
+            current_pf = get_placefield(
+                spks_tr_roi,
+                current_fb,
+                dist_edges,
+                average=True,
+                smooth_width=self.smooth_width,
+                use_fast_sampling=False,
+                session=session,
+            )
+            current_var = _estimate_residual_variance(spks_tr_roi, current_fb, current_pf)
+            iteration_placefields.append(current_pf)
+            iteration_diag_variances.append(current_var)
+            iteration_position_bins_tr.append(current_bins)
 
         return LocPredFit(
-            placefield=placefield_tr,
-            diag_gaussian_variance=diag_var,
+            placefield=iteration_placefields[-1],
+            diag_gaussian_variance=iteration_diag_variances[-1],
             idx_keep_rois=idx_keep_rois,
             dist_edges=dist_edges,
             norm_value=norm_value,
+            iteration_placefields=iteration_placefields,
+            iteration_diag_variances=iteration_diag_variances,
+            iteration_position_bins_tr=iteration_position_bins_tr,
         )
 
     def optimize(
@@ -625,6 +698,7 @@ class LocPredConfig(AnalysisConfigBase):
         registry: PopulationRegistry,
         fit: LocPredFit,
         split: "SplitName" = "validation",
+        iteration: int = -1,
     ):
         """Validation of hyperparameters for loss functions.
 
@@ -641,25 +715,30 @@ class LocPredConfig(AnalysisConfigBase):
         registry : PopulationRegistry
         split : SplitName
             Registry split to use as validation data. Default "validation".
+        iteration : int
+            Which EM iteration's placefield to use. Default -1 (last iteration).
         """
+        pf = fit.iteration_placefields[iteration]
+        dvar = fit.iteration_diag_variances[iteration]
+
         spks_vl, frame_behavior_vl = self._get_split_arrays(session, registry, split)
         spks_vl = self._apply_norm(spks_vl, fit.norm_value)
         spks_vl = spks_vl[:, fit.idx_keep_rois]
 
-        # Drop test frames whose environment didn't appear in training data.
-        idx_known = np.isin(frame_behavior_vl.environment, fit.placefield.environment)
+        # Drop frames whose environment didn't appear in training data.
+        idx_known = np.isin(frame_behavior_vl.environment, pf.environment)
         frame_behavior_vl = frame_behavior_vl.filter(idx_known)
         spks_vl = spks_vl[idx_known]
 
-        true_bins_vl = _true_position_bins(frame_behavior_vl, fit.placefield)
-        lik_methods = _get_likelihood_methods(self.likelihood_methods, fit.diag_gaussian_variance)
+        true_bins_vl = _true_position_bins(frame_behavior_vl, pf)
+        lik_methods = _get_likelihood_methods(self.likelihood_methods, dvar)
 
         # Only keep the ones with a hyperparameter to optimize over
         loss_methods = _get_loss_methods(self.loss_methods, fit.dist_edges, only_with_hyperparameters=True)
 
         hyperparameters: dict[str, dict[str, float]] = {}
         for lik_name, lik_fn in lik_methods.items():
-            ll = lik_fn(spks_vl, fit.placefield)
+            ll = lik_fn(spks_vl, pf)
             hyperparameters[lik_name] = {}
             for loss_name, loss_fn in loss_methods.items():
                 hyperparameters[lik_name][loss_name] = _optimize(loss_fn, ll, true_bins_vl)
@@ -673,6 +752,7 @@ class LocPredConfig(AnalysisConfigBase):
         fit: LocPredFit,
         hyperparameters: dict[str, dict[str, float]] | None = None,
         split: "SplitName" = "test",
+        iteration: int = -1,
     ) -> dict:
         """Compute log-likelihoods and losses on a held-out split.
 
@@ -686,38 +766,63 @@ class LocPredConfig(AnalysisConfigBase):
             Hyperparameters to use for evaluation. If None, uses the default hyperparameters.
         split : SplitName
             Registry split to evaluate on. Default "test".
+        iteration : int
+            Which EM iteration's placefield to use. Default -1 (last iteration).
 
         Returns
         -------
         dict
-            Keys: likelihood_matrix, loss_trajectory, loss_scalar,
-            true_position_bins_te, idx_keep_rois.
+            likelihood_matrix : dict mapping likelihood method name to array of shape (frames, total_bins) with log-likelihoods for each bin
+            loss_trajectory : dict mapping "likelihood_loss" method name to array of shape (frames,) with loss values for each frame
+            loss_scalar : dict mapping "likelihood_loss" method name to scalar summary of the loss across frames (e.g. mean loss)
+            true_bin_score : dict mapping "likelihood_method" to array of shape (frames,) with log-likelihood of the true position bin for each frame (to estimate prediction of activity)
+            true_position_bins_te : array of shape (frames,) with true position bin index for each frame
+            idx_keep_rois : boolean array of shape (rois,) indicating which ROIs were kept in the fit (for reference when interpreting likelihoods and losses)
         """
+        pf = fit.iteration_placefields[iteration]
+        dvar = fit.iteration_diag_variances[iteration]
+
         spks_te, frame_behavior_te = self._get_split_arrays(session, registry, split)
         spks_te = self._apply_norm(spks_te, fit.norm_value)
         spks_te = spks_te[:, fit.idx_keep_rois]
 
         # Drop test frames whose environment didn't appear in training data.
-        idx_known = np.isin(frame_behavior_te.environment, fit.placefield.environment)
+        idx_known = np.isin(frame_behavior_te.environment, pf.environment)
         frame_behavior_te = frame_behavior_te.filter(idx_known)
         spks_te = spks_te[idx_known]
+        true_bins_te = _true_position_bins(frame_behavior_te, pf)
 
-        true_bins_te = _true_position_bins(frame_behavior_te, fit.placefield)
-        lik_methods = _get_likelihood_methods(self.likelihood_methods, fit.diag_gaussian_variance)
+        # Use true position bins and learned PF to predict likelihood of each activity vector
+        # likelihood returns p(x=bin | r, theta) = p(r | x=bin, theta) * p(x=bin | theta) / p(r | theta)
 
+        # Compute likelihoods and losses for all requested methods.
+        # Likelihood: use a model p(x=bin | r, theta) to predict the likelihood of each position bin given the neural activity and the PF learned in fit()
+        # Loss: measure how well that likelihood estimates the true position bin
+        lik_methods = _get_likelihood_methods(self.likelihood_methods, dvar)
+        loss_methods = _get_loss_methods(self.loss_methods, fit.dist_edges)
+
+        # Prepare our output dicts
         likelihood_matrix: dict[str, np.ndarray] = {}
         loss_trajectory: dict[str, np.ndarray] = {}
         loss_scalar: dict[str, float] = {}
-
+        true_bin_score: dict[str, np.ndarray] = {}
         for lik_name, lik_fn in lik_methods.items():
-            ll = lik_fn(spks_te, fit.placefield)
+
+            # Measure likelihood of each bin
+            ll = lik_fn(spks_te, pf)
             likelihood_matrix[lik_name] = ll
+            true_bin_score[lik_name] = ll[np.arange(len(true_bins_te)), true_bins_te]
+
+            # Get hyperparameters for this likelihood, if any
             _hyperparams_for_lik = hyperparameters[lik_name] if hyperparameters is not None else {}
-            loss_methods = _get_loss_methods(self.loss_methods, fit.dist_edges)
             for loss_name, loss_fn in loss_methods.items():
+
+                # If this likelihood-loss combo has a hyperparameter, pass it in kwargs
                 kwargs = {}
                 if loss_fn.has_hyperparameter and loss_name in _hyperparams_for_lik:
                     kwargs[loss_fn.hyperparameter_name] = _hyperparams_for_lik[loss_name]
+
+                # Copmute loss scalars, trajectory (across samples), add to summary dicts
                 scalars, traj = loss_fn(ll, true_bins_te, **kwargs)
                 combo = f"{lik_name}_{loss_name}"
                 loss_trajectory[combo] = traj
@@ -729,6 +834,7 @@ class LocPredConfig(AnalysisConfigBase):
             likelihood_matrix=likelihood_matrix,
             loss_trajectory=loss_trajectory,
             loss_scalar=loss_scalar,
+            true_bin_score=true_bin_score,
             true_position_bins_te=true_bins_te,
             idx_keep_rois=fit.idx_keep_rois,
         )
@@ -741,7 +847,27 @@ class LocPredConfig(AnalysisConfigBase):
         val_split: "SplitName" = "validation",
         test_split: "SplitName" = "test",
     ) -> dict:
-        """Run Location Prediction analysis on a session."""
+        """Run Location Prediction analysis on a session.
+
+        Iterates over all EM iterations, running optimize and score for each. Results are
+        stacked across iterations: loss_scalar values are arrays of shape (fit_iterations,),
+        loss_trajectory arrays are shape (fit_iterations, frames), and likelihood_matrix arrays
+        are shape (fit_iterations, frames, total_bins).
+        """
         fit = self.fit(session, registry, split=train_split)
-        hyperparameters = self.optimize(session, registry, fit, split=val_split)
-        return self.score(session, registry, fit, hyperparameters=hyperparameters, split=test_split)
+        all_results = []
+        for i in range(self.fit_iterations):
+            hyperparameters = self.optimize(session, registry, fit, split=val_split, iteration=i)
+            result = self.score(session, registry, fit, hyperparameters=hyperparameters, split=test_split, iteration=i)
+            all_results.append(result)
+
+        first = all_results[0]
+        return dict(
+            likelihood_matrix={k: np.stack([r["likelihood_matrix"][k] for r in all_results]) for k in first["likelihood_matrix"]},
+            loss_trajectory={k: np.stack([r["loss_trajectory"][k] for r in all_results]) for k in first["loss_trajectory"]},
+            loss_scalar={k: np.array([r["loss_scalar"][k] for r in all_results]) for k in first["loss_scalar"]},
+            true_bin_score={k: np.stack([r["true_bin_score"][k] for r in all_results]) for k in first["true_bin_score"]},
+            true_position_bins_te=first["true_position_bins_te"],
+            idx_keep_rois=fit.idx_keep_rois,
+            iteration_position_bins_tr=fit.iteration_position_bins_tr,
+        )
