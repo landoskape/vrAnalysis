@@ -20,6 +20,7 @@ from dimensionality_manuscript import (
     SubspaceConfig,
     PopulationConfig,
     ExpMaxConfig,
+    LocPredConfig,
     ResultsStore,
 )
 
@@ -35,6 +36,7 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
         "subspace": SubspaceConfig,
         "svca": SVCAConfig,
         "expmax": ExpMaxConfig,
+        "locpred": LocPredConfig,
     }
     if include is None:
         include = list(_mapping.keys())
