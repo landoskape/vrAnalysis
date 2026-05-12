@@ -790,6 +790,7 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         registry: "PopulationRegistry",
         split_train: bool = True,
         predict_latents: bool = True,
+        speed_basis: bool = True,
         no_reward: bool = False,
         fit_intercept: bool = True,
         hyperparameters: FullRegressorHyperparameters = FullRegressorHyperparameters(),
@@ -804,6 +805,7 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         self.hyperparameters = hyperparameters
         self.fit_intercept = fit_intercept
         self.nonnegative = True
+        self.speed_basis = speed_basis
         self.no_reward = no_reward
 
         # This model requires double-cross-validation to prevent non-spatial leakage
@@ -1008,7 +1010,11 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
 
         # Now make a speed basis from frame_behavior
         speed = frame_behavior.speed
-        speed_basis = make_percentile_basis(speed, hyperparameters.speed_num_basis)
+        if self.speed_basis:
+            speed_basis = make_percentile_basis(speed, hyperparameters.speed_num_basis)
+        else:
+            # Speed basis is just the speed itself after z-scoring
+            speed_basis = torch.tensor((speed - np.mean(speed)) / np.std(speed), dtype=torch.float32).unsqueeze(-1)
 
         if self.no_reward:
             # If no_reward flag is set, we won't include any reward-related basis functions
@@ -1079,6 +1085,8 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             model_name += "_decoder_only"
         elif not self.split_train:
             model_name += "_leak"
+        if not self.speed_basis:
+            model_name += "_1dspeed"
         if self.no_reward:
             model_name += "_noreward"
         if not self.fit_intercept:
@@ -1178,6 +1186,9 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         extras : dict
             Extra information about the prediction.
         """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
         # Get the source activity data for the requested split
         source_data, _, _ = self.get_session_data(session, spks_type, split)
 
