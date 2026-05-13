@@ -1,4 +1,4 @@
-"""Named simulation atlas for shared-variance operator examples."""
+"""Shared-variance analysis: direct config API and named atlas registry."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import Any, Callable, Literal, Mapping, Optional
 
 import numpy as np
 import numpy.typing as npt
-from vrAnalysis.helpers import smart_pca
 
 from .generators import (
     CovariancePairConfig,
@@ -21,7 +20,13 @@ from .operators import sqrtm_spd
 
 AtlasKind = Literal["stim_full", "context_pair"]
 AtlasPipeline = Literal["stimulus_space", "covariance"]
-AtlasBuilder = Callable[[np.random.Generator], tuple[Any, Any]]
+AtlasBuilder = Callable[[np.random.Generator, npt.DTypeLike], tuple[Any, Any]]
+
+_CONFIG_DISPATCH: dict[type, tuple[AtlasKind, AtlasPipeline, type]] = {
+    StimFullConfig: ("stim_full", "stimulus_space", StimFullGenerator),
+    CovariancePairConfig: ("context_pair", "covariance", CovariancePairGenerator),
+    SharedSpaceConfig: ("context_pair", "covariance", SharedSpaceGenerator),
+}
 
 
 @dataclass(frozen=True)
@@ -34,12 +39,18 @@ class AtlasSpec:
     description: str
     builder: AtlasBuilder
 
-    def build(self, seed: Optional[int] = None, rng: Optional[np.random.Generator] = None) -> "AtlasBuild":
+    def build(
+        self,
+        seed: Optional[int] = None,
+        rng: Optional[np.random.Generator] = None,
+        dtype: npt.DTypeLike = np.float64,
+    ) -> "AtlasBuild":
         """Instantiate this atlas condition."""
         if seed is not None and rng is not None:
             raise ValueError("Provide seed or rng, not both.")
         _rng = np.random.default_rng(seed) if rng is None else rng
-        config, generator = self.builder(_rng)
+        _dtype = np.dtype(dtype)
+        config, generator = self.builder(_rng, _dtype)
         return AtlasBuild(
             name=self.name,
             kind=self.kind,
@@ -47,6 +58,7 @@ class AtlasSpec:
             description=self.description,
             config=config,
             generator=generator,
+            dtype=_dtype,
         )
 
 
@@ -60,6 +72,7 @@ class AtlasBuild:
     description: str
     config: Any
     generator: Any
+    dtype: np.dtype
 
 
 @dataclass(frozen=True)
@@ -70,6 +83,7 @@ class AtlasAnalysisResult:
     kind: AtlasKind
     pipeline: AtlasPipeline
     description: str
+    config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig | None
 
     population_svr: float
     population_candidate_modes: npt.NDArray[np.floating]
@@ -89,15 +103,29 @@ class AtlasAnalysisResult:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Matrix / covariance helpers
+# ---------------------------------------------------------------------------
+
+
 def _precov(data: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     """Return centered data scaled so G @ G.T equals np.cov(data)."""
+    data = np.asarray(data)
     if data.ndim != 2:
         raise ValueError(f"data must be 2D, got shape {data.shape}")
     n_samples = data.shape[1]
     if n_samples < 2:
         raise ValueError("Need at least two samples to compute covariance.")
-    centered = data - np.mean(data, axis=1, keepdims=True)
-    return centered / np.sqrt(n_samples - 1)
+    dtype = data.dtype
+    centered = data - np.mean(data, axis=1, keepdims=True, dtype=dtype)
+    scale = np.sqrt(np.array(n_samples - 1, dtype=dtype))
+    return (centered / scale).astype(dtype, copy=False)
+
+
+def _cov(data: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Return row-wise covariance while preserving the input floating dtype."""
+    data = np.asarray(data)
+    return np.cov(data, rowvar=True, dtype=data.dtype).astype(data.dtype, copy=False)
 
 
 def _symmetrize(A: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
@@ -119,6 +147,29 @@ def _sorted_eigenvalues(A: npt.NDArray[np.floating], *, symmetrize: bool = True)
 def _sqrt_sorted_eigenvalues(A: npt.NDArray[np.floating], *, symmetrize: bool = True) -> npt.NDArray[np.floating]:
     evals = _sorted_eigenvalues(A, symmetrize=symmetrize)
     return np.sqrt(np.maximum(evals, 0.0))
+
+
+def _sorted_eigenvalues_and_eigenvectors(
+    A: npt.NDArray[np.floating],
+    *,
+    symmetrize: bool = True,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    matrix = _symmetrize(A) if symmetrize else A
+    if symmetrize:
+        evals, evecs = np.linalg.eigh(matrix)
+    else:
+        evals, evecs = np.linalg.eig(matrix)
+        if np.max(np.abs(np.imag(evals))) > 1e-8:
+            raise ValueError("Non-symmetric matrix has complex eigenvalues; provide directions instead.")
+        evals = np.real(evals)
+        evecs = np.real(evecs)
+    order = np.argsort(evals)[::-1]
+    return evals[order], evecs[:, order]
+
+
+# ---------------------------------------------------------------------------
+# Public operator functions
+# ---------------------------------------------------------------------------
 
 
 def kappa_modes(A: npt.NDArray[np.floating], B: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
@@ -150,6 +201,11 @@ def stimulus_space_kappa_modes(G_A: npt.NDArray[np.floating], B: npt.NDArray[np.
 def stimulus_space_energy_modes(G_A: npt.NDArray[np.floating], B: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     """Mode-wise shared-energy eigenvalues using a pre-covariance G_A where A = G_A @ G_A.T."""
     return np.maximum(_sorted_eigenvalues(G_A.T @ _symmetrize(B) @ G_A), 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Internal analysis helpers
+# ---------------------------------------------------------------------------
 
 
 def _energy_directions(kernel: npt.NDArray[np.floating]) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
@@ -202,7 +258,7 @@ def _stimulus_means(
 
     means = np.empty((data.shape[0], num_stimuli), dtype=data.dtype)
     for istim in range(num_stimuli):
-        means[:, istim] = np.mean(data[:, stim_indices == istim], axis=1)
+        means[:, istim] = np.mean(data[:, stim_indices == istim], axis=1, dtype=data.dtype)
     return means
 
 
@@ -226,8 +282,12 @@ def _stimulus_balanced_folds(
     return [np.array(sorted(fold), dtype=int) for fold in folds]
 
 
-def _stim_full_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    gen: StimFullGenerator = build.generator
+# ---------------------------------------------------------------------------
+# Per-pipeline population and empirical result functions (take generator)
+# ---------------------------------------------------------------------------
+
+
+def _stim_full_population_result(gen: StimFullGenerator) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     sigma_stim, sigma_nuisance, sigma_eps = gen.true_covariance()
     sigma_full = sigma_stim + sigma_nuisance + sigma_eps
 
@@ -239,8 +299,8 @@ def _stim_full_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndar
     target_energy_modes = energy_modes(sigma_full, sigma_full)
 
     # Also measure eigenvalues and overlap energy of stim and full-to-stim
-    w_stim, v_stim = smart_pca(sigma_stim)
-    w_full, v_full = smart_pca(sigma_full)
+    w_stim, v_stim = _sorted_eigenvalues_and_eigenvectors(sigma_stim)
+    w_full, v_full = _sorted_eigenvalues_and_eigenvectors(sigma_full)
     energy_on_stim = ((v_stim.T @ v_full) ** 2) @ w_full
     energy_on_full = ((v_full.T @ v_stim) ** 2) @ w_stim
 
@@ -255,6 +315,7 @@ def _stim_full_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndar
         "trace_full": float(np.trace(sigma_full)),
         "cka": centered_kernel_alignment(sigma_stim, sigma_full),
         "ser": _svr(candidate_energy_modes, target_energy_modes),
+        "root_ser": _svr(np.sqrt(np.maximum(candidate_energy_modes, 0.0)), np.sqrt(np.maximum(target_energy_modes, 0.0))),
         "candidate_energy_modes": candidate_energy_modes,
         "target_energy_modes": target_energy_modes,
         "stimulus_space_modes_match_covariance_modes": bool(
@@ -262,7 +323,9 @@ def _stim_full_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndar
         ),
         # Using names shared with context* version for simplicity
         "candidate_spectrum": w_stim,
+        "candidate_modes": v_stim,
         "target_spectrum": w_full,
+        "target_modes": v_full,
         "target_on_candidate_overlap": energy_on_stim,
         "candidate_on_target_overlap": energy_on_full,
     }
@@ -287,23 +350,26 @@ def _stim_full_cvser_result(
     candidate_energy_modes = _project_energy_modes(cv_kernel, directions, symmetrize=False)
     target_energy_modes = energy_modes(full_train, full_test)
 
+    cv_stim_cov_estimate = fold_precovs[1] @ fold_precovs[2].T
+    cv_cka = centered_kernel_alignment(cv_stim_cov_estimate, full_test)
+
     metadata = {
         "empirical_cv_candidate_train_energy_modes": train_energy_modes,
         "empirical_cv_full_energy": float(np.trace(full_train @ full_test)),
         "empirical_cv_stim_full_energy": float(np.sum(candidate_energy_modes)),
+        "empirical_cv_cka": cv_cka,
         "empirical_cv_fold_sizes": tuple(int(len(fold)) for fold in folds),
     }
     return candidate_energy_modes, target_energy_modes, metadata
 
 
 def _stim_full_empirical_result(
-    build: AtlasBuild,
+    gen: StimFullGenerator,
     num_samples: int,
     rng: np.random.Generator,
     noise_variance: float,
     test_rotation_angle: float,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    gen: StimFullGenerator = build.generator
     data_train, _, extras_train = gen.generate(
         num_samples,
         noise_variance=noise_variance,
@@ -320,8 +386,8 @@ def _stim_full_empirical_result(
 
     stim_means = _stimulus_means(data_train, extras_train["stim_indices"], gen.config.num_stimuli)
     stim_precov = _precov(stim_means)
-    full_train = np.cov(data_train)
-    full_test = np.cov(data_test)
+    full_train = _cov(data_train)
+    full_test = _cov(data_test)
 
     candidate_modes = stimulus_space_kappa_modes(stim_precov, full_test)
     target_modes = kappa_modes(full_train, full_test)
@@ -333,41 +399,36 @@ def _stim_full_empirical_result(
         full_test,
         rng,
     )
+    nonnegative_cv_candidate_energy_modes = np.maximum(cv_candidate_energy_modes, 0.0)
+    nonnegative_cv_target_energy_modes = np.maximum(cv_target_energy_modes, 0.0)
     metadata = {
         "empirical_full_train": full_train,
         "empirical_full_test": full_test,
         "empirical_stim_means": stim_means,
-        "empirical_cka": centered_kernel_alignment(np.cov(stim_means), full_test),
+        "empirical_cka": centered_kernel_alignment(_cov(stim_means), full_test),
         "empirical_cv_candidate_energy_modes": cv_candidate_energy_modes,
         "empirical_cv_target_energy_modes": cv_target_energy_modes,
         "empirical_cvser": _svr(cv_candidate_energy_modes, cv_target_energy_modes),
+        "empirical_cvsvr": _svr(np.sqrt(nonnegative_cv_candidate_energy_modes), np.sqrt(nonnegative_cv_target_energy_modes)),
         **cv_metadata,
     }
     return candidate_modes, target_modes, metadata
 
 
-def _context_population_covariances(build: AtlasBuild) -> tuple[np.ndarray, np.ndarray]:
-    gen = build.generator
+def _context_population_result(gen) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     if isinstance(gen, CovariancePairGenerator):
-        return gen.expected_covariances()
-    if isinstance(gen, SharedSpaceGenerator):
-        return gen.true_covariance()
-    if hasattr(gen, "true_covariance"):
-        covariances = gen.true_covariance()
-        if len(covariances) != 2:
-            raise ValueError(f"Expected two covariances from {type(gen).__name__}.true_covariance()")
-        return covariances
-    raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
+        candidate_covariance, target_covariance = gen.expected_covariances()
+    elif isinstance(gen, SharedSpaceGenerator):
+        candidate_covariance, target_covariance = gen.true_covariance()
+    else:
+        raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
 
-
-def _context_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    candidate_covariance, target_covariance = _context_population_covariances(build)
     candidate_modes = kappa_modes(candidate_covariance, target_covariance)
     target_modes = kappa_modes(target_covariance, target_covariance)
 
     # Also measure eigenvalues and overlap energy of stim and full-to-stim
-    w_candidate, v_candidate = smart_pca(candidate_covariance)
-    w_target, v_target = smart_pca(target_covariance)
+    w_candidate, v_candidate = _sorted_eigenvalues_and_eigenvectors(candidate_covariance)
+    w_target, v_target = _sorted_eigenvalues_and_eigenvectors(target_covariance)
     energy_target_on_candidate = ((v_candidate.T @ v_target) ** 2) @ w_target
     energy_candidate_on_target = ((v_target.T @ v_candidate) ** 2) @ w_candidate
 
@@ -379,6 +440,8 @@ def _context_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndarra
         "cka": centered_kernel_alignment(candidate_covariance, target_covariance),
         "candidate_spectrum": w_candidate,
         "target_spectrum": w_target,
+        "candidate_modes": v_candidate,
+        "target_modes": v_target,
         "target_on_candidate_overlap": energy_target_on_candidate,
         "candidate_on_target_overlap": energy_candidate_on_target,
     }
@@ -386,12 +449,11 @@ def _context_population_result(build: AtlasBuild) -> tuple[np.ndarray, np.ndarra
 
 
 def _context_empirical_result(
-    build: AtlasBuild,
+    gen,
     num_samples: int,
     rng: np.random.Generator,
     noise_variance: float,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    gen = build.generator
     if isinstance(gen, CovariancePairGenerator):
         candidate_train = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
         target_train = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
@@ -402,9 +464,9 @@ def _context_empirical_result(
     else:
         raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
 
-    candidate_covariance = np.cov(candidate_train)
-    target_train_covariance = np.cov(target_train)
-    target_test_covariance = np.cov(target_test)
+    candidate_covariance = _cov(candidate_train)
+    target_train_covariance = _cov(target_train)
+    target_test_covariance = _cov(target_test)
 
     candidate_modes = kappa_modes(candidate_covariance, target_test_covariance)
     target_modes = kappa_modes(target_train_covariance, target_test_covariance)
@@ -415,6 +477,150 @@ def _context_empirical_result(
         "empirical_cka": centered_kernel_alignment(candidate_covariance, target_test_covariance),
     }
     return candidate_modes, target_modes, metadata
+
+
+# ---------------------------------------------------------------------------
+# Core analysis engine (takes a generator directly)
+# ---------------------------------------------------------------------------
+
+
+def _run_analysis(
+    gen,
+    kind: AtlasKind,
+    pipeline: AtlasPipeline,
+    *,
+    dtype: np.dtype,
+    num_samples: Optional[int] = None,
+    sample_seed: Optional[int] = None,
+    noise_variance: float = 0.0,
+    test_rotation_angle: float = 0.0,
+    name: str = "",
+    description: str = "",
+    config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig | None = None,
+) -> AtlasAnalysisResult:
+    if kind == "stim_full":
+        population_candidate, population_target, metadata = _stim_full_population_result(gen)
+    elif kind == "context_pair":
+        population_candidate, population_target, metadata = _context_population_result(gen)
+    else:
+        raise ValueError(f"Unknown atlas kind: {kind}")
+    metadata = {**metadata, "dtype": dtype.name}
+
+    empirical_candidate = None
+    empirical_target = None
+    empirical_cumulative = None
+    empirical_value = None
+    empirical_cv_candidate_energy = None
+    empirical_cv_target_energy = None
+    empirical_cv_cumulative = None
+    empirical_cv_value = None
+
+    if num_samples is not None:
+        rng = np.random.default_rng(sample_seed)
+        if kind == "stim_full":
+            empirical_candidate, empirical_target, empirical_metadata = _stim_full_empirical_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+                test_rotation_angle=test_rotation_angle,
+            )
+        else:
+            empirical_candidate, empirical_target, empirical_metadata = _context_empirical_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+            )
+        metadata = {**metadata, **empirical_metadata}
+        empirical_value = _svr(empirical_candidate, empirical_target)
+        empirical_cumulative = _cumulative_svr(empirical_candidate, empirical_target)
+        empirical_cv_candidate_energy = empirical_metadata.get("empirical_cv_candidate_energy_modes")
+        empirical_cv_target_energy = empirical_metadata.get("empirical_cv_target_energy_modes")
+        if empirical_cv_candidate_energy is not None and empirical_cv_target_energy is not None:
+            empirical_cv_value = _svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
+            empirical_cv_cumulative = _cumulative_svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
+
+    return AtlasAnalysisResult(
+        name=name,
+        kind=kind,
+        pipeline=pipeline,
+        description=description,
+        config=config,
+        population_svr=_svr(population_candidate, population_target),
+        population_candidate_modes=population_candidate,
+        population_target_modes=population_target,
+        population_cumulative_svr=_cumulative_svr(population_candidate, population_target),
+        empirical_svr=empirical_value,
+        empirical_candidate_modes=empirical_candidate,
+        empirical_target_modes=empirical_target,
+        empirical_cumulative_svr=empirical_cumulative,
+        empirical_cvser=empirical_cv_value,
+        empirical_cv_candidate_energy_modes=empirical_cv_candidate_energy,
+        empirical_cv_target_energy_modes=empirical_cv_target_energy,
+        empirical_cv_cumulative_ser=empirical_cv_cumulative,
+        metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def process(
+    config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig,
+    *,
+    dtype: npt.DTypeLike = np.float64,
+    num_samples: Optional[int] = None,
+    sample_seed: Optional[int] = None,
+    noise_variance: float = 0.0,
+    test_rotation_angle: float = 0.0,
+    name: str = "",
+    description: str = "",
+) -> AtlasAnalysisResult:
+    """
+    Analyze a simulation config directly.
+
+    Parameters
+    ----------
+    config
+        One of StimFullConfig, CovariancePairConfig, or SharedSpaceConfig.
+        The config's rng field controls the geometric structure of the simulation.
+    dtype
+        Floating dtype for the generator.
+    num_samples
+        If provided, draw empirical samples and compute empirical SVR/CVSER.
+    sample_seed
+        Seed for empirical sampling (independent of config construction rng).
+    noise_variance
+        Added isotropic noise variance for empirical samples.
+    test_rotation_angle
+        Test-set rotation angle (stim-full pipeline only).
+    name
+        Label stored in the result (optional).
+    description
+        Description stored in the result (optional).
+    """
+    config_type = type(config)
+    if config_type not in _CONFIG_DISPATCH:
+        raise TypeError(f"Unsupported config type: {config_type.__name__}. " f"Expected one of: {', '.join(t.__name__ for t in _CONFIG_DISPATCH)}")
+    kind, pipeline, gen_class = _CONFIG_DISPATCH[config_type]
+    _dtype = np.dtype(dtype)
+    gen = gen_class(config, dtype=_dtype)
+    return _run_analysis(
+        gen,
+        kind,
+        pipeline,
+        dtype=_dtype,
+        num_samples=num_samples,
+        sample_seed=sample_seed,
+        noise_variance=noise_variance,
+        test_rotation_angle=test_rotation_angle,
+        name=name,
+        description=description,
+        config=config,
+    )
 
 
 def analyze_build(
@@ -433,65 +639,18 @@ def analyze_build(
     stimulus-space K_B(A) for stim-full cases and covariance kappa for context
     pairs.
     """
-    if build.kind == "stim_full":
-        population_candidate, population_target, metadata = _stim_full_population_result(build)
-    elif build.kind == "context_pair":
-        population_candidate, population_target, metadata = _context_population_result(build)
-    else:
-        raise ValueError(f"Unknown atlas kind: {build.kind}")
-
-    empirical_candidate = None
-    empirical_target = None
-    empirical_cumulative = None
-    empirical_value = None
-    empirical_cv_candidate_energy = None
-    empirical_cv_target_energy = None
-    empirical_cv_cumulative = None
-    empirical_cv_value = None
-    if num_samples is not None:
-        rng = np.random.default_rng(sample_seed)
-        if build.kind == "stim_full":
-            empirical_candidate, empirical_target, empirical_metadata = _stim_full_empirical_result(
-                build,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
-                test_rotation_angle=test_rotation_angle,
-            )
-        else:
-            empirical_candidate, empirical_target, empirical_metadata = _context_empirical_result(
-                build,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
-            )
-        metadata = {**metadata, **empirical_metadata}
-        empirical_value = _svr(empirical_candidate, empirical_target)
-        empirical_cumulative = _cumulative_svr(empirical_candidate, empirical_target)
-        empirical_cv_candidate_energy = empirical_metadata.get("empirical_cv_candidate_energy_modes")
-        empirical_cv_target_energy = empirical_metadata.get("empirical_cv_target_energy_modes")
-        if empirical_cv_candidate_energy is not None and empirical_cv_target_energy is not None:
-            empirical_cv_value = _svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
-            empirical_cv_cumulative = _cumulative_svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
-
-    return AtlasAnalysisResult(
+    return _run_analysis(
+        build.generator,
+        build.kind,
+        build.pipeline,
+        dtype=build.dtype,
+        num_samples=num_samples,
+        sample_seed=sample_seed,
+        noise_variance=noise_variance,
+        test_rotation_angle=test_rotation_angle,
         name=build.name,
-        kind=build.kind,
-        pipeline=build.pipeline,
         description=build.description,
-        population_svr=_svr(population_candidate, population_target),
-        population_candidate_modes=population_candidate,
-        population_target_modes=population_target,
-        population_cumulative_svr=_cumulative_svr(population_candidate, population_target),
-        empirical_svr=empirical_value,
-        empirical_candidate_modes=empirical_candidate,
-        empirical_target_modes=empirical_target,
-        empirical_cumulative_svr=empirical_cumulative,
-        empirical_cvser=empirical_cv_value,
-        empirical_cv_candidate_energy_modes=empirical_cv_candidate_energy,
-        empirical_cv_target_energy_modes=empirical_cv_target_energy,
-        empirical_cv_cumulative_ser=empirical_cv_cumulative,
-        metadata=metadata,
+        config=build.config,
     )
 
 
@@ -499,13 +658,14 @@ def analyze_atlas_case(
     name: str,
     *,
     seed: Optional[int] = None,
+    dtype: npt.DTypeLike = np.float64,
     num_samples: Optional[int] = None,
     sample_seed: Optional[int] = None,
     noise_variance: float = 0.0,
     test_rotation_angle: float = 0.0,
 ) -> AtlasAnalysisResult:
     """Build and analyze one named atlas case."""
-    build = build_atlas_case(name, seed=seed)
+    build = build_atlas_case(name, seed=seed, dtype=dtype)
     return analyze_build(
         build,
         num_samples=num_samples,
@@ -513,6 +673,11 @@ def analyze_atlas_case(
         noise_variance=noise_variance,
         test_rotation_angle=test_rotation_angle,
     )
+
+
+# ---------------------------------------------------------------------------
+# Atlas registry helpers
+# ---------------------------------------------------------------------------
 
 
 def _stim_config(
@@ -541,8 +706,8 @@ def _stim_config(
     )
 
 
-def _stim_generator(config: StimFullConfig) -> StimFullGenerator:
-    return StimFullGenerator(config)
+def _stim_generator(config: StimFullConfig, dtype: npt.DTypeLike = np.float64) -> StimFullGenerator:
+    return StimFullGenerator(config, dtype=np.dtype(dtype))
 
 
 def _cov_pair_config(
@@ -569,8 +734,8 @@ def _cov_pair_config(
     )
 
 
-def _cov_pair_generator(config: CovariancePairConfig) -> CovariancePairGenerator:
-    return CovariancePairGenerator(config)
+def _cov_pair_generator(config: CovariancePairConfig, dtype: npt.DTypeLike = np.float64) -> CovariancePairGenerator:
+    return CovariancePairGenerator(config, dtype=np.dtype(dtype))
 
 
 def _shared_space_config(
@@ -593,8 +758,8 @@ def _shared_space_config(
     )
 
 
-def _shared_space_generator(config: SharedSpaceConfig) -> SharedSpaceGenerator:
-    return SharedSpaceGenerator(config)
+def _shared_space_generator(config: SharedSpaceConfig, dtype: npt.DTypeLike = np.float64) -> SharedSpaceGenerator:
+    return SharedSpaceGenerator(config, dtype=np.dtype(dtype))
 
 
 def _make_specs() -> tuple[AtlasSpec, ...]:
@@ -604,30 +769,39 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="stim_full",
             pipeline="stimulus_space",
             description="Stimulus covariance is the full covariance; nuisance and diagonal noise are absent.",
-            builder=lambda rng: (cfg := _stim_config(rng, nuisance_dim=0, nuisance_scale=0.0, noise_scale=0.0), _stim_generator(cfg)),
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=0, nuisance_scale=0.0, noise_scale=0.0),
+                _stim_generator(cfg, dtype),
+            ),
         ),
         AtlasSpec(
             name="stim_full.orthogonal_low_nuisance",
             kind="stim_full",
             pipeline="stimulus_space",
             description="Stimulus and nuisance subspaces are orthogonal; nuisance variance is modest.",
-            builder=lambda rng: (cfg := _stim_config(rng, nuisance_dim=10, nuisance_scale=0.25), _stim_generator(cfg)),
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=10, nuisance_scale=0.25),
+                _stim_generator(cfg, dtype),
+            ),
         ),
         AtlasSpec(
             name="stim_full.orthogonal_high_nuisance",
             kind="stim_full",
             pipeline="stimulus_space",
             description="Stimulus and nuisance subspaces are orthogonal; full covariance is dominated by nuisance variance.",
-            builder=lambda rng: (cfg := _stim_config(rng, nuisance_dim=40, nuisance_scale=3.0), _stim_generator(cfg)),
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=40, nuisance_scale=3.0),
+                _stim_generator(cfg, dtype),
+            ),
         ),
         AtlasSpec(
             name="stim_full.aligned_nuisance",
             kind="stim_full",
             pipeline="stimulus_space",
             description="Nuisance covariance lies on the same axes as the stimulus covariance.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _stim_config(rng, nuisance_dim=10, nuisance_scale=3.0, nuisance_alignment="aligned"),
-                _stim_generator(cfg),
+                _stim_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -635,9 +809,9 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="stim_full",
             pipeline="stimulus_space",
             description="Nuisance covariance has 45 degree principal angles from stimulus covariance.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _stim_config(rng, nuisance_dim=10, nuisance_scale=3.0, nuisance_alignment="angle", nuisance_angle=np.pi / 4),
-                _stim_generator(cfg),
+                _stim_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -645,9 +819,39 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="stim_full",
             pipeline="stimulus_space",
             description="Nuisance covariance is an independent random subspace with expected ambient overlap.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _stim_config(rng, nuisance_dim=40, nuisance_scale=2.0, nuisance_alignment="random"),
-                _stim_generator(cfg),
+                _stim_generator(cfg, dtype),
+            ),
+        ),
+        AtlasSpec(
+            name="stim_full.aligned_nuisance_nodiagonal",
+            kind="stim_full",
+            pipeline="stimulus_space",
+            description="Nuisance covariance lies on the same axes as the stimulus covariance.",
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=10, nuisance_scale=3.0, noise_scale=0.0, nuisance_alignment="aligned"),
+                _stim_generator(cfg, dtype),
+            ),
+        ),
+        AtlasSpec(
+            name="stim_full.angled_nuisance_45_nodiagonal",
+            kind="stim_full",
+            pipeline="stimulus_space",
+            description="Nuisance covariance has 45 degree principal angles from stimulus covariance.",
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=10, nuisance_scale=3.0, noise_scale=0.0, nuisance_alignment="angle", nuisance_angle=np.pi / 4),
+                _stim_generator(cfg, dtype),
+            ),
+        ),
+        AtlasSpec(
+            name="stim_full.random_nuisance_nodiagonal",
+            kind="stim_full",
+            pipeline="stimulus_space",
+            description="Nuisance covariance is an independent random subspace with expected ambient overlap.",
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=40, nuisance_scale=2.0, noise_scale=0.0, nuisance_alignment="random"),
+                _stim_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -655,9 +859,9 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="stim_full",
             pipeline="stimulus_space",
             description="Stimulus and nuisance are present, but independent neuron-specific variance dominates the full covariance.",
-            builder=lambda rng: (
-                cfg := _stim_config(rng, nuisance_dim=20, nuisance_scale=0.5, noise_scale=2.0),
-                _stim_generator(cfg),
+            builder=lambda rng, dtype: (
+                cfg := _stim_config(rng, nuisance_dim=20, nuisance_scale=0.2, noise_scale=2.0),
+                _stim_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -665,16 +869,19 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="context_pair",
             pipeline="covariance",
             description="Candidate and target covariances have identical eigenvectors and spectra.",
-            builder=lambda rng: (cfg := _cov_pair_config(rng, geometry="same"), _cov_pair_generator(cfg)),
+            builder=lambda rng, dtype: (
+                cfg := _cov_pair_config(rng, geometry="same"),
+                _cov_pair_generator(cfg, dtype),
+            ),
         ),
         AtlasSpec(
             name="context.rotated_45",
             kind="context_pair",
             pipeline="covariance",
             description="Candidate and target covariances have matched spectra but 45 degree principal-angle rotation.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _cov_pair_config(rng, geometry="angle", angle=np.pi / 4),
-                _cov_pair_generator(cfg),
+                _cov_pair_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -682,16 +889,19 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="context_pair",
             pipeline="covariance",
             description="Candidate and target covariances occupy orthogonal subspaces.",
-            builder=lambda rng: (cfg := _cov_pair_config(rng, geometry="orthogonal"), _cov_pair_generator(cfg)),
+            builder=lambda rng, dtype: (
+                cfg := _cov_pair_config(rng, geometry="orthogonal"),
+                _cov_pair_generator(cfg, dtype),
+            ),
         ),
         AtlasSpec(
             name="context.spectrum_mismatch",
             kind="context_pair",
             pipeline="covariance",
             description="Candidate and target share eigenvectors but assign variance differently across modes.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _cov_pair_config(rng, geometry="same", alpha_candidate=0.25, alpha_target=2.0),
-                _cov_pair_generator(cfg),
+                _cov_pair_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -699,9 +909,9 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="context_pair",
             pipeline="covariance",
             description="Candidate and target share only the first five dimensions; remaining target axes are private.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _cov_pair_config(rng, geometry="partial", shared_rank=5),
-                _cov_pair_generator(cfg),
+                _cov_pair_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -709,16 +919,19 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="context_pair",
             pipeline="covariance",
             description="Candidate and target covariances are independent random subspaces.",
-            builder=lambda rng: (cfg := _cov_pair_config(rng, geometry="random"), _cov_pair_generator(cfg)),
+            builder=lambda rng, dtype: (
+                cfg := _cov_pair_config(rng, geometry="random"),
+                _cov_pair_generator(cfg, dtype),
+            ),
         ),
         AtlasSpec(
             name="shared_space.shared_dominant",
             kind="context_pair",
             pipeline="covariance",
             description="Two contexts share a common subspace and have weak private covariance.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _shared_space_config(rng, private_ratio=0.5),
-                _shared_space_generator(cfg),
+                _shared_space_generator(cfg, dtype),
             ),
         ),
         AtlasSpec(
@@ -726,9 +939,9 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             kind="context_pair",
             pipeline="covariance",
             description="Two contexts share a common subspace but private covariance dominates each context.",
-            builder=lambda rng: (
+            builder=lambda rng, dtype: (
                 cfg := _shared_space_config(rng, private_ratio=3.0),
-                _shared_space_generator(cfg),
+                _shared_space_generator(cfg, dtype),
             ),
         ),
     )
@@ -758,9 +971,10 @@ def build_atlas_case(
     *,
     seed: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
+    dtype: npt.DTypeLike = np.float64,
 ) -> AtlasBuild:
     """Instantiate one named atlas case and return its config and generator."""
-    return get_atlas_spec(name).build(seed=seed, rng=rng)
+    return get_atlas_spec(name).build(seed=seed, rng=rng, dtype=dtype)
 
 
 __all__ = [
@@ -777,6 +991,7 @@ __all__ = [
     "get_atlas_spec",
     "kappa_modes",
     "list_atlas_cases",
+    "process",
     "stimulus_space_energy_modes",
     "stimulus_space_kappa_modes",
 ]
