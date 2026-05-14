@@ -100,6 +100,11 @@ class AtlasAnalysisResult:
     empirical_cv_target_energy_modes: Optional[npt.NDArray[np.floating]] = None
     empirical_cv_cumulative_ser: Optional[npt.NDArray[np.floating]] = None
 
+    empirical_cv_kappa_svr: Optional[float] = None
+    empirical_cv_kappa_candidate_modes: Optional[npt.NDArray[np.floating]] = None
+    empirical_cv_kappa_target_modes: Optional[npt.NDArray[np.floating]] = None
+    empirical_cv_kappa_cumulative_svr: Optional[npt.NDArray[np.floating]] = None
+
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -203,6 +208,21 @@ def stimulus_space_energy_modes(G_A: npt.NDArray[np.floating], B: npt.NDArray[np
     return np.maximum(_sorted_eigenvalues(G_A.T @ _symmetrize(B) @ G_A), 0.0)
 
 
+def cv_kappa_modes(
+    root_A: npt.NDArray[np.floating],
+    root_B: npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
+    """Singular values of root_A @ root_B (cross-validated kappa modes).
+
+    root_A = sqrtm_spd(Sigma_A) and root_B = sqrtm_spd(Sigma_B) must be
+    estimated from independent data. Singular values equal kappa_modes(Sigma_A,
+    Sigma_B) in the population, but removing the squared finite-sample bias that
+    arises when both roots come from the same data.
+    """
+    _, s, _ = np.linalg.svd(root_A @ root_B, full_matrices=False)
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Internal analysis helpers
 # ---------------------------------------------------------------------------
@@ -222,6 +242,24 @@ def _project_energy_modes(
 ) -> npt.NDArray[np.floating]:
     matrix = _symmetrize(kernel) if symmetrize else kernel
     return np.einsum("ij,ij->j", directions, matrix @ directions)
+
+
+def _cv_kappa_fit_score(
+    root_A_train: npt.NDArray[np.floating],
+    root_B_train: npt.NDArray[np.floating],
+    root_A_test: npt.NDArray[np.floating],
+    root_B_test: npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
+    """Learn shared subspace on train roots, score on test roots.
+
+    Mirrors SVCA.fit(root_A_train, root_B_train) then SVCA.score(root_A_test,
+    root_B_test, normalize=False). The score for mode k is:
+        u_k.T @ root_A_test @ root_B_test @ v_k
+    which is the projection of the test cross-product onto the train-learned mode.
+    Scores can be negative; their sum is a cross-validated estimate of shared signal.
+    """
+    U, _, Vt = np.linalg.svd(root_A_train @ root_B_train, full_matrices=False)
+    return np.diag(U.T @ root_A_test @ root_B_test @ Vt.T)
 
 
 def _svr(candidate_modes: npt.NDArray[np.floating], target_modes: npt.NDArray[np.floating]) -> float:
@@ -361,6 +399,85 @@ def _stim_full_cvser_result(
         "empirical_cv_fold_sizes": tuple(int(len(fold)) for fold in folds),
     }
     return candidate_energy_modes, target_energy_modes, metadata
+
+
+def _stim_full_cv_kappa_result(
+    gen: "StimFullGenerator",
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+    test_rotation_angle: float,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
+    """Cross-validated kappa for the stim-full pipeline.
+
+    Four independent draws: (train0, train1) to learn the subspace, (test0, test1)
+    to score it. train0 and test0 provide the stimulus covariance root (candidate);
+    train1 and test1 provide the full-activity covariance root (target). target_modes
+    uses the same train1/test1 target roots, shared with the candidate fit/score.
+    """
+    data_train0, _, extras_train0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_train1, _, _ = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_test0, _, extras_test0 = gen.generate(
+        num_samples, noise_variance=noise_variance, rotation_angle=test_rotation_angle, rng=rng, return_extras=True
+    )
+    data_test1, _, _ = gen.generate(num_samples, noise_variance=noise_variance, rotation_angle=test_rotation_angle, rng=rng, return_extras=True)
+
+    stim_means_train = _stimulus_means(data_train0, extras_train0["stim_indices"], gen.config.num_stimuli)
+    stim_means_test = _stimulus_means(data_test0, extras_test0["stim_indices"], gen.config.num_stimuli)
+
+    root_stim_train = sqrtm_spd(_cov(stim_means_train))
+    root_stim_test = sqrtm_spd(_cov(stim_means_test))
+    root_full_train1 = sqrtm_spd(_cov(data_train1))
+    root_full_test1 = sqrtm_spd(_cov(data_test1))
+    root_full_train0 = sqrtm_spd(_cov(data_train0))
+    root_full_test0 = sqrtm_spd(_cov(data_test0))
+
+    candidate_modes = _cv_kappa_fit_score(root_stim_train, root_full_train1, root_stim_test, root_full_test1)
+    target_modes = _cv_kappa_fit_score(root_full_train0, root_full_train1, root_full_test0, root_full_test1)
+
+    return candidate_modes, target_modes, {}
+
+
+def _context_cv_kappa_result(
+    gen,
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
+    """Cross-validated kappa for the context-pair pipeline.
+
+    Four independent draws: (train0, train1) to learn the subspace, (test0, test1)
+    to score it. candidate_modes fits on (candidate_train0, target_train1) and scores
+    on (candidate_test0, target_test1). target_modes fits on (target_train0, target_train1)
+    and scores on (target_test0, target_test1). The target_train1/test1 draws are shared
+    between both fits and scores.
+    """
+    if isinstance(gen, CovariancePairGenerator):
+        candidate_train0 = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
+        candidate_test0 = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
+        target_train0 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+        target_train1 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+        target_test0 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+        target_test1 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+    elif isinstance(gen, SharedSpaceGenerator):
+        candidate_train0, target_train0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        candidate_test0, target_test0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, target_train1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, target_test1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+    else:
+        raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
+
+    root_candidate_train0 = sqrtm_spd(_cov(candidate_train0))
+    root_candidate_test0 = sqrtm_spd(_cov(candidate_test0))
+    root_target_train0 = sqrtm_spd(_cov(target_train0))
+    root_target_train1 = sqrtm_spd(_cov(target_train1))
+    root_target_test0 = sqrtm_spd(_cov(target_test0))
+    root_target_test1 = sqrtm_spd(_cov(target_test1))
+
+    candidate_modes = _cv_kappa_fit_score(root_candidate_train0, root_target_train1, root_candidate_test0, root_target_test1)
+    target_modes = _cv_kappa_fit_score(root_target_train0, root_target_train1, root_target_test0, root_target_test1)
+
+    return candidate_modes, target_modes, {}
 
 
 def _stim_full_empirical_result(
@@ -514,11 +631,22 @@ def _run_analysis(
     empirical_cv_target_energy = None
     empirical_cv_cumulative = None
     empirical_cv_value = None
+    cv_kappa_candidate = None
+    cv_kappa_target = None
+    cv_kappa_cumulative = None
+    cv_kappa_value = None
 
     if num_samples is not None:
         rng = np.random.default_rng(sample_seed)
         if kind == "stim_full":
             empirical_candidate, empirical_target, empirical_metadata = _stim_full_empirical_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+                test_rotation_angle=test_rotation_angle,
+            )
+            cv_kappa_candidate, cv_kappa_target, _ = _stim_full_cv_kappa_result(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
@@ -532,6 +660,12 @@ def _run_analysis(
                 rng=rng,
                 noise_variance=noise_variance,
             )
+            cv_kappa_candidate, cv_kappa_target, _ = _context_cv_kappa_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+            )
         metadata = {**metadata, **empirical_metadata}
         empirical_value = _svr(empirical_candidate, empirical_target)
         empirical_cumulative = _cumulative_svr(empirical_candidate, empirical_target)
@@ -540,6 +674,8 @@ def _run_analysis(
         if empirical_cv_candidate_energy is not None and empirical_cv_target_energy is not None:
             empirical_cv_value = _svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
             empirical_cv_cumulative = _cumulative_svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
+        cv_kappa_value = _svr(cv_kappa_candidate, cv_kappa_target)
+        cv_kappa_cumulative = _cumulative_svr(cv_kappa_candidate, cv_kappa_target)
 
     return AtlasAnalysisResult(
         name=name,
@@ -559,6 +695,10 @@ def _run_analysis(
         empirical_cv_candidate_energy_modes=empirical_cv_candidate_energy,
         empirical_cv_target_energy_modes=empirical_cv_target_energy,
         empirical_cv_cumulative_ser=empirical_cv_cumulative,
+        empirical_cv_kappa_svr=cv_kappa_value,
+        empirical_cv_kappa_candidate_modes=cv_kappa_candidate,
+        empirical_cv_kappa_target_modes=cv_kappa_target,
+        empirical_cv_kappa_cumulative_svr=cv_kappa_cumulative,
         metadata=metadata,
     )
 
@@ -987,6 +1127,7 @@ __all__ = [
     "analyze_atlas_case",
     "analyze_build",
     "build_atlas_case",
+    "cv_kappa_modes",
     "energy_modes",
     "get_atlas_spec",
     "kappa_modes",
