@@ -10,7 +10,7 @@ from vrAnalysis.helpers.optimization import golden_section_search
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, Placefield, FrameBehavior, get_frame_behavior
 from dimilibi import RidgeRegression, ReducedRankRegression
-from .base import RegressionModel, ActivityParameters
+from .base import RegressionModel, ActivityParameters, OptimizationMethod
 from .hyperparameters import PlaceFieldHyperparameters, RBFPosHyperparameters, FullRegressorHyperparameters, ReducedRankRegressionHyperparameters
 from dimensionality_manuscript.regression_models import hyperparameters
 
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 
 class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "optuna"
+
     def __init__(
         self,
         registry: "PopulationRegistry",
@@ -566,6 +568,8 @@ def make_temporal_basis(
 
 
 class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "optuna"
+
     def __init__(
         self,
         registry: "PopulationRegistry",
@@ -785,6 +789,8 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
 
 
 class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "optuna"
+
     def __init__(
         self,
         registry: "PopulationRegistry",
@@ -1095,6 +1101,8 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
 
 
 class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "golden"
+
     def __init__(
         self,
         registry: "PopulationRegistry",

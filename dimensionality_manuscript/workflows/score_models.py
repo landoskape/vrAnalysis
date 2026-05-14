@@ -19,42 +19,42 @@ check_existing_scores = False  # Checks if scores already exist
 
 MODEL_NAMES: list[ModelName] = [
     # # 1D Placfield Models
-    # "external_placefield_1d",
-    # "internal_placefield_1d",
-    # "external_placefield_1d_gain",
-    # "internal_placefield_1d_gain",
-    # "external_placefield_1d_vector_gain",
-    # "internal_placefield_1d_vector_gain",
-    # # Core regression models
-    # "rbfpos_decoder_only",
-    # "rbfpos",
-    # "rbfpos_leak",
-    # "pos_speed_decoder_only",
-    # "pos_speed",
-    # "pos_speed_leak",
-    # "fullregressor_decoder_only",
-    # "fullregressor",
-    # "fullregressor_leak",
-    # # Core regression models with 1D Speed
+    "external_placefield_1d",
+    "internal_placefield_1d",
+    "external_placefield_1d_gain",
+    "internal_placefield_1d_gain",
+    "external_placefield_1d_vector_gain",
+    "internal_placefield_1d_vector_gain",
+    # Core regression models
+    "rbfpos_decoder_only",
+    "rbfpos",
+    "rbfpos_leak",
+    "pos_speed_decoder_only",
+    "pos_speed",
+    "pos_speed_leak",
+    "fullregressor_decoder_only",
+    "fullregressor",
+    "fullregressor_leak",
+    # Core regression models with 1D Speed
     "pos_speed_decoder_only_1dspeed",
     "pos_speed_1dspeed",
     "pos_speed_leak_1dspeed",
     "fullregressor_decoder_only_1dspeed",
     "fullregressor_1dspeed",
     "fullregressor_leak_1dspeed",
-    # # No intercept models
-    # "rbfpos_decoder_only_no_intercept",
-    # "rbfpos_no_intercept",
-    # "rbfpos_leak_no_intercept",
-    # "pos_speed_decoder_only_no_intercept",
-    # "pos_speed_no_intercept",
-    # "pos_speed_leak_no_intercept",
-    # "fullregressor_decoder_only_no_intercept",
-    # "fullregressor_no_intercept",
-    # "fullregressor_leak_no_intercept",
+    # No intercept models
+    "rbfpos_decoder_only_no_intercept",
+    "rbfpos_no_intercept",
+    "rbfpos_leak_no_intercept",
+    "pos_speed_decoder_only_no_intercept",
+    "pos_speed_no_intercept",
+    "pos_speed_leak_no_intercept",
+    "fullregressor_decoder_only_no_intercept",
+    "fullregressor_no_intercept",
+    "fullregressor_leak_no_intercept",
     # Reduced Rank Regression models
-    # "rrr", # optuna bad, golden good!!!!!
-    # "rrr_no_intercept", # optuna bad, golden good!!!!!
+    "rrr",
+    "rrr_no_intercept",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -63,7 +63,7 @@ SPKS_TYPES: tuple[SpksTypes] = (
     # "deconvolved",
 )
 
-METHOD = "optuna"  # "optuna"
+METHOD = "preferred"
 
 if __name__ == "__main__":
     sessiondb = get_database("vrSessions")
