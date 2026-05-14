@@ -9,13 +9,15 @@ $g(s_t)$ is a stimulus-dependent population vector, $h(n_t)$ is a stimulus-indep
 
 From this model, we can define the following objects:
 
-$$\begin{aligned}
-\Sigma_{\text{stim}} &= \operatorname{cov}_s(g(s_t)) \\
-\Sigma_{\text{nuisance}} &= \operatorname{cov}_n(h(n_t)) \\
-\Sigma_{\text{noise}} &= \operatorname{cov}(\varepsilon_t) \\
-\Sigma_{\text{full}} &= \operatorname{cov}_t(x_t) \\
+```math
+\begin{aligned}
+\Sigma_{\text{stim}} &= \mathrm{cov}_s(g(s_t)) \\
+\Sigma_{\text{nuisance}} &= \mathrm{cov}_n(h(n_t)) \\
+\Sigma_{\text{noise}} &= \mathrm{cov}(\varepsilon_t) \\
+\Sigma_{\text{full}} &= \mathrm{cov}_t(x_t) \\
 \Sigma_{\text{full}} &= \Sigma_{\text{stim}} + \Sigma_{\text{nuisance}} + \Sigma_{\text{noise}} \\
-\end{aligned}$$
+\end{aligned}
+```
 
 We are curious how much the geometry of $\Sigma_{\text{stim}}$ contributes to the covariance structure of $\Sigma_{\text{full}}$. In particular, we want a metric that fulfills the properties defined in the next section.
 
@@ -41,7 +43,7 @@ where $\|\cdot\|_*$ is the nuclear norm.
 
 We can express this in various equivalent ways, in terms of singular values ($\sigma_i$), eigenvalues ($\lambda_i$), or the trace:
 
-$$\| A^{1/2} B^{1/2} \|_* = \sum_i \sigma_i(A^{1/2}B^{1/2}) = \sum_i \sqrt{\lambda_i(A^{1/2}BA^{1/2})} = \operatorname{tr} \sqrt{A^{1/2}BA^{1/2}}$$
+$$\| A^{1/2} B^{1/2} \|_* = \sum_i \sigma_i(A^{1/2}B^{1/2}) = \sum_i \sqrt{\lambda_i(A^{1/2}BA^{1/2})} = \mathrm{tr} \sqrt{A^{1/2}BA^{1/2}}$$
 
 To understand what $\kappa(A, B)$ represents intuitively, consider the geometric meaning of each mode of overlap in the singular value decomposition of $A^{1/2}B^{1/2}$. 
 
@@ -62,24 +64,28 @@ Equipped with the shared variance overlap operator $\kappa$, we can now define a
 
 First, note that although we are interested in the geometry of $\Sigma_{\text{stim}}$, we don't have direct access to it directly because we only observe noisy samples of neural activity. We can define the empirical covariance of the average stimulus-evoked response as:
 
-$$\tilde{\Sigma}_{\text{stim}} = \operatorname{cov}_s(\bar{x}_s), \quad \text{ where } \; \bar{x}_s = \frac{1}{m_s} \sum_{t: s_t = s} x_t$$
+$$\tilde{\Sigma}_{\text{stim}} = \mathrm{cov}_s(\bar{x}_s), \quad \text{ where } \; \bar{x}_s = \frac{1}{m_s} \sum_{t: s_t = s} x_t$$
 
 Then, assuming equal and large sample size for each stimulus such that the nuisance variables are balanced:
-$$\begin{aligned}
+```math
+\begin{aligned}
 \bar{x}_s &= g(s) + \frac{1}{m_s} \sum_{t: s_t = s} h(n_t) + \frac{1}{m_s} \sum_{t: s_t = s} \varepsilon_t \\
 \mathbb{E}\left[\tilde{\Sigma}_{\text{stim}}\right] &\approx \Sigma_{\text{stim}} + \frac{1}{m_s} \Sigma_{\text{nuisance}} + \frac{1}{m_s} \Sigma_{\text{noise}}
-\end{aligned}$$
+\end{aligned}
+```
 
 Where $\mathbb{E}[\tilde{\Sigma}_{\text{stim}}]$ is the expected value of $\tilde{\Sigma}_{\text{stim}}$ across many repeats of stimuli and nuisance signals, assuming balanced sampling of stimuli and nuisance variables.
 
 We partition the trials of neural activity into two disjoint sets denoted $\mathcal{F}_{\text{train}}$ and $\mathcal{F}_{\text{test}}$, then measure the following quantities:
 
-$$\begin{aligned}
+```math
+\begin{aligned}
 \bar{x}_s^{\text{train}} &= \mathbb{E}_{t \in \mathcal{F}_{\text{train}}}[x_t \mid s_t = s] \\
-\tilde{\Sigma}_{\text{stim}}^{\text{train}} &= \operatorname{cov}_s\!\left(\bar{x}_s^{\text{train}}\right) \\
-\tilde{\Sigma}_{\text{full}}^{\text{train}} &= \operatorname{cov}_t(x_t),\quad t \in \mathcal{F}_{\text{train}} \\
-\tilde{\Sigma}_{\text{full}}^{\text{test}} &= \operatorname{cov}_t(x_t),\quad t \in \mathcal{F}_{\text{test}} \\
-\end{aligned}$$
+\tilde{\Sigma}_{\text{stim}}^{\text{train}} &= \mathrm{cov}_s\!\left(\bar{x}_s^{\text{train}}\right) \\
+\tilde{\Sigma}_{\text{full}}^{\text{train}} &= \mathrm{cov}_t(x_t),\quad t \in \mathcal{F}_{\text{train}} \\
+\tilde{\Sigma}_{\text{full}}^{\text{test}} &= \mathrm{cov}_t(x_t),\quad t \in \mathcal{F}_{\text{test}} \\
+\end{aligned}
+```
 
 Then, we use the following formula to define the ***shared variance ratio***, denoted $\text{SVR}$, which measures the ratio of reproducible structure in $\Sigma_{\text{full}}$ that is shared with $\Sigma_{\text{stim}}$:
 
@@ -92,7 +98,7 @@ Therefore, the full ratio measures the ratio of reliable structure in $\Sigma_{\
 ##### Comparison to Centered Kernel Alignment (CKA)
 Note how this differs from CKA, which uses the following formula:
 
-$$CKA(A, B) = \frac{\operatorname{tr}(A B)}{\sqrt{\operatorname{tr}(A^2) \operatorname{tr}(B^2)}}$$
+$$CKA(A, B) = \frac{\mathrm{tr}(A B)}{\sqrt{\mathrm{tr}(A^2) \mathrm{tr}(B^2)}}$$
 
 In CKA, the denominator is a normalization factor that accounts for the total variance in *each* matrix, rather than accounting for repeatability in the structure of the target matrix. Additionally, CKA measures alignment independent of scale (it acts like the cosine similarity between the two matrices), while $\text{SVR}$ measures the ratio of reproducible structure in $B$ shared with $A$. 
 
@@ -116,12 +122,12 @@ $$
 
 and
 
-$$
+```math
 \begin{aligned}
 X X^T &= B^{1/2} G_A G_A^T B^{1/2} \\
 X X^T &= B^{1/2} A B^{1/2}
 \end{aligned}
-$$
+```
 
 Since $X^T X$ and $X X^T$ have the same nonzero eigenvalues, and $B^{1/2} A B^{1/2}$ and $A^{1/2} B A^{1/2}$ have the same eigenvalues, we have:
 
@@ -131,47 +137,47 @@ for all nonzero modes.
 
 Therefore, 
 
-$$
+```math
 \begin{aligned}
 \kappa_i(A, B) &= \sqrt{\lambda_i(K_B(A))} \\
-\kappa(A, B) &= \operatorname{tr}\sqrt{K_B(A)} \\
+\kappa(A, B) &= \mathrm{tr}\sqrt{K_B(A)} \\
 \end{aligned}
-$$
+```
 
 
 This formulation is especially useful for cross-validation: independent foldwise estimates of $G_A$ yield unbiased two-view estimators of the underlying stimulus-space kernel, even when the resulting finite-sample estimator is no longer symmetric.
 
 #### Estimating $\kappa(\Sigma_{\text{stim}}, \Sigma_{\text{full}})$ without bias
-In practice, we don't have direct access to $\Sigma_{\text{stim}}$, so we need to estimate it from data. As described above, although $\bar{x}_s$ is an unbiased estimator of $g(s)$, the empirical covariance $\tilde{\Sigma}_{\text{stim}} = \operatorname{cov}_s(\bar{x}_s)$ is a biased estimator of $\Sigma_{\text{stim}}$ because it includes noise from finite trial sampling. 
+In practice, we don't have direct access to $\Sigma_{\text{stim}}$, so we need to estimate it from data. As described above, although $\bar{x}_s$ is an unbiased estimator of $g(s)$, the empirical covariance $\tilde{\Sigma}_{\text{stim}} = \mathrm{cov}_s(\bar{x}_s)$ is a biased estimator of $\Sigma_{\text{stim}}$ because it includes noise from finite trial sampling. 
 
 To mitigate this bias, we can use a cross-validated stimulus space estimator of $\kappa(\Sigma_{\text{stim}}, \Sigma_{\text{full}})$ that uses three independent splits of the data, $\mathcal{F}_1$, $\mathcal{F}_2$, and $\mathcal{F}_3$, to compute three independent estimates of the stimulus-evoked mean response for each stimulus. The first estimate will be used to compute directions, and the remaining estimates will be used for cross-validated measurement of amplitudes. We will use the stimulus space form as follows:
 
 Divide the training trials into three repeats: $\mathcal{F}_{tr1}$, $\mathcal{F}_{tr2}$, and $\mathcal{F}_{tr3}$. Then, compute the stimulus-evoked mean response for each stimulus in each repeat:
 
-$$
+```math
 \bar{x}_s^{(k)} = \mathbb{E}_{t \in \mathcal{F}_{k}}[x_t \mid s_t = s] \\
 \bar{X}^{(k)} = \begin{bmatrix} \bar{x}_1^{(k)} & \cdots & \bar{x}_S^{(k)} \end{bmatrix}
-$$
+```
 
 Next, from each repeat, we can compute the "pre-covariance" matrix by centering and scaling the stimulus-evoked mean responses. Here, $\mathbf{1}_S$ is a vector of ones of length $S$, and the centering term $\frac{1}{S} \bar{X}^{(k)} \mathbf{1}_S \mathbf{1}_S^T$ removes the mean across stimuli from each neuron's response:
 
-$$
+```math
 G_{\text{stim}}^{(k)} = \frac{1}{\sqrt{S - 1}} \left( \bar{X}^{(k)} - \frac{1}{S} \bar{X}^{(k)} \mathbf{1}_S \mathbf{1}_S^T \right) \in \mathbb{R}^{N \times S}
-$$
+```
 
 With this, we have $G_{\text{stim}}^{(k)} (G_{\text{stim}}^{(k)})^T = \tilde{\Sigma}_{\text{stim}}^{(k)}$, which is the empirical stimulus covariance computed from repeat $k$.
 
 To estimate directions, we first compute the eigenvectors of $K_{\text{full}}(G_{\text{stim}}^{(1)}) = (G_{\text{stim}}^{(1)})^T \tilde{\Sigma}_{\text{full}}^{\text{test}} G_{\text{stim}}^{(1)}$ using only the first repeat. Then, we measure the covariance along those directions of using the second and third repeats. With $u_i$ denoting the $i$th eigenvector of $K_{\text{full}}(G_{\text{stim}}^{(1)})$, we can compute the $i$th mode of shared variance as follows:
 
-$$
+```math
 w_i^{cv} = (G_{\text{stim}}^{(2)} u_i)^T \tilde{\Sigma}_{\text{full}}^{\text{test}} (G_{\text{stim}}^{(3)} u_i)
-$$
+```
 
 This is a valid, unbiased estimator of the covariance along the $i$th mode of overlap because $G_{\text{stim}}^{(2)}$ and $G_{\text{stim}}^{(3)}$ are independent estimates of the stimulus space, and $\tilde{\Sigma}_{\text{full}}^{\text{test}}$ is yet another independent estimate of the full covariance. However, it has the wrong scale as $\kappa$. Whereas $\kappa_i(A, B) = \sqrt{\lambda_i(K_B(A))}$, we have $\mathbb{E}[w_i^{cv}] = \lambda_i(K_B(A))$, but we can't take the square root of $w_i^{cv}$ because it can be negative. 
 
 We can do one of the following: 
 
-1. Instead of using the "amplitude" scale of $\kappa$, which estimates the singular values rather than eigenvalues, we can turn to this "energy" scale, which matches the bilinear form of our cross-validated estimator. In that case, the numerator of $\text{SVR}$ would be $\sum_i w_i^{cv}$, which is an unbiased estimator of $\operatorname{tr}(K_B(A)) = \operatorname{tr}(A B)$. The denominator of $\text{SVR}$ would be $\operatorname{tr}(\tilde{\Sigma}_{\text{full}}^{\text{train}} \tilde{\Sigma}_{\text{full}}^{\text{test}})$, which is an unbiased estimator of $\operatorname{tr}(\Sigma_{\text{full}}^2)$. This is closer in relation to CKA than the original definition of $\text{SVR}$. It measures the ratio of shared energy rather than the ratio of shared variance, and emphasize high-variance modes more than full distributions. 
+1. Instead of using the "amplitude" scale of $\kappa$, which estimates the singular values rather than eigenvalues, we can turn to this "energy" scale, which matches the bilinear form of our cross-validated estimator. In that case, the numerator of $\text{SVR}$ would be $\sum_i w_i^{cv}$, which is an unbiased estimator of $\mathrm{tr}(K_B(A)) = \mathrm{tr}(A B)$. The denominator of $\text{SVR}$ would be $\mathrm{tr}(\tilde{\Sigma}_{\text{full}}^{\text{train}} \tilde{\Sigma}_{\text{full}}^{\text{test}})$, which is an unbiased estimator of $\mathrm{tr}(\Sigma_{\text{full}}^2)$. This is closer in relation to CKA than the original definition of $\text{SVR}$. It measures the ratio of shared energy rather than the ratio of shared variance, and emphasize high-variance modes more than full distributions. 
 
 2. Alternatively, we can make the argument that negative values of $w_i^{cv}$ are likely to be noise, and therefore we can threshold $w_i^{cv}$ at 0 then take the square root. Although this is biased, it permits the cross-validated form to estimate the same quantity as the original $\text{SVR}$. This form looks like this:
 $$\text{SVR} = \frac{\sum_i \sqrt{\max(w_i^{cv}, 0)}}{\kappa\!\left(\tilde{\Sigma}_{\text{full}}^{\text{train}},\, \tilde{\Sigma}_{\text{full}}^{\text{test}}\right)}$$
@@ -180,44 +186,47 @@ $$\text{SVR} = \frac{\sum_i \sqrt{\max(w_i^{cv}, 0)}}{\kappa\!\left(\tilde{\Sigm
 #### Summary of 3 Key metrics
 1. Shared Variance Ratio
 
-$$\text{SVR}(A, B) = \frac{\kappa\!\left(A_{\text{train}}, B_{\text{test}}\right)}{\kappa\!\left(B_{\text{train}}, B_{\text{test}}\right)}$$
-
-$$\kappa(A, B) = \| A^{1/2} B^{1/2} \|_*$$
+```math
+\text{SVR}(A, B) = \frac{\kappa\!\left(A_{\text{train}}, B_{\text{test}}\right)}{\kappa\!\left(B_{\text{train}}, B_{\text{test}}\right)}
+\kappa(A, B) = \| A^{1/2} B^{1/2} \|_*
+```
 
 - The shared variance ratio measures how much variance overlap there is between $A$ and $B$ relative to the reliability of the structure in $B$. 
 - It compares $A$ and $B$ in train samples to $B$ in test samples, which makes it cross-validated, although it is not unbiased because the nuclear norm $\|\cdot\|_*$ is nonnegative.
-- When $A=B$, then $\kappa(A, B) = \operatorname{tr}(A) = \operatorname{tr}(B)$ and $\text{SVR}(A, B) = 1$.
+- When $A=B$, then $\kappa(A, B) = \mathrm{tr}(A) = \mathrm{tr}(B)$ and $\text{SVR}(A, B) = 1$.
 - $\text{SVR}(A, B)$ emphasizes the full dimensionality because it uses the ***variance scale*** of $A$ and $B$ by using the square root of the eigenvalues of a covariance matrix product (compare to the two metrics below).
 
 
 2. Cross-validated Shared Energy Ratio
 
-$$\text{cvSER}(A, B) = \frac{\operatorname{tr}(G_{12})}{\operatorname{tr}(B_{12} B_3)}$$
-
-$$G_{ij} \triangleq f(A_i)^T B_3 f(A_j)$$
-
-$$f(A) = \frac{1}{\sqrt{S - 1}} \left( A - \frac{1}{S} A \mathbf{1}_S \mathbf{1}_S^T \right)$$
+```math
+\text{cvSER}(A, B) = \frac{\mathrm{tr}(G_{12})}{\mathrm{tr}(B_{12} B_3)}
+G_{ij} \triangleq f(A_i)^T B_3 f(A_j)
+f(A) = \frac{1}{\sqrt{S - 1}} \left( A - \frac{1}{S} A \mathbf{1}_S \mathbf{1}_S^T \right)
+```
 
 - The cross-validated shared energy ratio measures how much variance overlap there is between $A$ and $B$ relative to the reliability of the structure in $B$.
-- The numerator is a cross-validated estimator of $\operatorname{tr}(A B)$, which means we can use repeats of a stimulus presentation (or environment traversal) to reduce the contribution of nuisance signals to the estimation of stimulus-specific covariance.
+- The numerator is a cross-validated estimator of $\mathrm{tr}(A B)$, which means we can use repeats of a stimulus presentation (or environment traversal) to reduce the contribution of nuisance signals to the estimation of stimulus-specific covariance.
 - The $\text{cvSER}$ emphasizes high-variance modes because it uses the ***variance-squared scale*** of $A$ and $B$ by using the eigenvalues of a covariance matrix product. This means if several high-variance modes are shared, the $\text{cvSER}$ will be high, even if there are many lower-variance modes that disagree.
 
 3. Centered Kernel Alignment (CKA)
 
-$$CKA(A, B) = \frac{\operatorname{tr}(A_{\text{train}} B_{\text{test}})}{\sqrt{\operatorname{tr}(A_{\text{train}}^2) \operatorname{tr}(B_{\text{test}}^2)}}$$
+```math
+CKA(A, B) = \frac{\mathrm{tr}(A_{\text{train}} B_{\text{test}})}{\sqrt{\mathrm{tr}(A_{\text{train}}^2) \mathrm{tr}(B_{\text{test}}^2)}}
+```
 
 - CKA measures how much variance overlap there is between $A$ and $B$ relative to the total variance in each matrix, without accounting for reliability of structure in either matrix.
 - It compares $A$ in a train sample to $B$ in a test sample, which makes it cross-validated (in the numerator, not the denominator!), although it is not unbiased because the trace of covariance matrices is nonnegative.
 - When $A=B$, then population $CKA(A, B) = 1$ (sample CKA will approach 1 as sample size increases).
 - Like $\text{cvSER}$, CKA emphasizes high-variance modes because it uses the variance-squared scale of $A$ and $B$ by using the eigenvalues of a covariance matrix product without a square root. 
-- CKA acts like a matrix inner product (it measures the cosine similarity between $A$ and $B$, with $\langle A, B \rangle = \operatorname{tr}(A B)$). Due to this property, CKA is always bounded above by $1$ and measures alignment (weighted by variance) independent of scale. 
+- CKA acts like a matrix inner product (it measures the cosine similarity between $A$ and $B$, with $\langle A, B \rangle = \mathrm{tr}(A B)$). Due to this property, CKA is always bounded above by $1$ and measures alignment (weighted by variance) independent of scale. 
 
 
 
 #### Amplitude vs. energy perspectives
 Above, we measure $\kappa(A, B) = \sum_i \kappa_i(A, B)$ to quantify the total shared variance across all overlap modes, in which we use the "amplitude" scale of $AB$ by taking the square root of the eigenvalues. In this case, when $A=B$, then $\kappa_i(A, A) = \lambda_i(A)$ which feels appropriate.
 
-However, the cross-validated bilinear form is more amenable to the "energy" scale that does not use a square root. If instead we used $\omega(A, B) = \sum_i \lambda_i(K_B(A)) = \operatorname{tr}(AB)$, then we could use the cross-validated estimator without modification. In this case, when $A=B$, then $\kappa_i(A, A) = \lambda_i^2(A)$.
+However, the cross-validated bilinear form is more amenable to the "energy" scale that does not use a square root. If instead we used $\omega(A, B) = \sum_i \lambda_i(K_B(A)) = \mathrm{tr}(AB)$, then we could use the cross-validated estimator without modification. In this case, when $A=B$, then $\kappa_i(A, A) = \lambda_i^2(A)$.
 
 The amplitude perspective is more sensitive to the full distribution of variance across modes, whereas the energy perspective is more sensitive to any highly overlapping high-variance modes. Both perspectives are interesting.
 
@@ -225,9 +234,9 @@ The amplitude perspective is more sensitive to the full distribution of variance
 #### The SVR estimates a true fraction for within condition comparisons
 We have defined the shared variance ratio as follows:
 
-$$
+```math
 \text{SVR} = \frac{\kappa(A, C)}{\kappa(B, C)}
-$$
+```
 
 In the case where matrix $A$ comes from a subset of the variance in $B$, we can establish that the population $\text{SVR}$ is bounded between 0 and 1, making it a true *fraction* of shared variance.
 
@@ -237,27 +246,33 @@ Matrix congruence preserves Loewner order. If $A \preceq B$ and $C$ is any matri
 
 We can express $\kappa(A, C)$ in terms of the eigenvalues of $A^{1/2}CA^{1/2}$ or $C^{1/2}AC^{1/2}$, which are the same:
 
-$$\begin{aligned}
+```math
+\begin{aligned}
 \kappa(A, C) &= \sum_i \sqrt{\lambda_i(A^{1/2}CA^{1/2})} = \sum_i \sqrt{\lambda_i(C^{1/2}AC^{1/2})} \\
 \kappa(B, C) &= \sum_i \sqrt{\lambda_i(B^{1/2}CB^{1/2})} = \sum_i \sqrt{\lambda_i(C^{1/2}BC^{1/2})}
-\end{aligned}$$
+\end{aligned}
+```
 
 Then, using the rightmost notation, where $C$ wraps $A$ or $B$, we have:
 
-$$\begin{aligned}
+```math
+\begin{aligned}
 A &\preceq B \\
 \implies C^{1/2} A C^{1/2} &\preceq C^{1/2} B C^{1/2} \\
 \implies \lambda_i(C^{1/2} A C^{1/2}) &\leq \lambda_i(C^{1/2} B C^{1/2}) \quad \forall i \\
 \implies \kappa(A, C) &\leq \kappa(B, C)
-\end{aligned}$$
+\end{aligned}
+```
 
 In our specific case, we have:
 
-$$\begin{aligned}
+```math
+\begin{aligned}
 A &= \Sigma_{\text{stim}}^{\text{train}} \\
 B &= \Sigma_{\text{full}}^{\text{train}} \\
 C &= \Sigma_{\text{full}}^{\text{test}}
-\end{aligned}$$
+\end{aligned}
+```
 
 We know from our generative model that $\Sigma_{\text{stim}} \preceq \Sigma_{\text{full}}$ because $\Sigma_{\text{full}} = \Sigma_{\text{stim}} + \Sigma_{\text{nuisance}} + \Sigma_{\text{noise}}$ and $\Sigma_{\text{nuisance}} + \Sigma_{\text{noise}} \succeq 0$. Therefore, 
 
@@ -278,7 +293,7 @@ $$0 \leq \frac{\kappa\!\left(\Sigma_{\text{stim}}^{\text{train}},\, \Sigma_{\tex
 
 This means that the expected value of $\text{SVR}$, which uses $\tilde{\Sigma}_{\text{stim}}$ in the numerator, is an upper bound of the latent $\text{SVR}$. The real case, where $\tilde{\Sigma}_{\text{stim}}$ is a finite-sample, rather than it's expected value is more complicated, but follows a similar trend. Using the law of total covariance for the empirical covariance matrix, we have:
 
-$$\operatorname{cov}_t(x_t)=\operatorname{cov}_s(\bar{x}_s) + \mathbb{E}_s[\operatorname{cov}_t(x_t \mid s_t = s)]$$
+$$\mathrm{cov}_t(x_t)=\mathrm{cov}_s(\bar{x}_s) + \mathbb{E}_s[\mathrm{cov}_t(x_t \mid s_t = s)]$$
 
 which implies that $\tilde{\Sigma}_{\text{stim}} \preceq \tilde{\Sigma}_{\text{full}}$.
 
