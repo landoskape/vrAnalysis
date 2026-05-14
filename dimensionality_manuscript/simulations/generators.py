@@ -39,7 +39,7 @@ class SharedSpaceGenerator:
 
     def __init__(self, config: SharedSpaceConfig, dtype: np.dtype = np.float64):
         self.config = config
-        self.dtype = dtype
+        self.dtype = np.dtype(dtype)
         rng = config.rng if config.rng is not None else np.random.default_rng()
 
         n_shared = config.shared_dimensions
@@ -77,7 +77,7 @@ class SharedSpaceGenerator:
 
         true_cov1 = shared_cov + self.config.private_ratio**2 * private_cov1
         true_cov2 = shared_cov + self.config.private_ratio**2 * private_cov2
-        return true_cov1, true_cov2
+        return true_cov1.astype(self.dtype, copy=False), true_cov2.astype(self.dtype, copy=False)
 
     def generate(
         self,
@@ -366,7 +366,7 @@ class StimFullGenerator:
 
     def __init__(self, config: StimFullConfig, dtype: np.dtype = np.float64):
         self.config = config
-        self.dtype = dtype
+        self.dtype = np.dtype(dtype)
         rng = config.rng if config.rng is not None else np.random.default_rng()
 
         N = config.num_neurons
@@ -461,10 +461,14 @@ class StimFullGenerator:
             diag(eps_scales^2)
         """
         stim_responses = self.stim_space @ np.diag(np.sqrt(self.stim_spectrum)) @ self.stim_latents  # (N, S)
-        sigma_stim = np.cov(stim_responses, rowvar=True)
+        sigma_stim = np.cov(stim_responses, rowvar=True, dtype=self.dtype).astype(self.dtype, copy=False)
         sigma_nuisance = (self.config.nuisance_scale**2) * self.nuisance_space @ np.diag(self.nuisance_spectrum) @ self.nuisance_space.T
         sigma_eps = np.diag(self.eps_scales**2)
-        return sigma_stim, sigma_nuisance, sigma_eps
+        return (
+            sigma_stim,
+            sigma_nuisance.astype(self.dtype, copy=False),
+            sigma_eps.astype(self.dtype, copy=False),
+        )
 
     def generate(
         self,
@@ -595,7 +599,7 @@ class CovariancePairGenerator:
 
     def __init__(self, config: CovariancePairConfig, dtype: np.dtype = np.float64):
         self.config = config
-        self.dtype = dtype
+        self.dtype = np.dtype(dtype)
         rng = config.rng if config.rng is not None else np.random.default_rng()
 
         N = config.num_neurons
@@ -681,7 +685,7 @@ class CovariancePairGenerator:
         """Return the candidate and target population covariance matrices."""
         candidate = self.candidate_space @ np.diag(self.candidate_spectrum) @ self.candidate_space.T
         target = self.target_space @ np.diag(self.target_spectrum) @ self.target_space.T
-        return candidate, target
+        return candidate.astype(self.dtype, copy=False), target.astype(self.dtype, copy=False)
 
     def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         """Alias for expected_covariances, matching other simulation generators."""

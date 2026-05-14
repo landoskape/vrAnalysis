@@ -18,7 +18,7 @@ from .generators import (
 )
 from .operators import sqrtm_spd, invsqrtm_spd, geometric_mean_spd, root_sandwich
 from .plotting import plot_ellipse
-from .shared_variance_atlas import (
+from .shared_variance import (
     ATLAS,
     AtlasAnalysisResult,
     AtlasBuild,
@@ -30,6 +30,7 @@ from .shared_variance_atlas import (
     get_atlas_spec,
     kappa_modes,
     list_atlas_cases,
+    process,
     stimulus_space_energy_modes,
     stimulus_space_kappa_modes,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "get_atlas_spec",
     "kappa_modes",
     "list_atlas_cases",
+    "process",
     "stimulus_space_energy_modes",
     "stimulus_space_kappa_modes",
     "get_orthogonal_direction",
