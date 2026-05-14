@@ -8,16 +8,19 @@ import pandas as pd
 from vrAnalysis.helpers import edge2center, vectorCorrelation
 from vrAnalysis.helpers.optimization import golden_section_search
 from vrAnalysis.sessions import B2Session, SpksTypes
-from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, Placefield, FrameBehavior
+from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, Placefield, FrameBehavior, get_frame_behavior
 from dimilibi import RidgeRegression, ReducedRankRegression
-from .base import RegressionModel, ActivityParameters
-from .hyperparameters import PlaceFieldHyperparameters, RBFPosHyperparameters, ReducedRankRegressionHyperparameters
+from .base import RegressionModel, ActivityParameters, OptimizationMethod
+from .hyperparameters import PlaceFieldHyperparameters, RBFPosHyperparameters, FullRegressorHyperparameters, ReducedRankRegressionHyperparameters
+from dimensionality_manuscript.regression_models import hyperparameters
 
 if TYPE_CHECKING:
     from ..registry import PopulationRegistry, SplitName
 
 
 class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "optuna"
+
     def __init__(
         self,
         registry: "PopulationRegistry",
@@ -416,12 +419,163 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         return internals
 
 
+def make_position_basis(
+    session: B2Session,
+    frame_behavior: FrameBehavior,
+    hyperparameters: RBFPosHyperparameters | FullRegressorHyperparameters,
+) -> torch.Tensor:
+    """Make the position basis for the Full Regressor model.
+
+    The position basis is a tensor of shape (num_timepoints, num_basis * num_environments) where
+    each column is a basis function for a given environment. When viewed as a 3-tensor with shape
+    (num_timepoints, num_environments, num_basis) each timepoint in a particular environment will
+    have a basis function represented in basis[timepoint, environment, :] with a structure depending
+    on the number of basis functions and basis width (set by hyperparameters).
+
+    Parameters
+    ----------
+    session : B2Session
+        The session to make the position basis for. Used simply to get environment length.
+    frame_behavior : FrameBehavior
+        The frame behavior to make the position basis for.
+    hyperparameters : RBFPosHyperparameters | FullRegressorHyperparameters
+        The hyperparameters to use for the position_basis creation.
+
+    Returns
+    -------
+    basis : torch.Tensor
+        The position basis of shape (num_timepoints, num_basis * num_environments).
+    """
+    if np.unique(session.env_length).size != 1:
+        raise ValueError("All trials must have the same environment length!")
+
+    # Set up the basis centers
+    env_length = session.env_length[0]
+    basis_centers = edge2center(np.linspace(0, env_length, hyperparameters.num_basis + 1))
+    basis_width = hyperparameters.basis_width
+
+    # Create the position basis
+    basis = torch.tensor(norm.pdf(frame_behavior.position[:, None], basis_centers, basis_width), dtype=torch.float32)
+
+    # Now we need to divide it by environment (right now it's agnostic)
+    environments = session.environments
+    env_idx = torch.tensor(np.searchsorted(environments, frame_behavior.environment))
+    basis_by_env = torch.zeros((len(frame_behavior.position), len(environments), hyperparameters.num_basis))
+
+    # Scatter in basis by environment (so it's zero everywhere else)
+    env_idx_for_scatter = env_idx.unsqueeze(-1).expand(-1, hyperparameters.num_basis).unsqueeze(1)
+    basis_by_env.scatter_(1, env_idx_for_scatter, basis.unsqueeze(1))
+    return basis_by_env.view(len(frame_behavior.position), -1)
+
+
+def make_percentile_basis(signal: np.ndarray, num_basis: int):
+    """Make a basis of percentile functions for the Full Regressor model.
+
+    The percentile basis is a tensor of shape (num_timepoints, num_basis) where each
+    column is a basis function corresponding to a percentile range of the input
+    signal. The value of each basis function at a given timepoint is determined by the
+    distance between the signal at that timepoint and the corresponding percentile value.
+
+    Parameters
+    ----------
+    signal : np.ndarray
+        The input signal to make the percentile basis for.
+    num_basis : int
+        The number of basis functions to create.
+
+    Returns
+    -------
+    basis : torch.Tensor
+        The percentile basis of shape (num_timepoints, num_basis).
+    """
+    percentiles = edge2center(np.linspace(0, 100, num_basis + 1))
+    percentile_values = np.percentile(signal, percentiles)
+    basis_width = (percentile_values[1] - percentile_values[0]) * 2.0
+    basis = torch.tensor(norm.pdf(signal[:, None], percentile_values, basis_width), dtype=torch.float32)
+    return basis
+
+
+def make_temporal_basis(
+    signal: np.ndarray,
+    num_lags: int,
+    basis_width: float,
+    only_predictive: bool = False,
+    only_responsive: bool = False,
+    remove_empty: bool = True,
+):
+    """Make a basis of temporal functions for the Full Regressor model.
+
+    The temporal basis is a tensor of shape (num_timepoints, num_basis) where each
+    column is the input signal filtered by a raised-cosine temporal basis function.
+    The middle basis function is centered at lag 0, and adjacent basis functions are
+    spaced by ``basis_width`` time bins.
+
+    Parameters
+    ----------
+    signal : np.ndarray
+        The input signal to make the temporal basis for.
+    num_lags : int
+        The number of lags (in addition to lag=0) to include.
+    basis_width : float
+        The spacing, in time bins, between adjacent raised-cosine basis centers.
+    only_predictive : bool
+        If True, will only use predictive lags.
+    only_responsive : bool
+        If True, will only use responsive lags.
+    remove_empty : bool = True
+        If True, will remove basis functions that have no support after clipping (note this changes the effective
+        num_basis!)
+
+    Returns
+    -------
+    basis : torch.Tensor
+        The temporal basis of shape (num_timepoints, num_bases).
+    """
+    if basis_width <= 0:
+        raise ValueError("basis_width must be positive!")
+
+    if only_predictive and only_responsive:
+        raise ValueError("If you want to use both predictive and responsive lags, set only_predictive and only_responsive to False!")
+
+    signal = np.asarray(signal, dtype=float)
+    num_basis = num_lags * 2 + 1
+    basis_centers = (np.arange(num_basis) - num_lags) * basis_width
+    max_lag = int(np.ceil(np.max(np.abs(basis_centers)) + basis_width))
+    lags = np.arange(-max_lag, max_lag + 1)
+
+    scaled_lags = (lags[:, None] - basis_centers[None, :]) / basis_width
+    filters = np.zeros_like(scaled_lags, dtype=float)
+    idx_supported = np.abs(scaled_lags) <= 1
+    filters[idx_supported] = 0.5 * (np.cos(np.pi * scaled_lags[idx_supported]) + 1.0)
+    filter_sums = filters.sum(axis=0, keepdims=True)
+    filters = np.divide(filters, filter_sums, out=np.zeros_like(filters), where=filter_sums > 0)
+
+    if only_predictive:
+        filters[lags > 0, :] = 0.0
+    elif only_responsive:
+        filters[lags < 0, :] = 0.0
+
+    if remove_empty:
+        idx_nonzero = np.any(filters != 0, axis=0)
+        filters = filters[:, idx_nonzero]
+        basis_centers = basis_centers[idx_nonzero]
+        num_basis = filters.shape[1]
+
+    padded_signal = np.pad(signal, (max_lag, max_lag), mode="constant")
+    basis = np.column_stack([np.convolve(padded_signal, filters[:, i], mode="valid") for i in range(num_basis)])
+    basis = torch.tensor(basis, dtype=torch.float32)
+    return basis
+
+
 class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "optuna"
+
     def __init__(
         self,
         registry: "PopulationRegistry",
         split_train: bool = True,
         predict_latents: bool = True,
+        fit_intercept: bool = True,
         hyperparameters: RBFPosHyperparameters = RBFPosHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
@@ -432,7 +586,7 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
             autosave=autosave,
         )
         self.hyperparameters = hyperparameters
-        self.fit_intercept = True
+        self.fit_intercept = fit_intercept
         self.nonnegative = True
 
         # This model requires double-cross-validation to prevent non-spatial leakage
@@ -496,13 +650,13 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         if self.predict_latents:
             # Train the encoder model to predict the position basis from source neuron activity
             source_data_encoder, _, frame_behavior_encoder = self.get_session_data(session, spks_type, encoder_split)
-            basis_for_encoder = self.make_position_basis(session, frame_behavior_encoder, hyperparameters)
+            basis_for_encoder = make_position_basis(session, frame_behavior_encoder, hyperparameters)
             encoder = RidgeRegression(alpha=hyperparameters.alpha_encoder, fit_intercept=self.fit_intercept)
             encoder = encoder.fit(source_data_encoder.T, basis_for_encoder)
 
         # Train the decoder model to predict the target neuron activity from the position basis
         _, target_data_decoder, frame_behavior_decoder = self.get_session_data(session, spks_type, decoder_split)
-        basis_for_decoder = self.make_position_basis(session, frame_behavior_decoder, hyperparameters)
+        basis_for_decoder = make_position_basis(session, frame_behavior_decoder, hyperparameters)
         decoder = RidgeRegression(alpha=hyperparameters.alpha_decoder, fit_intercept=self.fit_intercept)
         decoder = decoder.fit(basis_for_decoder, target_data_decoder.T)
 
@@ -549,11 +703,14 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
         extras : dict
             Extra information about the prediction. Contains the "true" position basis and the predicted position basis.
         """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
         # Get source activity and frame_behavior for the requested split
         source_data, _, frame_behavior = self.get_session_data(session, spks_type, split)
 
         # Make the position basis... of the "true" position
-        position_basis = self.make_position_basis(session, frame_behavior, hyperparameters)
+        position_basis = make_position_basis(session, frame_behavior, hyperparameters)
         extras = {"position_basis": np.array(position_basis)}
 
         if self.predict_latents:
@@ -596,58 +753,6 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
 
         return prediction, extras
 
-    def make_position_basis(
-        self,
-        session: B2Session,
-        frame_behavior: FrameBehavior,
-        hyperparameters: Optional[RBFPosHyperparameters] = None,
-    ) -> torch.Tensor:
-        """Make the position basis for the RBF(Pos) model.
-
-        The position basis is a tensor of shape (num_timepoints, num_basis * num_environments) where
-        each column is a basis function for a given environment. When viewed as a 3-tensor with shape
-        (num_timepoints, num_environments, num_basis) each timepoint in a particular environment will
-        have a basis function represented in basis[timepoint, environment, :] with a structure depending
-        on the number of basis functions and basis width (set by hyperparameters).
-
-        Parameters
-        ----------
-        session : B2Session
-            The session to make the position basis for. Used simply to get environment length.
-        frame_behavior : FrameBehavior
-            The frame behavior to make the position basis for.
-        hyperparameters : Optional[RBFPosHyperparameters]
-            The hyperparameters to use for the RBF(Pos) model. If None, uses the default hyperparameters for the model.
-
-        Returns
-        -------
-        basis : torch.Tensor
-            The position basis for the RBF(Pos) model of shape (num_timepoints, num_basis * num_environments).
-        """
-        if hyperparameters is None:
-            hyperparameters = self.hyperparameters
-
-        if np.unique(session.env_length).size != 1:
-            raise ValueError("All trials must have the same environment length!")
-
-        # Set up the basis centers
-        env_length = session.env_length[0]
-        basis_centers = edge2center(np.linspace(0, env_length, hyperparameters.num_basis + 1))
-        basis_width = hyperparameters.basis_width
-
-        # Create the position basis
-        basis = torch.tensor(norm.pdf(frame_behavior.position[:, None], basis_centers, basis_width), dtype=torch.float32)
-
-        # Now we need to divide it by environment (right now it's agnostic)
-        environments = session.environments
-        env_idx = torch.tensor(np.searchsorted(environments, frame_behavior.environment))
-        basis_by_env = torch.zeros((len(frame_behavior.position), len(environments), hyperparameters.num_basis))
-
-        # Scatter in basis by environment (so it's zero everywhere else)
-        env_idx_for_scatter = env_idx.unsqueeze(-1).expand(-1, hyperparameters.num_basis).unsqueeze(1)
-        basis_by_env.scatter_(1, env_idx_for_scatter, basis.unsqueeze(1))
-        return basis_by_env.view(len(frame_behavior.position), -1)
-
     @property
     def _model_hyperparameters(self) -> Type[RBFPosHyperparameters]:
         """Return the hyperparameter class constructor for RBFPosModel.
@@ -678,13 +783,330 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
             model_name += "_decoder_only"
         elif not self.split_train:
             model_name += "_leak"
+        if not self.fit_intercept:
+            model_name += "_no_intercept"
+        return model_name
+
+
+class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "optuna"
+
+    def __init__(
+        self,
+        registry: "PopulationRegistry",
+        split_train: bool = True,
+        predict_latents: bool = True,
+        speed_basis: bool = True,
+        no_reward: bool = False,
+        fit_intercept: bool = True,
+        hyperparameters: FullRegressorHyperparameters = FullRegressorHyperparameters(),
+        activity_parameters: ActivityParameters = ActivityParameters(),
+        autosave: bool = True,
+    ):
+        super().__init__(
+            registry,
+            activity_parameters=activity_parameters,
+            autosave=autosave,
+        )
+        self.hyperparameters = hyperparameters
+        self.fit_intercept = fit_intercept
+        self.nonnegative = True
+        self.speed_basis = speed_basis
+        self.no_reward = no_reward
+
+        # This model requires double-cross-validation to prevent non-spatial leakage
+        # between activity and position in the training set. To account for this, the
+        # population registry created two training sets -- train_0 and train_1 -- which
+        # are used to train the encoder and decoder respectively. (They're usually combined
+        # in other models).
+        # ------------------------------------------------------------------------------------
+        # To keep the API consistent with other models, I didn't want to add an additional
+        # split parameter for the train split - so instead we set a flag called _split_train
+        # which tells us to split 'train' into 'train0' and 'train1'.... but we *won't* double
+        # cross-validate if any other split is requested.
+        self.predict_latents = predict_latents
+        if not predict_latents:
+            # When we're not predicting latents, we don't need to split the training set
+            # into the decoder and encoder splits!
+            self.split_train = False
+        else:
+            self.split_train = split_train
+
+    def train(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "train",
+        hyperparameters: Optional[FullRegressorHyperparameters] = None,
+    ) -> Union[RidgeRegression, tuple[RidgeRegression, RidgeRegression]]:
+        """Train the model by fitting the Full Regressor model to the training data.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to train the Full Regressor model on.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        split: Optional["SplitName"]
+            The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
+            When _split_train is True, 'train' is split into 'train0' and 'train1' for the encoder and decoder.
+        hyperparameters : Optional[FullRegressorHyperparameters]
+            The hyperparameters to use for the Full Regressor model. If None, uses the default hyperparameters for the model.
+
+        Returns
+        -------
+        RidgeRegression or tuple[RidgeRegression, RidgeRegression]
+            The trained encoder and decoder models. The encoder model predicts position basis from activity of the source
+            neurons, and the decoder model predicts activity of the target neurons from the position basis.
+            The Full Regressor Model (in comparison to RBFPosModel) extends the regressors from *just* the position basis
+            to include the running speed and a reward prediction signal.
+            - When predict_latents is False, returns a single RidgeRegression object corresponding to the decoder model.
+            - When predict_latents is True, returns a tuple of RidgeRegression objects corresponding to the encoder and decoder models.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        # Split the neural data
+        if self.split_train and split == "train":
+            encoder_split = "train0"
+            decoder_split = "train1"
+        else:
+            encoder_split = split
+            decoder_split = split
+
+        if self.predict_latents:
+            # Train the encoder model to predict the position basis from source neuron activity
+            source_data_encoder, _, frame_behavior_encoder = self.get_session_data(session, spks_type, encoder_split)
+            basis_for_encoder = self.build_regressors(session, frame_behavior_encoder, hyperparameters)
+            encoder = RidgeRegression(alpha=hyperparameters.alpha_encoder, fit_intercept=self.fit_intercept)
+            encoder = encoder.fit(source_data_encoder.T, basis_for_encoder)
+
+        # Train the decoder model to predict the target neuron activity from the position basis
+        _, target_data_decoder, frame_behavior_decoder = self.get_session_data(session, spks_type, decoder_split)
+        basis_for_decoder = self.build_regressors(session, frame_behavior_decoder, hyperparameters)
+        decoder = RidgeRegression(alpha=hyperparameters.alpha_decoder, fit_intercept=self.fit_intercept)
+        decoder = decoder.fit(basis_for_decoder, target_data_decoder.T)
+
+        if self.predict_latents:
+            return encoder, decoder
+        else:
+            return decoder
+
+    def predict(
+        self,
+        session: B2Session,
+        fullreg_model: Union[RidgeRegression, tuple[RidgeRegression, RidgeRegression]],
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[FullRegressorHyperparameters] = None,
+        nan_safe: bool = False,
+    ) -> tuple[np.ndarray, dict]:
+        """Predict the target place field activity for a session.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to predict the target place field activity for.
+        fullreg_model : Union[RidgeRegression, tuple[RidgeRegression, RidgeRegression]]
+            The trained encoder and decoder models. If predict_latents is False, fullreg_model is a single RidgeRegression object corresponding to the decoder model.
+            If predict_latents is True, fullreg_model is a tuple of RidgeRegression objects corresponding to the encoder and decoder models. Otherwise, it is just the decoder model.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session
+            provided as input.
+        split : Optional["SplitName"]
+            The split to use for the prediction. If None, uses the split from the session
+            provided as input. Default is "test".
+        hyperparameters : Optional[FullRegressorHyperparameters]
+            The hyperparameters used for the model. These are not actually used for prediction so the presence of this parameter
+            is ignored and only here for consistency with other model types.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and raise an error if found.
+            If False, will filter out NaN samples from predictions.
+
+        Returns
+        -------
+        prediction : np.ndarray
+            The predicted target data for the requested timepoints.
+        extras : dict
+            Extra information about the prediction. Contains the "true" position basis and the predicted position basis.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        # Get source activity and frame_behavior for the requested split
+        source_data, _, frame_behavior = self.get_session_data(session, spks_type, split)
+
+        # Make the position basis... of the "true" position
+        basis_functions = self.build_regressors(session, frame_behavior, hyperparameters)
+        extras = {"basis_functions": np.array(basis_functions)}
+
+        if self.predict_latents:
+            # Predict the position basis with the encoder model, then the target from the predicted basis
+            basis_functions_predicted = fullreg_model[0].predict(source_data.T, nonnegative=self.nonnegative)
+            prediction = fullreg_model[1].predict(basis_functions_predicted, nonnegative=self.nonnegative).T
+            extras["basis_functions_predicted"] = np.array(basis_functions_predicted)
+
+        else:
+            # Predict the target from the true position basis
+            prediction = fullreg_model.predict(basis_functions, nonnegative=self.nonnegative).T
+
+        prediction = np.array(prediction)
+
+        # Check for NaNs in prediction and handle based on nan_safe
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                num_nan = np.sum(idx_nan_samples)
+                total = len(idx_nan_samples)
+                raise ValueError(f"{num_nan} / {total} samples have NaN values in prediction!")
+        else:
+            # Filter out NaN samples
+            idx_valid = ~idx_nan_samples
+            if np.any(idx_nan_samples):
+                # Filtering occurred
+                prediction = prediction[:, idx_valid]
+                if "basis_functions" in extras:
+                    extras["basis_functions"] = extras["basis_functions"][idx_valid]
+                if "basis_functions_predicted" in extras:
+                    extras["basis_functions_predicted"] = extras["basis_functions_predicted"][idx_valid]
+
+                # Track which original samples are valid
+                extras["idx_valid_predictions"] = np.where(idx_valid)[0]
+                extras["predictions_were_filtered"] = True
+            else:
+                # No NaNs, no filtering needed
+                extras["predictions_were_filtered"] = False
+
+        return prediction, extras
+
+    def build_regressors(
+        self,
+        session: B2Session,
+        frame_behavior: FrameBehavior,
+        hyperparameters: Optional[FullRegressorHyperparameters] = None,
+    ) -> torch.Tensor:
+        """Make the position basis for the Full Regressor model.
+
+        The position basis is a tensor of shape (num_timepoints, num_basis * num_environments) where
+        each column is a basis function for a given environment. When viewed as a 3-tensor with shape
+        (num_timepoints, num_environments, num_basis) each timepoint in a particular environment will
+        have a basis function represented in basis[timepoint, environment, :] with a structure depending
+        on the number of basis functions and basis width (set by hyperparameters).
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to make the position basis for. Used simply to get environment length.
+        frame_behavior : FrameBehavior
+            The frame behavior to make the position basis for.
+        hyperparameters : Optional[FullRegressorHyperparameters]
+            The hyperparameters to use for the Full Regressor model. If None, uses the default hyperparameters for the model.
+
+        Returns
+        -------
+        basis : torch.Tensor
+            The position basis for the Full Regressor model of shape (num_timepoints, num_basis * num_environments).
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        # Get position basis (same as RBFPos Model)
+        position_basis = make_position_basis(session, frame_behavior, hyperparameters)
+
+        # Now make a speed basis from frame_behavior
+        speed = frame_behavior.speed
+        if self.speed_basis:
+            speed_basis = make_percentile_basis(speed, hyperparameters.speed_num_basis)
+        else:
+            # Speed basis is just the speed itself after z-scoring
+            speed_basis = torch.tensor((speed - np.mean(speed)) / np.std(speed), dtype=torch.float32).unsqueeze(-1)
+
+        if self.no_reward:
+            # If no_reward flag is set, we won't include any reward-related basis functions
+            full_basis = torch.cat([position_basis, speed_basis], dim=1)
+            return full_basis
+
+        # For the reward basis, we need to build the temporal basis from the *whole* session,
+        # not just the split provided by get_session_data and passed through to here via frame_behavior.
+        # This is because we use a temporal convolution with shifted basis, so we might need our basis
+        # to include lags that respond (or predict) reward events that occur outside of the split!
+
+        # Start by getting full frame_behavior
+        frame_behavior_full = get_frame_behavior(session, clear_one_cache=False)
+
+        # And also a reward prediction / response basis
+        reward_delivery = frame_behavior_full.reward_delivery
+        reward_omitted = frame_behavior_full.reward_omitted
+        reward_expected = np.logical_or(reward_delivery, reward_omitted)
+        reward_expectation_basis = make_temporal_basis(
+            reward_expected,
+            hyperparameters.reward_num_basis_lags,
+            hyperparameters.reward_basis_width,
+        )[frame_behavior.idx]
+        reward_delivery_basis = make_temporal_basis(
+            reward_delivery,
+            hyperparameters.reward_num_basis_lags,
+            hyperparameters.reward_basis_width,
+            only_responsive=True,
+        )[frame_behavior.idx]
+        reward_omitted_basis = make_temporal_basis(
+            reward_omitted,
+            hyperparameters.reward_num_basis_lags,
+            hyperparameters.reward_basis_width,
+            only_responsive=True,
+        )[frame_behavior.idx]
+
+        # Full basis
+        full_basis = torch.cat([position_basis, speed_basis, reward_expectation_basis, reward_delivery_basis, reward_omitted_basis], dim=1)
+        return full_basis
+
+    @property
+    def _model_hyperparameters(self) -> Type[FullRegressorHyperparameters]:
+        """Return the hyperparameter class constructor for FullRegressorModel.
+
+        Returns
+        -------
+        type[FullRegressorHyperparameters]
+            The FullRegressorHyperparameters class constructor.
+        """
+        return FullRegressorHyperparameters
+
+    def _get_model_name(self) -> str:
+        """Get the model name identifier.
+
+        Returns
+        -------
+        str
+            The model name identifier, "fullregressor", "fullregressor_decoder_only", or "fullregressor_leak" for FullRegressorModel.
+            The "_decoder_only" suffix indicates that the model was trained to predict target neurons from
+            True position basis, rather than a prediction of the position basis from source neurons..
+            The "_leak" suffix indicates that the model was trained without double-cross-validation,
+            which allows for non-spatial leakage between activity and position in the training set.
+
+            Note that if predict_latents is False, split_train is ignored.
+        """
+        model_name = "fullregressor"
+        if not self.predict_latents:
+            model_name += "_decoder_only"
+        elif not self.split_train:
+            model_name += "_leak"
+        if not self.speed_basis:
+            model_name += "_1dspeed"
+        if self.no_reward:
+            model_name += "_noreward"
+        if not self.fit_intercept:
+            model_name += "_no_intercept"
         return model_name
 
 
 class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparameters]):
+    preferred_optimization_method: OptimizationMethod = "golden"
+
     def __init__(
         self,
         registry: "PopulationRegistry",
+        fit_intercept: bool = True,
         hyperparameters: ReducedRankRegressionHyperparameters = ReducedRankRegressionHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
@@ -695,7 +1117,7 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
             autosave=autosave,
         )
         self.hyperparameters = hyperparameters
-        self.fit_intercept = True
+        self.fit_intercept = fit_intercept
         self.nonnegative = True
 
     def train(
@@ -717,6 +1139,8 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         hyperparameters : Optional[ReducedRankRegressionHyperparameters]
             The hyperparameters to use for the reduced rank regression model. If None, uses the default hyperparameters for the model.
+        fit_intercept : bool
+            Whether to fit an intercept term in the regression model. Default is True.
 
         Returns
         -------
@@ -770,6 +1194,9 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         extras : dict
             Extra information about the prediction.
         """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
         # Get the source activity data for the requested split
         source_data, _, _ = self.get_session_data(session, spks_type, split)
 
@@ -827,7 +1254,10 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         str
             The model name identifier, always "rrr" for ReducedRankRegressionModel.
         """
-        return "rrr"
+        model_name = "rrr"
+        if not self.fit_intercept:
+            model_name += "_no_intercept"
+        return model_name
 
     def _optimize_golden(
         self,

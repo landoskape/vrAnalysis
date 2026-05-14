@@ -75,9 +75,8 @@ def standard_behavior(b2registration: "B2Registration") -> "B2Registration":
     trialRewardPosition = b2registration.convert_dense(trialInfo.rewardPosition)
     trialRewardTolerance = b2registration.convert_dense(trialInfo.rewardTolerance)
     trialRewardAvailability = b2registration.convert_dense(trialInfo.rewardAvailable).astype(np.bool_)
-    rewardDelivery = (
-        b2registration.convert_dense(trialInfo.rewardDeliveryFrame).astype(np.int64) - 1
-    )  # get reward delivery frame (frame within trial) first (will be -1 if no reward delivered)
+    # get reward delivery frame (frame within trial) first (will be -1 if no reward delivered)
+    rewardDelivery = b2registration.convert_dense(trialInfo.rewardDeliveryFrame).astype(np.int64) - 1
     # adjust frame count to behave arrays
     trialRewardDelivery = np.array(
         [

@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, callback, dcc, html, no_update
 from optuna.visualization import plot_parallel_coordinate, plot_param_importances
 
-from dimensionality_manuscript.simulations import (
+from . import (
     SharedSpaceConfig,
     SharedSpaceGenerator,
     sqrtm_spd,

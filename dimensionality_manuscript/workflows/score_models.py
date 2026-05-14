@@ -18,16 +18,43 @@ check_existing_scores = False  # Checks if scores already exist
 # which are the primary ones used for the manuscript. Non-defaults are primarly for testing and exploratory analysis.
 
 MODEL_NAMES: list[ModelName] = [
-    # "external_placefield_1d",
-    # "internal_placefield_1d",
-    # "external_placefield_1d_gain",
-    # "internal_placefield_1d_gain",
+    # # 1D Placfield Models
+    "external_placefield_1d",
+    "internal_placefield_1d",
+    "external_placefield_1d_gain",
+    "internal_placefield_1d_gain",
     "external_placefield_1d_vector_gain",
     "internal_placefield_1d_vector_gain",
-    # "rbfpos_decoder_only",
-    # "rbfpos",
-    # "rbfpos_leak",
-    # "rrr",
+    # Core regression models
+    "rbfpos_decoder_only",
+    "rbfpos",
+    "rbfpos_leak",
+    "pos_speed_decoder_only",
+    "pos_speed",
+    "pos_speed_leak",
+    "fullregressor_decoder_only",
+    "fullregressor",
+    "fullregressor_leak",
+    # Core regression models with 1D Speed
+    "pos_speed_decoder_only_1dspeed",
+    "pos_speed_1dspeed",
+    "pos_speed_leak_1dspeed",
+    "fullregressor_decoder_only_1dspeed",
+    "fullregressor_1dspeed",
+    "fullregressor_leak_1dspeed",
+    # No intercept models
+    "rbfpos_decoder_only_no_intercept",
+    "rbfpos_no_intercept",
+    "rbfpos_leak_no_intercept",
+    "pos_speed_decoder_only_no_intercept",
+    "pos_speed_no_intercept",
+    "pos_speed_leak_no_intercept",
+    "fullregressor_decoder_only_no_intercept",
+    "fullregressor_no_intercept",
+    "fullregressor_leak_no_intercept",
+    # Reduced Rank Regression models
+    "rrr",
+    "rrr_no_intercept",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
@@ -36,7 +63,7 @@ SPKS_TYPES: tuple[SpksTypes] = (
     # "deconvolved",
 )
 
-METHOD = "optuna"
+METHOD = "preferred"
 
 if __name__ == "__main__":
     sessiondb = get_database("vrSessions")
@@ -54,6 +81,7 @@ if __name__ == "__main__":
                     model.clear_cached_score(session, spks_type=spks_type, method=METHOD)
 
                 if score_models:
+                    _clear_cache = False
                     try:
                         _clear_cache = not model.check_existing_score(
                             session,
@@ -76,9 +104,9 @@ if __name__ == "__main__":
                         continue
 
                     finally:
-                        # Make sure any stored data is cleared (not actually sure if torch is saving things but better clear in case)
                         if _clear_cache:
                             session.clear_cache()
+                            registry.clear_population_cache()
                             torch.cuda.empty_cache()
                             gc.collect()
 

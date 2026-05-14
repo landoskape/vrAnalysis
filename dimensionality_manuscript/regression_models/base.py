@@ -1,4 +1,4 @@
-from typing import Literal, Optional, TYPE_CHECKING, Any, TypeVar, Generic, Type
+from typing import Literal, Optional, TYPE_CHECKING, Any, TypeVar, Generic, Type, TypeAlias
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from itertools import product
@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from optuna import Trial
 
 H = TypeVar("H", bound="HyperparametersBase")
+OptimizationMethod: TypeAlias = Literal["grid", "optuna", "golden"]
+OptimizationMethodSelection: TypeAlias = Literal["grid", "optuna", "golden", "best", "preferred"]
+
+_OPTIMIZATION_METHODS: tuple[OptimizationMethod, ...] = ("grid", "optuna", "golden")
 
 # We've got beautiful nested Taqqadums and Optuna's like meeeeeeeeeeeeeee... nope.
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -51,6 +55,7 @@ class ActivityParameters:
 
 class RegressionModel(ABC, Generic[H]):
     hyperparameters: H
+    preferred_optimization_method: OptimizationMethod = "optuna"
 
     def __init__(
         self,
@@ -61,6 +66,30 @@ class RegressionModel(ABC, Generic[H]):
         self.registry = registry
         self.activity_parameters = activity_parameters
         self.autosave = autosave
+
+    def _resolve_optimization_method(
+        self,
+        method: OptimizationMethodSelection,
+        allow_best: bool = False,
+    ) -> OptimizationMethod | Literal["best"]:
+        """Resolve selection methods like "preferred" to concrete optimization methods."""
+        if method == "preferred":
+            preferred_method = self.preferred_optimization_method
+            if preferred_method in _OPTIMIZATION_METHODS:
+                return preferred_method
+            raise ValueError(f"Invalid preferred_optimization_method: {preferred_method}. Must be one of {list(_OPTIMIZATION_METHODS)}.")
+
+        if method in _OPTIMIZATION_METHODS:
+            return method
+
+        if allow_best and method == "best":
+            return method
+
+        valid_methods = list(_OPTIMIZATION_METHODS)
+        if allow_best:
+            valid_methods.append("best")
+        valid_methods.append("preferred")
+        raise ValueError(f"Invalid method: {method}. Must be one of {valid_methods}.")
 
     @abstractmethod
     def train(
@@ -164,7 +193,7 @@ class RegressionModel(ABC, Generic[H]):
         )
         idx = np.array(population.get_split_times(self.registry.time_split[split], within_idx_samples=False))
         frame_behavior = frame_behavior.filter(idx)
-        return source_data, target_data, frame_behavior
+        return source_data.float(), target_data.float(), frame_behavior
 
     def score(
         self,
@@ -402,7 +431,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod | Literal["preferred"] = "grid",
         nan_safe: bool = False,
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize the hyperparameters of the model.
@@ -417,8 +446,8 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
-        method : Literal["grid", "optuna", "golden"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "golden", uses golden section search (for single-parameter optimization). Default is "grid".
+        method : Literal["grid", "optuna", "golden", "preferred"]
+            The method to use for hyperparameter optimization. If "preferred", uses the model's preferred optimization method. Default is "grid".
         nan_safe: bool = False
             If True, will check for NaN values in predictions and metrics and raise errors if found.
             If False, will skip all NaN checks and allow NaN values to pass through.
@@ -432,6 +461,8 @@ class RegressionModel(ABC, Generic[H]):
         results_df : pd.DataFrame
             A DataFrame with all the results from the optimization.
         """
+        method = self._resolve_optimization_method(method)
+
         if method == "grid":
             return self._optimize_grid(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
         elif method == "optuna":
@@ -439,7 +470,7 @@ class RegressionModel(ABC, Generic[H]):
         elif method == "golden":
             return self._optimize_golden(session, spks_type, train_split, validation_split, nan_safe=nan_safe)
         else:
-            raise ValueError(f"Invalid method: {method}. Must be one of ['grid', 'optuna', 'golden'].")
+            raise ValueError(f"Invalid method: {method}. Must be one of {list(_OPTIMIZATION_METHODS)}.")
 
     def _optimize_grid(
         self,
@@ -542,7 +573,9 @@ class RegressionModel(ABC, Generic[H]):
         n_trials: int = 50,
         timeout: float | None = None,
         sampler: optuna.samplers.BaseSampler | None = None,
+        sampler_seed: int = 42,
         nan_safe: bool = False,
+        return_study: bool = False,
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize the hyperparameters of the model using Optuna.
 
@@ -562,9 +595,14 @@ class RegressionModel(ABC, Generic[H]):
             Optional timeout in seconds (Optuna will stop once reached).
         sampler : optuna.samplers.BaseSampler | None
             Optional Optuna sampler; if None, defaults are used.
+        sampler_seed : int
+            Random seed for the Optuna sampler (if applicable). Default is 42.
+            Note: unused if sampler is provided!
         nan_safe: bool = False
             If True, will check for NaN values in predictions and metrics and raise errors if found.
             If False, will skip all NaN checks and allow NaN values to pass through.
+        return_study: bool = False
+            If True, will return the Optuna study object along with the results.
 
         Returns
         -------
@@ -579,7 +617,7 @@ class RegressionModel(ABC, Generic[H]):
         independent_optimization = HyperparameterClass.independent_optimization
 
         if sampler is None:
-            sampler = TPESampler(seed=42)
+            sampler = TPESampler(seed=sampler_seed)
 
         results: list[dict] = []
 
@@ -657,6 +695,9 @@ class RegressionModel(ABC, Generic[H]):
         best_score = best_trial.user_attrs["score"]
         results_df = pd.DataFrame(results)
 
+        if return_study:
+            return best_params, best_score, results_df, study
+
         return best_params, best_score, results_df
 
     def _optimize_golden(
@@ -711,7 +752,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna", "golden", "best"] = "grid",
+        method: OptimizationMethodSelection = "grid",
         force_remake: bool = False,
     ) -> tuple[H, float, pd.DataFrame]:
         """Get the best hyperparameters for the model.
@@ -726,8 +767,8 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for the training. If None, uses the split from the session provided as input. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
-        method : Literal["grid", "optuna", "golden", "best"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "golden", uses golden section search. If "best", tries all methods and returns the one with the best score. Default is "grid".
+        method : Literal["grid", "optuna", "golden", "best", "preferred"]
+            The method to use for hyperparameter optimization. If "preferred", uses the model's preferred optimization method. If "best", tries all methods and returns the one with the best score. Default is "grid".
         force_remake: bool = False
             If True, will re-run optimization and save the results even if it already exists.
             (default is False)
@@ -741,6 +782,8 @@ class RegressionModel(ABC, Generic[H]):
         results_df : pd.DataFrame
             The full optimization results. (Only returned if full_results is True.)
         """
+        method = self._resolve_optimization_method(method, allow_best=True)
+
         # Handle "best" method by trying grid, optuna, and golden
         if method == "best":
             grid_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, "grid")
@@ -838,7 +881,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna", "golden", "best"] = "best",
+        method: OptimizationMethodSelection = "best",
         force_remake: bool = False,
         force_reoptimize: bool = False,
     ) -> dict[str, float]:
@@ -856,8 +899,8 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for the validation. If None, uses the split from the session provided as input. Default is "validation".
         test_split : Optional["SplitName"]
             The split to use for the testing. If None, uses the split from the session provided as input. Default is "test".
-        method : Literal["grid", "optuna", "golden", "best"]
-            The method to use for hyperparameter optimization. If "grid", uses grid search. If "optuna", uses Optuna. If "golden", uses golden section search. If "best", uses whichever method has the best score. Default is "best".
+        method : Literal["grid", "optuna", "golden", "best", "preferred"]
+            The method to use for hyperparameter optimization. If "preferred", uses the model's preferred optimization method. If "best", uses whichever method has the best score. Default is "best".
         force_remake: bool = False
             If True, will re-measure the score and save the results even if it already exists.
             (default is False)
@@ -872,6 +915,8 @@ class RegressionModel(ABC, Generic[H]):
         """
         if spks_type is None:
             spks_type = session.params.spks_type
+
+        method = self._resolve_optimization_method(method, allow_best=True)
 
         # Handle "best" method by trying grid, optuna, and golden
         if method == "best":
@@ -985,9 +1030,10 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod | Literal["preferred"] = "grid",
     ) -> bool:
         """Check if the hyperparameters for the model exist in the hyperparameter cache."""
+        method = self._resolve_optimization_method(method)
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
         cache_path = self.registry.registry_paths.hyperparameter_path / f"{cache_key}.joblib"
         return cache_path.exists()
@@ -999,9 +1045,10 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod | Literal["preferred"] = "grid",
     ) -> bool:
         """Check if the score for the model exist in the score cache."""
+        method = self._resolve_optimization_method(method)
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
         cache_path = self.registry.registry_paths.score_path / f"{cache_key}.joblib"
         return cache_path.exists()
@@ -1012,7 +1059,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod = "grid",
     ) -> str:
         """Get the cache key for the hyperparameters of the model.
 
@@ -1088,7 +1135,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod = "grid",
     ) -> str:
         """Get the cache key for the score of the model.
 
@@ -1130,7 +1177,7 @@ class RegressionModel(ABC, Generic[H]):
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod | Literal["preferred"] = "grid",
     ) -> None:
         """Clear the cached hyperparameter for the model.
 
@@ -1144,9 +1191,10 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for training. Default is "train".
         validation_split : Optional["SplitName"]
             The split to use for validation. Default is "validation".
-        method : Literal["grid", "optuna", "golden"]
-            The method used for optimization. Default is "grid".
+        method : Literal["grid", "optuna", "golden", "preferred"]
+            The method used for optimization. If "preferred", uses the model's preferred optimization method. Default is "grid".
         """
+        method = self._resolve_optimization_method(method)
         cache_key = self._get_hyperparameter_cache_key(session, spks_type, train_split, validation_split, method)
         cache_path = self.registry.registry_paths.hyperparameter_path / f"{cache_key}.joblib"
         if cache_path.exists():
@@ -1159,7 +1207,7 @@ class RegressionModel(ABC, Generic[H]):
         train_split: Optional["SplitName"] = "train",
         validation_split: Optional["SplitName"] = "validation",
         test_split: Optional["SplitName"] = "test",
-        method: Literal["grid", "optuna", "golden"] = "grid",
+        method: OptimizationMethod | Literal["preferred"] = "grid",
     ) -> None:
         """Clear the cached score for the model.
 
@@ -1175,9 +1223,10 @@ class RegressionModel(ABC, Generic[H]):
             The split to use for validation. Default is "validation".
         test_split : Optional["SplitName"]
             The split to use for testing. Default is "test".
-        method : Literal["grid", "optuna", "golden"]
-            The method used for optimization. Default is "grid".
+        method : Literal["grid", "optuna", "golden", "preferred"]
+            The method used for optimization. If "preferred", uses the model's preferred optimization method. Default is "grid".
         """
+        method = self._resolve_optimization_method(method)
         cache_key = self._get_score_cache_key(session, spks_type, train_split, validation_split, test_split, method)
         cache_path = self.registry.registry_paths.score_path / f"{cache_key}.joblib"
         if cache_path.exists():

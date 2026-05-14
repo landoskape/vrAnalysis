@@ -1,7 +1,7 @@
 from tqdm import tqdm
 
 from vrAnalysis.database import get_database
-from dimensionality_manuscript.registry import PopulationRegistry
+from ..registry import PopulationRegistry
 
 clear_population = False  # Clears population cache
 check_exists = False  # Makes only if not existing

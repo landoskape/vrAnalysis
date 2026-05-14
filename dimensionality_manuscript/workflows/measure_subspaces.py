@@ -3,8 +3,8 @@ from tqdm import tqdm
 import torch
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import SpksTypes
-from dimensionality_manuscript.registry import SubspaceName, PopulationRegistry, get_subspace
-from dimensionality_manuscript.regression_models.hyperparameters import PlaceFieldHyperparameters
+from ..registry import SubspaceName, PopulationRegistry, get_subspace
+from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 
 clear_hyperparameters = False  # Clears hyperparameter cache
 clear_scores = False  # Clears score cache
@@ -20,8 +20,9 @@ source_model_name = "pca_subspace"
 source_method = "best"
 
 # This is for setting specific hyperparameters
-score_with_specific_hyperparameters = True  # Scores subspace models with specific hyperparameters
-check_existing_with_specific_hyperparameters = False  # Checks if scores already exist with specific hyperparameters
+clear_scores_from_hyps = False  # Clears score cache from specific hyperparameters
+score_with_specific_hyperparameters = False  # Scores subspace models with specific hyperparameters
+check_existing_with_specific_hyperparameters = True  # Checks if scores already exist with specific hyperparameters
 specific_hyperparameters = [
     PlaceFieldHyperparameters(num_bins=100, smooth_width=5.0),
     PlaceFieldHyperparameters(num_bins=100, smooth_width=None),
@@ -36,10 +37,10 @@ force_reoptimize = False  # Re-optimizes even if existing
 # which are the primary ones used for the manuscript. Non-defaults are primarly for testing and exploratory analysis.
 
 SUBSPACE_NAMES: list[SubspaceName] = [
-    # "pca_subspace",
+    "pca_subspace",
     # # # # "cvpca_subspace", # This is bad and doesn't make sense!!!
-    # "svca_subspace",
-    # "covcov_subspace",
+    # # # # "svca_subspace", # This one also just sucks, even though it technically "makes sense".
+    "covcov_subspace",
     "covcov_crossvalidated_subspace",
 ]
 
@@ -67,6 +68,10 @@ if __name__ == "__main__":
 
                 if clear_scores:
                     subspace_model.clear_cached_score(session, spks_type=spks_type, method=METHOD)
+
+                if clear_scores_from_hyps:
+                    for hyp in specific_hyperparameters:
+                        subspace_model.clear_cached_score_from_hyps(session, spks_type=spks_type, hyperparameters=hyp)
 
                 if score_subspaces:
                     try:
@@ -190,8 +195,8 @@ if __name__ == "__main__":
                             spks_type=spks_type,
                             hyperparameters=specific_hyperparameter,
                         ):
-                            print(f"{isession} Score for subspace {subspace_name} on session {session.session_print()} already exists")
+                            # print(f"{isession} Score for subspace {subspace_name} on session {session.session_print()} already exists")
                             pass
                         else:
-                            # print(f"{isession} !!!!! Score for subspace {subspace_name} on session {session.session_print()} does not exist")
+                            print(f"{isession} !!!!! Score for subspace {subspace_name} on session {session.session_print()} does not exist")
                             pass

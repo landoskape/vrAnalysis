@@ -105,6 +105,35 @@ def convolve_toeplitz(
         return np.moveaxis(output, -1, axis)
 
 
+def smooth(
+    data: np.ndarray,
+    timestamps: np.ndarray,
+    width: float,
+    axis: int = -1,
+    mode: str = "same",
+    device: str = "cpu",
+    force_torch: bool = False,
+) -> np.ndarray:
+    """Handles a smoothing loop with NaN consideration
+
+    Sets all nans in data to 0
+    Smooths data with a gaussian kernel of specified width (in units of timestamps)
+    using convolution with a toeplitz matrix (faster than scipy convolve for large data)
+    Then resets NaNs in original data
+
+    """
+    idx_nan = np.isnan(data)
+    valid = (~idx_nan).astype(float)
+    data = np.nan_to_num(data, nan=0.0)
+
+    valid_smooth = convolve_toeplitz(valid, get_gauss_kernel(timestamps, width), axis=axis, mode=mode, device=device, force_torch=force_torch)
+    data_smooth = convolve_toeplitz(data, get_gauss_kernel(timestamps, width), axis=axis, mode=mode, device=device, force_torch=force_torch)
+    data_smooth /= valid_smooth
+
+    data_smooth[idx_nan] = np.nan
+    return data_smooth
+
+
 @nb.njit(parallel=True, cache=True)
 def get_summation_map(
     value_to_sum,

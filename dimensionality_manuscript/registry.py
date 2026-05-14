@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Literal, overload
+from typing import Optional, Literal, overload, Any
 from pathlib import Path
 from joblib import dump, load
 import numpy as np
@@ -10,10 +10,16 @@ from vrAnalysis.processors.placefields import get_frame_behavior, FrameBehavior
 from vrAnalysis.processors.support import convert_position_to_bins
 from dimilibi import Population
 from .regression_models.base import RegressionModel
-from .regression_models.models import PlaceFieldModel, RBFPosModel, ReducedRankRegressionModel
-from .regression_models.hyperparameters import PlaceFieldHyperparameters, ReducedRankRegressionHyperparameters, HyperparametersBase
+from .regression_models.models import PlaceFieldModel, RBFPosModel, FullRegressorModel, ReducedRankRegressionModel
+from .regression_models.hyperparameters import (
+    PlaceFieldHyperparameters,
+    RBFPosHyperparameters,
+    FullRegressorHyperparameters,
+    ReducedRankRegressionHyperparameters,
+    HyperparametersBase,
+)
 from .subspace_analysis.base import SubspaceModel
-from .subspace_analysis.subspaces import PCASubspace, CVPCASubspace, SVCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace
+from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
 
 # Type alias for model names
 ModelName = Literal[
@@ -23,17 +29,41 @@ ModelName = Literal[
     "internal_placefield_1d_gain",
     "external_placefield_1d_vector_gain",
     "internal_placefield_1d_vector_gain",
+    # Core regression models
     "rbfpos_decoder_only",
     "rbfpos",
     "rbfpos_leak",
+    "pos_speed_decoder_only",
+    "pos_speed",
+    "pos_speed_leak",
+    "fullregressor_decoder_only",
+    "fullregressor",
+    "fullregressor_leak",
+    # Core regression models with 1D Speed
+    "pos_speed_decoder_only_1dspeed",
+    "pos_speed_1dspeed",
+    "pos_speed_leak_1dspeed",
+    "fullregressor_decoder_only_1dspeed",
+    "fullregressor_1dspeed",
+    "fullregressor_leak_1dspeed",
+    # No intercept models
+    "rbfpos_decoder_only_no_intercept",
+    "rbfpos_no_intercept",
+    "rbfpos_leak_no_intercept",
+    "pos_speed_decoder_only_no_intercept",
+    "pos_speed_no_intercept",
+    "pos_speed_leak_no_intercept",
+    "fullregressor_decoder_only_no_intercept",
+    "fullregressor_no_intercept",
+    "fullregressor_leak_no_intercept",
+    # Reduced Rank Regression models
     "rrr",
+    "rrr_no_intercept",
 ]
 
 # Type alias for subspace names
 SubspaceName = Literal[
     "pca_subspace",
-    "cvpca_subspace",
-    "svca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
 ]
@@ -73,6 +103,7 @@ class RegistryPaths:
 
     manuscript_path: Path = files.local_data_path() / "dimensionality-manuscript"
     figure_path: Path = manuscript_path / "figures"
+    dataclub_260330_path: Path = manuscript_path / "dataclub-260330"
     cache_path: Path = manuscript_path / "cache"
     registry_path: Path = cache_path / "population-registry"
     hyperparameter_path: Path = cache_path / "hyperparameters"
@@ -86,6 +117,8 @@ class RegistryPaths:
     measure_cvpca_path: Path = cache_path / "measure_cvpca"
     compare_cvpca_path: Path = cache_path / "compare_cvpca"
     em_path: Path = cache_path / "em"
+    pipeline_v2_path: Path = cache_path / "pipeline_v2"
+    pipeline_v2_db_path: Path = pipeline_v2_path / "results.db"
 
     def __post_init__(self):
         self.manuscript_path.mkdir(parents=True, exist_ok=True)
@@ -103,6 +136,7 @@ class RegistryPaths:
         self.em_path.mkdir(parents=True, exist_ok=True)
         self.measure_cvpca_path.mkdir(parents=True, exist_ok=True)
         self.compare_cvpca_path.mkdir(parents=True, exist_ok=True)
+        self.pipeline_v2_path.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -390,7 +424,6 @@ class PopulationRegistry:
                 time_split_indices[itsi] = time_split_index[_valid]
 
             # Now check the variances of the neurons
-            _original_spks_type = session.params.spks_type
             low_variance = [np.zeros(len(csi), dtype=bool) for csi in population.cell_split_indices]
             for spks_type in SPKS_TYPES_VARIANCE_CHECK:
                 session.params.spks_type = spks_type
@@ -554,48 +587,96 @@ class PopulationRegistry:
 
 
 MODEL_NAMES: tuple[ModelName] = (
+    # Placefield models
     "external_placefield_1d",
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
     "external_placefield_1d_vector_gain",
     "internal_placefield_1d_vector_gain",
+    # Latent variable models
     "rbfpos_decoder_only",
     "rbfpos",
     "rbfpos_leak",
+    "pos_speed_decoder_only",
+    "pos_speed",
+    "pos_speed_leak",
+    "fullregressor_decoder_only",
+    "fullregressor",
+    "fullregressor_leak",
+    # Latent variable models with 1D speed
+    "pos_speed_decoder_only_1dspeed",
+    "pos_speed_1dspeed",
+    "pos_speed_leak_1dspeed",
+    "fullregressor_decoder_only_1dspeed",
+    "fullregressor_1dspeed",
+    "fullregressor_leak_1dspeed",
+    # Latent variable models without y-intercept
+    "rbfpos_decoder_only_no_intercept",
+    "rbfpos_no_intercept",
+    "rbfpos_leak_no_intercept",
+    "pos_speed_decoder_only_no_intercept",
+    "pos_speed_no_intercept",
+    "pos_speed_leak_no_intercept",
+    "fullregressor_decoder_only_no_intercept",
+    "fullregressor_no_intercept",
+    "fullregressor_leak_no_intercept",
+    # Reduced rank regression models
     "rrr",
+    "rrr_no_intercept",
 )
 
 SUBSPACE_NAMES: tuple[SubspaceName] = (
     "pca_subspace",
-    "cvpca_subspace",
-    "svca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
+    "svca_subspace",
 )
 
 
 def short_model_name(model_name: ModelName) -> str:
-    if model_name == "external_placefield_1d":
-        return "PF-1D"
-    if model_name == "internal_placefield_1d":
-        return "Int. PF-1D"
-    if model_name == "external_placefield_1d_gain":
-        return "PF-1D (+Gain)"
-    if model_name == "internal_placefield_1d_gain":
-        return "Int. PF-1D (+Gain)"
-    if model_name == "external_placefield_1d_vector_gain":
-        return "PF-1D (+Vec. Gain)"
-    if model_name == "internal_placefield_1d_vector_gain":
-        return "Int. PF-1D (+Vec. Gain)"
-    if model_name == "rbfpos_decoder_only":
-        return "PF-HighD"
-    if model_name == "rbfpos":
-        return "Int. PF-HighD"
-    if model_name == "rbfpos_leak":
-        return "Int. PF-HighD"
-    if model_name == "rrr":
-        return "RRR"
+    _short_name_mapping = {
+        # Placefield models
+        "external_placefield_1d": "PF-1D",
+        "internal_placefield_1d": "Int. PF-1D",
+        "external_placefield_1d_gain": "PF-1D (+Gain)",
+        "internal_placefield_1d_gain": "Int. PF-1D (+Gain)",
+        "external_placefield_1d_vector_gain": "PF-1D (+vGain)",
+        "internal_placefield_1d_vector_gain": "Int. PF-1D (+vGain)",
+        # Latent variable models
+        "rbfpos_decoder_only": "PF-HighD",
+        "rbfpos": "Int PF-HighD",
+        "rbfpos_leak": "IntLeak PF-HighD",
+        "pos_speed_decoder_only": "Pos+Speed",
+        "pos_speed": "Int Pos+Speed",
+        "pos_speed_leak": "IntLeak Pos+Speed",
+        "fullregressor_decoder_only": "Full",
+        "fullregressor": "Int FullRegressor",
+        "fullregressor_leak": "IntLeak FullRegressor",
+        # Latent variable models with 1D speed
+        "pos_speed_decoder_only_1dspeed": "1dPos+Speed",
+        "pos_speed_1dspeed": "Int 1dPos+Speed",
+        "pos_speed_leak_1dspeed": "IntLeak 1dPos+Speed",
+        "fullregressor_decoder_only_1dspeed": "Full (1dSpeed)",
+        "fullregressor_1dspeed": "Int FullRegressor (1dSpeed)",
+        "fullregressor_leak_1dspeed": "IntLeak FullRegressor (1dSpeed)",
+        # Latent variable models without y-intercept
+        "rbfpos_decoder_only_no_intercept": "PF-HighD (no int)",
+        "rbfpos_no_intercept": "Int PF-HighD (no int)",
+        "rbfpos_leak_no_intercept": "IntLeak PF-HighD (no int)",
+        "pos_speed_decoder_only_no_intercept": "Pos+Speed (no int)",
+        "pos_speed_no_intercept": "Int Pos+Speed (no int)",
+        "pos_speed_leak_no_intercept": "IntLeak Pos+Speed (no int)",
+        "fullregressor_decoder_only_no_intercept": "Full (no int)",
+        "fullregressor_no_intercept": "Int FullRegressor (no int)",
+        "fullregressor_leak_no_intercept": "IntLeak FullRegressor (no int)",
+        # Reduced rank regression models
+        "rrr": "RRR",
+        "rrr_no_intercept": "RRR (no int)",
+    }
+    if model_name not in _short_name_mapping:
+        raise ValueError(f"Model name {model_name} not found in short name mapping.")
+    return _short_name_mapping[model_name]
 
 
 @overload
@@ -615,7 +696,14 @@ def get_model(
 
 @overload
 def get_model(
-    model_name: Literal["rbfpos", "rbfpos_decoder_only", "rbfpos_leak"],
+    model_name: Literal[
+        "rbfpos",
+        "rbfpos_decoder_only",
+        "rbfpos_leak",
+        "rbfpos_no_intercept",
+        "rbfpos_decoder_only_no_intercept",
+        "rbfpos_leak_no_intercept",
+    ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
 ) -> RBFPosModel: ...
@@ -623,7 +711,37 @@ def get_model(
 
 @overload
 def get_model(
-    model_name: Literal["rrr"],
+    model_name: Literal[
+        # Latent variable models
+        "pos_speed_decoder_only",
+        "pos_speed",
+        "pos_speed_leak",
+        "fullregressor_decoder_only",
+        "fullregressor",
+        "fullregressor_leak",
+        # Latent variable models with 1D speed
+        "pos_speed_decoder_only_1dspeed",
+        "pos_speed_1dspeed",
+        "pos_speed_leak_1dspeed",
+        "fullregressor_decoder_only_1dspeed",
+        "fullregressor_1dspeed",
+        "fullregressor_leak_1dspeed",
+        # Latent variable models without y-intercept
+        "pos_speed_decoder_only_no_intercept",
+        "pos_speed_no_intercept",
+        "pos_speed_leak_no_intercept",
+        "fullregressor_decoder_only_no_intercept",
+        "fullregressor_no_intercept",
+        "fullregressor_leak_no_intercept",
+    ],
+    population_registry: PopulationRegistry,
+    hyperparameters: Optional[HyperparametersBase] = None,
+) -> FullRegressorModel: ...
+
+
+@overload
+def get_model(
+    model_name: Literal["rrr", "rrr_no_intercept"],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
 ) -> ReducedRankRegressionModel: ...
@@ -650,38 +768,93 @@ def get_model(
     model : RegressionModel
         The model object for the model name. The specific type depends on model_name.
     """
+    _constructor_lookup: dict[str, type[RegressionModel]] = {
+        # Placefield models
+        "external_placefield_1d": PlaceFieldModel,
+        "internal_placefield_1d": PlaceFieldModel,
+        "external_placefield_1d_gain": PlaceFieldModel,
+        "internal_placefield_1d_gain": PlaceFieldModel,
+        "external_placefield_1d_vector_gain": PlaceFieldModel,
+        "internal_placefield_1d_vector_gain": PlaceFieldModel,
+        # Latent variable models
+        "rbfpos_decoder_only": RBFPosModel,
+        "rbfpos": RBFPosModel,
+        "rbfpos_leak": RBFPosModel,
+        "pos_speed_decoder_only": FullRegressorModel,
+        "pos_speed": FullRegressorModel,
+        "pos_speed_leak": FullRegressorModel,
+        "fullregressor_decoder_only": FullRegressorModel,
+        "fullregressor": FullRegressorModel,
+        "fullregressor_leak": FullRegressorModel,
+        # Latent variable models with 1D speed
+        "pos_speed_decoder_only_1dspeed": FullRegressorModel,
+        "pos_speed_1dspeed": FullRegressorModel,
+        "pos_speed_leak_1dspeed": FullRegressorModel,
+        "fullregressor_decoder_only_1dspeed": FullRegressorModel,
+        "fullregressor_1dspeed": FullRegressorModel,
+        "fullregressor_leak_1dspeed": FullRegressorModel,
+        # Latent variable models without y-intercept
+        "rbfpos_decoder_only_no_intercept": RBFPosModel,
+        "rbfpos_no_intercept": RBFPosModel,
+        "rbfpos_leak_no_intercept": RBFPosModel,
+        "pos_speed_decoder_only_no_intercept": FullRegressorModel,
+        "pos_speed_no_intercept": FullRegressorModel,
+        "pos_speed_leak_no_intercept": FullRegressorModel,
+        "fullregressor_decoder_only_no_intercept": FullRegressorModel,
+        "fullregressor_no_intercept": FullRegressorModel,
+        "fullregressor_leak_no_intercept": FullRegressorModel,
+        # Reduced rank regression models
+        "rrr": ReducedRankRegressionModel,
+        "rrr_no_intercept": ReducedRankRegressionModel,
+    }
+    _kwargs_lookup: dict[str, dict[str, Any]] = {
+        "external_placefield_1d": dict(internal=False, gain=False),
+        "internal_placefield_1d": dict(internal=True, gain=False),
+        "external_placefield_1d_gain": dict(internal=False, gain=True),
+        "internal_placefield_1d_gain": dict(internal=True, gain=True),
+        "external_placefield_1d_vector_gain": dict(internal=False, gain=True, vector_gain=True),
+        "internal_placefield_1d_vector_gain": dict(internal=True, gain=True, vector_gain=True),
+        # Latent variable models
+        "rbfpos_decoder_only": dict(split_train=False, predict_latents=False, fit_intercept=True),
+        "rbfpos": dict(split_train=True, predict_latents=True, fit_intercept=True),
+        "rbfpos_leak": dict(split_train=False, predict_latents=True, fit_intercept=True),
+        "pos_speed_decoder_only": dict(speed_basis=True, no_reward=True, split_train=False, predict_latents=False, fit_intercept=True),
+        "pos_speed": dict(speed_basis=True, no_reward=True, split_train=True, predict_latents=True, fit_intercept=True),
+        "pos_speed_leak": dict(speed_basis=True, no_reward=True, split_train=False, predict_latents=True, fit_intercept=True),
+        "fullregressor_decoder_only": dict(speed_basis=True, split_train=False, predict_latents=False, fit_intercept=True),
+        "fullregressor": dict(speed_basis=True, split_train=True, predict_latents=True, fit_intercept=True),
+        "fullregressor_leak": dict(speed_basis=True, split_train=False, predict_latents=True, fit_intercept=True),
+        # Latent variable models with 1D speed
+        "pos_speed_decoder_only_1dspeed": dict(speed_basis=False, no_reward=True, split_train=False, predict_latents=False, fit_intercept=True),
+        "pos_speed_1dspeed": dict(speed_basis=False, no_reward=True, split_train=True, predict_latents=True, fit_intercept=True),
+        "pos_speed_leak_1dspeed": dict(speed_basis=False, no_reward=True, split_train=False, predict_latents=True, fit_intercept=True),
+        "fullregressor_decoder_only_1dspeed": dict(speed_basis=False, split_train=False, predict_latents=False, fit_intercept=True),
+        "fullregressor_1dspeed": dict(speed_basis=False, split_train=True, predict_latents=True, fit_intercept=True),
+        "fullregressor_leak_1dspeed": dict(speed_basis=False, split_train=False, predict_latents=True, fit_intercept=True),
+        # Latent variable models without y-intercept
+        "rbfpos_decoder_only_no_intercept": dict(split_train=False, predict_latents=False, fit_intercept=False),
+        "rbfpos_no_intercept": dict(split_train=True, predict_latents=True, fit_intercept=False),
+        "rbfpos_leak_no_intercept": dict(split_train=False, predict_latents=True, fit_intercept=False),
+        "pos_speed_decoder_only_no_intercept": dict(speed_basis=True, no_reward=True, split_train=False, predict_latents=False, fit_intercept=False),
+        "pos_speed_no_intercept": dict(speed_basis=True, no_reward=True, split_train=True, predict_latents=True, fit_intercept=False),
+        "pos_speed_leak_no_intercept": dict(speed_basis=True, no_reward=True, split_train=False, predict_latents=True, fit_intercept=False),
+        "fullregressor_decoder_only_no_intercept": dict(speed_basis=True, split_train=False, predict_latents=False, fit_intercept=False),
+        "fullregressor_no_intercept": dict(speed_basis=True, split_train=True, predict_latents=True, fit_intercept=False),
+        "fullregressor_leak_no_intercept": dict(speed_basis=True, split_train=False, predict_latents=True, fit_intercept=False),
+        # Reduced rank regression models
+        "rrr": dict(fit_intercept=True),
+        "rrr_no_intercept": dict(fit_intercept=False),
+    }
     if model_name not in MODEL_NAMES:
         raise ValueError(f"Model {model_name} not found in registry.")
+    if model_name not in _constructor_lookup:
+        raise ValueError(f"Model {model_name} does not have a constructor in the registry.")
+    if model_name not in _kwargs_lookup:
+        raise ValueError(f"Model {model_name} does not have kwargs in the registry.")
 
-    if model_name == "external_placefield_1d":
-        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
-        return PlaceFieldModel(population_registry, internal=False, gain=False, hyperparameters=PlaceFieldHyperparameters())
-    if model_name == "internal_placefield_1d":
-        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
-        return PlaceFieldModel(population_registry, internal=True, gain=False, hyperparameters=PlaceFieldHyperparameters())
-    if model_name == "external_placefield_1d_gain":
-        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
-        return PlaceFieldModel(population_registry, internal=False, gain=True, hyperparameters=PlaceFieldHyperparameters())
-    if model_name == "internal_placefield_1d_gain":
-        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
-        return PlaceFieldModel(population_registry, internal=True, gain=True, hyperparameters=PlaceFieldHyperparameters())
-    if model_name == "external_placefield_1d_vector_gain":
-        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
-        return PlaceFieldModel(population_registry, internal=False, gain=True, vector_gain=True, hyperparameters=PlaceFieldHyperparameters())
-    if model_name == "internal_placefield_1d_vector_gain":
-        hyperparameters = hyperparameters or PlaceFieldHyperparameters()
-        return PlaceFieldModel(population_registry, internal=True, gain=True, vector_gain=True, hyperparameters=PlaceFieldHyperparameters())
-    if model_name == "rbfpos_decoder_only":
-        return RBFPosModel(population_registry, split_train=False, predict_latents=False)
-    if model_name == "rbfpos":
-        return RBFPosModel(population_registry)
-    if model_name == "rbfpos_leak":
-        return RBFPosModel(population_registry, split_train=False, predict_latents=True)
-    if model_name == "rrr":
-        hyperparameters = hyperparameters or ReducedRankRegressionHyperparameters()
-        return ReducedRankRegressionModel(population_registry, hyperparameters=hyperparameters)
-
-    raise ValueError(f"Model {model_name} not found in registry.")
+    constructor = _constructor_lookup[model_name]
+    kwargs = _kwargs_lookup[model_name]
+    return constructor(population_registry, hyperparameters=hyperparameters, **kwargs)
 
 
 @overload
@@ -691,24 +864,6 @@ def get_subspace(
     match_dimensions: bool = True,
     correlation: bool = False,
 ) -> PCASubspace: ...
-
-
-@overload
-def get_subspace(
-    subspace_name: Literal["cvpca_subspace"],
-    population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
-    correlation: bool = False,
-) -> CVPCASubspace: ...
-
-
-@overload
-def get_subspace(
-    subspace_name: Literal["svca_subspace"],
-    population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
-    correlation: bool = False,
-) -> SVCASubspace: ...
 
 
 @overload
@@ -727,6 +882,15 @@ def get_subspace(
     match_dimensions: bool = True,
     correlation: bool = False,
 ) -> CovCovCrossvalidatedSubspace: ...
+
+
+@overload
+def get_subspace(
+    subspace_name: Literal["svca_subspace"],
+    population_registry: PopulationRegistry,
+    match_dimensions: bool = True,
+    correlation: bool = False,
+) -> SVCASubspace: ...
 
 
 def get_subspace(
@@ -758,13 +922,10 @@ def get_subspace(
 
     if subspace_name == "pca_subspace":
         return PCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
-    if subspace_name == "cvpca_subspace":
-        return CVPCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
-    if subspace_name == "svca_subspace":
-        return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "covcov_subspace":
         return CovCovSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "covcov_crossvalidated_subspace":
         return CovCovCrossvalidatedSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
-
+    if subspace_name == "svca_subspace":
+        return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     raise ValueError(f"Subspace {subspace_name} not found in registry.")

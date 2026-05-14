@@ -6,6 +6,54 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.typing import ColorType
 from typing import Literal
+from panel import state
+import syd
+
+
+def add_scaled_limits(viewer: syd.Viewer, max_value: float, min_log_exponent: float = -10, y: bool = True):
+    """
+    Add a system for interactively setting limits on viewer for x or y axes. Used for either xlims or ylims.
+    Will use [0, max_value] for linear scale and [10^min_log_exponent, max_value] for log scale.
+    Auto adds a dropdown for linear vs log scale and a float range for the limits, updates range of limit options
+    depending on scale change. if y=True, will do ylims, yscale, otherwise xlims, xscale.
+
+    Adds either viewer.get_ylims or viewer.get_xlims method that returns the current limits in the correct scale (i.e. converts from log if needed).
+    """
+    max_log_exponent = np.ceil(np.log10(max_value))
+
+    lim_name = "ylims" if y else "xlims"
+    scale_name = "yscale" if y else "xscale"
+
+    def _update_ylim_range(state):
+        lims = state[lim_name]
+        if state[scale_name] == "log":
+            min = min_log_exponent
+            max = max_log_exponent
+            if lims[0] <= 0:
+                lims = (10**min_log_exponent, lims[1])
+            new_value = (np.log10(lims[0]), np.log10(lims[1]))
+        else:
+            min = 0
+            max = max_value
+            new_value = (10 ** lims[0], 10 ** lims[1])
+
+        viewer.update_float_range(lim_name, value=new_value, min=min, max=max)
+
+    def _get_limits(state):
+        lims = state[lim_name]
+        if state[scale_name] == "log":
+            return 10 ** np.array(lims)
+        else:
+            return np.array(lims)
+
+    viewer.add_selection(f"{scale_name}", options=["linear", "log"], value="linear")
+    viewer.add_float_range(f"{lim_name}", min=0, max=max_value, value=(0, max_value))
+    viewer.on_change(f"{scale_name}", _update_ylim_range)
+
+    if y:
+        viewer.get_ylims = _get_limits
+    else:
+        viewer.get_xlims = _get_limits
 
 
 @contextmanager
@@ -126,6 +174,9 @@ def beeswarm(y, nbins=None):
     # Calculate the number of bins if not provided
     if nbins is None:
         nbins = len(y) // 6
+
+    if nbins == 0:
+        return np.zeros_like(y)
 
     # Get upper and lower bounds of the data
     x = np.zeros(len(y))

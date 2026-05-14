@@ -1,3 +1,4 @@
+from collections import Counter
 import numpy as np
 import scipy as sp
 import torch
@@ -97,6 +98,17 @@ def pairdist(XA, XB):
     """
     difference = XA - XB
     return np.sqrt(np.sum(difference**2, axis=1))
+
+
+def precov(A: np.ndarray, axis=1, bias: bool = False) -> np.ndarray:
+    """Center and scale A by the standard deviation along the specified axis.
+
+    Returns the centered and scaled version of A, csA such that cov(csA)=csA @ csA.T
+    """
+    centered = A - np.mean(A, axis=axis, keepdims=True)
+    divisor = centered.shape[axis] - int(not bias)
+    A_precov = centered / np.sqrt(divisor)
+    return A_precov
 
 
 def autocorrelation(x: np.ndarray, axis: int = -1, normalize: bool = True) -> np.ndarray:
@@ -622,3 +634,41 @@ def percentile_filter(arr, window_size, percentile, mode="reflect", cval=0.0):
             result[i, col] = np.percentile(window, percentile)
 
     return result
+
+
+def uniq_val_filter(array: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """Count unique values in a sliding window over an array.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        1-D input array.
+    width : int
+        Window width.
+
+    Returns
+    -------
+    lengths : np.ndarray
+        Number of unique values in each window, shape (n - width + 1,).
+    centers : np.ndarray
+        Center index of each window, shape (n - width + 1,).
+    """
+    n = len(array)
+    num_windows = n - width + 1
+    lengths = np.empty(num_windows, dtype=np.intp)
+
+    counts = Counter(array[:width])
+    lengths[0] = len(counts)
+
+    for i in range(1, num_windows):
+        out_val = array[i - 1]
+        counts[out_val] -= 1
+        if counts[out_val] == 0:
+            del counts[out_val]
+
+        counts[array[i + width - 1]] += 1
+        lengths[i] = len(counts)
+
+    half = width // 2
+    centers = np.arange(half, half + num_windows)
+    return lengths, centers

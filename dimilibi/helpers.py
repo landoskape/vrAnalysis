@@ -1,8 +1,9 @@
-from typing import Union, Optional, Tuple
+from typing import Callable, Union, Optional, Tuple
 import numpy as np
 import torch
 from torch.nn.functional import conv1d
 from scipy.optimize import curve_fit
+from tqdm import tqdm
 from vrAnalysis.helpers.signals import fivePointDer
 
 
@@ -270,7 +271,13 @@ def fit_powerlaw_derivatives(eigenspectrum: torch.Tensor, width: int = 1, axis: 
     return alpha_local, idx_slice
 
 
-def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx: int = None) -> Tuple[float, float]:
+def fit_powerlaw_decay(
+    eigenspectrum: torch.Tensor,
+    start_idx: int = 0,
+    end_idx: int = None,
+    ignore_nans: bool = False,
+    verbose: bool = True,
+) -> Tuple[float, float]:
     """
     Fit a powerlaw decay to the eigenspectrum. Returns the alpha value for n^(-alpha) decay.
 
@@ -282,6 +289,10 @@ def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx:
         The index of the first dimension to fit.
     end_idx : int, default=None
         The index of the last dimension to fit. If None, will fit until the end of the eigenspectrum.
+    ignore_nans : bool, default=False
+        If True, will ignore NaN values in the fit. If False, will raise an error if there are NaNs in the selected range.
+    verbose : bool, default=True
+        If True, will print warnings about ignored values. Set to False to suppress warnings.
 
     Returns
     -------
@@ -302,12 +313,26 @@ def fit_powerlaw_decay(eigenspectrum: torch.Tensor, start_idx: int = 0, end_idx:
 
     eigenspectrum = np.array(eigenspectrum[start_idx:end_idx])
 
-    idx_positive = eigenspectrum > 0
-    if not np.all(idx_positive):
-        print(f"Warning: some eigenspectrum values are negative or zero! Setting them to 0.")
+    idx_use = eigenspectrum > 0
+    if not np.all(idx_use) and verbose:
+        print(f"Warning: some eigenspectrum values are negative or zero! Ignoring them.")
 
-    x = np.log(np.arange(start_idx, end_idx)[idx_positive] + 1)
-    y = np.log(eigenspectrum[idx_positive])  # log(n^(-1)) = -log(n)
+    idx_not_nan = ~np.isnan(eigenspectrum)
+    if not np.all(idx_not_nan):
+        if ignore_nans:
+            if verbose:
+                print(f"Warning: some eigenspectrum values are NaN! Ignoring them.")
+            idx_use = idx_use & idx_not_nan
+        else:
+            raise ValueError("Eigenspectrum contains NaN values in the selected range. Set ignore_nans=True to ignore them.")
+
+    if not np.any(idx_use) and ignore_nans:
+        if verbose:
+            print("Warning: no valid eigenspectrum values to fit after ignoring NaNs and non-positive values! Returning NaN.")
+        return np.nan, np.nan
+
+    x = np.log(np.arange(start_idx, end_idx)[idx_use] + 1)
+    y = np.log(eigenspectrum[idx_use])  # log(n^(-1)) = -log(n)
 
     def _powerlaw(x, alpha, amplitude):
         # lambda = A * n^(-alpha)
@@ -332,8 +357,8 @@ class VectorizedGoldenSectionSearch:
 
     def __init__(
         self,
-        a: torch.Tensor,
-        b: torch.Tensor,
+        a: Union[torch.Tensor, float],
+        b: Union[torch.Tensor, float],
         tolerance: float = 1e-5,
         max_iterations: int = 100,
     ):
@@ -342,15 +367,22 @@ class VectorizedGoldenSectionSearch:
 
         Parameters
         ----------
-        a : torch.Tensor
-            Lower bounds for search intervals. Shape: (n_optimizations,)
-        b : torch.Tensor
-            Upper bounds for search intervals. Shape: (n_optimizations,)
+        a : Union[torch.Tensor, float]
+            Lower bounds for search intervals. Shape: (n_optimizations,) or scalar.
+        b : Union[torch.Tensor, float]
+            Upper bounds for search intervals. Shape: (n_optimizations,) or scalar.
         tolerance : float, default=1e-5
             Convergence tolerance. Search stops when interval width < tolerance.
         max_iterations : int, default=100
             Maximum number of iterations before stopping.
         """
+        if not isinstance(a, torch.Tensor):
+            a = torch.tensor([a], dtype=torch.float32)
+        if not isinstance(b, torch.Tensor):
+            b = torch.tensor([b], dtype=torch.float32)
+        a = torch.atleast_1d(a)
+        b = torch.atleast_1d(b)
+
         assert a.shape == b.shape, "a and b must have the same shape"
         assert torch.all(a < b), "All elements of a must be less than b"
 
@@ -443,6 +475,57 @@ class VectorizedGoldenSectionSearch:
     def is_converged(self) -> bool:
         """Check if all optimizations have converged."""
         return torch.all(self.converged).item()
+
+    def run(
+        self,
+        objective: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        verbose: bool = False,
+        maximize: bool = False,
+    ) -> torch.Tensor:
+        """
+        Run the golden section search loop.
+
+        Parameters
+        ----------
+        objective : Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+            Function with signature ``(points, active_mask) -> values``.
+            ``points`` has shape (n_optimizations,); ``active_mask`` is boolean of same shape.
+            Must return shape (n_optimizations,). Inactive entries are ignored — the caller
+            may skip them or return zeros; ``run`` merges via ``torch.where``.
+        verbose : bool, default=False
+            Show tqdm progress bar.
+        maximize : bool, default=False
+            If True, maximize the objective; if False, minimize.
+
+        Returns
+        -------
+        torch.Tensor
+            Best points (midpoints of final intervals). Shape: (n_optimizations,).
+        """
+        sign = -1.0 if maximize else 1.0
+        active_mask = torch.ones(self.a.shape[0], dtype=torch.bool, device=self.a.device)
+
+        fc = sign * objective(self.c, active_mask)
+        fd = sign * objective(self.d, active_mask)
+
+        pbar = tqdm(total=self.max_iterations, desc="Golden section search", disable=not verbose, leave=False)
+        try:
+            while not self.is_converged() and self.iteration < self.max_iterations:
+                self.c, self.d = self.update(fc, fd)
+                active_mask = self.get_active_mask()
+                if torch.any(active_mask):
+                    fc_new = sign * objective(self.c, active_mask)
+                    fd_new = sign * objective(self.d, active_mask)
+                    fc = torch.where(active_mask, fc_new, fc)
+                    fd = torch.where(active_mask, fd_new, fd)
+                pbar.update(1)
+                pbar.set_postfix({"active": active_mask.sum().item()})
+        finally:
+            if self.is_converged():
+                pbar.n = self.max_iterations
+            pbar.close()
+
+        return self.get_best_points()
 
     def get_active_mask(self) -> torch.Tensor:
         """Get boolean mask of optimizations that are still active (not converged)."""

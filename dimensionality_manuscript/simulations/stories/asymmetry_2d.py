@@ -1,7 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 
-from dimensionality_manuscript.simulations import (
+from .. import (
     RotatedEigenbasisGenerator,
     geometric_mean_spd,
     root_sandwich,

@@ -7,7 +7,7 @@ from tqdm import tqdm
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import B2Session
 from dimilibi import RidgeRegression
-from dimensionality_manuscript.registry import PopulationRegistry, get_model
+from ..registry import PopulationRegistry, get_model
 import optuna
 import gc
 

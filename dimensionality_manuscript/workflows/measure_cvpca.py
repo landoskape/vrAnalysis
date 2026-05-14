@@ -13,8 +13,8 @@ from vrAnalysis.metrics import FractionActive
 from dimilibi import gaussian_filter
 from dimilibi.pca import PCA
 from dimilibi.cvpca import RegularizedCVPCA, CVPCA, LegacyCVPCA
-from dimensionality_manuscript.registry import PopulationRegistry
-from dimensionality_manuscript.workflows.compare_old_cvpca import get_legacy_cvpca
+from ..registry import PopulationRegistry
+from .compare_old_cvpca import get_legacy_cvpca
 
 # get session database
 sessiondb = get_database("vrSessions")

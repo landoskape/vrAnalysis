@@ -16,8 +16,6 @@ from vrAnalysis.processors import SpkmapProcessor
 from vrAnalysis.sessions import B2Session
 from dimilibi import measure_r2, measure_rms, mse
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 def _huber_irls_weights_from_pred(
     spks: np.ndarray,
@@ -38,7 +36,29 @@ def _huber_irls_weights_from_pred(
     return np.clip(weights, 0.0, 1.0)
 
 
-def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavior) -> FrameBehavior:
+def _mse_scores(spks_t: torch.Tensor, pf_t: torch.Tensor) -> torch.Tensor:
+    """MSE scores via expanded ||x-y||^2 = ||x||^2 + ||y||^2 - 2<x,y>. Lower = better."""
+    spks_sq = (spks_t**2).sum(dim=1)[:, None, None]
+    pf_sq = (pf_t**2).sum(dim=0)[None, ...]
+    cross_term = torch.einsum("ij,jkl->ikl", spks_t, pf_t)
+    return spks_sq + pf_sq - 2 * cross_term
+
+
+def _angle_scores(spks_t: torch.Tensor, pf_t: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Negative cosine similarity scores. Lower = better (= smaller angle)."""
+    cross = torch.einsum("ij,jkl->ikl", spks_t, pf_t)
+    spks_norm = torch.sqrt((spks_t**2).sum(dim=1))[:, None, None]
+    pf_norm = torch.sqrt((pf_t**2).sum(dim=0))[None, ...]
+    return -(cross / (spks_norm * pf_norm + eps))
+
+
+_OBJECTIVE_SCORES: dict[str, callable] = {
+    "mse": _mse_scores,
+    "angle": _angle_scores,
+}
+
+
+def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavior, objective: str = "mse") -> FrameBehavior:
     """E-Step: Use placefields to predict latent variables (mouse's internal estimate)
 
     Parameters
@@ -49,6 +69,8 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
         The placefield object used for predicting latent variables.
     frame_behavior : FrameBehavior
         The frame behavior object with the true latent variables.
+    objective : str
+        Objective for finding the best position. One of "mse" or "angle".
 
     Returns
     -------
@@ -57,27 +79,88 @@ def _estep(spks: np.ndarray, placefield: Placefield, frame_behavior: FrameBehavi
     """
     if placefield.trials is not None:
         raise ValueError("Provided placefield object is not averaged over trials. Use average=True when getting placefield.")
+    if objective not in _OBJECTIVE_SCORES:
+        raise ValueError(f"Unknown objective '{objective}'. Must be one of {list(_OBJECTIVE_SCORES)}")
 
     num_frames = len(spks)
     num_positions = placefield.shape[1]
     dist_centers = edge2center(placefield.dist_edges)
+    score_fn = _OBJECTIVE_SCORES[objective]
 
-    # Do this in torch on GPU
-    spks_torch = torch.from_numpy(spks).to(device)
-    pf_torch = torch.from_numpy(placefield.placefield).to(device)
-    pf_torch = pf_torch.permute(2, 0, 1)
-    error_torch = torch.sum((spks_torch[..., None, None] - pf_torch[None, ...]) ** 2, dim=1)
-    min_idx_torch = torch.argmin(torch.reshape(error_torch, (num_frames, -1)), dim=1)
-    env_idx = (min_idx_torch // num_positions).cpu().numpy()
-    pos_idx = (min_idx_torch % num_positions).cpu().numpy()
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    spks_t = torch.from_numpy(spks).to(dev)
+    pf_t = torch.from_numpy(placefield.placefield).to(dev).permute(2, 0, 1)
+    scores = score_fn(spks_t, pf_t)
+    min_idx = torch.argmin(scores.reshape(num_frames, -1), dim=1)
+    env_idx = (min_idx // num_positions).cpu().numpy()
+    pos_idx = (min_idx % num_positions).cpu().numpy()
+    del spks_t, pf_t, scores, min_idx
 
     frame_behavior = FrameBehavior(
         position=dist_centers[pos_idx],
         speed=frame_behavior.speed,
         environment=placefield.environment[env_idx],
         trial=frame_behavior.trial,
+        reward_delivery=frame_behavior.reward_delivery,
+        reward_omitted=frame_behavior.reward_omitted,
     )
     return frame_behavior
+
+
+def _compute_ce_score(
+    spks: np.ndarray,
+    placefield: Placefield,
+    true_bin_idx: np.ndarray,
+    objective: str = "mse",
+) -> tuple[np.ndarray, float]:
+    """Compute cross-entropy between predicted position distribution and true position bins.
+
+    Scores are converted to log-probabilities via log_softmax(-scores) over all (env, position)
+    bins. CE = -mean(log_prob[true_bin]) over frames.
+
+    Parameters
+    ----------
+    spks : np.ndarray
+        Spike counts. (Frames x ROIs)
+    placefield : Placefield
+        Averaged placefield used to score positions.
+    true_bin_idx : np.ndarray
+        Flat bin index per frame: env_idx * num_positions + pos_idx. Shape (Frames,).
+    objective : str
+        One of "mse" or "angle".
+
+    Returns
+    -------
+    pred_bin_idx : np.ndarray
+        Predicted flat bin index (argmin of scores) per frame. Shape (Frames,).
+    ce_score : float
+        Mean cross-entropy over frames.
+    """
+    if placefield.trials is not None:
+        raise ValueError("Placefield must be averaged over trials.")
+    if objective not in _OBJECTIVE_SCORES:
+        raise ValueError(f"Unknown objective '{objective}'. Must be one of {list(_OBJECTIVE_SCORES)}")
+
+    num_frames = len(spks)
+    num_positions = placefield.shape[1]
+    score_fn = _OBJECTIVE_SCORES[objective]
+
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    spks_t = torch.from_numpy(spks).to(dev)
+    pf_t = torch.from_numpy(placefield.placefield).to(dev).permute(2, 0, 1)
+    scores_flat = score_fn(spks_t, pf_t).reshape(num_frames, -1)
+    log_probs = torch.nn.functional.log_softmax(-scores_flat.float(), dim=1)
+    min_idx = torch.argmin(scores_flat, dim=1)
+    tb = torch.from_numpy(true_bin_idx).long().to(dev)
+    ce = -log_probs[torch.arange(num_frames, device=dev), tb].mean().item()
+    env_idx = (min_idx // num_positions).cpu().numpy()
+    pos_idx = (min_idx % num_positions).cpu().numpy()
+
+    # Clean up torch variables to free GPU memory (safe move)
+    del spks_t, pf_t, scores_flat, log_probs, min_idx, tb
+
+    pred_bin_idx = env_idx * num_positions + pos_idx
+    return pred_bin_idx, ce
 
 
 def _mstep(
@@ -136,7 +219,27 @@ class ExpMaxConfig:
     huber_eps: float = 1e-8
 
 
-def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -> dict:
+def process_session(
+    session: B2Session,
+    config: ExpMaxConfig = ExpMaxConfig(),
+) -> tuple[dict[str, np.ndarray], dict[str, list[FrameBehavior | Placefield]]]:
+    """
+    Process a session using the EM procedure to estimate the mouse's internal representation of the environment and internal placefields.
+
+
+    Parameters
+    ----------
+    session : B2Session
+    config : ExpMaxConfig
+        The configuration for the EM procedure.
+
+    Returns
+    -------
+    results : dict[str, np.ndarray]
+        A dictionary containing the results of the EM procedure, including performance metrics.
+    models : dict[str, list[FrameBehavior | Placefield]]
+        A dictionary containing the estimated models (frame behaviors and placefields) at each step of the EM procedure.
+    """
     # Select reliable cells
     spkmap = SpkmapProcessor(session)
     reliability = spkmap.get_reliability(use_session_filters=False)
@@ -216,11 +319,11 @@ def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -
     em_test_mse = mse(_test_pred, spks_te, dim=0, reduce="mean")
     em_null_mse = mse(_null_pred, spks_te, dim=0, reduce="mean")
 
-    print(f"EM test R2: {em_test_r2:.2f}, EM test RMS: {em_test_rms:.2f}, EM test MSE: {em_test_mse:.2f}")
-    print(f"EM null R2: {em_null_r2:.2f}, EM null RMS: {em_null_rms:.2f}, EM null MSE: {em_null_mse:.2f}")
+    print(f"EM test R2: {100*em_test_r2:.2f}, EM test RMS: {1e3*em_test_rms:.2f}, EM test MSE: {1e3*em_test_mse:.2f}")
+    print(f"EM null R2: {100*em_null_r2:.2f}, EM null RMS: {1e3*em_null_rms:.2f}, EM null MSE: {1e3*em_null_mse:.2f}")
 
-    for step in tqdm(range(num_steps)):
-        print(f"{step} MSE: {step_mse[step]:.2f}, R2: {step_r2[step]:.2f}, RMS: {step_rms[step]:.2f}")
+    for step in range(num_steps):
+        print(f"{step} MSE: {1e3*step_mse[step]:.2f}, R2: {100*step_r2[step]:.1f}, RMS: {1e3*step_rms[step]:.1f}")
 
     results = dict(
         em_test_r2=em_test_r2,
@@ -233,4 +336,9 @@ def process_session(session: B2Session, config: ExpMaxConfig = ExpMaxConfig()) -
         step_r2=step_r2,
         step_rms=step_rms,
     )
-    return results
+    extras = dict(
+        frame_behavior_est=fb_e,
+        placefield_est=pf_m,
+        idx_keep_rois=idx_keep_rois,
+    )
+    return results, extras

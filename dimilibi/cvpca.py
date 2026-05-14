@@ -1,7 +1,6 @@
 from typing import Optional
 import numpy as np
 import torch
-from tqdm import tqdm
 from .pca import PCA
 from .helpers import vector_correlation, gaussian_filter, VectorizedGoldenSectionSearch
 from .metrics import mse
@@ -25,6 +24,7 @@ class CVPCA:
         num_components: Optional[int] = None,
         verbose: Optional[bool] = False,
         center: Optional[bool] = True,
+        on_stimuli: Optional[bool] = False,
     ):
         """
         Initialize a CVPCA object with the option of specifying supporting parameters.
@@ -39,11 +39,14 @@ class CVPCA:
             (default is False)
         center : Optional[bool]
             If True, center the data before PCA. Default is True.
+        on_stimuli : Optional[bool]
+            If True, will perform PCA on the stimulus dimension instead of the neuron dimension.
         """
 
         self.num_components = num_components
         self.verbose = verbose
         self.center = center
+        self.on_stimuli = on_stimuli
         self.fitted = False
 
     @torch.no_grad()
@@ -66,7 +69,8 @@ class CVPCA:
             The CVPCA object with the fitted model.
         """
         self.fitted = False
-        self._validate_data(data_repeat1)
+        if self.on_stimuli:
+            data_repeat1 = data_repeat1.T
 
         self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1)
         self.fitted = True
@@ -93,13 +97,17 @@ class CVPCA:
         if not self.fitted:
             raise ValueError("Model must be fitted before scoring data.")
 
+        if self.on_stimuli:
+            data_repeat1 = data_repeat1.T
+            data_repeat2 = data_repeat2.T
+
         self._validate_data(data_repeat1)
         self._validate_data(data_repeat2)
 
-        repeat1_proj = self.pca.model.transform(data_repeat1.T)
-        repeat2_proj = self.pca.model.transform(data_repeat2.T)
+        repeat1_proj = self.pca.transform(data_repeat1)
+        repeat2_proj = self.pca.transform(data_repeat2)
 
-        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=0)
+        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=1)
 
     @torch.no_grad()
     def _validate_data(self, data: torch.Tensor):
@@ -122,6 +130,7 @@ class RegularizedCVPCA:
         num_components: Optional[int] = None,
         verbose: Optional[bool] = False,
         center: Optional[bool] = True,
+        on_stimuli: Optional[bool] = False,
     ):
         """
         Initialize a RegularizedCVPCA object with the option of specifying supporting parameters.
@@ -136,6 +145,9 @@ class RegularizedCVPCA:
             (default is True)
         center : Optional[bool]
             If True, center the data before PCA. Default is True.
+        on_stimuli : Optional[bool]
+            If True, will perform PCA on the stimulus dimension instead of the neuron dimension.
+            (Will still fit smoothing for each neuron!)
         """
 
         self.num_components = num_components
@@ -144,6 +156,7 @@ class RegularizedCVPCA:
         self.smoothing_fitted = False
         self.smoothing_widths = None
         self.center = center
+        self.on_stimuli = on_stimuli
 
     @torch.no_grad()
     def fit_smoothing(
@@ -187,10 +200,6 @@ class RegularizedCVPCA:
         self : object
             The RegularizedCVPCA object with optimized smoothing widths.
         """
-        self._validate_data(data_repeat1)
-        self._validate_data(data_repeat2)
-        self._validate_data(data_repeat3)
-
         assert data_repeat1.shape == data_repeat2.shape == data_repeat3.shape, "All repeats must have the same shape"
 
         num_neurons, num_stimuli = data_repeat1.shape
@@ -207,41 +216,10 @@ class RegularizedCVPCA:
         # Initialize golden section search
         gss = VectorizedGoldenSectionSearch(a, b, tolerance=tolerance, max_iterations=max_iterations)
 
-        # Evaluate initial points c and d
-        c, d = gss.c, gss.d
+        def objective(widths: torch.Tensor, active_mask: torch.Tensor) -> torch.Tensor:
+            return self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, widths, active_mask)
 
-        # Evaluate function at initial points (all neurons are active initially)
-        active_mask = torch.ones(num_neurons, dtype=torch.bool, device=data_repeat1.device)
-        fc = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, c, active_mask)
-        fd = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, d, active_mask)
-
-        # Main optimization loop with progress bar
-        pbar = tqdm(total=max_iterations, desc="Optimizing smoothing widths", disable=not self.verbose, leave=False)
-        try:
-            while not gss.is_converged() and gss.iteration < max_iterations:
-                # Update search intervals
-                c, d = gss.update(fc, fd)
-
-                # Evaluate at new points (only for active optimizations)
-                active_mask = gss.get_active_mask()
-                if torch.any(active_mask):
-                    fc_active = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, c, active_mask)
-                    fd_active = self._evaluate_smoothing_mse(data_repeat1, data_repeat2, data_repeat3, d, active_mask)
-                    # Only update active elements
-                    fc = torch.where(active_mask, fc_active, fc)
-                    fd = torch.where(active_mask, fd_active, fd)
-
-                # Update progress bar
-                pbar.update(1)
-                pbar.set_postfix({"active_neurons": active_mask.sum().item()})
-        finally:
-            # Jump to end if converged early
-            if gss.is_converged():
-                pbar.n = max_iterations
-            pbar.close()
-
-        # Get optimal smoothing widths
-        self.smoothing_widths = gss.get_best_points()
+        self.smoothing_widths = gss.run(objective, verbose=self.verbose)
         self.smoothing_fitted = True
 
         if self.verbose:
@@ -285,11 +263,13 @@ class RegularizedCVPCA:
                 print("Warning: Smoothing not fitted. Fitting without smoothing. " "Call fit_smoothing() first to optimize smoothing widths.")
 
         self.fitted = False
-        self._validate_data(data_repeat1)
 
         # Apply smoothing if available and not disabled
         if self.smoothing_fitted and not disable_smoothing and self.smoothing_widths is not None:
             data_repeat1 = gaussian_filter(data_repeat1, self.smoothing_widths * smoothing_factor, axis=1)
+
+        if self.on_stimuli:
+            data_repeat1 = data_repeat1.T
 
         self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1)
         self.fitted = True
@@ -316,13 +296,17 @@ class RegularizedCVPCA:
         if not self.fitted:
             raise ValueError("Model must be fitted before scoring data.")
 
+        if self.on_stimuli:
+            data_repeat2 = data_repeat2.T
+            data_repeat3 = data_repeat3.T
+
         self._validate_data(data_repeat2)
         self._validate_data(data_repeat3)
 
-        repeat2_proj = self.pca.model.transform(data_repeat2.T)
-        repeat3_proj = self.pca.model.transform(data_repeat3.T)
+        repeat2_proj = self.pca.transform(data_repeat2)
+        repeat3_proj = self.pca.transform(data_repeat3)
 
-        return vector_correlation(repeat2_proj, repeat3_proj, covariance=True, dim=0)
+        return vector_correlation(repeat2_proj, repeat3_proj, covariance=True, dim=1)
 
     @torch.no_grad()
     def _validate_data(self, data: torch.Tensor):
@@ -421,6 +405,7 @@ class LegacyCVPCA:
         num_components: Optional[int] = None,
         shuffle_fraction: Optional[float] = 0.0,
         center: Optional[bool] = True,
+        on_stimuli: Optional[bool] = False,
         fraction_nan_permitted: Optional[float] = 0.1,
         true_legacy: Optional[bool] = False,
         verbose: Optional[bool] = False,
@@ -438,6 +423,8 @@ class LegacyCVPCA:
             (default is 0.0)
         center : Optional[bool]
             If True, center the data before PCA. Default is True.
+        on_stimuli : Optional[bool]
+            If True, performs cvCPA on stimulus dimension instead of neural dimension.
         true_legacy: Optional[bool]
             If True, will use the true legacy cvPCA method, which will shuffle the data across repeats.
             (default is False)
@@ -449,6 +436,7 @@ class LegacyCVPCA:
         self.num_components = num_components
         self.shuffle_fraction = shuffle_fraction
         self.center = center
+        self.on_stimuli = on_stimuli
         self.verbose = verbose
         self.true_legacy = true_legacy
 
@@ -479,6 +467,9 @@ class LegacyCVPCA:
             raise ValueError("Data repeats must have the same shape.")
 
         if self.true_legacy:
+            if self.on_stimuli:
+                data_repeat1 = data_repeat1.T
+                data_repeat2 = data_repeat2.T
             covariance = old_helpers.shuff_cvPCA(data_repeat1.T.numpy(), data_repeat2.T.numpy(), nshuff=1, center=self.center)
             covariance = np.nanmean(covariance, axis=0)
             return covariance
@@ -490,9 +481,13 @@ class LegacyCVPCA:
             data_repeat1_flipped[:, idx_flip] = data_repeat2[:, idx_flip]
             data_repeat2_flipped[:, idx_flip] = data_repeat1[:, idx_flip]
 
+        if self.on_stimuli:
+            data_repeat1_flipped = data_repeat1_flipped.T
+            data_repeat2_flipped = data_repeat2_flipped.T
+
         self.pca = PCA(num_components=self.num_components, verbose=self.verbose, center=self.center).fit(data_repeat1_flipped)
 
-        repeat1_proj = self.pca.model.transform(data_repeat1_flipped.T)
-        repeat2_proj = self.pca.model.transform(data_repeat2_flipped.T)
+        repeat1_proj = self.pca.transform(data_repeat1_flipped)
+        repeat2_proj = self.pca.transform(data_repeat2_flipped)
 
-        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=0)
+        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=1)

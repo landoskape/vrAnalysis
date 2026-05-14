@@ -235,6 +235,61 @@ def rotate_subspace_by_angle(Q: np.ndarray, theta: float, rng=np.random.default_
     return Q * np.cos(theta) + (U @ O) * np.sin(theta)
 
 
+def _haar_orthogonal(n: int, rng=None) -> np.ndarray:
+    if rng is None:
+        rng = np.random.default_rng()
+    A = rng.normal(size=(n, n))
+    Q, R = np.linalg.qr(A)
+    # make Haar-correct signs
+    d = np.sign(np.diag(R))
+    d[d == 0] = 1.0
+    Q = Q @ np.diag(d)
+    return Q
+
+
+def rotate_global(Q: np.ndarray, alpha: float, rng=None) -> np.ndarray:
+    """
+    Randomly rotate an orthogonal basis Q so that:
+        Qp @ Qp.T = I
+        diag(Qp @ Q.T) = alpha
+
+    Uses a globally-mixing random orthogonal transform.
+
+    Requires:
+        - Q square orthogonal
+        - dimension even
+        - |alpha| <= 1
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    n, m = Q.shape
+    if n != m:
+        raise ValueError("Q must be square.")
+    if n % 2 != 0:
+        raise ValueError("This construction requires even dimension.")
+    if not np.allclose(Q @ Q.T, np.eye(n), atol=1e-8):
+        raise ValueError("Q must be orthogonal.")
+    if not (-1.0 <= alpha <= 1.0):
+        raise ValueError("alpha must be in [-1, 1].")
+
+    beta = np.sqrt(1.0 - alpha**2)
+
+    # canonical orthogonal skew-symmetric matrix
+    J = np.zeros((n, n), dtype=Q.dtype)
+    block = np.array([[0.0, -1.0], [1.0, 0.0]], dtype=Q.dtype)
+    for i in range(0, n, 2):
+        J[i : i + 2, i : i + 2] = block
+
+    # random change of basis -> global mixing
+    U = _haar_orthogonal(n, rng)
+    S = U @ J @ U.T
+
+    M = alpha * np.eye(n, dtype=Q.dtype) + beta * S
+    Qp = M @ Q
+    return Qp
+
+
 def find_commute_space_gated(A, B, K=50, num_steps=2000, lr=1e-2, lambda_gate=1e-3, prune_every=200, prune_thr=1e-2, min_dims=1, device="cuda"):
     A = torch.as_tensor(A, dtype=torch.float32, device=device)
     B = torch.as_tensor(B, dtype=torch.float32, device=device)

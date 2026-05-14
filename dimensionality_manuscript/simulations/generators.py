@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from typing import Callable, Optional, Mapping, Any
+from typing import Callable, Optional, Mapping, Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -39,7 +39,7 @@ class SharedSpaceGenerator:
 
     def __init__(self, config: SharedSpaceConfig, dtype: np.dtype = np.float64):
         self.config = config
-        self.dtype = dtype
+        self.dtype = np.dtype(dtype)
         rng = config.rng if config.rng is not None else np.random.default_rng()
 
         n_shared = config.shared_dimensions
@@ -77,16 +77,17 @@ class SharedSpaceGenerator:
 
         true_cov1 = shared_cov + self.config.private_ratio**2 * private_cov1
         true_cov2 = shared_cov + self.config.private_ratio**2 * private_cov2
-        return true_cov1, true_cov2
+        return true_cov1.astype(self.dtype, copy=False), true_cov2.astype(self.dtype, copy=False)
 
     def generate(
         self,
         num_samples: int,
         noise_variance: float = 0.0,
         rotation_angle: float = 0.0,
+        suppress_shared: bool = False,
         rng: Optional[np.random.Generator] = None,
         return_extras: bool = False,
-    ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], ...]:
+    ) -> tuple[npt.NDArray[np.floating], ...]:
         """
         Generate two datasets (num_neurons x num_samples) with shared and private structure.
 
@@ -98,6 +99,9 @@ class SharedSpaceGenerator:
             Variance of iid Gaussian noise added to each neuron. Default 0.0.
         rotation_angle : float, optional
             Angle to rotate the shared subspace by. Default 0.0.
+        suppress_shared : bool, optional
+            If True, suppress the shared component in the generated data (for testing).
+            Default False.
         rng : np.random.Generator, optional
             Random number generator for loadings and noise. Uses config rng if None.
         return_extras : bool, optional
@@ -137,13 +141,14 @@ class SharedSpaceGenerator:
             private1 = rotate_subspace_by_angle(private1, rotation_angle, rng)
             private2 = rotate_subspace_by_angle(private2, rotation_angle, rng)
 
+        shared_scale = 0.0 if suppress_shared else 1.0
         data1 = (
-            shared1 @ loading_shared1
+            shared_scale * shared1 @ loading_shared1
             + ratio * private1 @ loading_private1
             + noise_variance * rng.standard_normal((N, num_samples)).astype(self.dtype)
         )
         data2 = (
-            shared2 @ loading_shared2
+            shared_scale * shared2 @ loading_shared2
             + ratio * private2 @ loading_private2
             + noise_variance * rng.standard_normal((N, num_samples)).astype(self.dtype)
         )
@@ -322,6 +327,411 @@ class SharedSpaceGenerator:
         study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
         return study
+
+
+@dataclass
+class StimFullConfig:
+    """Configuration for x = g(s) + h + eps data generation."""
+
+    num_neurons: int
+    num_stimuli: int
+    stim_dim: int  # dimension of stimulus representation; must be <= num_stimuli
+    alpha_stim: float  # power-law exponent for stimulus spectrum
+    nuisance_dim: int  # dimension of stimulus-independent nuisance subspace
+    alpha_nuisance: float  # power-law exponent for nuisance spectrum
+
+    nuisance_scale: float = 1.0  # multiplicative scale for nuisance component
+    nuisance_alignment: Literal["orthogonal", "random", "aligned", "angle"] = "orthogonal"
+    nuisance_angle: float = 0.0  # used when nuisance_alignment="angle"; principal angle in radians
+    noise_scale: float = 1.0  # scale for per-neuron eps variance: sigma_n^2 ~ Exp(noise_scale)
+
+    rng: Optional[np.random.Generator] = None
+
+
+class StimFullGenerator:
+    """
+    Generator for x_t = g(s_t) + h(n_t) + eps_t following the shared-variance model.
+
+    g(s): stimulus-driven component. Each of num_stimuli stimuli has a fixed response
+    g(s) = stim_space @ z_s, where stim_space is (num_neurons, stim_dim) orthonormal
+    and z_s ~ N(0, diag(stim_spectrum)) are fixed per-stimulus latent codes.
+
+    h(n): nuisance component with power-law covariance, generated as
+    h(n) = nuisance_scale * nuisance_space @ diag(sqrt(nuisance_spectrum)) @ noise_n.
+    nuisance_space can be orthogonal, random, aligned to stim_space, or set to a
+    controlled principal angle from stim_space.
+
+    eps_t: per-neuron private noise where neuron n has variance sigma_n^2 ~ Exp(noise_scale).
+    """
+
+    def __init__(self, config: StimFullConfig, dtype: np.dtype = np.float64):
+        self.config = config
+        self.dtype = np.dtype(dtype)
+        rng = config.rng if config.rng is not None else np.random.default_rng()
+
+        N = config.num_neurons
+        S = config.num_stimuli
+        D = config.stim_dim
+        H = config.nuisance_dim
+
+        if D > S:
+            raise ValueError(f"stim_dim {D} > num_stimuli {S}")
+        if D > N:
+            raise ValueError(f"stim_dim {D} > num_neurons {N}")
+        if H < 0:
+            raise ValueError(f"nuisance_dim must be nonnegative, got {H}")
+        if H > N:
+            raise ValueError(f"nuisance_dim {H} > num_neurons {N}")
+        nuisance_alignment = self.config.nuisance_alignment
+        if nuisance_alignment == "orthogonal" and D + H > N:
+            raise ValueError(f"stim_dim + nuisance_dim ({D} + {H}) > num_neurons {N} (required for orthogonal nuisance)")
+        if nuisance_alignment == "angle":
+            k_angle = min(D, H)
+            if k_angle > 0 and N < 2 * k_angle:
+                raise ValueError(f"Need num_neurons >= 2 * min(stim_dim, nuisance_dim) for angled nuisance; got {N} < {2 * k_angle}")
+            if H > D and D + H > N:
+                raise ValueError(f"stim_dim + nuisance_dim ({D} + {H}) > num_neurons {N} (required when angled nuisance has extra axes)")
+
+        # Stimulus subspace: (N, D) orthonormal, optionally lower dimensional than number of stimuli. Fixed code per stimulus.
+        self.stim_space = generate_orthonormal(N, D, rng=rng).astype(self.dtype)
+        self.stim_spectrum = np.arange(1, D + 1, dtype=self.dtype) ** (-config.alpha_stim)
+        # Tight frame (D, S): rows orthonormal, scaled by sqrt(S) so L @ L.T = S * I_D.
+        # Guarantees stim_responses @ stim_responses.T / S = stim_space @ diag(stim_spectrum) @ stim_space.T exactly.
+        if D == S:
+            self.stim_latents = np.eye(D, dtype=self.dtype)
+        else:
+            self.stim_latents = np.sqrt(S) * generate_orthonormal(S, D, rng=rng).T.astype(self.dtype)
+
+        # nuisance subspace: (N, H) orthonormal with configurable geometry relative to stim_space
+        self.nuisance_space = self._build_nuisance_space(rng).astype(self.dtype)
+        self.nuisance_spectrum = np.arange(1, H + 1, dtype=self.dtype) ** (-config.alpha_nuisance)
+
+        # Per-neuron eps standard deviations: sigma_n = sqrt(Exp(noise_scale))
+        self.eps_scales = np.sqrt(rng.exponential(config.noise_scale, N)).astype(self.dtype)
+
+    def _build_nuisance_space(self, rng: np.random.Generator) -> npt.NDArray[np.floating]:
+        """Build the nuisance subspace with controlled geometry relative to stim_space."""
+        N = self.config.num_neurons
+        D = self.config.stim_dim
+        H = self.config.nuisance_dim
+        alignment = self.config.nuisance_alignment
+
+        if H == 0:
+            return np.zeros((N, 0), dtype=self.dtype)
+
+        if alignment == "orthogonal":
+            return generate_orthonormal(N, H, kernel=self.stim_space, rng=rng)
+
+        if alignment == "random":
+            return generate_orthonormal(N, H, rng=rng)
+
+        if alignment == "aligned":
+            k = min(D, H)
+            aligned = self.stim_space[:, :k]
+            if H == k:
+                return aligned.copy()
+            extras = generate_orthonormal(N, H - k, kernel=self.stim_space, rng=rng)
+            return np.concatenate([aligned, extras], axis=1)
+
+        if alignment == "angle":
+            k = min(D, H)
+            if k == 0:
+                return generate_orthonormal(N, H, rng=rng)
+            anchor = self.stim_space[:, :k]
+            rotated = rotate_subspace_by_angle(anchor, self.config.nuisance_angle, rng)
+            if H == k:
+                return rotated
+            kernel = np.concatenate([self.stim_space, rotated], axis=1)
+            extras = generate_orthonormal(N, H - k, kernel=kernel, rng=rng)
+            return np.concatenate([rotated, extras], axis=1)
+
+        raise ValueError(f"Unknown nuisance_alignment: {alignment}")
+
+    def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """
+        Return population-level Sigma_stim, Sigma_nuisance, and Sigma_eps.
+
+        Returns
+        -------
+        sigma_stim : ndarray, shape (num_neurons, num_neurons)
+            stim_space @ diag(stim_spectrum) @ stim_space.T
+        sigma_nuisance : ndarray, shape (num_neurons, num_neurons)
+            nuisance_space @ diag(nuisance_spectrum) @ nuisance_space.T
+        sigma_eps : ndarray, shape (num_neurons, num_neurons)
+            diag(eps_scales^2)
+        """
+        stim_responses = self.stim_space @ np.diag(np.sqrt(self.stim_spectrum)) @ self.stim_latents  # (N, S)
+        sigma_stim = np.cov(stim_responses, rowvar=True, dtype=self.dtype).astype(self.dtype, copy=False)
+        sigma_nuisance = (self.config.nuisance_scale**2) * self.nuisance_space @ np.diag(self.nuisance_spectrum) @ self.nuisance_space.T
+        sigma_eps = np.diag(self.eps_scales**2)
+        return (
+            sigma_stim,
+            sigma_nuisance.astype(self.dtype, copy=False),
+            sigma_eps.astype(self.dtype, copy=False),
+        )
+
+    def generate(
+        self,
+        num_samples: int,
+        noise_variance: float = 0.0,
+        rotation_angle: float = 0.0,
+        rng: Optional[np.random.Generator] = None,
+        return_extras: bool = False,
+    ) -> tuple[npt.NDArray[np.floating], ...]:
+        """
+        Generate data following x_t = g(s_t) + h_t + eps_t.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of time samples T.
+        noise_variance : float, optional
+            Variance of additional iid Gaussian noise added to full data. Default 0.0.
+        rotation_angle : float, optional
+            Angle to rotate stim and nuisance subspaces. Simulates session-to-session
+            representation drift. Requires num_neurons >= 2 * max(stim_dim, nuisance_dim).
+            Default 0.0.
+        rng : np.random.Generator, optional
+            Random number generator. Uses config rng if None.
+        return_extras : bool, optional
+            If True, also return an extras dict. Default False.
+
+        Returns
+        -------
+        data : ndarray, shape (num_neurons, num_samples)
+            Full data: g(s_t) + h_t + eps_t [+ noise].
+        stim_data : ndarray, shape (num_neurons, num_samples)
+            Stimulus-only component: g(s_t).
+        extras : dict, optional
+            When return_extras=True. Keys: stim_indices, stim_responses, stim_space,
+            nuisance_space, stim_spectrum, nuisance_spectrum, eps_scales, nuisance_component, eps_component.
+        """
+        rng = rng if rng is not None else self.config.rng
+        rng = np.random.default_rng() if rng is None else rng
+
+        N = self.config.num_neurons
+        S = self.config.num_stimuli
+        H = self.config.nuisance_dim
+
+        stim_space = self.stim_space.copy()
+        nuisance_space = self.nuisance_space.copy()
+        if rotation_angle != 0.0:
+            stim_space = rotate_subspace_by_angle(stim_space, rotation_angle, rng)
+            nuisance_space = rotate_subspace_by_angle(nuisance_space, rotation_angle, rng)
+
+        # Reconstruct stimulus responses in (possibly rotated) stim_space
+        stim_responses = stim_space @ np.diag(np.sqrt(self.stim_spectrum)) @ self.stim_latents  # (N, S)
+
+        # Sample random stimulus indices
+        stim_indices = rng.integers(0, S, size=num_samples)
+        stim_data = stim_responses[:, stim_indices]  # (N, T)
+
+        # nuisance component: nuisance_scale * nuisance_space @ diag(sqrt(nuisance_spectrum)) @ z
+        nuisance_loadings = (
+            self.config.nuisance_scale * np.diag(np.sqrt(self.nuisance_spectrum)) @ rng.standard_normal((H, num_samples)).astype(self.dtype)
+        )
+        nuisance_component = nuisance_space @ nuisance_loadings  # (N, T)
+
+        # eps component: per-neuron private noise
+        eps_component = self.eps_scales[:, None] * rng.standard_normal((N, num_samples)).astype(self.dtype)
+
+        data = stim_data + nuisance_component + eps_component
+        if noise_variance > 0.0:
+            data = data + np.sqrt(noise_variance) * rng.standard_normal((N, num_samples)).astype(self.dtype)
+
+        if return_extras:
+            extras: dict[str, Any] = {
+                "stim_indices": stim_indices,
+                "stim_responses": stim_responses,
+                "stim_space": stim_space,
+                "nuisance_space": nuisance_space,
+                "stim_spectrum": self.stim_spectrum.copy(),
+                "nuisance_spectrum": self.nuisance_spectrum.copy(),
+                "eps_scales": self.eps_scales.copy(),
+                "nuisance_component": nuisance_component,
+                "eps_component": eps_component,
+            }
+            return data, stim_data, extras
+        return data, stim_data
+
+
+@dataclass
+class CovariancePairConfig:
+    """Configuration for two low-rank covariance models A and B."""
+
+    num_neurons: int
+    candidate_rank: int
+    target_rank: int
+
+    alpha_candidate: float = 1.0
+    alpha_target: float = 1.0
+    candidate_scale: float = 1.0
+    target_scale: float = 1.0
+
+    geometry: Literal["same", "random", "orthogonal", "angle", "partial"] = "same"
+    angle: float = 0.0
+    shared_rank: Optional[int] = None
+
+    rng: Optional[np.random.Generator] = None
+
+
+class CovariancePairGenerator:
+    """
+    Generate paired covariance models with controlled eigenbasis geometry.
+
+    The generator constructs two positive semidefinite covariance matrices:
+
+    A = U_A diag(lambda_A) U_A.T
+    B = U_B diag(lambda_B) U_B.T
+
+    U_A and U_B are orthonormal bases with ranks candidate_rank and target_rank.
+    lambda_A and lambda_B are scaled power-law spectra. The geometry parameter
+    controls how U_B is constructed relative to U_A:
+
+    - "same": share the leading basis vectors.
+    - "random": sample U_B independently.
+    - "orthogonal": sample U_B from the orthogonal complement of U_A.
+    - "angle": rotate paired axes of U_A by a fixed principal angle.
+    - "partial": share shared_rank axes and place remaining target axes outside U_A.
+
+    Samples are drawn as x = U diag(sqrt(lambda)) z with z standard normal.
+    """
+
+    def __init__(self, config: CovariancePairConfig, dtype: np.dtype = np.float64):
+        self.config = config
+        self.dtype = np.dtype(dtype)
+        rng = config.rng if config.rng is not None else np.random.default_rng()
+
+        N = config.num_neurons
+        ra = config.candidate_rank
+        rb = config.target_rank
+
+        if ra < 1 or rb < 1:
+            raise ValueError(f"candidate_rank and target_rank must be positive; got {ra}, {rb}")
+        if ra > N or rb > N:
+            raise ValueError(f"Ranks must be <= num_neurons; got {ra}, {rb} with num_neurons={N}")
+        if config.geometry == "orthogonal" and ra + rb > N:
+            raise ValueError(f"candidate_rank + target_rank ({ra} + {rb}) > num_neurons {N}; cannot make orthogonal subspaces")
+        if config.geometry == "angle":
+            k = min(ra, rb)
+            if N < 2 * k:
+                raise ValueError(f"Need num_neurons >= 2 * min(candidate_rank, target_rank); got {N} < {2 * k}")
+            if rb > k and ra + rb > N:
+                raise ValueError(f"candidate_rank + target_rank ({ra} + {rb}) > num_neurons {N}; cannot add angled extra target axes")
+        if config.geometry == "partial":
+            shared_rank = 0 if config.shared_rank is None else config.shared_rank
+            if shared_rank < 0 or shared_rank > min(ra, rb):
+                raise ValueError(f"shared_rank must be between 0 and min(candidate_rank, target_rank); got {shared_rank}")
+            if config.angle != 0.0 and shared_rank > 0 and N < 2 * shared_rank:
+                raise ValueError(f"Need num_neurons >= 2 * shared_rank for angled partial overlap; got {N} < {2 * shared_rank}")
+            if rb > shared_rank and ra + rb - shared_rank > N:
+                raise ValueError(
+                    f"Need enough ambient dimensions for partial overlap; got candidate_rank + target_rank - shared_rank = "
+                    f"{ra + rb - shared_rank} > num_neurons {N}"
+                )
+
+        self.candidate_space = generate_orthonormal(N, ra, rng=rng).astype(self.dtype)
+        self.candidate_spectrum = (config.candidate_scale * np.arange(1, ra + 1, dtype=self.dtype) ** (-config.alpha_candidate)).astype(self.dtype)
+        self.target_space = self._build_target_space(rng).astype(self.dtype)
+        self.target_spectrum = (config.target_scale * np.arange(1, rb + 1, dtype=self.dtype) ** (-config.alpha_target)).astype(self.dtype)
+
+    def _build_target_space(self, rng: np.random.Generator) -> npt.NDArray[np.floating]:
+        N = self.config.num_neurons
+        ra = self.config.candidate_rank
+        rb = self.config.target_rank
+        geometry = self.config.geometry
+
+        if geometry == "same":
+            k = min(ra, rb)
+            shared = self.candidate_space[:, :k]
+            if rb == k:
+                return shared.copy()
+            extras = generate_orthonormal(N, rb - k, kernel=self.candidate_space, rng=rng)
+            return np.concatenate([shared, extras], axis=1)
+
+        if geometry == "random":
+            return generate_orthonormal(N, rb, rng=rng)
+
+        if geometry == "orthogonal":
+            return generate_orthonormal(N, rb, kernel=self.candidate_space, rng=rng)
+
+        if geometry == "angle":
+            k = min(ra, rb)
+            rotated = rotate_subspace_by_angle(self.candidate_space[:, :k], self.config.angle, rng)
+            if rb == k:
+                return rotated
+            kernel = np.concatenate([self.candidate_space, rotated], axis=1)
+            extras = generate_orthonormal(N, rb - k, kernel=kernel, rng=rng)
+            return np.concatenate([rotated, extras], axis=1)
+
+        if geometry == "partial":
+            k = 0 if self.config.shared_rank is None else self.config.shared_rank
+            blocks = []
+            kernel = self.candidate_space
+            if k > 0:
+                shared = self.candidate_space[:, :k]
+                if self.config.angle != 0.0:
+                    shared = rotate_subspace_by_angle(shared, self.config.angle, rng)
+                    kernel = np.concatenate([self.candidate_space, shared], axis=1)
+                blocks.append(shared)
+            if rb > k:
+                extras = generate_orthonormal(N, rb - k, kernel=kernel, rng=rng)
+                blocks.append(extras)
+            return np.concatenate(blocks, axis=1)
+
+        raise ValueError(f"Unknown geometry: {geometry}")
+
+    def expected_covariances(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """Return the candidate and target population covariance matrices."""
+        candidate = self.candidate_space @ np.diag(self.candidate_spectrum) @ self.candidate_space.T
+        target = self.target_space @ np.diag(self.target_spectrum) @ self.target_space.T
+        return candidate.astype(self.dtype, copy=False), target.astype(self.dtype, copy=False)
+
+    def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """Alias for expected_covariances, matching other simulation generators."""
+        return self.expected_covariances()
+
+    def generate(
+        self,
+        num_samples: int,
+        which: Any = "candidate",
+        noise_variance: float = 0.0,
+        rng: Optional[np.random.Generator] = None,
+    ) -> npt.NDArray[np.floating]:
+        """Generate samples from the candidate or target covariance."""
+        if noise_variance < 0:
+            raise ValueError("noise_variance must be non-negative")
+
+        rng = rng if rng is not None else self.config.rng
+        rng = np.random.default_rng() if rng is None else rng
+
+        if which in ("candidate", "A", 1):
+            space = self.candidate_space
+            spectrum = self.candidate_spectrum
+            rank = self.config.candidate_rank
+        elif which in ("target", "B", 2):
+            space = self.target_space
+            spectrum = self.target_spectrum
+            rank = self.config.target_rank
+        else:
+            raise ValueError("which must be one of 'candidate', 'target', 'A', 'B', 1, or 2")
+
+        z = rng.standard_normal((rank, num_samples)).astype(self.dtype)
+        data = space @ (np.sqrt(spectrum)[:, None] * z)
+        if noise_variance > 0.0:
+            data = data + np.sqrt(noise_variance) * rng.standard_normal((self.config.num_neurons, num_samples)).astype(self.dtype)
+        return data
+
+    def generate_pair(
+        self,
+        num_samples: int,
+        noise_variance: float = 0.0,
+        rng: Optional[np.random.Generator] = None,
+    ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """Generate candidate and target samples."""
+        candidate = self.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
+        target = self.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+        return candidate, target
 
 
 Transform = Callable[["CovarianceGenerator", np.random.Generator, dict[str, Any]], tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]]

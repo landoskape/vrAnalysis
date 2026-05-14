@@ -15,7 +15,7 @@ from vrAnalysis.helpers.plotting import errorPlot
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield
 from dimilibi.cvpca import CVPCA, LegacyCVPCA
-from dimensionality_manuscript.registry import PopulationRegistry
+from ..registry import PopulationRegistry
 
 # Import old method helpers
 from _old_vrAnalysis.analysis import placeCellMultiSession, placeCellSingleSession
