@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docs/**'
+      - 'dimensionality_manuscript/docs/shared_variance.md'
       - 'mkdocs.yml'
       - 'vrAnalysis/**'
       - '.github/workflows/docs.yml'
@@ -31,8 +32,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install mkdocs mkdocs-material mkdocstrings[python]
 
+      - name: Render shared variance HTML
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/data" \
+            -w /data \
+            --user "$(id -u):$(id -g)" \
+            pandoc/core:3.1 \
+            dimensionality_manuscript/docs/shared_variance.md \
+            --from=gfm+tex_math_dollars \
+            --to=html5 \
+            --standalone \
+            --katex \
+            --metadata title="Shared Variance Exposition" \
+            --output=dimensionality_manuscript/docs/shared_variance.html
+
       - name: Build documentation
         run: mkdocs build
+
+      - name: Include shared variance HTML
+        run: |
+          mkdir -p site/dimensionality_manuscript/docs
+          cp dimensionality_manuscript/docs/shared_variance.html site/dimensionality_manuscript/docs/shared_variance.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3

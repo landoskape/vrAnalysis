@@ -1,0 +1,50 @@
+name: Render Shared Variance HTML
+
+on:
+  push:
+    paths:
+      - "dimensionality_manuscript/docs/shared_variance.md"
+      - ".github/workflows/render-shared-variance-html.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Render Markdown to HTML with KaTeX
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/data" \
+            -w /data \
+            --user "$(id -u):$(id -g)" \
+            pandoc/core:3.1 \
+            dimensionality_manuscript/docs/shared_variance.md \
+            --from=gfm+tex_math_dollars \
+            --to=html5 \
+            --standalone \
+            --katex \
+            --metadata title="Shared Variance Exposition" \
+            --output=dimensionality_manuscript/docs/shared_variance.html
+
+      - name: Commit rendered HTML
+        run: |
+          git add dimensionality_manuscript/docs/shared_variance.html
+
+          if git diff --cached --quiet; then
+            echo "No HTML changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Render shared variance HTML"
+          git push origin HEAD:${GITHUB_REF_NAME}
