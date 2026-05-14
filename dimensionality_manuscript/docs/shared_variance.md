@@ -81,13 +81,13 @@ $$\begin{aligned}
 \tilde{\Sigma}_{\text{full}}^{\text{test}} &= \operatorname{cov}_t(x_t),\quad t \in \mathcal{F}_{\text{test}} \\
 \end{aligned}$$
 
-Then, we use the following formula to define the ***shared variance ratio***, denoted $\text{SVR}$, which measures the fraction of reproducible structure in $\Sigma_{\text{full}}$ that is shared with $\Sigma_{\text{stim}}$:
+Then, we use the following formula to define the ***shared variance ratio***, denoted $\text{SVR}$, which measures the ratio of reproducible structure in $\Sigma_{\text{full}}$ that is shared with $\Sigma_{\text{stim}}$:
 
 $$\text{SVR} = \frac{\kappa\!\left(\tilde{\Sigma}_{\text{stim}}^{\text{train}},\, \tilde{\Sigma}_{\text{full}}^{\text{test}}\right)}{\kappa\!\left(\tilde{\Sigma}_{\text{full}}^{\text{train}},\, \tilde{\Sigma}_{\text{full}}^{\text{test}}\right)}$$
 
 The numerator measures how much the geometry of stimulus-dependent covariance in the training set is shared with the geometry of the full covariance in the test set. The denominator measures how much the geometry of the full covariance is shared across the training and test sets, which serves as a normalization factor that accounts for the reliability of the structure in $\Sigma_{\text{full}}$.
 
-Therefore, the full ratio measures the fraction of reliable structure in $\Sigma_{\text{full}}$ that is shared with $\Sigma_{\text{stim}}$.
+Therefore, the full ratio measures the ratio of reliable structure in $\Sigma_{\text{full}}$ that is shared with $\Sigma_{\text{stim}}$.
 
 ##### Comparison to Centered Kernel Alignment (CKA)
 Note how this differs from CKA, which uses the following formula:
@@ -171,10 +171,47 @@ This is a valid, unbiased estimator of the covariance along the $i$th mode of ov
 
 We can do one of the following: 
 
-1. Instead of using the "amplitude" scale of $\kappa$, which estimates the singular values rather than eigenvalues, we can turn to this "energy" scale, which matches the bilinear form of our cross-validated estimator. In that case, the numerator of $\text{SVR}$ would be $\sum_i w_i^{cv}$, which is an unbiased estimator of $\operatorname{tr}(K_B(A)) = \operatorname{tr}(A B)$. The denominator of $\text{SVR}$ would be $\operatorname{tr}(\tilde{\Sigma}_{\text{full}}^{\text{train}} \tilde{\Sigma}_{\text{full}}^{\text{test}})$, which is an unbiased estimator of $\operatorname{tr}(\Sigma_{\text{full}}^2)$. This is closer in relation to CKA than the original definition of $\text{SVR}$. It measures the fraction of shared energy rather than the fraction of shared variance, and emphasize high-variance modes more than full distributions. 
+1. Instead of using the "amplitude" scale of $\kappa$, which estimates the singular values rather than eigenvalues, we can turn to this "energy" scale, which matches the bilinear form of our cross-validated estimator. In that case, the numerator of $\text{SVR}$ would be $\sum_i w_i^{cv}$, which is an unbiased estimator of $\operatorname{tr}(K_B(A)) = \operatorname{tr}(A B)$. The denominator of $\text{SVR}$ would be $\operatorname{tr}(\tilde{\Sigma}_{\text{full}}^{\text{train}} \tilde{\Sigma}_{\text{full}}^{\text{test}})$, which is an unbiased estimator of $\operatorname{tr}(\Sigma_{\text{full}}^2)$. This is closer in relation to CKA than the original definition of $\text{SVR}$. It measures the ratio of shared energy rather than the ratio of shared variance, and emphasize high-variance modes more than full distributions. 
 
 2. Alternatively, we can make the argument that negative values of $w_i^{cv}$ are likely to be noise, and therefore we can threshold $w_i^{cv}$ at 0 then take the square root. Although this is biased, it permits the cross-validated form to estimate the same quantity as the original $\text{SVR}$. This form looks like this:
 $$\text{SVR} = \frac{\sum_i \sqrt{\max(w_i^{cv}, 0)}}{\kappa\!\left(\tilde{\Sigma}_{\text{full}}^{\text{train}},\, \tilde{\Sigma}_{\text{full}}^{\text{test}}\right)}$$
+
+
+#### Summary of 3 Key metrics
+1. Shared Variance Ratio
+
+$$\text{SVR}(A, B) = \frac{\kappa\!\left(A_{\text{train}}, B_{\text{test}}\right)}{\kappa\!\left(B_{\text{train}}, B_{\text{test}}\right)}$$
+
+$$\kappa(A, B) = \| A^{1/2} B^{1/2} \|_*$$
+
+- The shared variance ratio measures how much variance overlap there is between $A$ and $B$ relative to the reliability of the structure in $B$. 
+- It compares $A$ and $B$ in train samples to $B$ in test samples, which makes it cross-validated, although it is not unbiased because the nuclear norm $\|\cdot\|_*$ is nonnegative.
+- When $A=B$, then $\kappa(A, B) = \operatorname{tr}(A) = \operatorname{tr}(B)$ and $\text{SVR}(A, B) = 1$.
+- $\text{SVR}(A, B)$ emphasizes the full dimensionality because it uses the ***variance scale*** of $A$ and $B$ by using the square root of the eigenvalues of a covariance matrix product (compare to the two metrics below).
+
+
+2. Cross-validated Shared Energy Ratio
+
+$$\text{cvSER}(A, B) = \frac{\operatorname{tr}(G_{12})}{\operatorname{tr}(B_{12} B_3)}$$
+
+$$G_{ij} \triangleq f(A_i)^T B_3 f(A_j)$$
+
+$$f(A) = \frac{1}{\sqrt{S - 1}} \left( A - \frac{1}{S} A \mathbf{1}_S \mathbf{1}_S^T \right)$$
+
+- The cross-validated shared energy ratio measures how much variance overlap there is between $A$ and $B$ relative to the reliability of the structure in $B$.
+- The numerator is a cross-validated estimator of $\operatorname{tr}(A B)$, which means we can use repeats of a stimulus presentation (or environment traversal) to reduce the contribution of nuisance signals to the estimation of stimulus-specific covariance.
+- The $\text{cvSER}$ emphasizes high-variance modes because it uses the ***variance-squared scale*** of $A$ and $B$ by using the eigenvalues of a covariance matrix product. This means if several high-variance modes are shared, the $\text{cvSER}$ will be high, even if there are many lower-variance modes that disagree.
+
+3. Centered Kernel Alignment (CKA)
+
+$$CKA(A, B) = \frac{\operatorname{tr}(A_{\text{train}} B_{\text{test}})}{\sqrt{\operatorname{tr}(A_{\text{train}}^2) \operatorname{tr}(B_{\text{test}}^2)}}$$
+
+- CKA measures how much variance overlap there is between $A$ and $B$ relative to the total variance in each matrix, without accounting for reliability of structure in either matrix.
+- It compares $A$ in a train sample to $B$ in a test sample, which makes it cross-validated (in the numerator, not the denominator!), although it is not unbiased because the trace of covariance matrices is nonnegative.
+- When $A=B$, then population $CKA(A, B) = 1$ (sample CKA will approach 1 as sample size increases).
+- Like $\text{cvSER}$, CKA emphasizes high-variance modes because it uses the variance-squared scale of $A$ and $B$ by using the eigenvalues of a covariance matrix product without a square root. 
+- CKA acts like a matrix inner product (it measures the cosine similarity between $A$ and $B$, with $\langle A, B \rangle = \operatorname{tr}(A B)$). Due to this property, CKA is always bounded above by $1$ and measures alignment (weighted by variance) independent of scale. 
+
 
 
 #### Amplitude vs. energy perspectives
