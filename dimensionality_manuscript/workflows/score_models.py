@@ -18,7 +18,7 @@ check_existing_scores = False  # Checks if scores already exist
 # which are the primary ones used for the manuscript. Non-defaults are primarly for testing and exploratory analysis.
 
 MODEL_NAMES: list[ModelName] = [
-    # # 1D Placfield Models
+    # 1D Placfield Models
     "external_placefield_1d",
     "internal_placefield_1d",
     "external_placefield_1d_gain",

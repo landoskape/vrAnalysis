@@ -814,6 +814,11 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         self.speed_basis = speed_basis
         self.no_reward = no_reward
 
+        # Name the three components of the reward regressors for optional manual sculpting of the model
+        # (Not going to put this in the main constructor API yet unless it helps)
+        self.reward_inclusion = {"expectation": True, "delivered_response": True, "omission_response": True}
+        self.expectation_symmetric = True
+
         # This model requires double-cross-validation to prevent non-spatial leakage
         # between activity and position in the training set. To account for this, the
         # population registry created two training sets -- train_0 and train_1 -- which
@@ -985,6 +990,7 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         session: B2Session,
         frame_behavior: FrameBehavior,
         hyperparameters: Optional[FullRegressorHyperparameters] = None,
+        as_list: bool = False,
     ) -> torch.Tensor:
         """Make the position basis for the Full Regressor model.
 
@@ -1002,12 +1008,16 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             The frame behavior to make the position basis for.
         hyperparameters : Optional[FullRegressorHyperparameters]
             The hyperparameters to use for the Full Regressor model. If None, uses the default hyperparameters for the model.
+        as_list : bool
+            If True, will return the different components of the basis as a list of tensors rather than concatenating them.
+            The order of the list is [position_basis, speed_basis, reward_expectation_basis, reward_delivery_basis, reward_omission_basis].
 
         Returns
         -------
         basis : torch.Tensor
             The position basis for the Full Regressor model of shape (num_timepoints, num_basis * num_environments).
         """
+        _return_basis = lambda basis_list: basis_list if as_list else torch.cat(basis_list, dim=1)
         if hyperparameters is None:
             hyperparameters = self.hyperparameters
 
@@ -1022,10 +1032,10 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             # Speed basis is just the speed itself after z-scoring
             speed_basis = torch.tensor((speed - np.mean(speed)) / np.std(speed), dtype=torch.float32).unsqueeze(-1)
 
+        basis_list = [position_basis, speed_basis]
         if self.no_reward:
             # If no_reward flag is set, we won't include any reward-related basis functions
-            full_basis = torch.cat([position_basis, speed_basis], dim=1)
-            return full_basis
+            return _return_basis(basis_list)
 
         # For the reward basis, we need to build the temporal basis from the *whole* session,
         # not just the split provided by get_session_data and passed through to here via frame_behavior.
@@ -1039,27 +1049,35 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         reward_delivery = frame_behavior_full.reward_delivery
         reward_omitted = frame_behavior_full.reward_omitted
         reward_expected = np.logical_or(reward_delivery, reward_omitted)
-        reward_expectation_basis = make_temporal_basis(
-            reward_expected,
-            hyperparameters.reward_num_basis_lags,
-            hyperparameters.reward_basis_width,
-        )[frame_behavior.idx]
-        reward_delivery_basis = make_temporal_basis(
-            reward_delivery,
-            hyperparameters.reward_num_basis_lags,
-            hyperparameters.reward_basis_width,
-            only_responsive=True,
-        )[frame_behavior.idx]
-        reward_omitted_basis = make_temporal_basis(
-            reward_omitted,
-            hyperparameters.reward_num_basis_lags,
-            hyperparameters.reward_basis_width,
-            only_responsive=True,
-        )[frame_behavior.idx]
 
-        # Full basis
-        full_basis = torch.cat([position_basis, speed_basis, reward_expectation_basis, reward_delivery_basis, reward_omitted_basis], dim=1)
-        return full_basis
+        if self.reward_inclusion["expectation"]:
+            reward_expectation_basis = make_temporal_basis(
+                reward_expected,
+                hyperparameters.reward_num_basis_lags,
+                hyperparameters.reward_basis_width,
+                only_predictive=not self.expectation_symmetric,
+            )[frame_behavior.idx]
+            basis_list.append(reward_expectation_basis)
+
+        if self.reward_inclusion["delivered_response"]:
+            reward_delivery_basis = make_temporal_basis(
+                reward_delivery,
+                hyperparameters.reward_num_basis_lags,
+                hyperparameters.reward_basis_width,
+                only_responsive=True,
+            )[frame_behavior.idx]
+            basis_list.append(reward_delivery_basis)
+
+        if self.reward_inclusion["omission_response"]:
+            reward_omitted_basis = make_temporal_basis(
+                reward_omitted,
+                hyperparameters.reward_num_basis_lags,
+                hyperparameters.reward_basis_width,
+                only_responsive=True,
+            )[frame_behavior.idx]
+            basis_list.append(reward_omitted_basis)
+
+        return _return_basis(basis_list)
 
     @property
     def _model_hyperparameters(self) -> Type[FullRegressorHyperparameters]:
