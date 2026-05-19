@@ -83,6 +83,8 @@ def _hard_e_step(
         speed=frame_behavior.speed,
         environment=placefield.environment[pred_env_idx],
         trial=frame_behavior.trial,
+        reward_delivery=frame_behavior.reward_delivery,
+        reward_omitted=frame_behavior.reward_omitted,
         idx=frame_behavior.idx,
     )
     return new_fb, pred_bin_idx
