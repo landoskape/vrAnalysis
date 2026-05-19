@@ -400,7 +400,7 @@ def _jit_reliability_loo(spkmap: np.ndarray) -> np.ndarray:
     return trial_consistency
 
 
-def reliability_loo(spkmap: np.ndarray, weighted: bool = True) -> tuple[np.ndarray, np.ndarray]:
+def reliability_loo(spkmap: np.ndarray, weighted: bool = True) -> np.ndarray:
     """Calculate overall spatial reliability scores using leave-one-out cross-validation.
 
     For each ROI, computes how consistent its spatial activity pattern is across trials
@@ -414,13 +414,9 @@ def reliability_loo(spkmap: np.ndarray, weighted: bool = True) -> tuple[np.ndarr
                  trials that may be dominated by noise.
 
     Returns:
-        tuple containing:
-            - score: 1D array of shape (num_rois,) containing the average reliability
-                    score for each ROI. Higher values indicate more consistent spatial
-                    activity patterns across trials.
-            - trial_consistency: 2D array of shape (num_rois, num_trials) containing
-                               the per-trial reliability measurements used to compute
-                               the final scores.
+        - score: 1D array of shape (num_rois,) containing the average reliability
+                score for each ROI. Higher values indicate more consistent spatial
+                activity patterns across trials.
     """
     trial_consistency = _jit_reliability_loo(spkmap)
     # Use RMS activity on each trial as weights if requested

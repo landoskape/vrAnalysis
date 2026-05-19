@@ -1,4 +1,5 @@
 from typing import Union, Literal, Optional, overload
+import numpy as np
 import torch
 from .population import _ensure_tensor
 
@@ -33,21 +34,21 @@ def _mse(x: torch.Tensor, y: torch.Tensor, dim: DimType = None) -> torch.Tensor:
 
 @overload
 def mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: Literal["mean", "sum"],
     dim: DimType = ...,
 ) -> float: ...
 @overload
 def mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: None,
     dim: DimType = ...,
 ) -> torch.Tensor: ...
 def mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: ReductionMSE = "mean",
     dim: DimType = 0,
 ) -> Union[float, torch.Tensor]:
@@ -88,23 +89,23 @@ def mse(
 
 @overload
 def scaled_mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: Literal["mean", "sum"],
     eps: float = ...,
     dim: DimType = ...,
 ) -> float: ...
 @overload
 def scaled_mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: None,
     eps: float = ...,
     dim: DimType = ...,
 ) -> torch.Tensor: ...
 def scaled_mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: ReductionMSE = "mean",
     eps: float = 1e-8,
     dim: DimType = 0,
@@ -151,21 +152,21 @@ def scaled_mse(
 
 @overload
 def measure_r2(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: Literal["mean"],
     dim: DimType = ...,
 ) -> float: ...
 @overload
 def measure_r2(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: Literal["none"],
     dim: DimType = ...,
 ) -> torch.Tensor: ...
 def measure_r2(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: ReductionR2 = "mean",
     dim: DimType = 0,
 ) -> Union[float, torch.Tensor]:
@@ -211,21 +212,21 @@ def measure_r2(
 
 @overload
 def measure_rms(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: Literal["mean", "sum"],
     dim: DimType = ...,
 ) -> float: ...
 @overload
 def measure_rms(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: None,
     dim: DimType = ...,
 ) -> torch.Tensor: ...
 def measure_rms(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: torch.Tensor | np.ndarray,
+    y_true: torch.Tensor | np.ndarray,
     reduce: ReductionRMS = "mean",
     dim: DimType = 0,
 ) -> Union[float, torch.Tensor]:
