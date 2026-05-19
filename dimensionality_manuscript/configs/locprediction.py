@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
-
+from typing import TYPE_CHECKING, ClassVar, Callable
+from functools import partial
 import numpy as np
 import torch
 from scipy.special import log_softmax
@@ -14,6 +14,7 @@ from vrAnalysis.processors.placefields import get_placefield, convert_position_t
 from vrAnalysis.processors.placefields import Placefield, FrameBehavior
 from vrAnalysis.helpers import reliability_loo
 from vrAnalysis.metrics import FractionActive
+from dimilibi import measure_r2
 from dimilibi.helpers import VectorizedGoldenSectionSearch
 from ..pipeline.base import AnalysisConfigBase
 
@@ -213,7 +214,7 @@ class LossBase:
     hyperparameter_name: ClassVar[str | None] = None
     optimize_target: ClassVar[str | None] = None
     optimize_direction: ClassVar[str | None] = None
-    optimize_init_range: ClassVar[tuple[float, float]] | None = None
+    optimize_init_range: ClassVar[tuple[float, float] | None] = None
 
     def __call__(
         self,
@@ -234,15 +235,20 @@ class CrossEntropyLoss(LossBase):
     """
 
     name: ClassVar[str] = "cross_entropy"
-    has_hyperparameter: bool = True
-    hyperparameter_name: ClassVar[str] = "temperature"
-    optimize_target: ClassVar[str] = "loss"
-    optimize_direction: ClassVar[str] = "minimize"
-    optimize_init_range: ClassVar[tuple[float, float]] | None = (0.01, 100.0)
+    has_hyperparameter: ClassVar[bool] = True
+    hyperparameter_name: ClassVar[str | None] = "temperature"
+    optimize_target: ClassVar[str | None] = "loss"
+    optimize_direction: ClassVar[str | None] = "minimize"
+    optimize_init_range: ClassVar[tuple[float, float] | None] = (0.01, 100.0)
     temperature: float = 1.0
 
     def __call__(
-        self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray, *, temperature: float | None = None
+        self,
+        log_likelihood: np.ndarray,
+        true_bin_idx: np.ndarray,
+        *,
+        temperature: float | None = None,
+        **kwargs,
     ) -> tuple[dict[str, float], np.ndarray]:
         t = temperature if temperature is not None else self.temperature
         log_probs = log_softmax(log_likelihood / t, axis=1)  # (frames, total_bins)
@@ -264,10 +270,10 @@ class RankOrderingLoss(LossBase):
     """
 
     has_hyperparameter: ClassVar[bool] = True
-    hyperparameter_name: ClassVar[str] = "temperature"
-    optimize_target: ClassVar[str] = "loss"
-    optimize_direction: ClassVar[str] = "minimize"
-    optimize_init_range: ClassVar[tuple[float, float]] | None = (0.01, 100.0)
+    hyperparameter_name: ClassVar[str | None] = "temperature"
+    optimize_target: ClassVar[str | None] = "loss"
+    optimize_direction: ClassVar[str | None] = "minimize"
+    optimize_init_range: ClassVar[tuple[float, float] | None] = (0.01, 100.0)
     temperature: float = 1.0
     g: str = "logistic"
     margin: float = 1.0
@@ -278,7 +284,12 @@ class RankOrderingLoss(LossBase):
         return f"rank_loss_{self.g}_{self.reduction}"
 
     def __call__(
-        self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray, *, temperature: float | None = None
+        self,
+        log_likelihood: np.ndarray,
+        true_bin_idx: np.ndarray,
+        *,
+        temperature: float | None = None,
+        **kwargs,
     ) -> tuple[dict[str, float], np.ndarray]:
         n_frames, n_bins = log_likelihood.shape
         t = temperature if temperature is not None else self.temperature
@@ -314,7 +325,12 @@ class RankOrderingMetric(LossBase):
 
     name: ClassVar[str] = "rank_metric"
 
-    def __call__(self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray) -> tuple[dict[str, float], np.ndarray]:
+    def __call__(
+        self,
+        log_likelihood: np.ndarray,
+        true_bin_idx: np.ndarray,
+        **kwargs,
+    ) -> tuple[dict[str, float], np.ndarray]:
         n_frames = len(true_bin_idx)
         true_score = log_likelihood[np.arange(n_frames), true_bin_idx]  # (frames,)
         ranks = 1 + np.sum(log_likelihood > true_score[:, None], axis=1)  # (frames,)
@@ -338,7 +354,7 @@ class DistanceErrorLoss(LossBase):
     name: ClassVar[str] = "distance_error"
     dist_edges: np.ndarray
 
-    def __call__(self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray) -> tuple[dict[str, float], np.ndarray]:
+    def __call__(self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray, **kwargs) -> tuple[dict[str, float], np.ndarray]:
         num_bins = len(self.dist_edges) - 1
         pred_bin_idx = np.argmax(log_likelihood, axis=1)  # (frames,)
         pred_env = pred_bin_idx // num_bins
@@ -358,7 +374,7 @@ class EnvSwapFraction(LossBase):
     name: ClassVar[str] = "env_swap"
     dist_edges: np.ndarray
 
-    def __call__(self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray) -> tuple[dict[str, float], np.ndarray]:
+    def __call__(self, log_likelihood: np.ndarray, true_bin_idx: np.ndarray, **kwargs) -> tuple[dict[str, float], np.ndarray]:
         num_bins = len(self.dist_edges) - 1
         pred_bin_idx = np.argmax(log_likelihood, axis=1)
         pred_env = pred_bin_idx // num_bins
@@ -378,13 +394,13 @@ _LIKELIHOOD_REGISTRY: dict[str, type[LikelihoodBase]] = {
     # diag_gaussian is handled specially in _get_likelihood_methods (needs fitted variance)
 }
 
-_LOSS_REGISTRY: dict[str, LossBase | type[LossBase]] = {
-    "cross_entropy": CrossEntropyLoss(),
-    "rank_loss_logistic_mean": RankOrderingLoss(g="logistic", reduction="mean"),
-    "rank_loss_logistic_sum": RankOrderingLoss(g="logistic", reduction="sum"),
-    "rank_loss_hinge_mean": RankOrderingLoss(g="hinge", reduction="mean"),
-    "rank_loss_hinge_sum": RankOrderingLoss(g="hinge", reduction="sum"),
-    "rank_metric": RankOrderingMetric(),
+_LOSS_REGISTRY: dict[str, Callable[..., LossBase]] = {
+    "cross_entropy": CrossEntropyLoss,
+    "rank_loss_logistic_mean": partial(RankOrderingLoss, g="logistic", reduction="mean"),
+    "rank_loss_logistic_sum": partial(RankOrderingLoss, g="logistic", reduction="sum"),
+    "rank_loss_hinge_mean": partial(RankOrderingLoss, g="hinge", reduction="mean"),
+    "rank_loss_hinge_sum": partial(RankOrderingLoss, g="hinge", reduction="sum"),
+    "rank_metric": RankOrderingMetric,
     "distance_error": DistanceErrorLoss,
     "env_swap": EnvSwapFraction,
 }
@@ -405,21 +421,22 @@ def _get_likelihood_methods(
     return out
 
 
-def _get_loss_methods(names: tuple[str, ...], dist_edges: np.ndarray, only_with_hyperparameters: bool = False) -> dict[str, LossBase]:
+_NEEDS_DIST_EDGES = {"distance_error", "env_swap"}
+
+
+def _get_loss_methods(
+    names: tuple[str, ...],
+    dist_edges: np.ndarray,
+    only_with_hyperparameters: bool = False,
+) -> dict[str, LossBase]:
     out: dict[str, LossBase] = {}
     for name in names:
         if name not in _LOSS_REGISTRY:
             raise ValueError(f"Unknown loss method: {name!r}. Valid: {list(_LOSS_REGISTRY)}")
-        if only_with_hyperparameters and not _LOSS_REGISTRY[name].has_hyperparameter:
-            continue
-        out[name] = _LOSS_REGISTRY[name]
-    for key in out:
-        # Check if out[key] is a class (not yet instantiated) and instantiate it if so
-        if isinstance(out[key], type) and issubclass(out[key], LossBase):
-            if key == "distance_error" or key == "env_swap":
-                out[key] = out[key](dist_edges=dist_edges)  # type: ignore[call-arg]
-            else:
-                out[key] = out[key]()  # type: ignore[call-arg]
+        cls = _LOSS_REGISTRY[name]
+        out[name] = cls(dist_edges=dist_edges) if name in _NEEDS_DIST_EDGES else cls()
+    if only_with_hyperparameters:
+        out = {key: v for key, v in out.items() if v.has_hyperparameter}
     return out
 
 
@@ -431,16 +448,110 @@ def _optimize(
     ll: np.ndarray,
     true_bins_vl: np.ndarray,
 ) -> float:
+    # Check the loss_fn provided is a valid optimizable loss
+    assert loss_fn.optimize_init_range is not None, f"{loss_fn.name} has no optimize_init_range"
+    assert loss_fn.optimize_target is not None
+    assert loss_fn.hyperparameter_name is not None
     target = loss_fn.optimize_target
     direction = loss_fn.optimize_direction
     init_range = loss_fn.optimize_init_range
+    hyperparameter_name = loss_fn.hyperparameter_name
     gss = VectorizedGoldenSectionSearch(init_range[0], init_range[1])
 
     def objective(points: torch.Tensor, active_mask: torch.Tensor) -> torch.Tensor:
-        val = loss_fn(ll, true_bins_vl, **{loss_fn.hyperparameter_name: points[0].item()})[0][target]
+        val = loss_fn(ll, true_bins_vl, **{hyperparameter_name: points[0].item()})[0][target]
         return torch.tensor([val], dtype=torch.float32)
 
     return gss.run(objective, verbose=False, maximize=(direction == "maximize"))[0].item()
+
+
+# ---------------------------------------------------------------------------
+# Shared ROI selection and data helpers
+# ---------------------------------------------------------------------------
+
+
+def _select_rois_fn(
+    spks: np.ndarray,
+    frame_behavior: FrameBehavior,
+    dist_edges: np.ndarray,
+    session: B2Session,
+    reliability_cutoff: float,
+    fraction_active_cutoff: float,
+) -> np.ndarray:
+    """Select reliable and active ROIs via leave-one-out reliability and fraction active.
+
+    Parameters
+    ----------
+    spks : np.ndarray
+        Activity array of shape (frames, rois).
+    frame_behavior : FrameBehavior
+    dist_edges : np.ndarray
+        Spatial bin edges, shape (num_bins + 1,).
+    session : B2Session
+    reliability_cutoff : float
+        Minimum leave-one-out reliability score.
+    fraction_active_cutoff : float
+        Minimum participation fraction.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask of shape (rois,).
+    """
+    _all_trials = get_placefield(
+        spks,
+        frame_behavior,
+        dist_edges,
+        average=False,
+        use_fast_sampling=True,
+        session=session,
+    )
+    pf_data = np.transpose(_all_trials.placefield, (2, 0, 1))
+    idx_reliable = reliability_loo(pf_data) >= reliability_cutoff
+    fraction_active = (
+        FractionActive.compute(
+            pf_data,
+            activity_axis=2,
+            fraction_axis=1,
+            activity_method="rms",
+            fraction_method="participation",
+        )
+        >= fraction_active_cutoff
+    )
+    return idx_reliable & fraction_active
+
+
+def _get_source_target_arrays(
+    session: B2Session,
+    registry: "PopulationRegistry",
+    spks_type: SpksTypes,
+    split: "SplitName",
+) -> tuple[np.ndarray, np.ndarray, FrameBehavior]:
+    """Get source and target spike arrays for a registry split via the preset cell split.
+
+    Parameters
+    ----------
+    session : B2Session
+    registry : PopulationRegistry
+    spks_type : SpksTypes
+    split : SplitName
+
+    Returns
+    -------
+    spks_source : np.ndarray
+        Shape (frames, source_rois).
+    spks_target : np.ndarray
+        Shape (frames, target_rois).
+    frame_behavior : FrameBehavior
+        Filtered to the requested split.
+    """
+    population, frame_behavior = registry.get_population(session, spks_type)
+    split_idx = registry.time_split[split]
+    source_data, target_data = population.get_split_data(split_idx, center=False, scale=False)
+    idx_orig = np.array(population.get_split_times(split_idx, within_idx_samples=False))
+    spks_source = source_data.numpy().T  # (frames, source_rois)
+    spks_target = target_data.numpy().T  # (frames, target_rois)
+    return spks_source, spks_target, frame_behavior.filter(idx_orig)
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +591,40 @@ class LocPredFit:
     iteration_placefields: list[Placefield]
     iteration_diag_variances: list[np.ndarray]
     iteration_position_bins_tr: list[np.ndarray]
+
+
+@dataclass
+class LocPredCrossValFit:
+    """Fitted state from LocPredCrossVal.fit().
+
+    Parameters
+    ----------
+    pf_source : Placefield
+        Place field built from source neurons on training data.
+    pf_target : Placefield
+        Place field built from target neurons on training data.
+    diag_gaussian_variance : np.ndarray
+        Per-source-ROI residual variance for diagonal-Gaussian decoding. Shape (n_source_kept,).
+    idx_keep_source : np.ndarray
+        Boolean mask over source neurons selecting reliable, active ROIs.
+    idx_keep_target : np.ndarray
+        Boolean mask over target neurons selecting reliable, active ROIs.
+    dist_edges : np.ndarray
+        Spatial bin edges. Shape (num_bins + 1,).
+    norm_value : np.ndarray or None
+        Per-ROI normalization constants from source training data. None when norm_method="none".
+    norm_value_target : np.ndarray or None
+        Per-ROI normalization constants from target training data. None when norm_method="none".
+    """
+
+    pf_source: Placefield
+    pf_target: Placefield
+    diag_gaussian_variance: np.ndarray
+    idx_keep_source: np.ndarray
+    idx_keep_target: np.ndarray
+    dist_edges: np.ndarray
+    norm_value: np.ndarray | None
+    norm_value_target: np.ndarray | None
 
 
 # ---------------------------------------------------------------------------
@@ -562,27 +707,7 @@ class LocPredConfig(AnalysisConfigBase):
 
     def _select_rois(self, session: B2Session, spks: np.ndarray, frame_behavior: FrameBehavior, dist_edges: np.ndarray) -> np.ndarray:
         """Select reliable and active ROIs via leave-one-out reliability and fraction active."""
-        _all_trials = get_placefield(
-            spks,
-            frame_behavior,
-            dist_edges,
-            average=False,
-            use_fast_sampling=True,
-            session=session,
-        )
-        pf_data = np.transpose(_all_trials.placefield, (2, 0, 1))
-        idx_reliable = reliability_loo(pf_data) >= self.reliability_cutoff
-        fraction_active = (
-            FractionActive.compute(
-                pf_data,
-                activity_axis=2,
-                fraction_axis=1,
-                activity_method="rms",
-                fraction_method="participation",
-            )
-            >= self.fraction_active_cutoff
-        )
-        return idx_reliable & fraction_active
+        return _select_rois_fn(spks, frame_behavior, dist_edges, session, self.reliability_cutoff, self.fraction_active_cutoff)
 
     def _compute_norm_value(self, spks_tr: np.ndarray) -> np.ndarray | None:
         if self.norm_method == "zero-one":
@@ -873,3 +998,241 @@ class LocPredConfig(AnalysisConfigBase):
             idx_keep_rois=fit.idx_keep_rois,
             iteration_position_bins_tr=fit.iteration_position_bins_tr,
         )
+
+
+# ---------------------------------------------------------------------------
+# LocPredCrossVal
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LocPredCrossVal(AnalysisConfigBase):
+    """Cross-population location prediction: decode position from source neurons, predict target activity.
+
+    Fits separate place fields for source and target neurons (using the registry's preset cell split),
+    then for each test frame:
+    - Decodes position from source activity using each likelihood model (argmax).
+    - Predicts target activity as target_PF[decoded_bin] (internal estimate).
+    - Compares against target_PF[true_bin] as an oracle upper bound.
+
+    The gap between oracle R² and internal R² measures information lost by going through
+    an internal position estimate rather than true/extrinsic position.
+
+    Parameters
+    ----------
+    norm_method : str
+        Normalization applied to source spike counts using only training statistics.
+        "zero-one": divide by per-cell max. "none": no normalization.
+    norm_scale : float
+        Optional global scale applied to source spikes after normalization.
+    num_bins : int
+        Number of spatial bins for place field computation.
+    smooth_width : float or None
+        Gaussian smoothing width for place fields.
+    reliability_cutoff : float
+        Minimum leave-one-out reliability for ROI inclusion (applied to source and target separately).
+    fraction_active_cutoff : float
+        Minimum participation fraction for ROI inclusion (applied to source and target separately).
+    spks_type : SpksTypes
+        Spike type to retrieve from the registry.
+    likelihood_methods : tuple[str, ...]
+        Likelihood functions to use for position decoding.
+        Options: "poisson", "gaussian", "diag_gaussian", "von_mises_fisher".
+    """
+
+    schema_version: str = "v1"
+    data_config_name: str = "default"
+
+    norm_method: str = "zero-one"
+    norm_scale: float = 1.0
+    num_bins: int = 100
+    smooth_width: float | None = 0.25
+    reliability_cutoff: float = 0.1
+    fraction_active_cutoff: float = 0.1
+    spks_type: SpksTypes = "oasis"
+    likelihood_methods: tuple[str, ...] = ("poisson", "gaussian", "diag_gaussian", "von_mises_fisher")
+
+    display_name: ClassVar[str] = "locpred_crossval"
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {
+            "norm_scale": [1.0, 50.0],
+            "smooth_width": [None, 5.0],
+        }
+
+    def _compute_norm_value(self, spks_tr: np.ndarray) -> np.ndarray | None:
+        if self.norm_method == "zero-one":
+            return np.maximum(np.max(spks_tr, axis=0), 1e-12)
+        elif self.norm_method == "none":
+            return None
+        else:
+            raise ValueError(f"Unknown norm_method: {self.norm_method!r}")
+
+    def _apply_norm(self, spks: np.ndarray, norm_value: np.ndarray | None) -> np.ndarray:
+        if norm_value is not None:
+            spks = spks / norm_value
+        if self.norm_scale != 1.0:
+            spks = spks * self.norm_scale
+        return spks
+
+    def fit(
+        self,
+        session: B2Session,
+        registry: "PopulationRegistry",
+        split: "SplitName" = "train",
+    ) -> LocPredCrossValFit:
+        """Fit source and target place fields from a training split.
+
+        Parameters
+        ----------
+        session : B2Session
+        registry : PopulationRegistry
+        split : SplitName
+            Registry split to use as training data. Default "train".
+
+        Returns
+        -------
+        LocPredCrossValFit
+        """
+        spks_source_tr, spks_target_tr, frame_behavior_tr = _get_source_target_arrays(session, registry, self.spks_type, split)
+        norm_value = self._compute_norm_value(spks_source_tr)
+        spks_source_tr = self._apply_norm(spks_source_tr, norm_value)
+        norm_value_target = self._compute_norm_value(spks_target_tr)
+        spks_target_tr = self._apply_norm(spks_target_tr, norm_value_target)
+
+        dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
+
+        idx_keep_source = _select_rois_fn(
+            spks_source_tr,
+            frame_behavior_tr,
+            dist_edges,
+            session,
+            self.reliability_cutoff,
+            self.fraction_active_cutoff,
+        )
+        idx_keep_target = _select_rois_fn(
+            spks_target_tr,
+            frame_behavior_tr,
+            dist_edges,
+            session,
+            self.reliability_cutoff,
+            self.fraction_active_cutoff,
+        )
+
+        pf_source = get_placefield(
+            spks_source_tr[:, idx_keep_source],
+            frame_behavior_tr,
+            dist_edges,
+            average=True,
+            smooth_width=self.smooth_width,
+            use_fast_sampling=True,
+            session=session,
+        )
+        pf_target = get_placefield(
+            spks_target_tr[:, idx_keep_target],
+            frame_behavior_tr,
+            dist_edges,
+            average=True,
+            smooth_width=self.smooth_width,
+            use_fast_sampling=True,
+            session=session,
+        )
+        diag_gaussian_variance = _estimate_residual_variance(spks_source_tr[:, idx_keep_source], frame_behavior_tr, pf_source)
+        return LocPredCrossValFit(
+            pf_source=pf_source,
+            pf_target=pf_target,
+            diag_gaussian_variance=diag_gaussian_variance,
+            idx_keep_source=idx_keep_source,
+            idx_keep_target=idx_keep_target,
+            dist_edges=dist_edges,
+            norm_value=norm_value,
+            norm_value_target=norm_value_target,
+        )
+
+    def score(
+        self,
+        session: B2Session,
+        registry: "PopulationRegistry",
+        fit: LocPredCrossValFit,
+        split: "SplitName" = "test",
+    ) -> dict:
+        """Score source→target prediction on a held-out split.
+
+        For each frame, decodes position from source activity (argmax of log-likelihood under each
+        likelihood model), then predicts target activity as target_PF[decoded_bin]. Compares against
+        oracle prediction target_PF[true_bin].
+
+        Parameters
+        ----------
+        session : B2Session
+        registry : PopulationRegistry
+        fit : LocPredCrossValFit
+            Fitted state from :meth:`fit`.
+        split : SplitName
+            Registry split to evaluate on. Default "test".
+
+        Returns
+        -------
+        dict
+            oracle_r2 : float
+                Mean R² across target ROIs using true position bins (upper bound).
+            oracle_r2_roi : np.ndarray
+                Per-target-ROI R², shape (n_target_kept,).
+            internal_r2 : dict[str, float]
+                Mean R² per likelihood method using decoded position bins.
+            internal_r2_roi : dict[str, np.ndarray]
+                Per-target-ROI R² per likelihood method, shape (n_target_kept,).
+            true_bins_te : np.ndarray
+                True flat bin indices, shape (frames,).
+            idx_keep_source : np.ndarray
+                Boolean mask over source neurons used in fit.
+            idx_keep_target : np.ndarray
+                Boolean mask over target neurons used in fit.
+        """
+        spks_source_te, spks_target_te, frame_behavior_te = _get_source_target_arrays(session, registry, self.spks_type, split)
+        spks_source_te = self._apply_norm(spks_source_te, fit.norm_value)
+        spks_source_te = spks_source_te[:, fit.idx_keep_source]
+        spks_target_te = self._apply_norm(spks_target_te, fit.norm_value_target)
+        spks_target_te = spks_target_te[:, fit.idx_keep_target]
+
+        # Drop frames whose environment didn't appear in training data.
+        idx_known = np.isin(frame_behavior_te.environment, fit.pf_source.environment)
+        frame_behavior_te = frame_behavior_te.filter(idx_known)
+        spks_source_te = spks_source_te[idx_known]
+        spks_target_te = spks_target_te[idx_known]
+
+        true_bins_te = _true_position_bins(frame_behavior_te, fit.pf_source)
+        pf_target_flat = _pf_flat(fit.pf_target)  # (total_bins, n_target_kept)
+
+        # Oracle: predict target activity using true position bins
+        target_oracle = pf_target_flat[true_bins_te]  # (frames, n_target_kept)
+        oracle_r2 = measure_r2(target_oracle.T, spks_target_te.T, reduce="mean", dim=None)
+
+        # Internal: decode position from source, predict target
+        lik_methods = _get_likelihood_methods(self.likelihood_methods, fit.diag_gaussian_variance)
+        internal_r2: dict[str, float] = {}
+        for lik_name, lik_fn in lik_methods.items():
+            ll = lik_fn(spks_source_te, fit.pf_source)  # (frames, total_bins)
+            pred_bins = np.argmax(ll, axis=1)  # (frames,)
+            target_internal = pf_target_flat[pred_bins]  # (frames, n_target_kept)
+            internal_r2[lik_name] = measure_r2(target_internal.T, spks_target_te.T, reduce="mean", dim=None)
+
+        return dict(
+            oracle_r2=oracle_r2,
+            internal_r2=internal_r2,
+            true_bins_te=true_bins_te,
+            idx_keep_source=fit.idx_keep_source,
+            idx_keep_target=fit.idx_keep_target,
+        )
+
+    def process(
+        self,
+        session: B2Session,
+        registry: "PopulationRegistry",
+        train_split: "SplitName" = "train",
+        test_split: "SplitName" = "test",
+    ) -> dict:
+        """Run source→target location prediction analysis on a session."""
+        fit = self.fit(session, registry, split=train_split)
+        return self.score(session, registry, fit, split=test_split)
