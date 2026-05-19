@@ -30,6 +30,7 @@ Here are some of the key features that it makes possible:
 
 - **[Installation Guide](installation.md)** - Get started with vrAnalysis
 - **[Workflows](workflows/index.md)** - Learn how the package can be used
+- **[Math on Shared Variance Metrics](shared_variance.html)** - Understand the mathematical details of shared variance metrics
 
 ## Getting Help
 

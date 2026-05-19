@@ -33,11 +33,11 @@ jobs:
             --standalone \
             --katex \
             --metadata title="Shared Variance Exposition" \
-            --output=dimensionality_manuscript/docs/shared_variance.html
+            --output=docs/shared_variance.html
 
       - name: Commit rendered HTML
         run: |
-          git add dimensionality_manuscript/docs/shared_variance.html
+          git add docs/shared_variance.html
 
           if git diff --cached --quiet; then
             echo "No HTML changes to commit."
