@@ -231,6 +231,10 @@ class FrameBehavior:
     def __len__(self) -> int:
         return len(self.position)
 
+    @property
+    def shape(self) -> int:
+        return len(self.position)
+
     def __getitem__(self, idx) -> "FrameBehavior":
         """Allows indexing FrameBehavior like arrays to retrieve a subset of the data."""
         data = {
