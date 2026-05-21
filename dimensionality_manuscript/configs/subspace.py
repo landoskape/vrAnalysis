@@ -42,7 +42,7 @@ class SubspaceConfig(AnalysisConfigBase):
     schema_version: str = "v3"
     data_config_name: str = "even"
 
-    subspace_name: SubspaceName = "covcov_crossvalidated_subspace"
+    subspace_name: SubspaceName = "covcov_subspace"
     spks_type: SpksTypes = "oasis"
     num_bins: int = 100
     smooth_width: float | None = None
@@ -57,13 +57,13 @@ class SubspaceConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "subspace_name": ["pca_subspace", "covcov_subspace", "covcov_crossvalidated_subspace"],
+            "subspace_name": ["pca_subspace", "svca_subspace", "covcov_subspace", "covcov_crossvalidated_subspace"],
             "smooth_width": [5.0, None],
         }
 
     def validate(self):
         if self.subspace_name == "cvpca_subspace":
-            raise ValueError("cvpca_subspace is marked as broken and cannot be used in SubspaceConfig.")
+            raise ValueError("cvpca_subspace is broken and cannot be used in SubspaceConfig.")
         if self.subspace_name not in SUBSPACE_NAMES:
             raise ValueError(f"Unknown subspace_name {self.subspace_name!r}. " f"Available: {', '.join(SUBSPACE_NAMES)}")
 
@@ -79,11 +79,7 @@ class SubspaceConfig(AnalysisConfigBase):
         return "_".join(parts)
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> None:
-        """Measure subspace on this session.
-
-        The subspace infrastructure caches results to its own file store,
-        so we return None (completion marker) — no blob in ResultsStore.
-        """
+        """Measure subspace on this session."""
         model = get_subspace(self.subspace_name, registry)
         hyps = PlaceFieldHyperparameters(num_bins=self.num_bins, smooth_width=self.smooth_width)
         subspace = model.fit(session, spks_type=self.spks_type, hyperparameters=hyps)

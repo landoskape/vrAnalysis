@@ -18,6 +18,7 @@ from ..registry import (
     ModelName,
     PopulationRegistry,
     get_model,
+    ACTIVITY_PARAMETERS_NAMES,
 )
 from ..pipeline.base import AnalysisConfigBase
 
@@ -40,6 +41,7 @@ class RegressionConfig(AnalysisConfigBase):
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "oasis"
     method: str = "best"
+    activity_parameters_name: str = "default"
 
     display_name: ClassVar[str] = "regression"
 
@@ -47,11 +49,16 @@ class RegressionConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(MODEL_NAMES),
+            "activity_parameters_name": list(ACTIVITY_PARAMETERS_NAMES),
         }
 
     def validate(self):
         if self.model_name not in MODEL_NAMES:
             raise ValueError(f"Unknown model_name {self.model_name!r}. " f"Available: {', '.join(MODEL_NAMES)}")
+        if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
+            raise ValueError(
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
+            )
 
     def summary(self) -> str:
         parts = [
@@ -59,8 +66,10 @@ class RegressionConfig(AnalysisConfigBase):
             f"{self.model_name}",
             f"spks={self.spks_type}",
             f"method={self.method}",
-            self.schema_version,
         ]
+        if self.activity_parameters_name != "default":
+            parts.append(f"ap={self.activity_parameters_name}")
+        parts.append(self.schema_version)
         return "_".join(parts)
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
@@ -69,7 +78,7 @@ class RegressionConfig(AnalysisConfigBase):
         The model infrastructure caches results to its own file store,
         so we return None (completion marker) — no blob in ResultsStore.
         """
-        model = get_model(self.model_name, registry)
+        model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
         score = model.get_best_score(
             session,
             spks_type=self.spks_type,
