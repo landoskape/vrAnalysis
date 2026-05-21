@@ -12,7 +12,6 @@ from dimensionality_manuscript import (
     RegressionConfig,
     ResultsStore,
     SubspaceConfig,
-    SVCAConfig,
     get_data_config,
     list_data_configs,
     result_uid,
@@ -314,23 +313,6 @@ def test_subspace_validate_rejects_cvpca():
 def test_subspace_from_key():
     c = SubspaceConfig(subspace_name="pca_subspace", smooth_width=5.0)
     assert SubspaceConfig.from_key(c.key()) == c
-
-
-# -- SVCAConfig ----------------------------------------------------------------
-
-
-def test_svca_config_generation():
-    configs = SVCAConfig.generate_variations()
-    # 2 subspace names × 1 spks_type × 1 num_bins × 2 smooth_widths = 4
-    assert len(configs) == 4
-
-
-def test_svca_validate_rejects_invalid():
-    try:
-        SVCAConfig(subspace_name="pca_subspace")
-        assert False
-    except ValueError:
-        pass
 
 
 # -- PopulationConfig ----------------------------------------------------------
