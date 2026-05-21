@@ -38,7 +38,7 @@ class SubspaceModel(ABC):
         correlation: bool = False,
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         max_components: int = 300,
-        match_dimensions: bool = True,
+        match_dimensions: bool = False,
         autosave: bool = True,
     ):
         """Initialize the subspace model.
@@ -56,7 +56,7 @@ class SubspaceModel(ABC):
         max_components : int
             Maximum number of components to use. Default is 300.
         match_dimensions : bool
-            Whether to match the dimensions of the activity and placefields. Default is True.
+            Whether to match the dimensions of the activity and placefields. Default is False.
         autosave : bool
             Whether to automatically save optimization results to cache. Default is True.
         """
@@ -336,7 +336,7 @@ class SubspaceModel(ABC):
         Returns
         -------
         str
-            The name of the model (e.g., "pca_subspace", "cvpca_subspace", "svca_subspace").
+            The name of the model (e.g., "pca_subspace", "svca_subspace").
         """
         pass
 
@@ -1168,6 +1168,7 @@ class SubspaceModel(ABC):
             (
                 self.centered,
                 self.max_components,
+                self.match_dimensions,
             )
         )
 
@@ -1283,6 +1284,7 @@ class SubspaceModel(ABC):
             (
                 self.centered,
                 self.max_components,
+                self.match_dimensions,
             )
         )
 

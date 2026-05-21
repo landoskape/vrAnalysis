@@ -3,16 +3,18 @@ from tqdm import tqdm
 import torch
 from vrAnalysis.database import get_database
 from vrAnalysis.sessions import SpksTypes
-from ..registry import SubspaceName, PopulationRegistry, get_subspace
-from ..regression_models.hyperparameters import PlaceFieldHyperparameters
+from dimensionality_manuscript.registry import SubspaceName, PopulationRegistry, get_subspace
+from dimensionality_manuscript.regression_models.hyperparameters import PlaceFieldHyperparameters
+
+raise ValueError("This workflow is now superceded by measure_subspaces.py")
 
 # only works on the "optimized" route, not on specific hyperparameters
-clear_hyperparameters = False  # Clears hyperparameter cache
-clear_scores = False  # Clears score cache
+clear_hyperparameters = True  # Clears hyperparameter cache
+clear_scores = True  # Clears score cache
 
 # This is for setting specific hyperparameters
-score_with_specific_hyperparameters = True  # Scores subspace models with specific hyperparameters
-check_existing_with_specific_hyperparameters = False  # Checks if scores already exist with specific hyperparameters
+score_with_specific_hyperparameters = False  # Scores subspace models with specific hyperparameters
+check_existing_with_specific_hyperparameters = True  # Checks if scores already exist with specific hyperparameters
 specific_hyperparameters = [
     PlaceFieldHyperparameters(num_bins=100, smooth_width=5.0),
     PlaceFieldHyperparameters(num_bins=100, smooth_width=None),

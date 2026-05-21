@@ -1,11 +1,3 @@
-# class SubspaceAnalysis:
-#     def fit(self, session, spks_type): ...  # Returns the fit components and extras (data, placefields, etc)
-#     def score(self, session, fits, spks_type): ...  # Returns the variance in the test data
-#     def reconstruction_score(
-#         self, session, fits, spks_type
-#     ): ...  # Returns the frobenius norm of the difference between the test data and the reconstructed data for each expanding subspace
-#     def get_scores(): ...  # A similar cache method for getting scores without dealing with refitting which is slow
-
 from typing import TYPE_CHECKING, Optional
 import torch
 from vrAnalysis.sessions import B2Session, SpksTypes
@@ -104,8 +96,8 @@ class PCASubspace(SubspaceModel):
         base_name = "pca_subspace"
         if self.correlation:
             base_name += "_correlation"
-        if not self.match_dimensions:
-            base_name += "_without_match"
+        if self.match_dimensions:
+            base_name += "_with_match"
         return base_name
 
 
@@ -192,14 +184,56 @@ class SVCASubspace(SubspaceModel):
         subspace: Subspace,
         spks_type: SpksTypes = "oasis",
         split: "SplitName" = "not_train",
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        nan_safe: bool = False,
     ):
-        (test_source, test_target), _, _ = self.get_session_data(session, spks_type, split, use_cell_split=True)
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        (test_source, test_target), frame_behavior_test, (num_source_neurons, num_target_neurons) = self.get_session_data(
+            session, spks_type, split, use_cell_split=True
+        )
+
+        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        placefield_source = get_placefield(
+            test_source.T.numpy(),
+            frame_behavior_test,
+            dist_edges=dist_edges,
+            average=True,
+            smooth_width=hyperparameters.smooth_width,
+        )
+        placefield_target = get_placefield(
+            test_target.T.numpy(),
+            frame_behavior_test,
+            dist_edges=dist_edges,
+            average=True,
+            smooth_width=hyperparameters.smooth_width,
+        )
+        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T
+        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T
+
+        idx_nan_samples = torch.any(torch.isnan(placefield_source_extended), dim=0) | torch.any(torch.isnan(placefield_target_extended), dim=0)
+
+        if nan_safe:
+            if torch.any(idx_nan_samples):
+                num_nan = torch.sum(idx_nan_samples).item()
+                total = len(idx_nan_samples)
+                raise ValueError(f"{num_nan} / {total} samples have NaN values in placefield data!")
+            if torch.any(torch.isnan(test_source)) or torch.any(torch.isnan(test_target)):
+                raise ValueError("NaN values in test_source or test_target!")
+        else:
+            idx_valid = ~idx_nan_samples
+            placefield_source_extended = placefield_source_extended[:, idx_valid]
+            placefield_target_extended = placefield_target_extended[:, idx_valid]
+
         variance_activity = subspace.subspace_activity.score(test_source, test_target)[0]
         variance_placefields = subspace.subspace_placefields.score(test_source, test_target)[0]
+        variance_placefield_placefield = subspace.subspace_placefields.score(placefield_source_extended, placefield_target_extended)[0]
 
         return dict(
             variance_activity=variance_activity,
             variance_placefields=variance_placefields,
+            variance_placefield_placefield=variance_placefield_placefield,
         )
 
     def _get_model_name(self) -> str:
@@ -207,8 +241,8 @@ class SVCASubspace(SubspaceModel):
         base_name = "svca_subspace"
         if self.correlation:
             base_name += "_correlation"
-        if not self.match_dimensions:
-            base_name += "_without_match"
+        if self.match_dimensions:
+            base_name += "_with_match"
         return base_name
 
 
@@ -316,8 +350,8 @@ class CovCovSubspace(SubspaceModel):
         base_name = "covcov_subspace"
         if self.correlation:
             base_name += "_correlation"
-        if not self.match_dimensions:
-            base_name += "_without_match"
+        if self.match_dimensions:
+            base_name += "_with_match"
         return base_name
 
 
@@ -390,8 +424,12 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
         root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
 
         # Measure SVD on activity vs activity or PFs vs activity
-        SVCA_activity = SVCA(centered=False, num_components=num_components).fit(root_cov_activity0, root_cov_activity1)
-        SVCA_placefields = SVCA(centered=False, num_components=num_components).fit(root_cov_placefields0, root_cov_activity1)
+        if self.match_dimensions:
+            SVCA_activity = SVCA(centered=False, num_components=num_components).fit(root_cov_activity0, root_cov_activity1)
+            SVCA_placefields = SVCA(centered=False, num_components=num_components).fit(root_cov_placefields0, root_cov_activity1)
+        else:
+            SVCA_activity = SVCA(centered=False).fit(root_cov_activity0, root_cov_activity1)
+            SVCA_placefields = SVCA(centered=False).fit(root_cov_placefields0, root_cov_activity1)
 
         return Subspace(
             subspace_activity=SVCA_activity,
@@ -499,8 +537,8 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
         base_name = "covcov_crossvalidated_subspace"
         if self.correlation:
             base_name += "_correlation"
-        if not self.match_dimensions:
-            base_name += "_without_match"
+        if self.match_dimensions:
+            base_name += "_with_match"
         return base_name
 
 
