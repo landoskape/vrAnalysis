@@ -12,7 +12,6 @@ from vrAnalysis.processors.placefields import get_placefield, get_placefield_pre
 from dimilibi import RidgeRegression, ReducedRankRegression
 from .base import RegressionModel, ActivityParameters, OptimizationMethod
 from .hyperparameters import PlaceFieldHyperparameters, RBFPosHyperparameters, FullRegressorHyperparameters, ReducedRankRegressionHyperparameters
-from dimensionality_manuscript.regression_models import hyperparameters
 
 if TYPE_CHECKING:
     from ..registry import PopulationRegistry, SplitName

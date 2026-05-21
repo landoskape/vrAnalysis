@@ -9,15 +9,9 @@ from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_frame_behavior, FrameBehavior
 from vrAnalysis.processors.support import convert_position_to_bins
 from dimilibi import Population
-from .regression_models.base import RegressionModel
+from .regression_models.base import RegressionModel, ActivityParameters
 from .regression_models.models import PlaceFieldModel, RBFPosModel, FullRegressorModel, ReducedRankRegressionModel
-from .regression_models.hyperparameters import (
-    PlaceFieldHyperparameters,
-    RBFPosHyperparameters,
-    FullRegressorHyperparameters,
-    ReducedRankRegressionHyperparameters,
-    HyperparametersBase,
-)
+from .regression_models.hyperparameters import HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
 from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
 
@@ -66,6 +60,7 @@ SubspaceName = Literal[
     "pca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
+    "svca_subspace",
 ]
 
 SplitName = Literal[
@@ -633,6 +628,20 @@ SUBSPACE_NAMES: tuple[SubspaceName] = (
     "svca_subspace",
 )
 
+ACTIVITY_PARAMETERS_REGISTRY: dict[str, ActivityParameters] = {
+    "default": ActivityParameters(),
+    "raw": ActivityParameters(center=False, scale=False, scale_type="none"),
+    "preserved": ActivityParameters(center=False, scale=True, scale_type="preserve"),
+}
+
+ACTIVITY_PARAMETERS_NAMES: tuple[str] = tuple(ACTIVITY_PARAMETERS_REGISTRY.keys())
+
+
+def get_activity_parameters(name: str) -> ActivityParameters:
+    if name not in ACTIVITY_PARAMETERS_REGISTRY:
+        raise ValueError(f"Unknown activity_parameters name {name!r}. Available: {list(ACTIVITY_PARAMETERS_REGISTRY)}")
+    return ACTIVITY_PARAMETERS_REGISTRY[name]
+
 
 def short_model_name(model_name: ModelName) -> str:
     _short_name_mapping = {
@@ -691,6 +700,7 @@ def get_model(
     ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> PlaceFieldModel: ...
 
 
@@ -706,6 +716,7 @@ def get_model(
     ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> RBFPosModel: ...
 
 
@@ -736,6 +747,7 @@ def get_model(
     ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> FullRegressorModel: ...
 
 
@@ -744,6 +756,7 @@ def get_model(
     model_name: Literal["rrr", "rrr_no_intercept"],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> ReducedRankRegressionModel: ...
 
 
@@ -751,6 +764,7 @@ def get_model(
     model_name: ModelName,
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> RegressionModel:
     """Get a model object for a model name.
 
@@ -852,16 +866,23 @@ def get_model(
     if model_name not in _kwargs_lookup:
         raise ValueError(f"Model {model_name} does not have kwargs in the registry.")
 
+    if activity_parameters is None or activity_parameters == "default":
+        resolved_ap = get_activity_parameters("default")
+    elif isinstance(activity_parameters, str):
+        resolved_ap = get_activity_parameters(activity_parameters)
+    else:
+        resolved_ap = activity_parameters
+
     constructor = _constructor_lookup[model_name]
     kwargs = _kwargs_lookup[model_name]
-    return constructor(population_registry, hyperparameters=hyperparameters, **kwargs)
+    return constructor(population_registry, hyperparameters=hyperparameters, activity_parameters=resolved_ap, **kwargs)
 
 
 @overload
 def get_subspace(
     subspace_name: Literal["pca_subspace"],
     population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
+    match_dimensions: bool = False,
     correlation: bool = False,
 ) -> PCASubspace: ...
 
@@ -870,7 +891,7 @@ def get_subspace(
 def get_subspace(
     subspace_name: Literal["covcov_subspace"],
     population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
+    match_dimensions: bool = False,
     correlation: bool = False,
 ) -> CovCovSubspace: ...
 
@@ -879,7 +900,7 @@ def get_subspace(
 def get_subspace(
     subspace_name: Literal["covcov_crossvalidated_subspace"],
     population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
+    match_dimensions: bool = False,
     correlation: bool = False,
 ) -> CovCovCrossvalidatedSubspace: ...
 
@@ -888,7 +909,7 @@ def get_subspace(
 def get_subspace(
     subspace_name: Literal["svca_subspace"],
     population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
+    match_dimensions: bool = False,
     correlation: bool = False,
 ) -> SVCASubspace: ...
 
@@ -896,7 +917,7 @@ def get_subspace(
 def get_subspace(
     subspace_name: SubspaceName,
     population_registry: PopulationRegistry,
-    match_dimensions: bool = True,
+    match_dimensions: bool = False,
     correlation: bool = False,
 ) -> SubspaceModel:
     """Get a subspace model object for a subspace name.
@@ -908,7 +929,7 @@ def get_subspace(
     population_registry : PopulationRegistry
         The population registry to use for the subspace model.
     match_dimensions : bool
-        Whether to match the dimensions of the activity and placefields. Default is True.
+        Whether to match the dimensions of the activity and placefields. Default is False.
     correlation : bool
         Whether to use correlation instead of covariance. Default is False.
 

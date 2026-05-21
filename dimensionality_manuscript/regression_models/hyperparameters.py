@@ -285,7 +285,7 @@ class ReducedRankRegressionHyperparameters(HyperparametersBase):
             Dictionary with hyperparameter names as keys and the suggested values.
         """
         training = {
-            "alpha": trial.suggest_float("alpha", 1e-2, 1e2, log=True),
+            "alpha": trial.suggest_float("alpha", 1e-2, 1e10, log=True),
         }
         prediction = {
             "rank": (1, 2, 3, 5, 8, 15, 50, 100),
