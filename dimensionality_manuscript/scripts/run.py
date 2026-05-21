@@ -16,7 +16,6 @@ from dimensionality_manuscript import (
     AnalysisConfigBase,
     CVPCAConfig,
     RegressionConfig,
-    SVCAConfig,
     SubspaceConfig,
     PopulationConfig,
     ExpMaxConfig,
@@ -34,7 +33,6 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
         "regression": RegressionConfig,
         "cvpca": CVPCAConfig,
         "subspace": SubspaceConfig,
-        "svca": SVCAConfig,
         "expmax": ExpMaxConfig,
         "locpred": LocPredConfig,
     }

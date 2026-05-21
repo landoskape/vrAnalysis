@@ -38,10 +38,9 @@ from dimensionality_manuscript.configs.data_config import _NAMED_CONFIGS, get_da
 from dimensionality_manuscript.configs.population import PopulationConfig
 from dimensionality_manuscript.configs.regression import RegressionConfig
 from dimensionality_manuscript.configs.subspace import SubspaceConfig
-from dimensionality_manuscript.configs.svca import SVCAConfig
 from dimensionality_manuscript.pipeline.store import BASE_STORE_PATH, ResultsStore
 
-_ALL_CLASSES = [CVPCAConfig, SVCAConfig, SubspaceConfig, RegressionConfig, PopulationConfig]
+_ALL_CLASSES = [CVPCAConfig, SubspaceConfig, RegressionConfig, PopulationConfig]
 
 
 def _old_analysis_key(cfg) -> str:
