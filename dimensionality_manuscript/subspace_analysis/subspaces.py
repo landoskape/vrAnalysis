@@ -269,7 +269,7 @@ class CovCovSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T
+        placefield_extended = torch.tensor(placefield.flattened()).T
 
         # Check for NaNs and filter if needed
         placefield_extended, train_data = self._check_and_filter_nans(placefield_extended, train_data, nan_safe=nan_safe)
@@ -312,7 +312,7 @@ class CovCovSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T
+        placefield_extended = torch.tensor(placefield.flattened()).T
 
         # Check for NaNs and filter if needed
         placefield_extended, _ = self._check_and_filter_nans(placefield_extended, test_data, nan_safe=nan_safe)

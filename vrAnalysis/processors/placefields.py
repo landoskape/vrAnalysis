@@ -691,6 +691,11 @@ class Placefield:
 
         return new_placefield
 
+    def flattened(self) -> np.ndarray:
+        """Flatten the placefield to shape (num_environments/trials*num_bins, num_rois)."""
+        num_rows, num_bins, num_rois = self.placefield.shape
+        return self.placefield.reshape(num_rows * num_bins, num_rois)
+
 
 def get_placefield(
     spks: np.ndarray,

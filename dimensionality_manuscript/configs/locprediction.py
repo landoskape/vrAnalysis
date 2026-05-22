@@ -59,7 +59,7 @@ def _estimate_residual_variance(
 ) -> np.ndarray:
     """Estimate per-ROI variance from training residuals around placefield predictions."""
     train_bins = _true_position_bins(frame_behavior_tr, placefield_tr)
-    mu_train = _pf_flat(placefield_tr)[train_bins]  # (frames_tr, rois)
+    mu_train = placefield_tr.flattened()[train_bins]  # (frames_tr, rois)
     residuals = spks_tr - mu_train
     variance = np.var(residuals, axis=0, ddof=1)
     return np.maximum(variance, min_variance)
@@ -119,7 +119,7 @@ class PoissonLikelihood(LikelihoodBase):
     name: ClassVar[str] = "poisson"
 
     def __call__(self, spks: np.ndarray, placefield: Placefield) -> np.ndarray:
-        lam = np.maximum(_pf_flat(placefield), self.eps)  # (total_bins, rois)
+        lam = np.maximum(placefield.flattened(), self.eps)  # (total_bins, rois)
         return spks @ np.log(lam).T - np.sum(lam, axis=1)  # (frames, total_bins)
 
 
@@ -137,7 +137,7 @@ class GaussianLikelihood(LikelihoodBase):
     name: ClassVar[str] = "gaussian"
 
     def __call__(self, spks: np.ndarray, placefield: Placefield) -> np.ndarray:
-        pf = _pf_flat(placefield)  # (total_bins, rois)
+        pf = placefield.flattened()  # (total_bins, rois)
         spks_sq = np.sum(spks**2, axis=1, keepdims=True)  # (frames, 1)
         pf_sq = np.sum(pf**2, axis=1)  # (total_bins,)
         cross = spks @ pf.T  # (frames, total_bins)
@@ -163,7 +163,7 @@ class VonMisesFisherLikelihood(LikelihoodBase):
     kappa: float = 1.0
 
     def __call__(self, spks: np.ndarray, placefield: Placefield) -> np.ndarray:
-        pf = _pf_flat(placefield)  # (total_bins, rois)
+        pf = placefield.flattened()  # (total_bins, rois)
         spks_norm = np.linalg.norm(spks, axis=1, keepdims=True)  # (frames, 1)
         pf_norm = np.linalg.norm(pf, axis=1, keepdims=True)  # (total_bins, 1)
         spks_unit = spks / np.maximum(spks_norm, self.eps)
@@ -189,7 +189,7 @@ class DiagonalGaussianLikelihood(LikelihoodBase):
     min_variance: float = 1e-6
 
     def __call__(self, spks: np.ndarray, placefield: Placefield) -> np.ndarray:
-        mu = _pf_flat(placefield)  # (total_bins, rois)
+        mu = placefield.flattened()  # (total_bins, rois)
 
         if self.variance is None:
             inv_var = np.ones(mu.shape[1], dtype=float)
@@ -679,6 +679,14 @@ class LocPredConfig(AnalysisConfigBase):
     fit_iterations: int = 4
     predict_likelihood: str = "diag_gaussian"
     display_name: ClassVar[str] = "locprediction"
+
+    _result_handling: ClassVar[dict[str, str]] = {
+        "likelihood_matrix": "skip",
+        "loss_trajectory": "skip",
+        "loss_scalar": "skip",
+        "true_bin_score": "skip",
+        "iteration_position_bins_tr": "skip",
+    }
 
     @staticmethod
     def _param_grid() -> dict:
@@ -1203,7 +1211,7 @@ class LocPredCrossVal(AnalysisConfigBase):
         spks_target_te = spks_target_te[idx_known]
 
         true_bins_te = _true_position_bins(frame_behavior_te, fit.pf_source)
-        pf_target_flat = _pf_flat(fit.pf_target)  # (total_bins, n_target_kept)
+        pf_target_flat = fit.pf_target.flattened()  # (total_bins, n_target_kept)
 
         # Oracle: predict target activity using true position bins
         target_oracle = pf_target_flat[true_bins_te]  # (frames, n_target_kept)
