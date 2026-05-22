@@ -23,6 +23,7 @@ _BUSY_TIMEOUT_MS = 30_000
 
 # Single source of truth for column names and SQL types.
 # Tuples of (column_name, sql_type). First entry is the primary key.
+# result_blob lives in the sibling result_blobs table — touch only on store/load.
 _COLUMNS = (
     ("result_uid", "TEXT PRIMARY KEY"),
     ("session_id", "TEXT NOT NULL"),
@@ -31,20 +32,26 @@ _COLUMNS = (
     ("analysis_type", "TEXT"),
     ("schema_version", "TEXT"),
     ("result_stored", "INTEGER NOT NULL DEFAULT 1"),
-    ("result_blob", "BLOB"),
     ("snapshot_path", "TEXT"),
     ("computed_at", "TIMESTAMP"),
 )
 
 _COLUMN_NAMES = tuple(name for name, _ in _COLUMNS)
 _SCHEMA = "CREATE TABLE IF NOT EXISTS results (\n    {}\n)".format(",\n    ".join(f"{name} {sqltype}" for name, sqltype in _COLUMNS))
+_BLOB_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS result_blobs (\n"
+    "    result_uid TEXT PRIMARY KEY REFERENCES results(result_uid) ON DELETE CASCADE,\n"
+    "    result_blob BLOB NOT NULL\n"
+    ")"
+)
 _INSERT_SQL = "INSERT OR REPLACE INTO results ({}) VALUES ({})".format(
     ", ".join(_COLUMN_NAMES),
     ", ".join("?" for _ in _COLUMN_NAMES),
 )
-# Summary omits result_blob (large)
-_SUMMARY_COLUMNS = tuple(c for c in _COLUMN_NAMES if c != "result_blob")
-_SUMMARY_SQL = f"SELECT {', '.join(_SUMMARY_COLUMNS)} FROM results"
+_INSERT_BLOB_SQL = "INSERT OR REPLACE INTO result_blobs (result_uid, result_blob) VALUES (?, ?)"
+_SUMMARY_SQL = "SELECT * FROM results"
+# Keep for backwards-compat with any callers that reference _SUMMARY_COLUMNS
+_SUMMARY_COLUMNS = _COLUMN_NAMES
 
 
 def result_uid(session_id: str, analysis_key: str) -> str:
@@ -87,6 +94,7 @@ class ResultsStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(_SCHEMA)
+            conn.execute(_BLOB_SCHEMA)
 
     @contextmanager
     def _connect(self):
@@ -94,6 +102,7 @@ class ResultsStore:
         conn = sqlite3.connect(self.db_path, timeout=_BUSY_TIMEOUT_MS / 1000)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
             conn.commit()
@@ -140,8 +149,8 @@ class ResultsStore:
         """
         uid = self._uid(session_id, analysis_cfg)
         blob = pickle.dumps(result) if result is not None else None
-        # Order must match _COLUMN_NAMES
-        values = (
+        # Order must match _COLUMN_NAMES (no blob column)
+        meta_values = (
             uid,
             session_id,
             analysis_cfg.key(),
@@ -149,31 +158,26 @@ class ResultsStore:
             analysis_cfg.display_name,
             analysis_cfg.schema_version,
             int(result_stored),
-            blob,
             snapshot_path,
             datetime.now(timezone.utc).isoformat(),
         )
         with self._connect() as conn:
-            conn.execute(_INSERT_SQL, values)
+            conn.execute(_INSERT_SQL, meta_values)
+            if blob is not None:
+                conn.execute(_INSERT_BLOB_SQL, (uid, blob))
 
     def get(self, session_id: str, analysis_cfg: AnalysisConfigBase) -> dict | None:
         """Retrieve a stored result, or None if not found / completion marker."""
         uid = self._uid(session_id, analysis_cfg)
-        with self._connect() as conn:
-            row = conn.execute("SELECT result_blob FROM results WHERE result_uid=?", (uid,)).fetchone()
-        if row is None:
-            return None
-        blob = row[0]
-        return pickle.loads(blob) if blob is not None else None
+        return self.get_by_uid(uid)
 
     def get_by_uid(self, uid: str) -> dict | None:
         """Retrieve a stored result directly by its result_uid."""
         with self._connect() as conn:
-            row = conn.execute("SELECT result_blob FROM results WHERE result_uid=?", (uid,)).fetchone()
+            row = conn.execute("SELECT result_blob FROM result_blobs WHERE result_uid=?", (uid,)).fetchone()
         if row is None:
             return None
-        blob = row[0]
-        return pickle.loads(blob) if blob is not None else None
+        return pickle.loads(row[0])
 
     def invalidate(
         self,
@@ -211,7 +215,7 @@ class ResultsStore:
             conn.execute("DELETE FROM results")
 
     def summary_table(self, as_dataframe: bool = False) -> list[dict] | pd.DataFrame:
-        """Return a summary of all stored results (excludes result_blob).
+        """Return metadata for all stored results (no blob data).
 
         Parameters
         ----------
@@ -220,9 +224,9 @@ class ResultsStore:
         """
         with self._connect() as conn:
             rows = conn.execute(_SUMMARY_SQL).fetchall()
-        records = [dict(zip(_SUMMARY_COLUMNS, row)) for row in rows]
+        records = [dict(zip(_COLUMN_NAMES, row)) for row in rows]
         if as_dataframe:
-            return pd.DataFrame(records, columns=list(_SUMMARY_COLUMNS))
+            return pd.DataFrame(records, columns=list(_COLUMN_NAMES))
         return records
 
     def coverage(

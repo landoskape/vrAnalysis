@@ -17,6 +17,7 @@ from dimensionality_manuscript import (
     CVPCAConfig,
     RegressionConfig,
     SubspaceConfig,
+    StimSpaceConfig,
     PopulationConfig,
     ExpMaxConfig,
     LocPredConfig,
@@ -33,6 +34,7 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
         "regression": RegressionConfig,
         "cvpca": CVPCAConfig,
         "subspace": SubspaceConfig,
+        "stimspace": StimSpaceConfig,
         "expmax": ExpMaxConfig,
         "locpred": LocPredConfig,
     }
@@ -67,7 +69,7 @@ def run(
     Parameters
     ----------
     analyses: list of str or None
-        Which analysis configs to include. Options: "cvpca", "regression". None = all.
+        Which analysis configs to include. Options: "cvpca", "regression", "stimspace". None = all.
     force_remake : bool
         Recompute even if results already exist in the store.
     snapshot_codebase : bool
@@ -108,7 +110,7 @@ def run(
 
 def main():
     parser = argparse.ArgumentParser(description="Run dimensionality manuscript analysis pipeline")
-    parser.add_argument("--analyses", nargs="+", help="Which analysis configs to include. Options: 'cvpca', 'regression'. Default: all.")
+    parser.add_argument("--analyses", nargs="+", help="Which analysis configs to include. Options: 'cvpca', 'regression', 'stimspace'. Default: all.")
     parser.add_argument("--force-remake", action="store_true", help="Recompute all results")
     parser.add_argument("--no-snapshot", action="store_true", help="Skip codebase snapshot")
     parser.add_argument("--n-jobs", type=int, default=4, help="Number of parallel workers (default: 8)")
