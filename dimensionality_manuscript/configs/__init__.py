@@ -3,6 +3,7 @@ from .data_config import DataConfig, get_data_config, list_data_configs
 from .population import PopulationConfig
 from .regression import RegressionConfig
 from .subspace import SubspaceConfig
+from .stimspace import StimSpaceConfig
 from .expmax import ExpMaxConfig
 from .locprediction import LocPredConfig, LocPredCrossVal
 
@@ -12,6 +13,7 @@ __all__ = [
     "PopulationConfig",
     "RegressionConfig",
     "SubspaceConfig",
+    "StimSpaceConfig",
     "ExpMaxConfig",
     "LocPredConfig",
     "LocPredCrossVal",
