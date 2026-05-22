@@ -14,6 +14,7 @@ from .regression_models.models import PlaceFieldModel, RBFPosModel, FullRegresso
 from .regression_models.hyperparameters import HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
 from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
+from .subspace_analysis.stimspace import StimSpaceSubspace
 
 # Type alias for model names
 ModelName = Literal[
@@ -61,6 +62,7 @@ SubspaceName = Literal[
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
     "svca_subspace",
+    "stimspace_subspace",
 ]
 
 SplitName = Literal[
@@ -625,6 +627,7 @@ SUBSPACE_NAMES: tuple[SubspaceName] = (
     "pca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
+    "stimspace_subspace",
     "svca_subspace",
 )
 
@@ -914,6 +917,15 @@ def get_subspace(
 ) -> SVCASubspace: ...
 
 
+@overload
+def get_subspace(
+    subspace_name: Literal["stimspace_subspace"],
+    population_registry: PopulationRegistry,
+    match_dimensions: bool = False,
+    correlation: bool = False,
+) -> StimSpaceSubspace: ...
+
+
 def get_subspace(
     subspace_name: SubspaceName,
     population_registry: PopulationRegistry,
@@ -949,4 +961,6 @@ def get_subspace(
         return CovCovCrossvalidatedSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     if subspace_name == "svca_subspace":
         return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+    if subspace_name == "stimspace_subspace":
+        return StimSpaceSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
     raise ValueError(f"Subspace {subspace_name} not found in registry.")
