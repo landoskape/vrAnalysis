@@ -105,6 +105,11 @@ class AtlasAnalysisResult:
     empirical_cv_kappa_target_modes: Optional[npt.NDArray[np.floating]] = None
     empirical_cv_kappa_cumulative_svr: Optional[npt.NDArray[np.floating]] = None
 
+    empirical_cv_stimstim_svr: Optional[float] = None
+    empirical_cv_stimstim_candidate_modes: Optional[npt.NDArray[np.floating]] = None
+    empirical_cv_stimstim_target_modes: Optional[npt.NDArray[np.floating]] = None
+    empirical_cv_stimstim_cumulative_svr: Optional[npt.NDArray[np.floating]] = None
+
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -438,6 +443,51 @@ def _stim_full_cv_kappa_result(
     return candidate_modes, target_modes, {}
 
 
+def _stim_full_cv_stimstim_result(
+    gen: "StimFullGenerator",
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+    test_rotation_angle: float,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
+    """CV stimulus-stimstim energy modes.
+
+    Mirrors cv_variance_squared_pf_pf from StimSpaceSubspace:
+      directions: G(s_0).T @ cov(s_3) @ G(s_0)
+      score:      G(s_1).T @ cov(s_3) @ G(s_2)
+    s_3 is the shared reference fold; s_0, s_1, s_2 are independent draws.
+    target: symmetric stimstim energy G(s_t).T @ cov(s_3) @ G(s_t) from a
+    fresh draw s_t, providing a cross-validated normalizer.
+    """
+    data_0, _, extras_0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_1, _, extras_1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_2, _, extras_2 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_3, _, extras_3 = gen.generate(num_samples, noise_variance=noise_variance, rotation_angle=test_rotation_angle, rng=rng, return_extras=True)
+    data_t, _, extras_t = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+
+    ns = gen.config.num_stimuli
+    s_0 = _stimulus_means(data_0, extras_0["stim_indices"], ns)
+    s_1 = _stimulus_means(data_1, extras_1["stim_indices"], ns)
+    s_2 = _stimulus_means(data_2, extras_2["stim_indices"], ns)
+    s_3 = _stimulus_means(data_3, extras_3["stim_indices"], ns)
+    s_t = _stimulus_means(data_t, extras_t["stim_indices"], ns)
+
+    G_0 = _precov(s_0)
+    G_1 = _precov(s_1)
+    G_2 = _precov(s_2)
+    G_t = _precov(s_t)
+    cov_3 = _cov(s_3)
+
+    direction_kernel = G_0.T @ cov_3 @ G_0
+    _, directions = _energy_directions(direction_kernel)
+
+    cv_kernel = G_1.T @ cov_3 @ G_2
+    candidate_modes = _project_energy_modes(cv_kernel, directions, symmetrize=False)
+    target_modes = stimulus_space_energy_modes(G_t, cov_3)
+
+    return candidate_modes, target_modes, {}
+
+
 def _context_cv_kappa_result(
     gen,
     num_samples: int,
@@ -635,6 +685,10 @@ def _run_analysis(
     cv_kappa_target = None
     cv_kappa_cumulative = None
     cv_kappa_value = None
+    cv_stimstim_candidate = None
+    cv_stimstim_target = None
+    cv_stimstim_cumulative = None
+    cv_stimstim_value = None
 
     if num_samples is not None:
         rng = np.random.default_rng(sample_seed)
@@ -647,6 +701,13 @@ def _run_analysis(
                 test_rotation_angle=test_rotation_angle,
             )
             cv_kappa_candidate, cv_kappa_target, _ = _stim_full_cv_kappa_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+                test_rotation_angle=test_rotation_angle,
+            )
+            cv_stimstim_candidate, cv_stimstim_target, _ = _stim_full_cv_stimstim_result(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
@@ -676,6 +737,9 @@ def _run_analysis(
             empirical_cv_cumulative = _cumulative_svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
         cv_kappa_value = _svr(cv_kappa_candidate, cv_kappa_target)
         cv_kappa_cumulative = _cumulative_svr(cv_kappa_candidate, cv_kappa_target)
+        if cv_stimstim_candidate is not None and cv_stimstim_target is not None:
+            cv_stimstim_value = _svr(cv_stimstim_candidate, cv_stimstim_target)
+            cv_stimstim_cumulative = _cumulative_svr(cv_stimstim_candidate, cv_stimstim_target)
 
     return AtlasAnalysisResult(
         name=name,
@@ -699,6 +763,10 @@ def _run_analysis(
         empirical_cv_kappa_candidate_modes=cv_kappa_candidate,
         empirical_cv_kappa_target_modes=cv_kappa_target,
         empirical_cv_kappa_cumulative_svr=cv_kappa_cumulative,
+        empirical_cv_stimstim_svr=cv_stimstim_value,
+        empirical_cv_stimstim_candidate_modes=cv_stimstim_candidate,
+        empirical_cv_stimstim_target_modes=cv_stimstim_target,
+        empirical_cv_stimstim_cumulative_svr=cv_stimstim_cumulative,
         metadata=metadata,
     )
 
