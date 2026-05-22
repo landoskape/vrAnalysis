@@ -10,7 +10,13 @@ from panel import state
 import syd
 
 
-def add_scaled_limits(viewer: syd.Viewer, max_value: float, min_log_exponent: float = -10, y: bool = True):
+def add_scaled_limits(
+    viewer: syd.Viewer,
+    max_value: float,
+    min_log_exponent: float = -10,
+    y: bool = True,
+    log_default: bool = False,
+):
     """
     Add a system for interactively setting limits on viewer for x or y axes. Used for either xlims or ylims.
     Will use [0, max_value] for linear scale and [10^min_log_exponent, max_value] for log scale.
@@ -46,9 +52,12 @@ def add_scaled_limits(viewer: syd.Viewer, max_value: float, min_log_exponent: fl
         else:
             return np.array(lims)
 
-    viewer.add_selection(f"{scale_name}", options=["linear", "log"], value="linear")
-    viewer.add_float_range(f"{lim_name}", min=0, max=max_value, value=(0, max_value))
-    viewer.on_change(f"{scale_name}", _update_ylim_range)
+    viewer.add_selection(scale_name, options=["linear", "log"], value="linear")
+    viewer.add_float_range(lim_name, min=0, max=max_value, value=(0, max_value))
+    viewer.on_change(scale_name, _update_ylim_range)
+
+    if log_default:
+        viewer.update_selection(scale_name, value="log")
 
     if y:
         viewer.get_ylims = _get_limits
