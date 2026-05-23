@@ -17,7 +17,7 @@ import torch
 
 from vrAnalysis.helpers import reliability_loo
 from vrAnalysis.metrics import FractionActive
-from vrAnalysis.processors.placefields import get_placefield
+from vrAnalysis.processors.placefields import FrameBehavior, Placefield, get_placefield
 from vrAnalysis.sessions import B2Session, SpksTypes
 from dimilibi import PCA
 
@@ -71,7 +71,9 @@ class StimSpaceSubspace(SubspaceModel):
         use_fast_sampling: bool = True,
         reliability_threshold: Optional[float] = None,
         fraction_active_threshold: Optional[float] = None,
-    ):
+        directions_from_placefield_only: bool = False,
+        cross_validated_placefield_kernel: bool = False,
+    ) -> None:
         # Note, match dimensions present but always set to False!!!
         super().__init__(
             registry,
@@ -86,6 +88,8 @@ class StimSpaceSubspace(SubspaceModel):
         self.use_fast_sampling = use_fast_sampling
         self.reliability_threshold = reliability_threshold
         self.fraction_active_threshold = fraction_active_threshold
+        self.directions_from_placefield_only = directions_from_placefield_only
+        self.cross_validated_placefield_kernel = cross_validated_placefield_kernel
 
     def _best_env_idx(self, session: B2Session) -> int:
         num_per_env = {i: int(np.sum(session.trial_environment == i)) for i in session.environments}
@@ -149,6 +153,111 @@ class StimSpaceSubspace(SubspaceModel):
         norm_values[norm_values < min_norm] = min_norm
         return norm_values
 
+    def _preprocess_data(
+        self,
+        data: torch.Tensor,
+        idx_keep: np.ndarray,
+        norm_values: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Apply neuron filtering, optional normalization, and optional centering."""
+        data = data[idx_keep]
+        if norm_values is not None:
+            data = data / norm_values
+        return self._center_data(data, self.centered)
+
+    def _compute_placefield_folds(
+        self,
+        fold_specs: dict[str, tuple[torch.Tensor, "FrameBehavior", Optional[float]]],
+        dist_edges: np.ndarray,
+        session: B2Session,
+    ) -> dict[str, Placefield]:
+        """Compute placefields for all folds used by the stimulus-space estimator.
+
+        Parameters
+        ----------
+        fold_specs : dict
+            Mapping from fold name to ``(data, frame_behavior, smooth_width)``.
+            ``data`` has shape ``(num_neurons, num_samples)``.
+        dist_edges : np.ndarray
+            Spatial bin edges for placefield computation.
+        session : B2Session
+            Session used by fast-sampling placefield computation.
+
+        Returns
+        -------
+        dict
+            Mapping from fold name to a ``Placefield`` with zero-count bins set
+            to NaN.
+        """
+        placefields = {}
+        for name, (data, frame_behavior, smooth_width) in fold_specs.items():
+            placefields[name] = get_placefield(
+                data.T.numpy(),
+                frame_behavior,
+                dist_edges=dist_edges,
+                average=True,
+                smooth_width=smooth_width,
+                zero_to_nan=True,
+                use_fast_sampling=self.use_fast_sampling,
+                session=session,
+            )
+        return placefields
+
+    def _position_filter(self, placefields: dict[str, Placefield]) -> tuple[np.ndarray, np.ndarray]:
+        """Find environments and positions valid in every placefield fold.
+
+        Parameters
+        ----------
+        placefields : dict
+            Placefield folds whose flattened stimulus axes must be aligned.
+
+        Returns
+        -------
+        valid_environments : np.ndarray
+            Environments present in every fold.
+        valid_positions : np.ndarray
+            Boolean mask over original position bins. A bin is valid only if no
+            retained fold has NaNs for any retained environment or neuron.
+        """
+        environment_sets = [set(np.asarray(placefield.environment, dtype=int).tolist()) for placefield in placefields.values()]
+        valid_environments = np.array(sorted(set.intersection(*environment_sets)), dtype=int)
+        if len(valid_environments) == 0:
+            raise ValueError("No environments are shared across all StimSpace placefield folds.")
+
+        num_positions = next(iter(placefields.values())).count.shape[1]
+        valid_positions = np.ones(num_positions, dtype=bool)
+        environments = tuple(int(env) for env in valid_environments)
+        for placefield in placefields.values():
+            filtered = placefield.filter_by_environment(environments)
+            valid_positions &= ~np.any(np.isnan(filtered.placefield), axis=(0, 2))
+
+        if not np.any(valid_positions):
+            raise ValueError("No positions are valid across all StimSpace placefield folds.")
+
+        return valid_environments, valid_positions
+
+    def _placefield_matrix(
+        self,
+        placefield: Placefield,
+        valid_environments: np.ndarray,
+        valid_positions: np.ndarray,
+    ) -> torch.Tensor:
+        """Return an aligned ``(neurons, environments * positions)`` matrix."""
+        rows = []
+        for environment in valid_environments:
+            idx_environment = placefield.environment == environment
+            if np.sum(idx_environment) != 1:
+                raise ValueError(f"Expected exactly one row for environment {environment}, " f"found {np.sum(idx_environment)}.")
+            rows.append(placefield.placefield[idx_environment][:, valid_positions, :])
+
+        aligned = np.concatenate(rows, axis=0)
+        if np.any(np.isnan(aligned)):
+            raise ValueError("Filtered placefield matrix still contains NaNs.")
+        return torch.tensor(
+            aligned.reshape(-1, aligned.shape[2]).T,
+            dtype=torch.float32,
+        )
+
     def fit(
         self,
         session: B2Session,
@@ -175,56 +284,61 @@ class StimSpaceSubspace(SubspaceModel):
 
         dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
 
-        # Load sub-splits
-        # - we use test as a reference for all kernels
-        # - train0 is used for the "train" fold because we need two more folds for cross-validation
-        train_split, ref_split = "train0", "test"
+        # Load sub-splits used by fit and score so position filtering can align
+        # every stimulus-space matrix before flattening.
+        train_split, cv1_split, cv2_split, test_split = "train0", "train1", "validation", "test"
         data_train, fb_train, _ = self.get_session_data(session, spks_type, train_split, use_cell_split=False)
-        data_ref, fb_ref, num_neurons = self.get_session_data(session, spks_type, ref_split, use_cell_split=False)
+        data_cv1, fb_cv1, _ = self.get_session_data(session, spks_type, cv1_split, use_cell_split=False)
+        data_cv2, fb_cv2, _ = self.get_session_data(session, spks_type, cv2_split, use_cell_split=False)
+        data_test, fb_test, num_neurons = self.get_session_data(session, spks_type, test_split, use_cell_split=False)
 
         # Neuron filtering by reliability and/or fraction active
         # (computed from full data split, and using logical_or across environments)
         idx_keep = self._neuron_filter(session, spks_type, num_neurons, dist_edges)
-        data_train = data_train[idx_keep]
-        data_ref = data_ref[idx_keep]
+        norm_values = self._get_norm_values(session, spks_type, idx_keep) if self.normalize else None
+        data_train = self._preprocess_data(data_train, idx_keep, norm_values)
+        data_cv1 = self._preprocess_data(data_cv1, idx_keep, norm_values)
+        data_cv2 = self._preprocess_data(data_cv2, idx_keep, norm_values)
+        data_test = self._preprocess_data(data_test, idx_keep, norm_values)
 
-        if self.normalize:
-            norm_values = self._get_norm_values(session, spks_type, idx_keep)
-            data_train = data_train / norm_values
-            data_ref = data_ref / norm_values
+        num_test_samples = data_test.shape[1]
+        num_test_samples_split0 = num_test_samples // 2
+        test_perm = torch.randperm(num_test_samples)
+        idx_test_split0 = torch.sort(test_perm[:num_test_samples_split0]).values
+        idx_test_split1 = torch.sort(test_perm[num_test_samples_split0:]).values
 
-        # Center if requested (handled within _center_data)
-        data_train = self._center_data(data_train, self.centered)
-        data_ref = self._center_data(data_ref, self.centered)
+        fold_specs = {
+            "train": (data_train, fb_train, hyperparameters.smooth_width),
+            "cv1": (data_cv1, fb_cv1, None),
+            "cv2": (data_cv2, fb_cv2, None),
+            "test": (data_test, fb_test, hyperparameters.smooth_width),
+        }
+        if self.cross_validated_placefield_kernel:
+            fold_specs["test0"] = (
+                data_test[:, idx_test_split0],
+                fb_test.filter(idx_test_split0),
+                hyperparameters.smooth_width,
+            )
+            fold_specs["test1"] = (
+                data_test[:, idx_test_split1],
+                fb_test.filter(idx_test_split1),
+                hyperparameters.smooth_width,
+            )
 
-        # Placefields for each sub-split, single best environment
-        pf_kw = dict(
-            dist_edges=dist_edges,
-            average=True,
-            smooth_width=hyperparameters.smooth_width,
-            use_fast_sampling=self.use_fast_sampling,
-            session=session,
-        )
-        pf_train = get_placefield(data_train.T.numpy(), fb_train, **pf_kw)
-        pf_ref = get_placefield(data_ref.T.numpy(), fb_ref, **pf_kw)
+        placefields = self._compute_placefield_folds(fold_specs, dist_edges, session)
+        valid_environments, valid_positions = self._position_filter(placefields)
+        pf_mat_train = self._placefield_matrix(placefields["train"], valid_environments, valid_positions)
+        pf_mat_test = self._placefield_matrix(placefields["test"], valid_environments, valid_positions)
 
-        # Output of flattened is np.ndarray (num_env * num_bins, num_neurons)
-        pf_mat_train = torch.tensor(pf_train.flattened().T, dtype=torch.float32)
-        pf_mat_ref = torch.tensor(pf_ref.flattened().T, dtype=torch.float32)  # (N, S)
-
-        # Filter to bins present in both folds
-        valid_bins = ~(torch.any(torch.isnan(pf_mat_ref), dim=0) | torch.any(torch.isnan(pf_mat_train), dim=0))
-        pf_mat_train = pf_mat_train[:, valid_bins]
-        pf_mat_ref = pf_mat_ref[:, valid_bins]
-
-        S = pf_mat_ref.shape[1]
+        S = pf_mat_test.shape[1]
         if S < 2:
             raise ValueError(f"Too few valid bins ({S}) after NaN filtering in fit.")
 
         G_train = _make_G(pf_mat_train)  # (N, S)
 
-        cov_pf_ref = torch.cov(pf_mat_ref)
-        cov_data_ref = torch.cov(data_ref)
+        # Use covariance from test fold in kernel to estimate directions
+        cov_pf_test = torch.cov(pf_mat_test)
+        cov_data_test = torch.cov(data_test)
 
         # Learn pca on placefields train and full data train
         pca_activity = PCA(center=True).fit(data_train)
@@ -234,10 +348,13 @@ class StimSpaceSubspace(SubspaceModel):
         # K_pf(PF) to get the potentially cross-validatable eigenvectors of our PF-PF kernel
         #          - this is so that we can do a covcov version of cvPCA
         # K_pf(Full) to prepare the numerator of cross-validatable shared variance ratio
-        pf_pf_kernel = G_train.T @ cov_pf_ref @ G_train  # (S, S)
-        pf_full_kernel = G_train.T @ cov_data_ref @ G_train  # (S, S)
+        pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (S, S)
+        pf_full_kernel = G_train.T @ cov_data_test @ G_train  # (S, S)
         u_pf_pf = torch.fliplr(torch.linalg.eigh(pf_pf_kernel)[1])  # (S, S) eigenvectors of pf_pf_kernel
         u_pf_full = torch.fliplr(torch.linalg.eigh(pf_full_kernel)[1])  # (S, S) eigenvectors of pf_full_kernel
+
+        if self.directions_from_placefield_only:
+            u_pf_pf = torch.fliplr(torch.linalg.eigh(G_train.T @ G_train)[1])
 
         return Subspace(
             subspace_activity=pca_activity,
@@ -248,6 +365,10 @@ class StimSpaceSubspace(SubspaceModel):
                 "u_pf_pf": u_pf_pf,
                 "u_pf_full": u_pf_full,
                 "idx_keep": idx_keep,
+                "valid_environments": valid_environments,
+                "valid_positions": valid_positions,
+                "idx_test_split0": idx_test_split0,
+                "idx_test_split1": idx_test_split1,
             },
         )
 
@@ -273,27 +394,18 @@ class StimSpaceSubspace(SubspaceModel):
         # These names are grandfathered from the TimeSplit class in registry.py
         # this model is connected to the "even" data split config (see configs/stimspace)
         # so each split name is just an even non-overlapping split of data
-        cv1_split, cv2_split, ref_split = "train1", "validation", "test"
+        cv1_split, cv2_split, test_split = "train1", "validation", "test"
         cv1_data, cv1_fb, _ = self.get_session_data(session, spks_type, cv1_split, use_cell_split=False)
         cv2_data, cv2_fb, _ = self.get_session_data(session, spks_type, cv2_split, use_cell_split=False)
-        test_data, frame_behavior_test, num_neurons = self.get_session_data(session, spks_type, ref_split, use_cell_split=False)
+        test_data, fb_test, num_neurons = self.get_session_data(session, spks_type, test_split, use_cell_split=False)
         idx_keep = subspace.extras["idx_keep"]
+        valid_environments = subspace.extras["valid_environments"]
+        valid_positions = subspace.extras["valid_positions"]
 
-        # filter data to include kept neurons only
-        cv1_data = cv1_data[idx_keep]
-        cv2_data = cv2_data[idx_keep]
-        test_data = test_data[idx_keep]
-
-        if self.normalize:
-            norm_values = self._get_norm_values(session, spks_type, idx_keep)
-            cv1_data = cv1_data / norm_values
-            cv2_data = cv2_data / norm_values
-            test_data = test_data / norm_values
-
-        # Center if requested (handled within _center_data)
-        cv1_data = self._center_data(cv1_data, self.centered)
-        cv2_data = self._center_data(cv2_data, self.centered)
-        test_data = self._center_data(test_data, self.centered)
+        norm_values = self._get_norm_values(session, spks_type, idx_keep) if self.normalize else None
+        cv1_data = self._preprocess_data(cv1_data, idx_keep, norm_values)
+        cv2_data = self._preprocess_data(cv2_data, idx_keep, norm_values)
+        test_data = self._preprocess_data(test_data, idx_keep, norm_values)
 
         # Compute covariance of test data
         test_data_cov = torch.cov(test_data)
@@ -301,33 +413,49 @@ class StimSpaceSubspace(SubspaceModel):
         # Also measure covariance of test placefield data for a placefield-placefield comparison as a control
         dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
 
-        # Placefields for each sub-split, single best environment
-        # Note: hard code smooth_width=None because these are the test trials - (similar to r-cvPCA)
-        pf_kw = dict(
-            dist_edges=dist_edges,
-            average=True,
-            smooth_width=None,  # hard coded!!!!!
-            use_fast_sampling=self.use_fast_sampling,
-            session=session,
-        )
-        cv1_placefield = get_placefield(cv1_data.T.numpy(), cv1_fb, **pf_kw)
-        cv2_placefield = get_placefield(cv2_data.T.numpy(), cv2_fb, **pf_kw)
-        test_placefield = get_placefield(test_data.T.numpy(), frame_behavior_test, **pf_kw)
-        cv1_placefield_extended = torch.tensor(cv1_placefield.flattened()).T
-        cv2_placefield_extended = torch.tensor(cv2_placefield.flattened()).T
-        test_placefield_extended = torch.tensor(test_placefield.flattened()).T
+        fold_specs = {
+            "cv1": (cv1_data, cv1_fb, None),
+            "cv2": (cv2_data, cv2_fb, None),
+            "test": (test_data, fb_test, hyperparameters.smooth_width),
+        }
+        if self.cross_validated_placefield_kernel:
+            idx_test_split0 = subspace.extras["idx_test_split0"]
+            idx_test_split1 = subspace.extras["idx_test_split1"]
+            fold_specs["test0"] = (
+                test_data[:, idx_test_split0],
+                fb_test.filter(idx_test_split0),
+                hyperparameters.smooth_width,
+            )
+            fold_specs["test1"] = (
+                test_data[:, idx_test_split1],
+                fb_test.filter(idx_test_split1),
+                hyperparameters.smooth_width,
+            )
+
+        placefields = self._compute_placefield_folds(fold_specs, dist_edges, session)
+        cv1_placefield_extended = self._placefield_matrix(placefields["cv1"], valid_environments, valid_positions)
+        cv2_placefield_extended = self._placefield_matrix(placefields["cv2"], valid_environments, valid_positions)
+        test_placefield_extended = self._placefield_matrix(placefields["test"], valid_environments, valid_positions)
 
         # Get pre-cov matrices
         precov_cv1_pf = _make_G(cv1_placefield_extended)
         precov_cv2_pf = _make_G(cv2_placefield_extended)
 
-        # Check for NaNs and filter if needed
-        test_placefield_extended, _ = self._check_and_filter_nans(test_placefield_extended, test_data, nan_safe=nan_safe)
         test_placefield_cov = torch.cov(test_placefield_extended)
 
         # Now we can compute the cross-validated stimulus space kernels
         K_pf1_full3_pf2 = precov_cv1_pf.T @ test_data_cov @ precov_cv2_pf
-        K_pf1_pf3_pf2 = precov_cv1_pf.T @ test_placefield_cov @ precov_cv2_pf
+
+        if not self.cross_validated_placefield_kernel:
+            K_pf1_pf3_pf2 = precov_cv1_pf.T @ test_placefield_cov @ precov_cv2_pf
+
+        else:
+            test_placefield0_extended = self._placefield_matrix(placefields["test0"], valid_environments, valid_positions)
+            test_placefield1_extended = self._placefield_matrix(placefields["test1"], valid_environments, valid_positions)
+            precov_test0_pf = _make_G(test_placefield0_extended)
+            precov_test1_pf = _make_G(test_placefield1_extended)
+            center_kernel = precov_test0_pf @ precov_test1_pf.T
+            K_pf1_pf3_pf2 = precov_cv1_pf.T @ center_kernel @ precov_cv2_pf
 
         # And we can now measure variance on learned directions of the symmetric kernel
         # using a separate fold

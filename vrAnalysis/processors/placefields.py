@@ -628,8 +628,21 @@ class Placefield:
     def shape(self) -> Tuple[int, int, int]:
         return self.placefield.shape
 
-    def filter_by_environment(self, environment: int) -> "Placefield":
-        idx_environment = self.environment == environment
+    def filter_by_environment(self, environment: int | tuple[int, ...]) -> "Placefield":
+        """Return placefields from one or more environments.
+
+        Parameters
+        ----------
+        environment : int or tuple of int
+            Environment identifier(s) to keep.
+
+        Returns
+        -------
+        Placefield
+            Placefield object restricted to the requested environments.
+        """
+        environments = np.asarray((environment,) if np.isscalar(environment) else environment)
+        idx_environment = np.isin(self.environment, environments)
         return Placefield(
             placefield=self.placefield[idx_environment],
             dist_edges=self.dist_edges,
