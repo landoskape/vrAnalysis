@@ -10,7 +10,8 @@ score (validation / test): w[i] = (G2 @ u_i).T @ cov_PF0_train @ (G3 @ u_i)
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional, Sequence
 
 import numpy as np
 import torch
@@ -34,16 +35,66 @@ def _make_G(pf: torch.Tensor) -> torch.Tensor:
     return (pf - pf.mean(dim=1, keepdim=True)) / (S - 1) ** 0.5
 
 
+@dataclass(frozen=True)
+class StimSpaceFoldSpec:
+    """Logical fold name mapped to a registry split and placefield smoothing."""
+
+    name: str
+    registry_split: "SplitName"
+    smooth_width: Optional[float]
+
+
+@dataclass
+class StimSpacePrepState:
+    """Preparation state produced at fit and replayed at score."""
+
+    idx_keep: np.ndarray
+    valid_environments: np.ndarray
+    valid_positions: np.ndarray
+    idx_test_split0: Optional[torch.Tensor] = None
+    idx_test_split1: Optional[torch.Tensor] = None
+
+    def to_extras(self) -> dict:
+        """Return only preparation keys for ``Subspace.extras``."""
+        extras = {
+            "idx_keep": self.idx_keep,
+            "valid_environments": self.valid_environments,
+            "valid_positions": self.valid_positions,
+        }
+        if self.idx_test_split0 is not None:
+            extras["idx_test_split0"] = self.idx_test_split0
+        if self.idx_test_split1 is not None:
+            extras["idx_test_split1"] = self.idx_test_split1
+        return extras
+
+    @classmethod
+    def from_extras(cls, extras: dict) -> "StimSpacePrepState":
+        """Reconstruct preparation state from ``Subspace.extras``."""
+        return cls(
+            idx_keep=extras["idx_keep"],
+            valid_environments=extras["valid_environments"],
+            valid_positions=extras["valid_positions"],
+            idx_test_split0=extras.get("idx_test_split0"),
+            idx_test_split1=extras.get("idx_test_split1"),
+        )
+
+
+@dataclass
+class StimSpaceFolds:
+    """Processed activity, placefields, and aligned PF matrices per logical fold."""
+
+    activity: dict[str, torch.Tensor]
+    placefields: dict[str, Placefield]
+    pf_matrices: dict[str, torch.Tensor]
+
+
 class StimSpaceSubspace(SubspaceModel):
     """Stimulus-space cross-validated subspace model.
 
     Parameters
     ----------
     registry : PopulationRegistry
-    centered : bool
-    correlation : bool
     hyperparameters : PlaceFieldHyperparameters
-    max_components : int
     autosave : bool
     normalize : bool
         Normalize placefield matrices by per-neuron peak response across
@@ -61,11 +112,7 @@ class StimSpaceSubspace(SubspaceModel):
     def __init__(
         self,
         registry,
-        centered: bool = False,
-        correlation: bool = False,
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
-        max_components: int = 300,
-        match_dimensions: bool = False,
         autosave: bool = True,
         normalize: bool = True,
         use_fast_sampling: bool = True,
@@ -74,14 +121,9 @@ class StimSpaceSubspace(SubspaceModel):
         directions_from_placefield_only: bool = False,
         cross_validated_placefield_kernel: bool = False,
     ) -> None:
-        # Note, match dimensions present but always set to False!!!
         super().__init__(
             registry,
-            centered=centered,
-            correlation=correlation,
             hyperparameters=hyperparameters,
-            max_components=max_components,
-            match_dimensions=False,
             autosave=autosave,
         )
         self.normalize = normalize
@@ -91,10 +133,24 @@ class StimSpaceSubspace(SubspaceModel):
         self.directions_from_placefield_only = directions_from_placefield_only
         self.cross_validated_placefield_kernel = cross_validated_placefield_kernel
 
-    def _best_env_idx(self, session: B2Session) -> int:
-        num_per_env = {i: int(np.sum(session.trial_environment == i)) for i in session.environments}
-        best_env = max(num_per_env, key=num_per_env.get)
-        return int(np.where(session.environments == best_env)[0][0])
+    def _fit_fold_specs(self, hyperparameters: PlaceFieldHyperparameters) -> list[StimSpaceFoldSpec]:
+        """Fold definitions used during fit (includes train and all CV folds)."""
+        smooth_width = hyperparameters.smooth_width
+        return [
+            StimSpaceFoldSpec("train", "train0", smooth_width),
+            StimSpaceFoldSpec("cv1", "train1", None),
+            StimSpaceFoldSpec("cv2", "validation", None),
+            StimSpaceFoldSpec("test", "test", smooth_width),
+        ]
+
+    def _score_fold_specs(self, hyperparameters: PlaceFieldHyperparameters) -> list[StimSpaceFoldSpec]:
+        """Fold definitions used during score."""
+        smooth_width = hyperparameters.smooth_width
+        return [
+            StimSpaceFoldSpec("cv1", "train1", None),
+            StimSpaceFoldSpec("cv2", "validation", None),
+            StimSpaceFoldSpec("test", "test", smooth_width),
+        ]
 
     def _neuron_filter(
         self,
@@ -159,11 +215,11 @@ class StimSpaceSubspace(SubspaceModel):
         idx_keep: np.ndarray,
         norm_values: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        """Apply neuron filtering, optional normalization, and optional centering."""
+        """Apply neuron filtering and optional normalization."""
         data = data[idx_keep]
         if norm_values is not None:
             data = data / norm_values
-        return self._center_data(data, self.centered)
+        return data
 
     def _compute_placefield_folds(
         self,
@@ -258,6 +314,121 @@ class StimSpaceSubspace(SubspaceModel):
             dtype=torch.float32,
         )
 
+    def _resolve_test_half_indices(
+        self,
+        num_test_samples: int,
+        prep_state: Optional[StimSpacePrepState],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return sorted sample indices for test-fold halves."""
+        if prep_state is not None:
+            if prep_state.idx_test_split0 is None or prep_state.idx_test_split1 is None:
+                raise ValueError("cross_validated_placefield_kernel requires idx_test_split0 and " "idx_test_split1 in prep_state when scoring.")
+            return prep_state.idx_test_split0, prep_state.idx_test_split1
+
+        num_test_samples_split0 = num_test_samples // 2
+        test_perm = torch.randperm(num_test_samples)
+        idx_test_split0 = torch.sort(test_perm[:num_test_samples_split0]).values
+        idx_test_split1 = torch.sort(test_perm[num_test_samples_split0:]).values
+        return idx_test_split0, idx_test_split1
+
+    def get_processed_folds(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        fold_specs: Sequence[StimSpaceFoldSpec],
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        *,
+        prep_state: Optional[StimSpacePrepState] = None,
+    ) -> tuple[StimSpaceFolds, StimSpacePrepState]:
+        """Load, preprocess, and align activity and placefield data for StimSpace folds.
+
+        Parameters
+        ----------
+        session : B2Session
+        spks_type : SpksTypes
+        fold_specs : sequence of StimSpaceFoldSpec
+            Logical folds to load (test0/test1 are added automatically when
+            ``cross_validated_placefield_kernel`` is enabled and ``test`` is requested).
+        hyperparameters : PlaceFieldHyperparameters, optional
+        prep_state : StimSpacePrepState, optional
+            When provided (score path), reuses neuron mask, position mask, and test-half
+            indices from fit. When ``None`` (fit path), computes them.
+
+        Returns
+        -------
+        folds : StimSpaceFolds
+        prep_state : StimSpacePrepState
+            Preparation state for reuse at score (new state when ``prep_state`` was ``None``).
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        fold_specs = list(fold_specs)
+
+        if prep_state is None:
+            _first_data, _, num_neurons = self.get_session_data(session, spks_type, fold_specs[0].registry_split, use_cell_split=False)
+            idx_keep = self._neuron_filter(session, spks_type, num_neurons, dist_edges)
+            valid_environments = None
+            valid_positions = None
+            idx_test_split0 = None
+            idx_test_split1 = None
+        else:
+            idx_keep = prep_state.idx_keep
+            valid_environments = prep_state.valid_environments
+            valid_positions = prep_state.valid_positions
+            idx_test_split0 = prep_state.idx_test_split0
+            idx_test_split1 = prep_state.idx_test_split1
+
+        norm_values = self._get_norm_values(session, spks_type, idx_keep) if self.normalize else None
+
+        activity: dict[str, torch.Tensor] = {}
+        frame_behaviors: dict[str, FrameBehavior] = {}
+        smooth_widths: dict[str, Optional[float]] = {}
+
+        for spec in fold_specs:
+            data, frame_behavior, _ = self.get_session_data(session, spks_type, spec.registry_split, use_cell_split=False)
+            activity[spec.name] = self._preprocess_data(data, idx_keep, norm_values)
+            frame_behaviors[spec.name] = frame_behavior
+            smooth_widths[spec.name] = spec.smooth_width
+
+        pf_fold_names = [spec.name for spec in fold_specs]
+        if self.cross_validated_placefield_kernel and "test" in activity:
+            idx_test_split0, idx_test_split1 = self._resolve_test_half_indices(activity["test"].shape[1], prep_state)
+            fb_test = frame_behaviors["test"]
+            test_smooth = smooth_widths["test"]
+            activity["test0"] = activity["test"][:, idx_test_split0]
+            activity["test1"] = activity["test"][:, idx_test_split1]
+            frame_behaviors["test0"] = fb_test.filter(idx_test_split0)
+            frame_behaviors["test1"] = fb_test.filter(idx_test_split1)
+            smooth_widths["test0"] = test_smooth
+            smooth_widths["test1"] = test_smooth
+            pf_fold_names.extend(["test0", "test1"])
+
+        elif prep_state is None and "test" in activity:
+            num_test_samples = activity["test"].shape[1]
+            num_test_samples_split0 = num_test_samples // 2
+            test_perm = torch.randperm(num_test_samples)
+            idx_test_split0 = torch.sort(test_perm[:num_test_samples_split0]).values
+            idx_test_split1 = torch.sort(test_perm[num_test_samples_split0:]).values
+
+        pf_input_specs = {name: (activity[name], frame_behaviors[name], smooth_widths[name]) for name in pf_fold_names}
+        placefields = self._compute_placefield_folds(pf_input_specs, dist_edges, session)
+
+        if valid_environments is None or valid_positions is None:
+            valid_environments, valid_positions = self._position_filter(placefields)
+
+        pf_matrices = {name: self._placefield_matrix(placefields[name], valid_environments, valid_positions) for name in pf_fold_names}
+
+        out_prep = StimSpacePrepState(
+            idx_keep=idx_keep,
+            valid_environments=valid_environments,
+            valid_positions=valid_positions,
+            idx_test_split0=idx_test_split0,
+            idx_test_split1=idx_test_split1,
+        )
+        return StimSpaceFolds(activity=activity, placefields=placefields, pf_matrices=pf_matrices), out_prep
+
     def fit(
         self,
         session: B2Session,
@@ -282,53 +453,17 @@ class StimSpaceSubspace(SubspaceModel):
         if hyperparameters is None:
             hyperparameters = self.hyperparameters
 
-        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        folds, prep = self.get_processed_folds(
+            session,
+            spks_type,
+            self._fit_fold_specs(hyperparameters),
+            hyperparameters,
+        )
 
-        # Load sub-splits used by fit and score so position filtering can align
-        # every stimulus-space matrix before flattening.
-        train_split, cv1_split, cv2_split, test_split = "train0", "train1", "validation", "test"
-        data_train, fb_train, _ = self.get_session_data(session, spks_type, train_split, use_cell_split=False)
-        data_cv1, fb_cv1, _ = self.get_session_data(session, spks_type, cv1_split, use_cell_split=False)
-        data_cv2, fb_cv2, _ = self.get_session_data(session, spks_type, cv2_split, use_cell_split=False)
-        data_test, fb_test, num_neurons = self.get_session_data(session, spks_type, test_split, use_cell_split=False)
-
-        # Neuron filtering by reliability and/or fraction active
-        # (computed from full data split, and using logical_or across environments)
-        idx_keep = self._neuron_filter(session, spks_type, num_neurons, dist_edges)
-        norm_values = self._get_norm_values(session, spks_type, idx_keep) if self.normalize else None
-        data_train = self._preprocess_data(data_train, idx_keep, norm_values)
-        data_cv1 = self._preprocess_data(data_cv1, idx_keep, norm_values)
-        data_cv2 = self._preprocess_data(data_cv2, idx_keep, norm_values)
-        data_test = self._preprocess_data(data_test, idx_keep, norm_values)
-
-        num_test_samples = data_test.shape[1]
-        num_test_samples_split0 = num_test_samples // 2
-        test_perm = torch.randperm(num_test_samples)
-        idx_test_split0 = torch.sort(test_perm[:num_test_samples_split0]).values
-        idx_test_split1 = torch.sort(test_perm[num_test_samples_split0:]).values
-
-        fold_specs = {
-            "train": (data_train, fb_train, hyperparameters.smooth_width),
-            "cv1": (data_cv1, fb_cv1, None),
-            "cv2": (data_cv2, fb_cv2, None),
-            "test": (data_test, fb_test, hyperparameters.smooth_width),
-        }
-        if self.cross_validated_placefield_kernel:
-            fold_specs["test0"] = (
-                data_test[:, idx_test_split0],
-                fb_test.filter(idx_test_split0),
-                hyperparameters.smooth_width,
-            )
-            fold_specs["test1"] = (
-                data_test[:, idx_test_split1],
-                fb_test.filter(idx_test_split1),
-                hyperparameters.smooth_width,
-            )
-
-        placefields = self._compute_placefield_folds(fold_specs, dist_edges, session)
-        valid_environments, valid_positions = self._position_filter(placefields)
-        pf_mat_train = self._placefield_matrix(placefields["train"], valid_environments, valid_positions)
-        pf_mat_test = self._placefield_matrix(placefields["test"], valid_environments, valid_positions)
+        data_train = folds.activity["train"]
+        pf_mat_train = folds.pf_matrices["train"]
+        pf_mat_test = folds.pf_matrices["test"]
+        data_test = folds.activity["test"]
 
         S = pf_mat_test.shape[1]
         if S < 2:
@@ -336,39 +471,32 @@ class StimSpaceSubspace(SubspaceModel):
 
         G_train = _make_G(pf_mat_train)  # (N, S)
 
-        # Use covariance from test fold in kernel to estimate directions
         cov_pf_test = torch.cov(pf_mat_test)
         cov_data_test = torch.cov(data_test)
 
-        # Learn pca on placefields train and full data train
         pca_activity = PCA(center=True).fit(data_train)
         pca_placefields = PCA(center=True).fit(pf_mat_train)
 
-        # Now we need to learn directions on the "stimulus" kernels
-        # K_pf(PF) to get the potentially cross-validatable eigenvectors of our PF-PF kernel
-        #          - this is so that we can do a covcov version of cvPCA
-        # K_pf(Full) to prepare the numerator of cross-validatable shared variance ratio
         pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (S, S)
         pf_full_kernel = G_train.T @ cov_data_test @ G_train  # (S, S)
-        u_pf_pf = torch.fliplr(torch.linalg.eigh(pf_pf_kernel)[1])  # (S, S) eigenvectors of pf_pf_kernel
-        u_pf_full = torch.fliplr(torch.linalg.eigh(pf_full_kernel)[1])  # (S, S) eigenvectors of pf_full_kernel
+        u_pf_full = torch.fliplr(torch.linalg.eigh(pf_full_kernel)[1])
 
         if self.directions_from_placefield_only:
+            # Just learn directions via a single fold placefield covariance (SxS!)
             u_pf_pf = torch.fliplr(torch.linalg.eigh(G_train.T @ G_train)[1])
+        else:
+            # Use symmetric placefield kernel of train / test / train
+            u_pf_pf = torch.fliplr(torch.linalg.eigh(pf_pf_kernel)[1])
 
         return Subspace(
             subspace_activity=pca_activity,
             subspace_placefields=pca_placefields,
             extras={
+                **prep.to_extras(),
                 "pf_pf_kernel": pf_pf_kernel,
                 "pf_full_kernel": pf_full_kernel,
                 "u_pf_pf": u_pf_pf,
                 "u_pf_full": u_pf_full,
-                "idx_keep": idx_keep,
-                "valid_environments": valid_environments,
-                "valid_positions": valid_positions,
-                "idx_test_split0": idx_test_split0,
-                "idx_test_split1": idx_test_split1,
             },
         )
 
@@ -389,85 +517,38 @@ class StimSpaceSubspace(SubspaceModel):
         if hyperparameters is None:
             hyperparameters = self.hyperparameters
 
-        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
+        prep = StimSpacePrepState.from_extras(subspace.extras)
+        folds, _ = self.get_processed_folds(
+            session,
+            spks_type,
+            self._score_fold_specs(hyperparameters),
+            hyperparameters,
+            prep_state=prep,
+        )
 
-        # These names are grandfathered from the TimeSplit class in registry.py
-        # this model is connected to the "even" data split config (see configs/stimspace)
-        # so each split name is just an even non-overlapping split of data
-        cv1_split, cv2_split, test_split = "train1", "validation", "test"
-        cv1_data, cv1_fb, _ = self.get_session_data(session, spks_type, cv1_split, use_cell_split=False)
-        cv2_data, cv2_fb, _ = self.get_session_data(session, spks_type, cv2_split, use_cell_split=False)
-        test_data, fb_test, num_neurons = self.get_session_data(session, spks_type, test_split, use_cell_split=False)
-        idx_keep = subspace.extras["idx_keep"]
-        valid_environments = subspace.extras["valid_environments"]
-        valid_positions = subspace.extras["valid_positions"]
-
-        norm_values = self._get_norm_values(session, spks_type, idx_keep) if self.normalize else None
-        cv1_data = self._preprocess_data(cv1_data, idx_keep, norm_values)
-        cv2_data = self._preprocess_data(cv2_data, idx_keep, norm_values)
-        test_data = self._preprocess_data(test_data, idx_keep, norm_values)
-
-        # Compute covariance of test data
+        test_data = folds.activity["test"]
         test_data_cov = torch.cov(test_data)
 
-        # Also measure covariance of test placefield data for a placefield-placefield comparison as a control
-        dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
-
-        fold_specs = {
-            "cv1": (cv1_data, cv1_fb, None),
-            "cv2": (cv2_data, cv2_fb, None),
-            "test": (test_data, fb_test, hyperparameters.smooth_width),
-        }
-        if self.cross_validated_placefield_kernel:
-            idx_test_split0 = subspace.extras["idx_test_split0"]
-            idx_test_split1 = subspace.extras["idx_test_split1"]
-            fold_specs["test0"] = (
-                test_data[:, idx_test_split0],
-                fb_test.filter(idx_test_split0),
-                hyperparameters.smooth_width,
-            )
-            fold_specs["test1"] = (
-                test_data[:, idx_test_split1],
-                fb_test.filter(idx_test_split1),
-                hyperparameters.smooth_width,
-            )
-
-        placefields = self._compute_placefield_folds(fold_specs, dist_edges, session)
-        cv1_placefield_extended = self._placefield_matrix(placefields["cv1"], valid_environments, valid_positions)
-        cv2_placefield_extended = self._placefield_matrix(placefields["cv2"], valid_environments, valid_positions)
-        test_placefield_extended = self._placefield_matrix(placefields["test"], valid_environments, valid_positions)
-
-        # Get pre-cov matrices
-        precov_cv1_pf = _make_G(cv1_placefield_extended)
-        precov_cv2_pf = _make_G(cv2_placefield_extended)
-
+        precov_cv1_pf = _make_G(folds.pf_matrices["cv1"])
+        precov_cv2_pf = _make_G(folds.pf_matrices["cv2"])
+        test_placefield_extended = folds.pf_matrices["test"]
         test_placefield_cov = torch.cov(test_placefield_extended)
 
-        # Now we can compute the cross-validated stimulus space kernels
         K_pf1_full3_pf2 = precov_cv1_pf.T @ test_data_cov @ precov_cv2_pf
 
-        if not self.cross_validated_placefield_kernel:
-            K_pf1_pf3_pf2 = precov_cv1_pf.T @ test_placefield_cov @ precov_cv2_pf
-
-        else:
-            test_placefield0_extended = self._placefield_matrix(placefields["test0"], valid_environments, valid_positions)
-            test_placefield1_extended = self._placefield_matrix(placefields["test1"], valid_environments, valid_positions)
-            precov_test0_pf = _make_G(test_placefield0_extended)
-            precov_test1_pf = _make_G(test_placefield1_extended)
+        if self.cross_validated_placefield_kernel:
+            precov_test0_pf = _make_G(folds.pf_matrices["test0"])
+            precov_test1_pf = _make_G(folds.pf_matrices["test1"])
             center_kernel = precov_test0_pf @ precov_test1_pf.T
             K_pf1_pf3_pf2 = precov_cv1_pf.T @ center_kernel @ precov_cv2_pf
+        else:
+            K_pf1_pf3_pf2 = precov_cv1_pf.T @ test_placefield_cov @ precov_cv2_pf
 
-        # And we can now measure variance on learned directions of the symmetric kernel
-        # using a separate fold
         u_pf_full: torch.Tensor = subspace.extras["u_pf_full"]
         u_pf_pf: torch.Tensor = subspace.extras["u_pf_pf"]
         cv_variance_placefields = torch.sum(u_pf_full * (K_pf1_full3_pf2 @ u_pf_full), dim=0)
         cv_variance_placefield_placefield = torch.sum(u_pf_pf * (K_pf1_pf3_pf2 @ u_pf_pf), dim=0)
 
-        # We're looking for train_cov^{1/2} @ test_cov @ train_cov^{1/2}
-        # We can use the eigenvalues of the inner block:
-        # train_eval^{1/2} @ train_evecs.T @ test_cov @ train_evecs @ train_eval^{1/2}
-        # The outer train_evecs don't affect the eigenvalues and make it a bigger matrix
         train_evecs_activity = subspace.subspace_activity.get_components()
         train_eval_activity_root = torch.diag(torch.sqrt(subspace.subspace_activity.get_eigenvalues()))
         train_evecs_placefields = subspace.subspace_placefields.get_components()
@@ -503,4 +584,8 @@ class StimSpaceSubspace(SubspaceModel):
             base += f"_rel{self.reliability_threshold}"
         if self.fraction_active_threshold is not None:
             base += f"_frac{self.fraction_active_threshold}"
+        if self.directions_from_placefield_only:
+            base += "_dirFromPF"
+        if self.cross_validated_placefield_kernel:
+            base += "_cvPFKernel"
         return base

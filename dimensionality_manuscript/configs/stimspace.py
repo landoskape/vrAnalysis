@@ -36,10 +36,9 @@ class StimSpaceConfig(AnalysisConfigBase):
         Spike type to use.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     data_config_name: str = "even"
 
-    center: bool = True
     normalize: bool = False
     use_fast_sampling: bool = True
     reliability_threshold: Optional[float] = None
@@ -47,6 +46,8 @@ class StimSpaceConfig(AnalysisConfigBase):
     num_bins: int = 100
     smooth_width: Optional[float] = None
     spks_type: SpksTypes = "oasis"
+    directions_from_placefield_only: bool = False
+    cross_validated_placefield_kernel: bool = False
 
     display_name: ClassVar[str] = "stimspace"
 
@@ -56,18 +57,21 @@ class StimSpaceConfig(AnalysisConfigBase):
             "reliability_threshold": [None, 0.2],
             "fraction_active_threshold": [None, 0.05],
             "smooth_width": [None, 5.0],
+            "directions_from_placefield_only": [False, True],
+            "cross_validated_placefield_kernel": [False, True],
         }
 
     def summary(self) -> str:
         parts = [
             self.display_name,
-            f"center={self.center}",
             f"norm={self.normalize}",
             f"fast={self.use_fast_sampling}",
             f"rel={self.reliability_threshold}",
             f"frac={self.fraction_active_threshold}",
             f"bins={self.num_bins}",
             f"smooth={self.smooth_width}",
+            f"dir_from_pf={self.directions_from_placefield_only}",
+            f"cv_pf_kernel={self.cross_validated_placefield_kernel}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -79,10 +83,11 @@ class StimSpaceConfig(AnalysisConfigBase):
         hyps = PlaceFieldHyperparameters(num_bins=self.num_bins, smooth_width=self.smooth_width)
         model = StimSpaceSubspace(
             registry,
-            centered=self.center,
             normalize=self.normalize,
             use_fast_sampling=self.use_fast_sampling,
             reliability_threshold=self.reliability_threshold,
             fraction_active_threshold=self.fraction_active_threshold,
+            directions_from_placefield_only=self.directions_from_placefield_only,
+            cross_validated_placefield_kernel=self.cross_validated_placefield_kernel,
         )
         return model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)
