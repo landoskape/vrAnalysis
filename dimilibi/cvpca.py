@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 import numpy as np
 import torch
 from .pca import PCA
@@ -107,7 +107,7 @@ class CVPCA:
         repeat1_proj = self.pca.transform(data_repeat1)
         repeat2_proj = self.pca.transform(data_repeat2)
 
-        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=1)
+        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=1, center=bool(self.center))
 
     @torch.no_grad()
     def _validate_data(self, data: torch.Tensor):
@@ -131,6 +131,8 @@ class RegularizedCVPCA:
         verbose: Optional[bool] = False,
         center: Optional[bool] = True,
         on_stimuli: Optional[bool] = False,
+        stimulus_positions: Optional[Union[torch.Tensor, np.ndarray]] = None,
+        full_stimulus_positions: Optional[Union[torch.Tensor, np.ndarray]] = None,
     ):
         """
         Initialize a RegularizedCVPCA object with the option of specifying supporting parameters.
@@ -148,6 +150,12 @@ class RegularizedCVPCA:
         on_stimuli : Optional[bool]
             If True, will perform PCA on the stimulus dimension instead of the neuron dimension.
             (Will still fit smoothing for each neuron!)
+        stimulus_positions : torch.Tensor or np.ndarray or None
+            The positions of the stimuli. If None, will assume evenly spaced
+            ``[0, 1, ..., num_stimuli - 1]``.
+        full_stimulus_positions : torch.Tensor or np.ndarray or None
+            Complete regular stimulus grid for smoothing normalization when
+            ``stimulus_positions`` omits bins.
         """
 
         self.num_components = num_components
@@ -157,6 +165,33 @@ class RegularizedCVPCA:
         self.smoothing_widths = None
         self.center = center
         self.on_stimuli = on_stimuli
+        self.stimulus_positions = stimulus_positions
+        self.full_stimulus_positions = full_stimulus_positions
+
+    def _stimulus_axis_length(self, num_stimuli: int) -> float:
+        """Return the physical length of the stimulus axis."""
+        if self.full_stimulus_positions is not None and self.stimulus_positions is not None:
+            stimulus_positions = torch.as_tensor(self.stimulus_positions, dtype=torch.float32).flatten()
+            if stimulus_positions.numel() != num_stimuli:
+                raise ValueError(
+                    "stimulus_positions must have length matching the stimulus axis " f"({num_stimuli}), got {stimulus_positions.numel()}."
+                )
+
+        axis_positions = self.full_stimulus_positions if self.full_stimulus_positions is not None else self.stimulus_positions
+        if axis_positions is None:
+            return float(num_stimuli)
+
+        stimulus_positions = torch.as_tensor(axis_positions, dtype=torch.float32).flatten()
+        if self.full_stimulus_positions is None and stimulus_positions.numel() != num_stimuli:
+            raise ValueError("stimulus_positions must have length matching the stimulus axis " f"({num_stimuli}), got {stimulus_positions.numel()}.")
+        if num_stimuli == 1:
+            return 1.0
+
+        bin_width = torch.median(torch.abs(torch.diff(stimulus_positions))).item()
+        axis_length = (stimulus_positions.max() - stimulus_positions.min()).item() + bin_width
+        if axis_length <= 0:
+            raise ValueError("stimulus_positions must span a positive range.")
+        return axis_length
 
     @torch.no_grad()
     def fit_smoothing(
@@ -176,7 +211,8 @@ class RegularizedCVPCA:
         and MSE between smoothed repeat 1 and repeat 3. Uses a vectorized golden section search
         since the optimization is roughly convex and 1D.
 
-        Stimuli are assumed to be evenly spaced [0, 1, ..., num_stimuli-1].
+        Stimuli are assumed to be evenly spaced ``[0, 1, ..., num_stimuli - 1]``
+        when ``stimulus_positions`` is not provided.
 
         Parameters
         ----------
@@ -187,9 +223,10 @@ class RegularizedCVPCA:
         data_repeat3 : torch.Tensor
             The data to be used for testing (num_neurons, num_stimuli).
         smoothing_range : tuple[float, float], default=(0.01, 0.5)
-            (min, max) range for smoothing width search, relative to the number of stimuli.
-            For example, with num_stimuli=100 and smoothing_range=(0.01, 0.5), the search
-            will be over widths [1.0, 50.0] in stimulus index units.
+            (min, max) range for smoothing width search, relative to the stimulus
+            axis length. For example, with num_stimuli=100, no stimulus positions,
+            and smoothing_range=(0.01, 0.5), the search will be over widths
+            [1.0, 50.0] in stimulus index units.
         tolerance : float, default=1e-3
             Convergence tolerance for golden section search.
         max_iterations : int, default=100
@@ -204,10 +241,10 @@ class RegularizedCVPCA:
 
         num_neurons, num_stimuli = data_repeat1.shape
 
-        # Scale smoothing_range by number of stimuli to convert from relative to absolute units
-        # Stimuli are evenly spaced [0, 1, ..., num_stimuli-1], so range is num_stimuli
-        smoothing_min = smoothing_range[0] * num_stimuli
-        smoothing_max = smoothing_range[1] * num_stimuli
+        # Convert relative search bounds into the same units as stimulus_positions.
+        stimulus_axis_length = self._stimulus_axis_length(num_stimuli)
+        smoothing_min = smoothing_range[0] * stimulus_axis_length
+        smoothing_max = smoothing_range[1] * stimulus_axis_length
 
         # Initialize smoothing widths for each neuron
         a = torch.full((num_neurons,), smoothing_min, device=data_repeat1.device)
@@ -242,7 +279,8 @@ class RegularizedCVPCA:
         for the first repeat of stimuli, which is smoothed to accurately estimate the eigenvectors.
 
         If smoothing has been optimized via fit_smoothing(), it will be applied automatically unless
-        disable_smoothing=True. Stimuli are assumed to be evenly spaced [0, 1, ..., num_stimuli-1].
+        disable_smoothing=True. Stimuli are assumed to be evenly spaced ``[0, 1, ..., num_stimuli - 1]``
+        when ``stimulus_positions`` is not provided.
 
         Parameters
         ----------
@@ -266,7 +304,13 @@ class RegularizedCVPCA:
 
         # Apply smoothing if available and not disabled
         if self.smoothing_fitted and not disable_smoothing and self.smoothing_widths is not None:
-            data_repeat1 = gaussian_filter(data_repeat1, self.smoothing_widths * smoothing_factor, axis=1)
+            data_repeat1 = gaussian_filter(
+                data_repeat1,
+                self.smoothing_widths * smoothing_factor,
+                axis=1,
+                stimulus_positions=self.stimulus_positions,
+                full_stimulus_positions=self.full_stimulus_positions,
+            )
 
         if self.on_stimuli:
             data_repeat1 = data_repeat1.T
@@ -306,7 +350,7 @@ class RegularizedCVPCA:
         repeat2_proj = self.pca.transform(data_repeat2)
         repeat3_proj = self.pca.transform(data_repeat3)
 
-        return vector_correlation(repeat2_proj, repeat3_proj, covariance=True, dim=1)
+        return vector_correlation(repeat2_proj, repeat3_proj, covariance=True, dim=1, center=bool(self.center))
 
     @torch.no_grad()
     def _validate_data(self, data: torch.Tensor):
@@ -370,8 +414,14 @@ class RegularizedCVPCA:
         data_r3_active = data_repeat3[active_indices]
         smoothing_widths_active = smoothing_widths[active_indices]
 
-        # Smooth active neurons with their own widths (stimuli are evenly spaced [0, 1, ..., num_stimuli-1])
-        smoothed_r1_active = gaussian_filter(data_r1_active, smoothing_widths_active, axis=1)
+        # Smooth active neurons with their own widths in stimulus-axis units.
+        smoothed_r1_active = gaussian_filter(
+            data_r1_active,
+            smoothing_widths_active,
+            axis=1,
+            stimulus_positions=self.stimulus_positions,
+            full_stimulus_positions=self.full_stimulus_positions,
+        )
 
         # Compute MSE between smoothed r1 and r2 (per neuron, along stimulus dimension)
         mse_r1_r2_active = mse(smoothed_r1_active, data_r2_active, reduce=None, dim=1)  # (num_active,)
@@ -490,4 +540,4 @@ class LegacyCVPCA:
         repeat1_proj = self.pca.transform(data_repeat1_flipped)
         repeat2_proj = self.pca.transform(data_repeat2_flipped)
 
-        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=1)
+        return vector_correlation(repeat1_proj, repeat2_proj, covariance=True, dim=1, center=bool(self.center))

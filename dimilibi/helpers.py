@@ -14,12 +14,14 @@ def vector_correlation(
     covariance: bool = False,
     dim: int = -1,
     ignore_nan: bool = False,
+    center: bool = True,
 ) -> torch.Tensor:
     """
     Measure the correlation of every element in x with every element in y on dim=dim.
 
     If covariance=True, will measure the covariance instead of correlation.
     If ignore_nan=True, will ignore NaN values in the correlation calculation.
+    If center=False, uses uncentered second moments along ``dim``.
 
     Parameters
     ----------
@@ -33,6 +35,9 @@ def vector_correlation(
         Dimension along which to compute correlation (default is -1).
     ignore_nan : bool
         If True, ignore NaN values in the calculation (default is False).
+    center : bool
+        If True, subtract the mean along ``dim`` before measuring covariance or
+        correlation. If False, use uncentered moments. Default is True.
 
     Returns
     -------
@@ -52,12 +57,17 @@ def vector_correlation(
     sum_func = torch.nansum if ignore_nan else torch.sum
 
     n = x.shape[dim]
-    x_dev = x - mean_func(x, dim=dim, keepdim=True)
-    y_dev = y - mean_func(y, dim=dim, keepdim=True)
+    denominator = n - int(center)
+    if center:
+        x_dev = x - mean_func(x, dim=dim, keepdim=True)
+        y_dev = y - mean_func(y, dim=dim, keepdim=True)
+    else:
+        x_dev = x
+        y_dev = y
 
     if not covariance:
-        x_sample_std = torch.sqrt(sum_func(x_dev**2, dim=dim, keepdim=True) / (n - 1))
-        y_sample_std = torch.sqrt(sum_func(y_dev**2, dim=dim, keepdim=True) / (n - 1))
+        x_sample_std = torch.sqrt(sum_func(x_dev**2, dim=dim, keepdim=True) / denominator)
+        y_sample_std = torch.sqrt(sum_func(y_dev**2, dim=dim, keepdim=True) / denominator)
         x_idx_valid = x_sample_std > 0
         y_idx_valid = y_sample_std > 0
         x_sample_std_corrected = x_sample_std + (~x_idx_valid).float()
@@ -70,7 +80,7 @@ def vector_correlation(
 
     x_dev = x_dev / x_sample_std_corrected
     y_dev = y_dev / y_sample_std_corrected
-    std = sum_func(x_dev * y_dev, dim=dim) / (n - 1)
+    std = sum_func(x_dev * y_dev, dim=dim) / denominator
 
     if not covariance:
         valid_mask = torch.squeeze(x_idx_valid & y_idx_valid)
@@ -115,6 +125,7 @@ def gaussian_filter(
     data: torch.Tensor,
     smoothing_widths: Union[torch.Tensor, float, int],
     stimulus_positions: Optional[Union[torch.Tensor, np.ndarray]] = None,
+    full_stimulus_positions: Optional[Union[torch.Tensor, np.ndarray]] = None,
     axis: int = -1,
 ) -> torch.Tensor:
     """
@@ -133,6 +144,10 @@ def gaussian_filter(
         for per-sample smoothing. If scalar, same width is used for all samples.
     stimulus_positions : Optional[Union[torch.Tensor, np.ndarray]]
         Positions/timestamps for stimuli. If None, assumes evenly spaced [0, 1, ..., n-1].
+    full_stimulus_positions : Optional[Union[torch.Tensor, np.ndarray]]
+        Complete regular stimulus grid used to normalize smoothing when
+        ``stimulus_positions`` is a subset with missing bins. Missing bins are
+        treated as zero-valued samples.
     axis : int, default=-1
         Axis along which to apply smoothing (stimulus dimension).
 
@@ -168,6 +183,18 @@ def gaussian_filter(
         stimulus_positions = stimulus_positions.detach().cpu().numpy()
     else:
         stimulus_positions = np.asarray(stimulus_positions, dtype=np.float32)
+    if stimulus_positions.ndim != 1 or stimulus_positions.shape[0] != num_stimuli:
+        raise ValueError(
+            "stimulus_positions must be one-dimensional with length matching "
+            f"the smoothing axis ({num_stimuli}), got shape {stimulus_positions.shape}."
+        )
+    if full_stimulus_positions is not None:
+        if isinstance(full_stimulus_positions, torch.Tensor):
+            full_stimulus_positions = full_stimulus_positions.detach().cpu().numpy()
+        else:
+            full_stimulus_positions = np.asarray(full_stimulus_positions, dtype=np.float32)
+        if full_stimulus_positions.ndim != 1:
+            raise ValueError("full_stimulus_positions must be one-dimensional.")
 
     # Normalize smoothing_widths to a 1D tensor of length num_samples
     if isinstance(smoothing_widths, (int, float)):
@@ -183,6 +210,51 @@ def gaussian_filter(
             smoothing_widths_t = smoothing_widths_t.expand(num_samples)
         elif smoothing_widths_t.numel() != num_samples:
             raise ValueError(f"smoothing_widths must be scalar or have length {num_samples}, " f"got {smoothing_widths_t.numel()}")
+
+    position_steps = np.diff(stimulus_positions)
+    positions_are_uniform = num_stimuli < 3 or np.allclose(position_steps, position_steps[0])
+    if full_stimulus_positions is not None or not positions_are_uniform:
+        if full_stimulus_positions is None:
+            positive_steps = position_steps[position_steps > 0]
+            if len(positive_steps) == 0:
+                raise ValueError("stimulus_positions must span a positive range.")
+            bin_width = np.min(positive_steps)
+            full_stimulus_positions = np.arange(
+                stimulus_positions[0],
+                stimulus_positions[-1] + 0.5 * bin_width,
+                bin_width,
+                dtype=np.float32,
+            )
+
+        full_steps = np.diff(full_stimulus_positions)
+        full_positions_are_uniform = len(full_stimulus_positions) < 3 or np.allclose(full_steps, full_steps[0])
+        if not full_positions_are_uniform:
+            raise ValueError("full_stimulus_positions must be a regular grid.")
+
+        bin_width = 1.0 if len(full_stimulus_positions) < 2 else full_stimulus_positions[1] - full_stimulus_positions[0]
+        dense_idx = np.rint((stimulus_positions - full_stimulus_positions[0]) / bin_width).astype(int)
+        if (
+            np.any(dense_idx < 0)
+            or np.any(dense_idx >= len(full_stimulus_positions))
+            or not np.allclose(full_stimulus_positions[dense_idx], stimulus_positions)
+        ):
+            raise ValueError("stimulus_positions must be a subset of full_stimulus_positions.")
+
+        dense_flat = torch.zeros(
+            (num_samples, len(full_stimulus_positions)),
+            device=device,
+            dtype=dtype,
+        )
+        dense_flat[:, dense_idx] = data_flat.to(dtype=dtype)
+        smoothed_dense = gaussian_filter(
+            dense_flat,
+            smoothing_widths_t,
+            stimulus_positions=full_stimulus_positions,
+            axis=1,
+        )
+        smoothed_flat = smoothed_dense[:, dense_idx]
+        smoothed_reshaped = smoothed_flat.reshape(*original_shape)
+        return torch.moveaxis(smoothed_reshaped, -1, axis)
 
     # Build one Gaussian kernel per sample (on CPU via your existing helper)
     widths_np = smoothing_widths_t.detach().cpu().numpy()

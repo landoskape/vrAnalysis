@@ -12,7 +12,7 @@ from dimilibi.cvpca import CVPCA, RegularizedCVPCA
 from dimilibi.pca import PCA
 from ..registry import PopulationRegistry
 from ..workflows.compare_old_cvpca import get_legacy_cvpca
-from vrAnalysis.helpers import cross_validate_trials, reliability_loo
+from vrAnalysis.helpers import cross_validate_trials, reliability_loo, edge2center
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_placefield
 from vrAnalysis.sessions import B2Session
@@ -48,7 +48,7 @@ class CVPCAConfig(AnalysisConfigBase):
         Number of spatial bins.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "default"
 
     center: bool = True
@@ -56,7 +56,7 @@ class CVPCAConfig(AnalysisConfigBase):
     use_fast_sampling: bool = True
     reliability_threshold: Optional[float] = None
     fraction_active_threshold: Optional[float] = None
-    fixed_smooth_width: float = 3.0
+    fixed_smooth_width: float = 5.0
     num_bins: int = 100
     use_spatial_eigenvectors: bool = False  # Whether to use spatial eigenvectors instead of neural eigenvectors
 
@@ -100,6 +100,8 @@ class CVPCAConfig(AnalysisConfigBase):
 
         env_length = session.env_length[0]
         dist_edges = np.linspace(0, env_length, self.num_bins + 1)
+        dist_centers = edge2center(dist_edges)
+        full_dist_centers = dist_centers.copy()
         population, frame_behavior = registry.get_population(session)
 
         trial_folds = cross_validate_trials(session.trial_environment, [1, 1, 1])
@@ -152,6 +154,7 @@ class CVPCAConfig(AnalysisConfigBase):
             if not np.all(np.diff(good_idx) == 1):
                 raise ValueError(f"Non-sequential missing counts at locations: {bad_locations}")
             torch_pfs = [pf[:, good_idx] for pf in torch_pfs]
+            dist_centers = dist_centers[good_idx]
 
         # Normalize by max
         if self.normalize:
@@ -203,9 +206,27 @@ class CVPCAConfig(AnalysisConfigBase):
             c1 = torch_pfs[(ref_fold + 1) % len(trial_folds)]
             c2 = torch_pfs[(ref_fold + 2) % len(trial_folds)]
 
-            c0_fixed = gaussian_filter(c0, self.fixed_smooth_width, axis=1)
-            c1_fixed = gaussian_filter(c1, self.fixed_smooth_width, axis=1)
-            c2_fixed = gaussian_filter(c2, self.fixed_smooth_width, axis=1)
+            c0_fixed = gaussian_filter(
+                c0,
+                self.fixed_smooth_width,
+                axis=1,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
+            c1_fixed = gaussian_filter(
+                c1,
+                self.fixed_smooth_width,
+                axis=1,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
+            c2_fixed = gaussian_filter(
+                c2,
+                self.fixed_smooth_width,
+                axis=1,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
 
             # R-CVPCA with fixed smoothing on fit data only
             cvpca_fixed_fit = CVPCA(**_cvpca_args).fit(c0_fixed)
@@ -215,15 +236,37 @@ class CVPCAConfig(AnalysisConfigBase):
             reg_fixed_smooth_variances_test.append(torch.var(cvpca_fixed_fit.pca.transform(_opt_transpose(c2)), dim=1))
 
             # Regularized CVPCA with optimized smoothing
-            reg_cvpca = RegularizedCVPCA(**_cvpca_args)
+            reg_cvpca = RegularizedCVPCA(
+                **_cvpca_args,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
             reg_cvpca = reg_cvpca.fit_smoothing(c0, c1, c2)
             reg_cvpca = reg_cvpca.fit(c0)
             reg_covariances.append(reg_cvpca.score(c1, c2))
 
             # Get smoothed data
-            c0_smooth = gaussian_filter(c0, reg_cvpca.smoothing_widths, axis=1)
-            c1_smooth = gaussian_filter(c1, reg_cvpca.smoothing_widths, axis=1)
-            c2_smooth = gaussian_filter(c2, reg_cvpca.smoothing_widths, axis=1)
+            c0_smooth = gaussian_filter(
+                c0,
+                reg_cvpca.smoothing_widths,
+                axis=1,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
+            c1_smooth = gaussian_filter(
+                c1,
+                reg_cvpca.smoothing_widths,
+                axis=1,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
+            c2_smooth = gaussian_filter(
+                c2,
+                reg_cvpca.smoothing_widths,
+                axis=1,
+                stimulus_positions=dist_centers,
+                full_stimulus_positions=full_dist_centers,
+            )
 
             reg_variances_train.append(torch.var(reg_cvpca.pca.transform(_opt_transpose(c0_smooth)), dim=1))
             reg_variances_test.append(torch.var(reg_cvpca.pca.transform(_opt_transpose(c1)), dim=1))
