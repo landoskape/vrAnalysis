@@ -56,6 +56,13 @@ def plot_stim_nuisance_2D(
     ax: tuple[plt.Axes, ...],
     stim_color: str = "orange",
     nuisance_color: str = "black",
+    extend_arrow_factor: float = 1.0,
+    arrow_width: float = 0.5,
+    arrow_length: float = 0.5,
+    linewidth: float = 1.0,
+    point_alpha: float = 0.5,
+    point_size: float = 10.0,
+    max_lim_factor: float = 4.5,
     n_samples: int = 1000,
 ) -> None:
     # unpack axes
@@ -73,56 +80,60 @@ def plot_stim_nuisance_2D(
 
     # In ax_direction, plot stimulus and nuisance directions as bidirectional arrows from the origin
     max_amplitude = max(cfg.stim_amplitude, cfg.nuisance_amplitude) + cfg.noise_amplitude
-    max_lims = max_amplitude * 4.5
+    max_lims = max_amplitude * max_lim_factor
     ax_direction.arrow(
         0,
         0,
-        cfg.stim_direction[0],
-        cfg.stim_direction[1],
-        head_width=0.1,
-        head_length=0.1,
+        cfg.stim_direction[0] * extend_arrow_factor,
+        cfg.stim_direction[1] * extend_arrow_factor,
+        head_width=arrow_width,
+        head_length=arrow_length,
         fc=stim_color,
         ec=stim_color,
+        linewidth=linewidth,
     )
     ax_direction.arrow(
         0,
         0,
-        cfg.nuisance_direction[0],
-        cfg.nuisance_direction[1],
-        head_width=0.1,
-        head_length=0.1,
+        cfg.nuisance_direction[0] * extend_arrow_factor,
+        cfg.nuisance_direction[1] * extend_arrow_factor,
+        head_width=arrow_width,
+        head_length=arrow_length,
         fc=nuisance_color,
         ec=nuisance_color,
+        linewidth=linewidth,
     )
     ax_direction.arrow(
         0,
         0,
-        -cfg.stim_direction[0],
-        -cfg.stim_direction[1],
-        head_width=0.1,
-        head_length=0.1,
+        -cfg.stim_direction[0] * extend_arrow_factor,
+        -cfg.stim_direction[1] * extend_arrow_factor,
+        head_width=arrow_width,
+        head_length=arrow_length,
         fc=stim_color,
         ec=stim_color,
+        linewidth=linewidth,
     )
     ax_direction.arrow(
         0,
         0,
-        -cfg.nuisance_direction[0],
-        -cfg.nuisance_direction[1],
-        head_width=0.1,
-        head_length=0.1,
+        -cfg.nuisance_direction[0] * extend_arrow_factor,
+        -cfg.nuisance_direction[1] * extend_arrow_factor,
+        head_width=arrow_width,
+        head_length=arrow_length,
         fc=nuisance_color,
         ec=nuisance_color,
+        linewidth=linewidth,
     )
     ax_direction.set_xlim(max_lims * -1, max_lims)
     ax_direction.set_ylim(max_lims * -1, max_lims)
 
     # In ax_stimcov / ax_fullcov, generate samples of the stimulus and full(stim+nuisance), including independent noise
     # scatter the sample data, and plot the covariance ellipsoids with a thin line colored appropriately
-    ax_stimcov.scatter(samples_stim[:, 0], samples_stim[:, 1], alpha=0.5, color=stim_color)
-    ax_fullcov.scatter(samples_full[:, 0], samples_full[:, 1], alpha=0.5, color=nuisance_color)
-    ax_stimcov.plot(stim_ellipse[0], stim_ellipse[1], color=stim_color, linewidth=2)
-    ax_fullcov.plot(full_ellipse[0], full_ellipse[1], color=nuisance_color, linewidth=2)
+    ax_stimcov.scatter(samples_stim[:, 0], samples_stim[:, 1], alpha=point_alpha, s=point_size, color=stim_color)
+    ax_fullcov.scatter(samples_full[:, 0], samples_full[:, 1], alpha=point_alpha, s=point_size, color=nuisance_color)
+    ax_stimcov.plot(stim_ellipse[0], stim_ellipse[1], color=stim_color, linewidth=linewidth)
+    ax_fullcov.plot(full_ellipse[0], full_ellipse[1], color=nuisance_color, linewidth=linewidth)
     ax_stimcov.set_xlim(max_lims * -1, max_lims)
     ax_stimcov.set_ylim(max_lims * -1, max_lims)
     ax_fullcov.set_xlim(max_lims * -1, max_lims)
