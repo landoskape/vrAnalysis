@@ -3,6 +3,10 @@
 import pathlib
 import tempfile
 
+from unittest.mock import patch
+
+import numpy as np
+
 from dimensionality_manuscript import (
     AnalysisPlan,
     CVPCAConfig,
@@ -10,6 +14,7 @@ from dimensionality_manuscript import (
     Job,
     PopulationConfig,
     RegressionConfig,
+    ResultsAggregator,
     ResultsStore,
     SubspaceConfig,
     get_data_config,
@@ -20,6 +25,18 @@ from dimensionality_manuscript import (
 
 class FakeSession:
     session_uid = "test_session"
+    mouse_name = "mouse_a"
+
+    class params:
+        spks_type = "oasis"
+
+    def clear_cache(self):
+        pass
+
+
+class FakeSessionB:
+    session_uid = "test_session_b"
+    mouse_name = "mouse_b"
 
     class params:
         spks_type = "oasis"
@@ -330,6 +347,125 @@ def test_population_config_generation():
 
 def test_population_config_key_stable():
     assert PopulationConfig().key() == PopulationConfig().key()
+
+
+# -- ResultsStore summary filters / cache --------------------------------------
+
+
+def test_store_summary_table_analysis_type_filter():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        store.put("s1", CVPCAConfig(), {"a": 1})
+        store.put("s2", SubspaceConfig(), {"b": 2})
+
+        cvpca_rows = store.summary_table(analysis_type="cvpca")
+        assert len(cvpca_rows) == 1
+        assert cvpca_rows[0]["analysis_type"] == "cvpca"
+
+
+def test_store_summary_table_session_ids_filter():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        store.put("s1", CVPCAConfig(), {"a": 1})
+        store.put("s2", CVPCAConfig(center=False), {"a": 2})
+
+        rows = store.summary_table(session_ids=["s1"])
+        assert len(rows) == 1
+        assert rows[0]["session_id"] == "s1"
+
+
+def test_store_blob_cache():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        acfg = CVPCAConfig()
+        store.put("s1", acfg, {"x": 1})
+        uid = store._uid("s1", acfg)
+
+        with patch("dimensionality_manuscript.pipeline.store.pickle.loads", wraps=__import__("pickle").loads) as loads:
+            assert store.get_by_uid(uid) == {"x": 1}
+            assert store.get_by_uid(uid) == {"x": 1}
+            assert loads.call_count == 1
+        assert uid in store._blob_cache
+
+
+# -- ResultsAggregator lazy loading --------------------------------------------
+
+
+def _populate_cvpca_grid(store, sessions):
+    """Two sessions × center True/False with distinct pad values."""
+    for ses in sessions:
+        for center in (True, False):
+            cfg = CVPCAConfig(center=center)
+            val = 1.0 if center else 2.0
+            store.put(
+                ses.session_uid,
+                cfg,
+                {
+                    "reg_covariances": np.array([val, val + 1.0]),
+                    "trial_folds": {"marker": center},
+                },
+            )
+
+
+def test_aggregator_lazy_eager_parity():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        sessions = [FakeSession(), FakeSessionB()]
+        _populate_cvpca_grid(store, sessions)
+
+        eager = ResultsAggregator(CVPCAConfig, store, sessions, lazy=False)
+        lazy = ResultsAggregator(CVPCAConfig, store, sessions, lazy=True)
+        lazy.load_all(load_objects=True)
+
+        for key in eager.arrays:
+            if key in lazy.arrays:
+                np.testing.assert_array_equal(eager.arrays[key], lazy.arrays[key])
+        assert "trial_folds" in eager.objects
+        assert "trial_folds" in lazy.objects
+
+
+def test_aggregator_lazy_sel_loads_slice_only():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        sessions = [FakeSession(), FakeSessionB()]
+        _populate_cvpca_grid(store, sessions)
+
+        lazy = ResultsAggregator(CVPCAConfig, store, sessions, lazy=True, keys=["reg_covariances"])
+        with patch.object(store, "get_by_uid", wraps=store.get_by_uid) as get_by_uid:
+            sliced = lazy.sel(center=True)
+            assert sliced["reg_covariances"].shape[0] == 2
+            assert get_by_uid.call_count == 2
+
+        with patch.object(store, "get_by_uid", wraps=store.get_by_uid) as get_by_uid:
+            lazy.sel(center=True)
+            assert get_by_uid.call_count == 0
+
+
+def test_aggregator_skip_keys_deferred_until_sel_objects():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        sessions = [FakeSession()]
+        _populate_cvpca_grid(store, sessions)
+
+        lazy = ResultsAggregator(CVPCAConfig, store, sessions, lazy=True)
+        assert len(lazy._objects_backend) == 0
+        lazy.sel(center=True, keys=["reg_covariances"])
+        assert len(lazy._objects_backend) == 0
+
+        objs = lazy.sel_objects(center=True)
+        assert "trial_folds" in objs
+        assert objs["trial_folds"].shape[0] == 1
+
+
+def test_aggregator_lazy_init_fast():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        sessions = [FakeSession(), FakeSessionB()]
+        _populate_cvpca_grid(store, sessions)
+
+        with patch.object(store, "get_by_uid", wraps=store.get_by_uid) as get_by_uid:
+            ResultsAggregator(CVPCAConfig, store, sessions, lazy=True)
+            assert get_by_uid.call_count == 0
 
 
 if __name__ == "__main__":

@@ -177,8 +177,7 @@ class AnalysisConfigBase:
                     ax.plot(data["reg_covariances"])
                     return fig
         """
-        mouse_results = results.average_by_mouse()
-        unique_mice = mouse_results.session_ids
+        unique_mice = list(dict.fromkeys(results.mouse_names.tolist()))
 
         param_axes = self._param_grid()
         filter_by = []
@@ -189,15 +188,22 @@ class AnalysisConfigBase:
 
         viewer.add_selection("view_by", options=["session", "mouse_average"], value="mouse_average")
         viewer.add_selection("session_id", options=results.session_ids, value=results.session_ids[0])
-        viewer.add_selection("mouse", options=unique_mice, value=unique_mice[0])
+        viewer.add_selection("mouse", options=unique_mice, value=unique_mice[0] if unique_mice else "")
         viewer.add_boolean("filter_by_ses_or_mouse", value=False)
+        viewer._dm_results = results
+        viewer._dm_mouse_results = None
 
         if include_get_results:
 
             def get_result(state: dict) -> tuple[dict, list[str]]:
                 param_kwargs = {k: state[k] for k in param_axes if k in filter_by}
                 view_by = state["view_by"]
-                source = mouse_results if view_by == "mouse_average" else results
+                if view_by == "mouse_average":
+                    if viewer._dm_mouse_results is None:
+                        viewer._dm_mouse_results = viewer._dm_results.average_by_mouse()
+                    source = viewer._dm_mouse_results
+                else:
+                    source = viewer._dm_results
                 sliced, axes_names = source.sel(
                     squeeze_ones=squeeze_ones,
                     return_param_sizes=True,

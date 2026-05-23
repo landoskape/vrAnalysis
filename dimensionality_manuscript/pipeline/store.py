@@ -84,10 +84,12 @@ class ResultsStore:
         Path to the SQLite database file.
     """
 
-    def __init__(self, db_path: Path = BASE_STORE_PATH):
+    def __init__(self, db_path: Path = BASE_STORE_PATH, *, blob_cache_maxsize: int | None = None):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
+        self._blob_cache: dict[str, dict | None] = {}
+        self._blob_cache_maxsize = blob_cache_maxsize
         with self._connect() as conn:
             conn.execute(_SCHEMA)
 
@@ -155,6 +157,7 @@ class ResultsStore:
         """
         uid = self._uid(session_id, analysis_cfg)
         blob_path = self._blob_path(uid)
+        self._blob_cache.pop(uid, None)
 
         # Write blob file first — row will never be added without its blob
         if result is not None and result_stored:
@@ -184,11 +187,25 @@ class ResultsStore:
         return self.get_by_uid(uid)
 
     def get_by_uid(self, uid: str) -> dict | None:
-        """Retrieve a stored result directly by its result_uid."""
+        """Retrieve a stored result directly by its result_uid.
+
+        Results are cached in-memory on this store instance until
+        :meth:`clear_blob_cache` is called or the entry is invalidated.
+        """
+        if uid in self._blob_cache:
+            return self._blob_cache[uid]
         path = self._blob_path(uid)
         if not path.exists():
-            return None
-        return pickle.loads(path.read_bytes())
+            result = None
+        else:
+            result = pickle.loads(path.read_bytes())
+        if self._blob_cache_maxsize is None or len(self._blob_cache) < self._blob_cache_maxsize:
+            self._blob_cache[uid] = result
+        return result
+
+    def clear_blob_cache(self) -> None:
+        """Clear the in-memory unpickled blob cache."""
+        self._blob_cache.clear()
 
     def invalidate(
         self,
@@ -223,6 +240,7 @@ class ResultsStore:
             conn.execute(f"DELETE FROM results WHERE {where}", tuple(active.values()))
         for uid in uids:
             self._blob_path(uid).unlink(missing_ok=True)
+            self._blob_cache.pop(uid, None)
 
     def invalidate_all(self):
         """Delete all results and their blob files."""
@@ -230,17 +248,45 @@ class ResultsStore:
             conn.execute("DELETE FROM results")
         for p in self._blob_dir.glob("*.pkl"):
             p.unlink(missing_ok=True)
+        self._blob_cache.clear()
 
-    def summary_table(self, as_dataframe: bool = False) -> list[dict] | pd.DataFrame:
-        """Return metadata for all stored results (no blob data).
+    def summary_table(
+        self,
+        as_dataframe: bool = False,
+        *,
+        analysis_type: str | None = None,
+        session_ids: list[str] | None = None,
+    ) -> list[dict] | pd.DataFrame:
+        """Return metadata for stored results (no blob data).
 
         Parameters
         ----------
         as_dataframe : bool
             If True, return a pandas DataFrame instead of a list of dicts.
+        analysis_type : str, optional
+            If given, only rows with this ``analysis_type`` are returned.
+        session_ids : list of str, optional
+            If given, only rows whose ``session_id`` is in this list are returned.
         """
+        clauses: list[str] = []
+        params: list = []
+        if analysis_type is not None:
+            clauses.append("analysis_type=?")
+            params.append(analysis_type)
+        if session_ids is not None:
+            if not session_ids:
+                records: list[dict] = []
+                if as_dataframe:
+                    return pd.DataFrame(records, columns=list(_COLUMN_NAMES))
+                return records
+            placeholders = ",".join("?" for _ in session_ids)
+            clauses.append(f"session_id IN ({placeholders})")
+            params.extend(session_ids)
+        sql = _SUMMARY_SQL
+        if clauses:
+            sql = f"{_SUMMARY_SQL} WHERE {' AND '.join(clauses)}"
         with self._connect() as conn:
-            rows = conn.execute(_SUMMARY_SQL).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         records = [dict(zip(_COLUMN_NAMES, row)) for row in rows]
         if as_dataframe:
             return pd.DataFrame(records, columns=list(_COLUMN_NAMES))
