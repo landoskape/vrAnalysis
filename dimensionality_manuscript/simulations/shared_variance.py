@@ -75,9 +75,102 @@ class AtlasBuild:
     dtype: np.dtype
 
 
+MetricKind = Literal["kappa", "energy"]
+
+
+@dataclass(frozen=True)
+class ModeComparison:
+    """Candidate vs reference mode vectors and scalar summaries."""
+
+    candidate_modes: npt.NDArray[np.floating]
+    reference_modes: npt.NDArray[np.floating]
+    ratio: float
+    cumulative_ratio: npt.NDArray[np.floating]
+    metric: MetricKind
+
+    @property
+    def candidate_variance_scale_modes(self) -> npt.NDArray[np.floating]:
+        """Variance-scale modes (sqrt energy); identity for kappa comparisons."""
+        if self.metric == "energy":
+            return np.sqrt(np.maximum(self.candidate_modes, 0.0))
+        return self.candidate_modes
+
+    @property
+    def reference_variance_scale_modes(self) -> npt.NDArray[np.floating]:
+        """Variance-scale modes (sqrt energy); identity for kappa comparisons."""
+        if self.metric == "energy":
+            return np.sqrt(np.maximum(self.reference_modes, 0.0))
+        return self.reference_modes
+
+    def as_variance_scale(self) -> "ModeComparison":
+        """Energy comparison mapped to variance scale with ratio recomputed."""
+        return _comparison(
+            self.candidate_variance_scale_modes,
+            self.reference_variance_scale_modes,
+            metric="kappa",
+        )
+
+
+@dataclass(frozen=True)
+class SubspaceGeometry:
+    """Eigenstructure and cross-subspace overlap for candidate vs reference."""
+
+    candidate_spectrum: npt.NDArray[np.floating]
+    reference_spectrum: npt.NDArray[np.floating]
+    candidate_eigenvectors: npt.NDArray[np.floating]
+    reference_eigenvectors: npt.NDArray[np.floating]
+    reference_on_candidate_overlap: npt.NDArray[np.floating]
+    candidate_on_reference_overlap: npt.NDArray[np.floating]
+    cka: float
+    trace_candidate: float
+    trace_reference: float
+    trace_nuisance: Optional[float] = None
+    trace_eps: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PopulationBlock:
+    """Population-level kappa, energy, and geometry diagnostics."""
+
+    kappa: ModeComparison
+    energy: ModeComparison
+    geometry: SubspaceGeometry
+    stimstim: Optional[ModeComparison] = None
+
+
+@dataclass(frozen=True)
+class EmpiricalDiagnostics:
+    """Scalar empirical diagnostics not carried in mode comparisons."""
+
+    cka: float
+    cv_cka: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class EmpiricalBlock:
+    """Finite-sample comparisons and CV variants."""
+
+    kappa: ModeComparison
+    diagnostics: EmpiricalDiagnostics
+    cv_energy: Optional[ModeComparison] = None
+    cv_kappa: Optional[ModeComparison] = None
+    cv_stimstim: Optional[ModeComparison] = None
+
+
+@dataclass(frozen=True)
+class AnalysisProvenance:
+    """Parameters needed to reproduce empirical draws."""
+
+    dtype: np.dtype
+    num_samples: Optional[int]
+    sample_seed: Optional[int]
+    noise_variance: float
+    test_rotation_angle: float
+
+
 @dataclass(frozen=True)
 class AtlasAnalysisResult:
-    """Shared output shape for stimulus-full and context-pair analyses."""
+    """Structured output for stimulus-full and context-pair analyses."""
 
     name: str
     kind: AtlasKind
@@ -85,32 +178,10 @@ class AtlasAnalysisResult:
     description: str
     config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig | None
 
-    population_svr: float
-    population_candidate_modes: npt.NDArray[np.floating]
-    population_target_modes: npt.NDArray[np.floating]
-    population_cumulative_svr: npt.NDArray[np.floating]
-
-    empirical_svr: Optional[float] = None
-    empirical_candidate_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_target_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cumulative_svr: Optional[npt.NDArray[np.floating]] = None
-
-    empirical_cvser: Optional[float] = None
-    empirical_cv_candidate_energy_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cv_target_energy_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cv_cumulative_ser: Optional[npt.NDArray[np.floating]] = None
-
-    empirical_cv_kappa_svr: Optional[float] = None
-    empirical_cv_kappa_candidate_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cv_kappa_target_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cv_kappa_cumulative_svr: Optional[npt.NDArray[np.floating]] = None
-
-    empirical_cv_stimstim_svr: Optional[float] = None
-    empirical_cv_stimstim_candidate_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cv_stimstim_target_modes: Optional[npt.NDArray[np.floating]] = None
-    empirical_cv_stimstim_cumulative_svr: Optional[npt.NDArray[np.floating]] = None
-
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    population: PopulationBlock
+    empirical: Optional[EmpiricalBlock] = None
+    provenance: AnalysisProvenance = field(default_factory=lambda: AnalysisProvenance(np.dtype(np.float64), None, None, 0.0, 0.0))
+    extras: Mapping[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -267,25 +338,71 @@ def _cv_kappa_fit_score(
     return np.diag(U.T @ root_A_test @ root_B_test @ Vt.T)
 
 
-def _svr(candidate_modes: npt.NDArray[np.floating], target_modes: npt.NDArray[np.floating]) -> float:
-    denom = float(np.sum(target_modes))
+def _ratio(candidate_modes: npt.NDArray[np.floating], reference_modes: npt.NDArray[np.floating]) -> float:
+    denom = float(np.sum(reference_modes))
     if denom <= 0.0:
         return np.nan
     return float(np.sum(candidate_modes) / denom)
 
 
-def _cumulative_svr(candidate_modes: npt.NDArray[np.floating], target_modes: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
-    n_modes = max(len(candidate_modes), len(target_modes))
+def _cumulative_ratio(
+    candidate_modes: npt.NDArray[np.floating],
+    reference_modes: npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
+    n_modes = max(len(candidate_modes), len(reference_modes))
     candidate = np.zeros(n_modes, dtype=float)
-    target = np.zeros(n_modes, dtype=float)
+    reference = np.zeros(n_modes, dtype=float)
     candidate[: len(candidate_modes)] = candidate_modes
-    target[: len(target_modes)] = target_modes
-    target_cumulative = np.cumsum(target)
+    reference[: len(reference_modes)] = reference_modes
+    reference_cumulative = np.cumsum(reference)
     return np.divide(
         np.cumsum(candidate),
-        target_cumulative,
+        reference_cumulative,
         out=np.full(n_modes, np.nan, dtype=float),
-        where=target_cumulative > 0.0,
+        where=reference_cumulative > 0.0,
+    )
+
+
+def _comparison(
+    candidate_modes: npt.NDArray[np.floating],
+    reference_modes: npt.NDArray[np.floating],
+    *,
+    metric: MetricKind,
+) -> ModeComparison:
+    """Build a ModeComparison from candidate and reference mode vectors."""
+    return ModeComparison(
+        candidate_modes=candidate_modes,
+        reference_modes=reference_modes,
+        ratio=_ratio(candidate_modes, reference_modes),
+        cumulative_ratio=_cumulative_ratio(candidate_modes, reference_modes),
+        metric=metric,
+    )
+
+
+def _build_geometry(
+    candidate_covariance: npt.NDArray[np.floating],
+    reference_covariance: npt.NDArray[np.floating],
+    *,
+    trace_nuisance: Optional[float] = None,
+    trace_eps: Optional[float] = None,
+) -> SubspaceGeometry:
+    """Eigenstructure and overlap diagnostics for a candidate/reference pair."""
+    w_candidate, v_candidate = _sorted_eigenvalues_and_eigenvectors(candidate_covariance)
+    w_reference, v_reference = _sorted_eigenvalues_and_eigenvectors(reference_covariance)
+    reference_on_candidate = ((v_candidate.T @ v_reference) ** 2) @ w_reference
+    candidate_on_reference = ((v_reference.T @ v_candidate) ** 2) @ w_candidate
+    return SubspaceGeometry(
+        candidate_spectrum=w_candidate,
+        reference_spectrum=w_reference,
+        candidate_eigenvectors=v_candidate,
+        reference_eigenvectors=v_reference,
+        reference_on_candidate_overlap=reference_on_candidate,
+        candidate_on_reference_overlap=candidate_on_reference,
+        cka=centered_kernel_alignment(candidate_covariance, reference_covariance),
+        trace_candidate=float(np.trace(candidate_covariance)),
+        trace_reference=float(np.trace(reference_covariance)),
+        trace_nuisance=trace_nuisance,
+        trace_eps=trace_eps,
     )
 
 
@@ -330,49 +447,70 @@ def _stimulus_balanced_folds(
 # ---------------------------------------------------------------------------
 
 
-def _stim_full_population_result(gen: StimFullGenerator) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+def _population_stimstim_comparison(
+    stim_precov: npt.NDArray[np.floating],
+    sigma_stim: npt.NDArray[np.floating],
+) -> ModeComparison:
+    """Population stim×stim shared-energy modes.
+
+    Oracle analog of ``_stim_full_cv_stimstim_result``: learn directions from
+    ``G.T @ Sigma_stim @ G`` and score ``G.T @ Sigma_stim @ G`` with independent
+    pre-covariances collapsed to the same true stimulus means. The reference
+    side matches the CV symmetric stimstim normalization,
+    ``stimulus_space_energy_modes(G, Sigma_stim)``.
+
+    Parameters
+    ----------
+    stim_precov
+        Pre-covariance ``G`` from true per-stimulus responses (stimulus means).
+    sigma_stim
+        Population stimulus covariance ``Sigma_stim``.
+
+    Returns
+    -------
+    ModeComparison
+        Energy-mode comparison with ``metric="energy"``.
+    """
+    kernel = stim_precov.T @ _symmetrize(sigma_stim) @ stim_precov
+    _, directions = _energy_directions(kernel)
+
+    candidate_energy = _project_energy_modes(kernel, directions, symmetrize=False)
+    reference_energy = stimulus_space_energy_modes(stim_precov, sigma_stim)
+
+    return _comparison(candidate_energy, reference_energy, metric="energy")
+
+
+def _stim_full_population_block(gen: StimFullGenerator) -> tuple[PopulationBlock, dict[str, Any]]:
     sigma_stim, sigma_nuisance, sigma_eps = gen.true_covariance()
     sigma_full = sigma_stim + sigma_nuisance + sigma_eps
 
     stim_responses = gen.stim_space @ np.diag(np.sqrt(gen.stim_spectrum)) @ gen.stim_latents
     stim_precov = _precov(stim_responses)
-    candidate_modes = stimulus_space_kappa_modes(stim_precov, sigma_full)
-    target_modes = kappa_modes(sigma_full, sigma_full)
-    candidate_energy_modes = stimulus_space_energy_modes(stim_precov, sigma_full)
-    target_energy_modes = energy_modes(sigma_full, sigma_full)
+    candidate_kappa = stimulus_space_kappa_modes(stim_precov, sigma_full)
+    reference_kappa = kappa_modes(sigma_full, sigma_full)
+    candidate_energy = stimulus_space_energy_modes(stim_precov, sigma_full)
+    reference_energy = energy_modes(sigma_full, sigma_full)
 
-    # Also measure eigenvalues and overlap energy of stim and full-to-stim
-    w_stim, v_stim = _sorted_eigenvalues_and_eigenvectors(sigma_stim)
-    w_full, v_full = _sorted_eigenvalues_and_eigenvectors(sigma_full)
-    energy_on_stim = ((v_stim.T @ v_full) ** 2) @ w_full
-    energy_on_full = ((v_full.T @ v_stim) ** 2) @ w_stim
-
-    metadata = {
-        "sigma_stim": sigma_stim,
-        "sigma_nuisance": sigma_nuisance,
-        "sigma_eps": sigma_eps,
-        "sigma_full": sigma_full,
-        "trace_stim": float(np.trace(sigma_stim)),
-        "trace_nuisance": float(np.trace(sigma_nuisance)),
-        "trace_eps": float(np.trace(sigma_eps)),
-        "trace_full": float(np.trace(sigma_full)),
-        "cka": centered_kernel_alignment(sigma_stim, sigma_full),
-        "ser": _svr(candidate_energy_modes, target_energy_modes),
-        "root_ser": _svr(np.sqrt(np.maximum(candidate_energy_modes, 0.0)), np.sqrt(np.maximum(target_energy_modes, 0.0))),
-        "candidate_energy_modes": candidate_energy_modes,
-        "target_energy_modes": target_energy_modes,
+    geometry = _build_geometry(
+        sigma_stim,
+        sigma_full,
+        trace_nuisance=float(np.trace(sigma_nuisance)),
+        trace_eps=float(np.trace(sigma_eps)),
+    )
+    extras = {
         "stimulus_space_modes_match_covariance_modes": bool(
-            np.allclose(candidate_modes, kappa_modes(sigma_stim, sigma_full)[: len(candidate_modes)], atol=1e-8)
+            np.allclose(candidate_kappa, kappa_modes(sigma_stim, sigma_full)[: len(candidate_kappa)], atol=1e-8)
         ),
-        # Using names shared with context* version for simplicity
-        "candidate_spectrum": w_stim,
-        "candidate_modes": v_stim,
-        "target_spectrum": w_full,
-        "target_modes": v_full,
-        "target_on_candidate_overlap": energy_on_stim,
-        "candidate_on_target_overlap": energy_on_full,
     }
-    return candidate_modes, target_modes, metadata
+    return (
+        PopulationBlock(
+            kappa=_comparison(candidate_kappa, reference_kappa, metric="kappa"),
+            energy=_comparison(candidate_energy, reference_energy, metric="energy"),
+            geometry=geometry,
+            stimstim=_population_stimstim_comparison(stim_precov, sigma_stim),
+        ),
+        extras,
+    )
 
 
 def _stim_full_cvser_result(
@@ -382,28 +520,21 @@ def _stim_full_cvser_result(
     full_train: npt.NDArray[np.floating],
     full_test: npt.NDArray[np.floating],
     rng: np.random.Generator,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
+) -> tuple[ModeComparison, float, tuple[int, ...]]:
     folds = _stimulus_balanced_folds(stim_indices, num_stimuli, num_folds=3, rng=rng)
     fold_precovs = [_precov(_stimulus_means(data_train[:, fold], stim_indices[fold], num_stimuli)) for fold in folds]
 
     direction_kernel = fold_precovs[0].T @ _symmetrize(full_test) @ fold_precovs[0]
-    train_energy_modes, directions = _energy_directions(direction_kernel)
+    _, directions = _energy_directions(direction_kernel)
 
     cv_kernel = fold_precovs[1].T @ full_test @ fold_precovs[2]
-    candidate_energy_modes = _project_energy_modes(cv_kernel, directions, symmetrize=False)
-    target_energy_modes = energy_modes(full_train, full_test)
+    candidate_energy = _project_energy_modes(cv_kernel, directions, symmetrize=False)
+    reference_energy = energy_modes(full_train, full_test)
 
     cv_stim_cov_estimate = fold_precovs[1] @ fold_precovs[2].T
     cv_cka = centered_kernel_alignment(cv_stim_cov_estimate, full_test)
-
-    metadata = {
-        "empirical_cv_candidate_train_energy_modes": train_energy_modes,
-        "empirical_cv_full_energy": float(np.trace(full_train @ full_test)),
-        "empirical_cv_stim_full_energy": float(np.sum(candidate_energy_modes)),
-        "empirical_cv_cka": cv_cka,
-        "empirical_cv_fold_sizes": tuple(int(len(fold)) for fold in folds),
-    }
-    return candidate_energy_modes, target_energy_modes, metadata
+    fold_sizes = tuple(int(len(fold)) for fold in folds)
+    return _comparison(candidate_energy, reference_energy, metric="energy"), cv_cka, fold_sizes
 
 
 def _stim_full_cv_kappa_result(
@@ -412,13 +543,12 @@ def _stim_full_cv_kappa_result(
     rng: np.random.Generator,
     noise_variance: float,
     test_rotation_angle: float,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
+) -> tuple[ModeComparison, dict[str, Any]]:
     """Cross-validated kappa for the stim-full pipeline.
 
     Four independent draws: (train0, train1) to learn the subspace, (test0, test1)
     to score it. train0 and test0 provide the stimulus covariance root (candidate);
-    train1 and test1 provide the full-activity covariance root (target). target_modes
-    uses the same train1/test1 target roots, shared with the candidate fit/score.
+    train1 and test1 provide the full-activity covariance root (reference).
     """
     data_train0, _, extras_train0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
     data_train1, _, _ = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
@@ -437,10 +567,10 @@ def _stim_full_cv_kappa_result(
     root_full_train0 = sqrtm_spd(_cov(data_train0))
     root_full_test0 = sqrtm_spd(_cov(data_test0))
 
-    candidate_modes = _cv_kappa_fit_score(root_stim_train, root_full_train1, root_stim_test, root_full_test1)
-    target_modes = _cv_kappa_fit_score(root_full_train0, root_full_train1, root_full_test0, root_full_test1)
+    candidate_kappa = _cv_kappa_fit_score(root_stim_train, root_full_train1, root_stim_test, root_full_test1)
+    reference_kappa = _cv_kappa_fit_score(root_full_train0, root_full_train1, root_full_test0, root_full_test1)
 
-    return candidate_modes, target_modes, {}
+    return _comparison(candidate_kappa, reference_kappa, metric="kappa"), {}
 
 
 def _stim_full_cv_stimstim_result(
@@ -449,15 +579,14 @@ def _stim_full_cv_stimstim_result(
     rng: np.random.Generator,
     noise_variance: float,
     test_rotation_angle: float,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
+) -> tuple[ModeComparison, dict[str, Any]]:
     """CV stimulus-stimstim energy modes.
 
     Mirrors cv_variance_squared_pf_pf from StimSpaceSubspace:
       directions: G(s_0).T @ cov(s_3) @ G(s_0)
       score:      G(s_1).T @ cov(s_3) @ G(s_2)
     s_3 is the shared reference fold; s_0, s_1, s_2 are independent draws.
-    target: symmetric stimstim energy G(s_t).T @ cov(s_3) @ G(s_t) from a
-    fresh draw s_t, providing a cross-validated normalizer.
+    Reference: symmetric stimstim energy from a fresh draw s_t.
     """
     data_0, _, extras_0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
     data_1, _, extras_1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
@@ -482,10 +611,10 @@ def _stim_full_cv_stimstim_result(
     _, directions = _energy_directions(direction_kernel)
 
     cv_kernel = G_1.T @ cov_3 @ G_2
-    candidate_modes = _project_energy_modes(cv_kernel, directions, symmetrize=False)
-    target_modes = stimulus_space_energy_modes(G_t, cov_3)
+    candidate_energy = _project_energy_modes(cv_kernel, directions, symmetrize=False)
+    reference_energy = stimulus_space_energy_modes(G_t, cov_3)
 
-    return candidate_modes, target_modes, {}
+    return _comparison(candidate_energy, reference_energy, metric="energy"), {}
 
 
 def _context_cv_kappa_result(
@@ -493,41 +622,34 @@ def _context_cv_kappa_result(
     num_samples: int,
     rng: np.random.Generator,
     noise_variance: float,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], dict[str, Any]]:
-    """Cross-validated kappa for the context-pair pipeline.
-
-    Four independent draws: (train0, train1) to learn the subspace, (test0, test1)
-    to score it. candidate_modes fits on (candidate_train0, target_train1) and scores
-    on (candidate_test0, target_test1). target_modes fits on (target_train0, target_train1)
-    and scores on (target_test0, target_test1). The target_train1/test1 draws are shared
-    between both fits and scores.
-    """
+) -> tuple[ModeComparison, dict[str, Any]]:
+    """Cross-validated kappa for the context-pair pipeline."""
     if isinstance(gen, CovariancePairGenerator):
         candidate_train0 = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
         candidate_test0 = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
-        target_train0 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
-        target_train1 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
-        target_test0 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
-        target_test1 = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+        reference_train0 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        reference_train1 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        reference_test0 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        reference_test1 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
     elif isinstance(gen, SharedSpaceGenerator):
-        candidate_train0, target_train0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
-        candidate_test0, target_test0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
-        _, target_train1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
-        _, target_test1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        candidate_train0, reference_train0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        candidate_test0, reference_test0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, reference_train1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, reference_test1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
     else:
         raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
 
     root_candidate_train0 = sqrtm_spd(_cov(candidate_train0))
     root_candidate_test0 = sqrtm_spd(_cov(candidate_test0))
-    root_target_train0 = sqrtm_spd(_cov(target_train0))
-    root_target_train1 = sqrtm_spd(_cov(target_train1))
-    root_target_test0 = sqrtm_spd(_cov(target_test0))
-    root_target_test1 = sqrtm_spd(_cov(target_test1))
+    root_reference_train0 = sqrtm_spd(_cov(reference_train0))
+    root_reference_train1 = sqrtm_spd(_cov(reference_train1))
+    root_reference_test0 = sqrtm_spd(_cov(reference_test0))
+    root_reference_test1 = sqrtm_spd(_cov(reference_test1))
 
-    candidate_modes = _cv_kappa_fit_score(root_candidate_train0, root_target_train1, root_candidate_test0, root_target_test1)
-    target_modes = _cv_kappa_fit_score(root_target_train0, root_target_train1, root_target_test0, root_target_test1)
+    candidate_kappa = _cv_kappa_fit_score(root_candidate_train0, root_reference_train1, root_candidate_test0, root_reference_test1)
+    reference_kappa = _cv_kappa_fit_score(root_reference_train0, root_reference_train1, root_reference_test0, root_reference_test1)
 
-    return candidate_modes, target_modes, {}
+    return _comparison(candidate_kappa, reference_kappa, metric="kappa"), {}
 
 
 def _stim_full_empirical_result(
@@ -536,7 +658,7 @@ def _stim_full_empirical_result(
     rng: np.random.Generator,
     noise_variance: float,
     test_rotation_angle: float,
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+) -> tuple[ModeComparison, ModeComparison, EmpiricalDiagnostics, dict[str, Any]]:
     data_train, _, extras_train = gen.generate(
         num_samples,
         noise_variance=noise_variance,
@@ -556,9 +678,9 @@ def _stim_full_empirical_result(
     full_train = _cov(data_train)
     full_test = _cov(data_test)
 
-    candidate_modes = stimulus_space_kappa_modes(stim_precov, full_test)
-    target_modes = kappa_modes(full_train, full_test)
-    cv_candidate_energy_modes, cv_target_energy_modes, cv_metadata = _stim_full_cvser_result(
+    candidate_kappa = stimulus_space_kappa_modes(stim_precov, full_test)
+    reference_kappa = kappa_modes(full_train, full_test)
+    cv_energy, cv_cka, fold_sizes = _stim_full_cvser_result(
         data_train,
         extras_train["stim_indices"],
         gen.config.num_stimuli,
@@ -566,84 +688,66 @@ def _stim_full_empirical_result(
         full_test,
         rng,
     )
-    nonnegative_cv_candidate_energy_modes = np.maximum(cv_candidate_energy_modes, 0.0)
-    nonnegative_cv_target_energy_modes = np.maximum(cv_target_energy_modes, 0.0)
-    metadata = {
-        "empirical_full_train": full_train,
-        "empirical_full_test": full_test,
-        "empirical_stim_means": stim_means,
-        "empirical_cka": centered_kernel_alignment(_cov(stim_means), full_test),
-        "empirical_cv_candidate_energy_modes": cv_candidate_energy_modes,
-        "empirical_cv_target_energy_modes": cv_target_energy_modes,
-        "empirical_cvser": _svr(cv_candidate_energy_modes, cv_target_energy_modes),
-        "empirical_cvsvr": _svr(np.sqrt(nonnegative_cv_candidate_energy_modes), np.sqrt(nonnegative_cv_target_energy_modes)),
-        **cv_metadata,
-    }
-    return candidate_modes, target_modes, metadata
+    return (
+        _comparison(candidate_kappa, reference_kappa, metric="kappa"),
+        cv_energy,
+        EmpiricalDiagnostics(
+            cka=centered_kernel_alignment(_cov(stim_means), full_test),
+            cv_cka=cv_cka,
+        ),
+        {"empirical_cv_fold_sizes": fold_sizes},
+    )
 
 
-def _context_population_result(gen) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+def _context_population_block(gen) -> PopulationBlock:
     if isinstance(gen, CovariancePairGenerator):
-        candidate_covariance, target_covariance = gen.expected_covariances()
+        candidate_covariance, reference_covariance = gen.expected_covariances()
     elif isinstance(gen, SharedSpaceGenerator):
-        candidate_covariance, target_covariance = gen.true_covariance()
+        candidate_covariance, reference_covariance = gen.true_covariance()
     else:
         raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
 
-    candidate_modes = kappa_modes(candidate_covariance, target_covariance)
-    target_modes = kappa_modes(target_covariance, target_covariance)
+    candidate_kappa = kappa_modes(candidate_covariance, reference_covariance)
+    reference_kappa = kappa_modes(reference_covariance, reference_covariance)
+    candidate_energy = energy_modes(candidate_covariance, reference_covariance)
+    reference_energy = energy_modes(reference_covariance, reference_covariance)
 
-    # Also measure eigenvalues and overlap energy of stim and full-to-stim
-    w_candidate, v_candidate = _sorted_eigenvalues_and_eigenvectors(candidate_covariance)
-    w_target, v_target = _sorted_eigenvalues_and_eigenvectors(target_covariance)
-    energy_target_on_candidate = ((v_candidate.T @ v_target) ** 2) @ w_target
-    energy_candidate_on_target = ((v_target.T @ v_candidate) ** 2) @ w_candidate
-
-    metadata = {
-        "candidate_covariance": candidate_covariance,
-        "target_covariance": target_covariance,
-        "trace_candidate": float(np.trace(candidate_covariance)),
-        "trace_target": float(np.trace(target_covariance)),
-        "cka": centered_kernel_alignment(candidate_covariance, target_covariance),
-        "candidate_spectrum": w_candidate,
-        "target_spectrum": w_target,
-        "candidate_modes": v_candidate,
-        "target_modes": v_target,
-        "target_on_candidate_overlap": energy_target_on_candidate,
-        "candidate_on_target_overlap": energy_candidate_on_target,
-    }
-    return candidate_modes, target_modes, metadata
+    return PopulationBlock(
+        kappa=_comparison(candidate_kappa, reference_kappa, metric="kappa"),
+        energy=_comparison(candidate_energy, reference_energy, metric="energy"),
+        geometry=_build_geometry(candidate_covariance, reference_covariance),
+    )
 
 
-def _context_empirical_result(
+def _context_empirical_block(
     gen,
     num_samples: int,
     rng: np.random.Generator,
     noise_variance: float,
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+) -> EmpiricalBlock:
     if isinstance(gen, CovariancePairGenerator):
         candidate_train = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
-        target_train = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
-        target_test = gen.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
+        reference_train = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        reference_test = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
     elif isinstance(gen, SharedSpaceGenerator):
-        candidate_train, target_train = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
-        _, target_test = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        candidate_train, reference_train = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, reference_test = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
     else:
         raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
 
     candidate_covariance = _cov(candidate_train)
-    target_train_covariance = _cov(target_train)
-    target_test_covariance = _cov(target_test)
+    reference_train_covariance = _cov(reference_train)
+    reference_test_covariance = _cov(reference_test)
 
-    candidate_modes = kappa_modes(candidate_covariance, target_test_covariance)
-    target_modes = kappa_modes(target_train_covariance, target_test_covariance)
-    metadata = {
-        "empirical_candidate_covariance": candidate_covariance,
-        "empirical_target_train_covariance": target_train_covariance,
-        "empirical_target_test_covariance": target_test_covariance,
-        "empirical_cka": centered_kernel_alignment(candidate_covariance, target_test_covariance),
-    }
-    return candidate_modes, target_modes, metadata
+    candidate_kappa = kappa_modes(candidate_covariance, reference_test_covariance)
+    reference_kappa = kappa_modes(reference_train_covariance, reference_test_covariance)
+
+    return EmpiricalBlock(
+        kappa=_comparison(candidate_kappa, reference_kappa, metric="kappa"),
+        diagnostics=EmpiricalDiagnostics(
+            cka=centered_kernel_alignment(candidate_covariance, reference_test_covariance),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -665,81 +769,75 @@ def _run_analysis(
     description: str = "",
     config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig | None = None,
 ) -> AtlasAnalysisResult:
+    provenance = AnalysisProvenance(
+        dtype=dtype,
+        num_samples=num_samples,
+        sample_seed=sample_seed,
+        noise_variance=noise_variance,
+        test_rotation_angle=test_rotation_angle,
+    )
+    extras: dict[str, Any] = {}
+
     if kind == "stim_full":
-        population_candidate, population_target, metadata = _stim_full_population_result(gen)
+        population, pop_extras = _stim_full_population_block(gen)
     elif kind == "context_pair":
-        population_candidate, population_target, metadata = _context_population_result(gen)
+        population = _context_population_block(gen)
+        pop_extras = {}
     else:
         raise ValueError(f"Unknown atlas kind: {kind}")
-    metadata = {**metadata, "dtype": dtype.name}
+    extras.update(pop_extras)
 
-    empirical_candidate = None
-    empirical_target = None
-    empirical_cumulative = None
-    empirical_value = None
-    empirical_cv_candidate_energy = None
-    empirical_cv_target_energy = None
-    empirical_cv_cumulative = None
-    empirical_cv_value = None
-    cv_kappa_candidate = None
-    cv_kappa_target = None
-    cv_kappa_cumulative = None
-    cv_kappa_value = None
-    cv_stimstim_candidate = None
-    cv_stimstim_target = None
-    cv_stimstim_cumulative = None
-    cv_stimstim_value = None
-
+    empirical: Optional[EmpiricalBlock] = None
     if num_samples is not None:
         rng = np.random.default_rng(sample_seed)
         if kind == "stim_full":
-            empirical_candidate, empirical_target, empirical_metadata = _stim_full_empirical_result(
+            empirical_kappa, cv_energy, diagnostics, emp_extras = _stim_full_empirical_result(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
                 noise_variance=noise_variance,
                 test_rotation_angle=test_rotation_angle,
             )
-            cv_kappa_candidate, cv_kappa_target, _ = _stim_full_cv_kappa_result(
+            cv_kappa, _ = _stim_full_cv_kappa_result(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
                 noise_variance=noise_variance,
                 test_rotation_angle=test_rotation_angle,
             )
-            cv_stimstim_candidate, cv_stimstim_target, _ = _stim_full_cv_stimstim_result(
+            cv_stimstim, _ = _stim_full_cv_stimstim_result(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
                 noise_variance=noise_variance,
                 test_rotation_angle=test_rotation_angle,
+            )
+            empirical = EmpiricalBlock(
+                kappa=empirical_kappa,
+                cv_energy=cv_energy,
+                cv_kappa=cv_kappa,
+                cv_stimstim=cv_stimstim,
+                diagnostics=diagnostics,
             )
         else:
-            empirical_candidate, empirical_target, empirical_metadata = _context_empirical_result(
+            empirical = _context_empirical_block(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
                 noise_variance=noise_variance,
             )
-            cv_kappa_candidate, cv_kappa_target, _ = _context_cv_kappa_result(
+            cv_kappa, _ = _context_cv_kappa_result(
                 gen,
                 num_samples=num_samples,
                 rng=rng,
                 noise_variance=noise_variance,
             )
-        metadata = {**metadata, **empirical_metadata}
-        empirical_value = _svr(empirical_candidate, empirical_target)
-        empirical_cumulative = _cumulative_svr(empirical_candidate, empirical_target)
-        empirical_cv_candidate_energy = empirical_metadata.get("empirical_cv_candidate_energy_modes")
-        empirical_cv_target_energy = empirical_metadata.get("empirical_cv_target_energy_modes")
-        if empirical_cv_candidate_energy is not None and empirical_cv_target_energy is not None:
-            empirical_cv_value = _svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
-            empirical_cv_cumulative = _cumulative_svr(empirical_cv_candidate_energy, empirical_cv_target_energy)
-        cv_kappa_value = _svr(cv_kappa_candidate, cv_kappa_target)
-        cv_kappa_cumulative = _cumulative_svr(cv_kappa_candidate, cv_kappa_target)
-        if cv_stimstim_candidate is not None and cv_stimstim_target is not None:
-            cv_stimstim_value = _svr(cv_stimstim_candidate, cv_stimstim_target)
-            cv_stimstim_cumulative = _cumulative_svr(cv_stimstim_candidate, cv_stimstim_target)
+            empirical = EmpiricalBlock(
+                kappa=empirical.kappa,
+                cv_kappa=cv_kappa,
+                diagnostics=empirical.diagnostics,
+            )
+        extras.update(emp_extras if kind == "stim_full" else {})
 
     return AtlasAnalysisResult(
         name=name,
@@ -747,27 +845,10 @@ def _run_analysis(
         pipeline=pipeline,
         description=description,
         config=config,
-        population_svr=_svr(population_candidate, population_target),
-        population_candidate_modes=population_candidate,
-        population_target_modes=population_target,
-        population_cumulative_svr=_cumulative_svr(population_candidate, population_target),
-        empirical_svr=empirical_value,
-        empirical_candidate_modes=empirical_candidate,
-        empirical_target_modes=empirical_target,
-        empirical_cumulative_svr=empirical_cumulative,
-        empirical_cvser=empirical_cv_value,
-        empirical_cv_candidate_energy_modes=empirical_cv_candidate_energy,
-        empirical_cv_target_energy_modes=empirical_cv_target_energy,
-        empirical_cv_cumulative_ser=empirical_cv_cumulative,
-        empirical_cv_kappa_svr=cv_kappa_value,
-        empirical_cv_kappa_candidate_modes=cv_kappa_candidate,
-        empirical_cv_kappa_target_modes=cv_kappa_target,
-        empirical_cv_kappa_cumulative_svr=cv_kappa_cumulative,
-        empirical_cv_stimstim_svr=cv_stimstim_value,
-        empirical_cv_stimstim_candidate_modes=cv_stimstim_candidate,
-        empirical_cv_stimstim_target_modes=cv_stimstim_target,
-        empirical_cv_stimstim_cumulative_svr=cv_stimstim_cumulative,
-        metadata=metadata,
+        population=population,
+        empirical=empirical,
+        provenance=provenance,
+        extras=extras,
     )
 
 
@@ -794,7 +875,7 @@ def process(
     ----------
     config
         One of StimFullConfig, CovariancePairConfig, or SharedSpaceConfig.
-        The config's rng field controls the geometric structure of the simulation.
+        The config rng field controls the geometric structure of the simulation.
     dtype
         Floating dtype for the generator.
     num_samples
@@ -923,18 +1004,18 @@ def _cov_pair_config(
     *,
     geometry: Literal["same", "random", "orthogonal", "angle", "partial"],
     alpha_candidate: float = 1.0,
-    alpha_target: float = 1.0,
+    alpha_reference: float = 1.0,
     angle: float = 0.0,
     shared_rank: Optional[int] = None,
-    target_scale: float = 1.0,
+    reference_scale: float = 1.0,
 ) -> CovariancePairConfig:
     return CovariancePairConfig(
         num_neurons=200,
         candidate_rank=20,
-        target_rank=20,
+        reference_rank=20,
         alpha_candidate=alpha_candidate,
-        alpha_target=alpha_target,
-        target_scale=target_scale,
+        alpha_reference=alpha_reference,
+        reference_scale=reference_scale,
         geometry=geometry,
         angle=angle,
         shared_rank=shared_rank,
@@ -1108,7 +1189,7 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
             pipeline="covariance",
             description="Candidate and target share eigenvectors but assign variance differently across modes.",
             builder=lambda rng, dtype: (
-                cfg := _cov_pair_config(rng, geometry="same", alpha_candidate=0.25, alpha_target=2.0),
+                cfg := _cov_pair_config(rng, geometry="same", alpha_candidate=0.25, alpha_reference=2.0),
                 _cov_pair_generator(cfg, dtype),
             ),
         ),
@@ -1187,11 +1268,17 @@ def build_atlas_case(
 
 __all__ = [
     "ATLAS",
+    "AnalysisProvenance",
     "AtlasAnalysisResult",
     "AtlasBuild",
     "AtlasKind",
     "AtlasPipeline",
     "AtlasSpec",
+    "EmpiricalBlock",
+    "EmpiricalDiagnostics",
+    "ModeComparison",
+    "PopulationBlock",
+    "SubspaceGeometry",
     "analyze_atlas_case",
     "analyze_build",
     "build_atlas_case",

@@ -67,17 +67,17 @@ class SharedSpaceGenerator:
         self.private_spectrum1 = np.arange(1, n_priv1 + 1, dtype=self.dtype) ** (-config.alpha_private_1)
         self.private_spectrum2 = np.arange(1, n_priv2 + 1, dtype=self.dtype) ** (-config.alpha_private_2)
 
-    def true_covariance(self) -> npt.NDArray[np.floating]:
+    def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         """
-        Return the true covariance matrix.
+        Return the true candidate and reference covariance matrices.
         """
         shared_cov = self.shared_space @ np.diag(self.shared_spectrum1) @ self.shared_space.T
         private_cov1 = self.private_space1 @ np.diag(self.private_spectrum1) @ self.private_space1.T
         private_cov2 = self.private_space2 @ np.diag(self.private_spectrum2) @ self.private_space2.T
 
-        true_cov1 = shared_cov + self.config.private_ratio**2 * private_cov1
-        true_cov2 = shared_cov + self.config.private_ratio**2 * private_cov2
-        return true_cov1.astype(self.dtype, copy=False), true_cov2.astype(self.dtype, copy=False)
+        candidate_cov = shared_cov + self.config.private_ratio**2 * private_cov1
+        reference_cov = shared_cov + self.config.private_ratio**2 * private_cov2
+        return candidate_cov.astype(self.dtype, copy=False), reference_cov.astype(self.dtype, copy=False)
 
     def generate(
         self,
@@ -557,16 +557,16 @@ class StimFullGenerator:
 
 @dataclass
 class CovariancePairConfig:
-    """Configuration for two low-rank covariance models A and B."""
+    """Configuration for two low-rank covariance models (candidate and reference)."""
 
     num_neurons: int
     candidate_rank: int
-    target_rank: int
+    reference_rank: int
 
     alpha_candidate: float = 1.0
-    alpha_target: float = 1.0
+    alpha_reference: float = 1.0
     candidate_scale: float = 1.0
-    target_scale: float = 1.0
+    reference_scale: float = 1.0
 
     geometry: Literal["same", "random", "orthogonal", "angle", "partial"] = "same"
     angle: float = 0.0
@@ -584,7 +584,7 @@ class CovariancePairGenerator:
     A = U_A diag(lambda_A) U_A.T
     B = U_B diag(lambda_B) U_B.T
 
-    U_A and U_B are orthonormal bases with ranks candidate_rank and target_rank.
+    U_A and U_B are orthonormal bases with ranks candidate_rank and reference_rank.
     lambda_A and lambda_B are scaled power-law spectra. The geometry parameter
     controls how U_B is constructed relative to U_A:
 
@@ -592,7 +592,7 @@ class CovariancePairGenerator:
     - "random": sample U_B independently.
     - "orthogonal": sample U_B from the orthogonal complement of U_A.
     - "angle": rotate paired axes of U_A by a fixed principal angle.
-    - "partial": share shared_rank axes and place remaining target axes outside U_A.
+    - "partial": share shared_rank axes and place remaining reference axes outside U_A.
 
     Samples are drawn as x = U diag(sqrt(lambda)) z with z standard normal.
     """
@@ -604,41 +604,41 @@ class CovariancePairGenerator:
 
         N = config.num_neurons
         ra = config.candidate_rank
-        rb = config.target_rank
+        rb = config.reference_rank
 
         if ra < 1 or rb < 1:
-            raise ValueError(f"candidate_rank and target_rank must be positive; got {ra}, {rb}")
+            raise ValueError(f"candidate_rank and reference_rank must be positive; got {ra}, {rb}")
         if ra > N or rb > N:
             raise ValueError(f"Ranks must be <= num_neurons; got {ra}, {rb} with num_neurons={N}")
         if config.geometry == "orthogonal" and ra + rb > N:
-            raise ValueError(f"candidate_rank + target_rank ({ra} + {rb}) > num_neurons {N}; cannot make orthogonal subspaces")
+            raise ValueError(f"candidate_rank + reference_rank ({ra} + {rb}) > num_neurons {N}; cannot make orthogonal subspaces")
         if config.geometry == "angle":
             k = min(ra, rb)
             if N < 2 * k:
-                raise ValueError(f"Need num_neurons >= 2 * min(candidate_rank, target_rank); got {N} < {2 * k}")
+                raise ValueError(f"Need num_neurons >= 2 * min(candidate_rank, reference_rank); got {N} < {2 * k}")
             if rb > k and ra + rb > N:
-                raise ValueError(f"candidate_rank + target_rank ({ra} + {rb}) > num_neurons {N}; cannot add angled extra target axes")
+                raise ValueError(f"candidate_rank + reference_rank ({ra} + {rb}) > num_neurons {N}; cannot add angled extra reference axes")
         if config.geometry == "partial":
             shared_rank = 0 if config.shared_rank is None else config.shared_rank
             if shared_rank < 0 or shared_rank > min(ra, rb):
-                raise ValueError(f"shared_rank must be between 0 and min(candidate_rank, target_rank); got {shared_rank}")
+                raise ValueError(f"shared_rank must be between 0 and min(candidate_rank, reference_rank); got {shared_rank}")
             if config.angle != 0.0 and shared_rank > 0 and N < 2 * shared_rank:
                 raise ValueError(f"Need num_neurons >= 2 * shared_rank for angled partial overlap; got {N} < {2 * shared_rank}")
             if rb > shared_rank and ra + rb - shared_rank > N:
                 raise ValueError(
-                    f"Need enough ambient dimensions for partial overlap; got candidate_rank + target_rank - shared_rank = "
+                    f"Need enough ambient dimensions for partial overlap; got candidate_rank + reference_rank - shared_rank = "
                     f"{ra + rb - shared_rank} > num_neurons {N}"
                 )
 
         self.candidate_space = generate_orthonormal(N, ra, rng=rng).astype(self.dtype)
         self.candidate_spectrum = (config.candidate_scale * np.arange(1, ra + 1, dtype=self.dtype) ** (-config.alpha_candidate)).astype(self.dtype)
-        self.target_space = self._build_target_space(rng).astype(self.dtype)
-        self.target_spectrum = (config.target_scale * np.arange(1, rb + 1, dtype=self.dtype) ** (-config.alpha_target)).astype(self.dtype)
+        self.reference_space = self._build_reference_space(rng).astype(self.dtype)
+        self.reference_spectrum = (config.reference_scale * np.arange(1, rb + 1, dtype=self.dtype) ** (-config.alpha_reference)).astype(self.dtype)
 
-    def _build_target_space(self, rng: np.random.Generator) -> npt.NDArray[np.floating]:
+    def _build_reference_space(self, rng: np.random.Generator) -> npt.NDArray[np.floating]:
         N = self.config.num_neurons
         ra = self.config.candidate_rank
-        rb = self.config.target_rank
+        rb = self.config.reference_rank
         geometry = self.config.geometry
 
         if geometry == "same":
@@ -682,10 +682,10 @@ class CovariancePairGenerator:
         raise ValueError(f"Unknown geometry: {geometry}")
 
     def expected_covariances(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-        """Return the candidate and target population covariance matrices."""
-        candidate = self.candidate_space @ np.diag(self.candidate_spectrum) @ self.candidate_space.T
-        target = self.target_space @ np.diag(self.target_spectrum) @ self.target_space.T
-        return candidate.astype(self.dtype, copy=False), target.astype(self.dtype, copy=False)
+        """Return the candidate and reference population covariance matrices."""
+        candidate_cov = self.candidate_space @ np.diag(self.candidate_spectrum) @ self.candidate_space.T
+        reference_cov = self.reference_space @ np.diag(self.reference_spectrum) @ self.reference_space.T
+        return candidate_cov.astype(self.dtype, copy=False), reference_cov.astype(self.dtype, copy=False)
 
     def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         """Alias for expected_covariances, matching other simulation generators."""
@@ -698,7 +698,7 @@ class CovariancePairGenerator:
         noise_variance: float = 0.0,
         rng: Optional[np.random.Generator] = None,
     ) -> npt.NDArray[np.floating]:
-        """Generate samples from the candidate or target covariance."""
+        """Generate samples from the candidate or reference covariance."""
         if noise_variance < 0:
             raise ValueError("noise_variance must be non-negative")
 
@@ -709,12 +709,12 @@ class CovariancePairGenerator:
             space = self.candidate_space
             spectrum = self.candidate_spectrum
             rank = self.config.candidate_rank
-        elif which in ("target", "B", 2):
-            space = self.target_space
-            spectrum = self.target_spectrum
-            rank = self.config.target_rank
+        elif which in ("reference", "target", "B", 2):
+            space = self.reference_space
+            spectrum = self.reference_spectrum
+            rank = self.config.reference_rank
         else:
-            raise ValueError("which must be one of 'candidate', 'target', 'A', 'B', 1, or 2")
+            raise ValueError("which must be one of 'candidate', 'reference', 'A', 'B', 1, or 2")
 
         z = rng.standard_normal((rank, num_samples)).astype(self.dtype)
         data = space @ (np.sqrt(spectrum)[:, None] * z)
@@ -728,10 +728,10 @@ class CovariancePairGenerator:
         noise_variance: float = 0.0,
         rng: Optional[np.random.Generator] = None,
     ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-        """Generate candidate and target samples."""
-        candidate = self.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
-        target = self.generate(num_samples, which="target", noise_variance=noise_variance, rng=rng)
-        return candidate, target
+        """Generate candidate and reference samples."""
+        candidate_data = self.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
+        reference_data = self.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        return candidate_data, reference_data
 
 
 Transform = Callable[["CovarianceGenerator", np.random.Generator, dict[str, Any]], tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]]
