@@ -52,12 +52,16 @@ def add_scaled_limits(
         else:
             return np.array(lims)
 
-    viewer.add_selection(scale_name, options=["linear", "log"], value="linear")
-    viewer.add_float_range(lim_name, min=0, max=max_value, value=(0, max_value))
-    viewer.on_change(scale_name, _update_ylim_range)
-
     if log_default:
-        viewer.update_selection(scale_name, value="log")
+        scale_value = "log"
+        lim_value = (min_log_exponent, max_log_exponent)
+    else:
+        scale_value = "linear"
+        lim_value = (0, max_value)
+
+    viewer.add_selection(scale_name, options=["linear", "log"], value=scale_value)
+    viewer.add_float_range(lim_name, min=lim_value[0], max=lim_value[1], value=lim_value)
+    viewer.on_change(scale_name, _update_ylim_range)
 
     if y:
         viewer.get_ylims = _get_limits
