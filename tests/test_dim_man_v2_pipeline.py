@@ -113,15 +113,15 @@ def test_list_data_configs():
 
 
 def test_result_uid_deterministic():
-    uid1 = result_uid("ses1", "dk1", "ak1")
-    uid2 = result_uid("ses1", "dk1", "ak1")
+    uid1 = result_uid("ses1", "ak1")
+    uid2 = result_uid("ses1", "ak1")
     assert uid1 == uid2
     assert len(uid1) == 16
 
 
 def test_result_uid_varies():
-    uid1 = result_uid("ses1", "dk1", "ak1")
-    uid2 = result_uid("ses1", "dk1", "ak2")
+    uid1 = result_uid("ses1", "ak1")
+    uid2 = result_uid("ses1", "ak2")
     assert uid1 != uid2
 
 
@@ -132,24 +132,25 @@ def test_store_round_trip():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
         acfg = CVPCAConfig()
-        dcfg = get_data_config()
         sid = "test_session"
 
-        assert not store.has(sid, dcfg, acfg)
-        store.put(sid, dcfg, acfg, {"foo": 42}, snapshot_path="/snap.zip")
-        assert store.has(sid, dcfg, acfg)
-        assert store.get(sid, dcfg, acfg) == {"foo": 42}
+        assert not store.has(sid, acfg)
+        store.put(sid, acfg, {"foo": 42}, snapshot_path="/snap.zip")
+        assert store.has(sid, acfg)
+        assert store.get(sid, acfg) == {"foo": 42}
+
+        uid = store._uid(sid, acfg)
+        assert store._blob_path(uid).exists()
 
 
 def test_store_get_by_uid():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
         acfg = CVPCAConfig()
-        dcfg = get_data_config()
         sid = "test_session"
 
-        store.put(sid, dcfg, acfg, {"bar": 99})
-        uid = store._uid(sid, dcfg, acfg)
+        store.put(sid, acfg, {"bar": 99})
+        uid = store._uid(sid, acfg)
         assert store.get_by_uid(uid) == {"bar": 99}
         assert store.get_by_uid("nonexistent") is None
 
@@ -157,47 +158,51 @@ def test_store_get_by_uid():
 def test_store_none_completion_marker():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
-        dcfg = get_data_config()
         acfg = CVPCAConfig(center=False)
         sid = "test_session"
 
-        store.put(sid, dcfg, acfg, None)
-        assert store.has(sid, dcfg, acfg)
-        assert store.get(sid, dcfg, acfg) is None
+        store.put(sid, acfg, None)
+        assert store.has(sid, acfg)
+        assert store.get(sid, acfg) is None
+
+        uid = store._uid(sid, acfg)
+        assert not store._blob_path(uid).exists()
 
 
 def test_store_result_stored_flag():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
-        dcfg = get_data_config()
         sid = "test_session"
 
         acfg_in = CVPCAConfig()
-        store.put(sid, dcfg, acfg_in, {"data": 1}, result_stored=True)
+        store.put(sid, acfg_in, {"data": 1}, result_stored=True)
 
         acfg_ext = CVPCAConfig(center=False)
-        store.put(sid, dcfg, acfg_ext, None, result_stored=False)
+        store.put(sid, acfg_ext, {"data": 2}, result_stored=False)
 
         df = store.summary_table(as_dataframe=True)
         assert "result_stored" in df.columns
         assert "result_blob" not in df.columns
         stored_vals = dict(zip(df["result_uid"], df["result_stored"]))
-        uid_in = store._uid(sid, dcfg, acfg_in)
-        uid_ext = store._uid(sid, dcfg, acfg_ext)
+        uid_in = store._uid(sid, acfg_in)
+        uid_ext = store._uid(sid, acfg_ext)
         assert stored_vals[uid_in] == 1
         assert stored_vals[uid_ext] == 0
+
+        # result_stored=True writes file; result_stored=False does not
+        assert store._blob_path(uid_in).exists()
+        assert not store._blob_path(uid_ext).exists()
 
 
 def test_store_summary_table():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
-        dcfg = get_data_config()
         acfg1 = CVPCAConfig()
         acfg2 = CVPCAConfig(center=False)
         sid = "test_session"
 
-        store.put(sid, dcfg, acfg1, {"a": 1}, snapshot_path="/snap.zip")
-        store.put(sid, dcfg, acfg2, None)
+        store.put(sid, acfg1, {"a": 1}, snapshot_path="/snap.zip")
+        store.put(sid, acfg2, None)
 
         records = store.summary_table()
         assert len(records) == 2
@@ -211,28 +216,29 @@ def test_store_summary_table():
 def test_store_coverage():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
-        dcfg = get_data_config()
         acfg1 = CVPCAConfig()
         acfg2 = CVPCAConfig(center=False)
 
-        store.put("test_session", dcfg, acfg1, {"a": 1})
-        store.put("test_session", dcfg, acfg2, None)
+        store.put("test_session", acfg1, {"a": 1})
+        store.put("test_session", acfg2, None)
 
-        cov = store.coverage([FakeSession()], [dcfg], [acfg1, acfg2])
+        cov = store.coverage([FakeSession()], [acfg1, acfg2])
         assert cov == 1.0
 
 
 def test_store_invalidate():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
-        dcfg = get_data_config()
         acfg = CVPCAConfig()
         sid = "test_session"
 
-        store.put(sid, dcfg, acfg, {"a": 1})
-        assert store.has(sid, dcfg, acfg)
+        store.put(sid, acfg, {"a": 1})
+        uid = store._uid(sid, acfg)
+        assert store.has(sid, acfg)
+        assert store._blob_path(uid).exists()
         store.invalidate(analysis_type="cvpca")
-        assert not store.has(sid, dcfg, acfg)
+        assert not store.has(sid, acfg)
+        assert not store._blob_path(uid).exists()
 
 
 def test_store_invalidate_requires_filter():
@@ -248,26 +254,25 @@ def test_store_invalidate_requires_filter():
 def test_store_invalidate_all():
     with tempfile.TemporaryDirectory() as td:
         store = ResultsStore(pathlib.Path(td) / "test.db")
-        dcfg = get_data_config()
-        store.put("s1", dcfg, CVPCAConfig(), {"a": 1})
-        store.put("s2", dcfg, CVPCAConfig(), {"b": 2})
+        store.put("s1", CVPCAConfig(), {"a": 1})
+        store.put("s2", CVPCAConfig(), {"b": 2})
         store.invalidate_all()
         assert len(store.summary_table()) == 0
+        assert list(store._blob_dir.glob("*.pkl")) == []
 
 
 # -- Job -----------------------------------------------------------------------
 
 
 def test_job_result_uid():
-    job = Job(session=FakeSession(), data_config=get_data_config(), analysis_config=CVPCAConfig())
+    job = Job(session=FakeSession(), analysis_config=CVPCAConfig())
     assert len(job.result_uid) == 16
-    # Matches the standalone function
-    expected = result_uid("test_session", get_data_config().key(), CVPCAConfig().key())
+    expected = result_uid("test_session", CVPCAConfig().key())
     assert job.result_uid == expected
 
 
 def test_job_repr():
-    job = Job(session=FakeSession(), data_config=get_data_config(), analysis_config=CVPCAConfig())
+    job = Job(session=FakeSession(), analysis_config=CVPCAConfig())
     r = repr(job)
     assert "test_session" in r
     assert "cvpca" in r

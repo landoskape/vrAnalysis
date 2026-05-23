@@ -23,7 +23,7 @@ _BUSY_TIMEOUT_MS = 30_000
 
 # Single source of truth for column names and SQL types.
 # Tuples of (column_name, sql_type). First entry is the primary key.
-# result_blob lives in the sibling result_blobs table — touch only on store/load.
+# Blobs live on disk as blobs/{uid}.pkl — not in this database.
 _COLUMNS = (
     ("result_uid", "TEXT PRIMARY KEY"),
     ("session_id", "TEXT NOT NULL"),
@@ -38,19 +38,11 @@ _COLUMNS = (
 
 _COLUMN_NAMES = tuple(name for name, _ in _COLUMNS)
 _SCHEMA = "CREATE TABLE IF NOT EXISTS results (\n    {}\n)".format(",\n    ".join(f"{name} {sqltype}" for name, sqltype in _COLUMNS))
-_BLOB_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS result_blobs (\n"
-    "    result_uid TEXT PRIMARY KEY REFERENCES results(result_uid) ON DELETE CASCADE,\n"
-    "    result_blob BLOB NOT NULL\n"
-    ")"
-)
 _INSERT_SQL = "INSERT OR REPLACE INTO results ({}) VALUES ({})".format(
     ", ".join(_COLUMN_NAMES),
     ", ".join("?" for _ in _COLUMN_NAMES),
 )
-_INSERT_BLOB_SQL = "INSERT OR REPLACE INTO result_blobs (result_uid, result_blob) VALUES (?, ?)"
 _SUMMARY_SQL = "SELECT * FROM results"
-# Keep for backwards-compat with any callers that reference _SUMMARY_COLUMNS
 _SUMMARY_COLUMNS = _COLUMN_NAMES
 
 
@@ -79,9 +71,12 @@ BASE_STORE_PATH = RegistryPaths.pipeline_v2_db_path
 class ResultsStore:
     """SQLite-backed store for analysis results.
 
-    Each result is keyed by a unified hash of ``(session_id, data_key,
-    analysis_key)``. Per-operation connections with WAL mode and a busy
-    timeout allow safe concurrent access from joblib workers.
+    Each result is keyed by a unified hash of ``(session_id, analysis_key)``.
+    Metadata lives in the SQLite database; result blobs are stored as
+    ``blobs/{uid}.pkl`` files in the same directory as the database.
+
+    Per-operation connections with WAL mode and a busy timeout allow safe
+    concurrent access from joblib workers.
 
     Parameters
     ----------
@@ -92,9 +87,16 @@ class ResultsStore:
     def __init__(self, db_path: Path = BASE_STORE_PATH):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._blob_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(_SCHEMA)
-            conn.execute(_BLOB_SCHEMA)
+
+    @property
+    def _blob_dir(self) -> Path:
+        return self.db_path.parent / "blobs"
+
+    def _blob_path(self, uid: str) -> Path:
+        return self._blob_dir / f"{uid}.pkl"
 
     @contextmanager
     def _connect(self):
@@ -133,6 +135,10 @@ class ResultsStore:
     ):
         """Store a result, overwriting any existing entry.
 
+        The blob file is written before the database row is committed, so a
+        row will never exist that should have a blob but doesn't. If the
+        database commit fails, the orphan blob file is cleaned up.
+
         Parameters
         ----------
         session_id : str
@@ -144,12 +150,16 @@ class ResultsStore:
         snapshot_path : str or None
             Path to the codebase snapshot associated with this run.
         result_stored : bool
-            Whether the result blob lives in this database (True) or
+            Whether the result blob should be written to disk (True) or
             is stored externally (False). Default True.
         """
         uid = self._uid(session_id, analysis_cfg)
-        blob = pickle.dumps(result) if result is not None else None
-        # Order must match _COLUMN_NAMES (no blob column)
+        blob_path = self._blob_path(uid)
+
+        # Write blob file first — row will never be added without its blob
+        if result is not None and result_stored:
+            blob_path.write_bytes(pickle.dumps(result))
+
         meta_values = (
             uid,
             session_id,
@@ -161,10 +171,12 @@ class ResultsStore:
             snapshot_path,
             datetime.now(timezone.utc).isoformat(),
         )
-        with self._connect() as conn:
-            conn.execute(_INSERT_SQL, meta_values)
-            if blob is not None:
-                conn.execute(_INSERT_BLOB_SQL, (uid, blob))
+        try:
+            with self._connect() as conn:
+                conn.execute(_INSERT_SQL, meta_values)
+        except BaseException:
+            blob_path.unlink(missing_ok=True)
+            raise
 
     def get(self, session_id: str, analysis_cfg: AnalysisConfigBase) -> dict | None:
         """Retrieve a stored result, or None if not found / completion marker."""
@@ -173,11 +185,10 @@ class ResultsStore:
 
     def get_by_uid(self, uid: str) -> dict | None:
         """Retrieve a stored result directly by its result_uid."""
-        with self._connect() as conn:
-            row = conn.execute("SELECT result_blob FROM result_blobs WHERE result_uid=?", (uid,)).fetchone()
-        if row is None:
+        path = self._blob_path(uid)
+        if not path.exists():
             return None
-        return pickle.loads(row[0])
+        return pickle.loads(path.read_bytes())
 
     def invalidate(
         self,
@@ -207,12 +218,18 @@ class ResultsStore:
             raise ValueError("At least one filter is required. Use invalidate_all() to delete everything.")
         where = " AND ".join(f"{k}=?" for k in active)
         with self._connect() as conn:
+            rows = conn.execute(f"SELECT result_uid FROM results WHERE {where}", tuple(active.values())).fetchall()
+            uids = [row[0] for row in rows]
             conn.execute(f"DELETE FROM results WHERE {where}", tuple(active.values()))
+        for uid in uids:
+            self._blob_path(uid).unlink(missing_ok=True)
 
     def invalidate_all(self):
-        """Delete all results."""
+        """Delete all results and their blob files."""
         with self._connect() as conn:
             conn.execute("DELETE FROM results")
+        for p in self._blob_dir.glob("*.pkl"):
+            p.unlink(missing_ok=True)
 
     def summary_table(self, as_dataframe: bool = False) -> list[dict] | pd.DataFrame:
         """Return metadata for all stored results (no blob data).
@@ -238,7 +255,6 @@ class ResultsStore:
         total = len(sessions) * len(analysis_configs)
         if total == 0:
             return 1.0
-        # Batch lookup with a single connection
         uids = {self._uid(ses.session_uid, acfg) for ses in sessions for acfg in analysis_configs}
         found = 0
         with self._connect() as conn:

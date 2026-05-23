@@ -40,10 +40,8 @@ def main():
     (row_count,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
     t0 = _t(f"COUNT(*) -> {row_count} rows", t0)
 
-    (blob_count,) = conn.execute(
-        "SELECT COUNT(result_blob) FROM results WHERE result_blob IS NOT NULL"
-    ).fetchone()
-    t0 = _t(f"blob stats: {blob_count} blobs (sizes skipped — reads all data)", t0)
+    (blob_count,) = conn.execute("SELECT COUNT(*) FROM results WHERE result_stored=1").fetchone()
+    t0 = _t(f"results with blobs: {blob_count}", t0)
 
     (summary_max_kb, summary_avg_kb, summary_total_kb) = conn.execute(
         "SELECT MAX(LENGTH(analysis_summary))/1024.0, AVG(LENGTH(analysis_summary))/1024.0, SUM(LENGTH(analysis_summary))/1024.0 FROM results"
@@ -74,8 +72,7 @@ def main():
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
         """
-        SELECT analysis_type, COUNT(*) as n,
-               SUM(CASE WHEN result_blob IS NOT NULL THEN 1 ELSE 0 END) as has_blob
+        SELECT analysis_type, COUNT(*) as n, SUM(result_stored) as has_blob
         FROM results
         GROUP BY analysis_type
         ORDER BY n DESC
@@ -90,6 +87,16 @@ def main():
             print(f"  {str(analysis_type):<35s} {n:>6} {has_blob:>10}")
     else:
         print("  No rows.")
+
+    # --- blob dir sizes ---
+    print("\n=== Blob files ===")
+    blob_dir = db_path.parent / "blobs"
+    if blob_dir.exists():
+        blobs = list(blob_dir.glob("*.pkl"))
+        total_blob_mb = sum(b.stat().st_size for b in blobs) / 1024**2
+        print(f"  {len(blobs)} pkl files, {total_blob_mb:.1f} MB total")
+    else:
+        print("  No blob dir.")
 
     # --- snapshot sizes ---
     print("\n=== Snapshot files ===")
