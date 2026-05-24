@@ -1,6 +1,5 @@
 import tomllib
 from pathlib import Path
-from tkinter import Tk
 
 _REPO_ROOT = Path(__file__).parent.parent
 _PATHS_FILE = _REPO_ROOT / "paths.toml"
@@ -46,6 +45,7 @@ def getCopyString(mouseName, datestr="", session="", server=server_path(), toCli
     targetString = Path(local_data_path() / mouseName / datestr / session)
     cmdPromptCommand = f"robocopy {sourceString} {targetString} /s /xf *.tif *.mj2"
     if toClipboard:
+        from tkinter import Tk
         tkManager = Tk()
         tkManager.clipboard_append(cmdPromptCommand)
         tkManager.destroy()
@@ -57,6 +57,7 @@ def copyDataToStorage(mouseName, datestr="", session="", toClipboard=True):
     targetString = Path(storage_path() / mouseName / datestr / session)
     cmdPromptCommand = f"robocopy {sourceString} {targetString} /s"
     if toClipboard:
+        from tkinter import Tk
         tkManager = Tk()
         tkManager.clipboard_append(cmdPromptCommand)
         tkManager.destroy()
