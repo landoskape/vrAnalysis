@@ -5,7 +5,7 @@
 #   uv pip install -e . --no-deps
 
 # Core scientific stack
-numpy
+numpy<2
 scipy
 pandas
 scikit-learn
