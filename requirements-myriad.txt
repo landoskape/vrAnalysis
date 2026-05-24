@@ -1,0 +1,21 @@
+# Minimal requirements for running the dimensionality manuscript pipeline on MYRIAD.
+# Install with:
+#   uv pip install -r requirements-myriad.txt
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   uv pip install -e . --no-deps
+
+# Core scientific stack
+numpy
+scipy
+pandas
+scikit-learn
+
+# Pipeline infrastructure
+joblib
+tqdm
+freezedry
+numpyencoder
+speedystats
+
+# Numerical JIT
+numba

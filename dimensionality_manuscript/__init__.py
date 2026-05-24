@@ -11,7 +11,7 @@ from .configs import (
     get_data_config,
     list_data_configs,
 )
-from .pipeline import ResultsAggregator, AnalysisConfigBase, AnalysisPlan, Job, ResultsStore, result_uid
+from .pipeline import ResultsAggregator, AnalysisConfigBase, AnalysisPlan, Job, JobQueue, ResultsStore, result_uid
 
 __all__ = [
     "ResultsAggregator",
@@ -29,6 +29,7 @@ __all__ = [
     "list_data_configs",
     "AnalysisPlan",
     "Job",
+    "JobQueue",
     "ResultsStore",
     "result_uid",
 ]

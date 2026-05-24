@@ -11,7 +11,6 @@ from dimilibi import gaussian_filter
 from dimilibi.cvpca import CVPCA, RegularizedCVPCA
 from dimilibi.pca import PCA
 from ..registry import PopulationRegistry
-from ..workflows.compare_old_cvpca import get_legacy_cvpca
 from vrAnalysis.helpers import cross_validate_trials, reliability_loo, edge2center
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_placefield
@@ -309,6 +308,7 @@ class CVPCAConfig(AnalysisConfigBase):
 
         # Legacy CVPCA results
         try:
+            from ..workflows.compare_old_cvpca import get_legacy_cvpca
             saved_leg_result = get_legacy_cvpca(session, best_env_idx=best_env_idx)
         except Exception as e:
             print(f"Error getting legacy CVPCA for {session.session_uid}: {e}")

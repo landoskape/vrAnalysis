@@ -8,8 +8,9 @@ Replicates the measure_cvpca.py workflow using the new pipeline architecture.
 """
 
 import argparse
+import json
+from pathlib import Path
 from vrAnalysis.sessions import B2Session
-from vrAnalysis.database import get_database
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import (
     AnalysisPlan,
@@ -52,8 +53,23 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
 
 def collect_sessions() -> list[B2Session]:
     """All imaging sessions from the vrSessions database."""
+    from vrAnalysis.database import get_database
     sessiondb = get_database("vrSessions")
     return list(sessiondb.iter_sessions(imaging=True))
+
+
+def collect_sessions_from_file(path: Path) -> list[B2Session]:
+    """Load sessions from a JSON file exported by export_sessions.py.
+
+    Use this on systems where the Access database is unavailable (e.g. MYRIAD).
+
+    Parameters
+    ----------
+    path : Path
+        JSON file produced by ``export_sessions.py``.
+    """
+    records = json.loads(Path(path).read_text())
+    return [B2Session.create(r["mouse_name"], r["date"], r["session_id"]) for r in records]
 
 
 def run(
