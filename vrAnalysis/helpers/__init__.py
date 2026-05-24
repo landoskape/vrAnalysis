@@ -2,9 +2,7 @@ from .debug import *
 from .figures import *
 from .indexing import *
 from .linear_algebra import *
-from .plotting import *
 from .signals import *
 from .typing import *
 from .vrsupport import *
 from .wrangling import *
-from .fluorescence import *

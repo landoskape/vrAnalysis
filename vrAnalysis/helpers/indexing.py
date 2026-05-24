@@ -4,6 +4,11 @@ import numpy as np
 from .wrangling import check_iterable
 
 
+def edge2center(edges):
+    assert isinstance(edges, np.ndarray) and edges.ndim == 1, "edges must be a 1-d numpy array"
+    return edges[:-1] + np.diff(edges) / 2
+
+
 # ------------------------------------ index handling ------------------------------------
 def all_pairs(idx_ses):
     """Return all pairs without replacement of elements in iterable idx_ses"""

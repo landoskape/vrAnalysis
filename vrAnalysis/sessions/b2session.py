@@ -8,8 +8,6 @@ from numpyencoder import NumpyEncoder
 import speedystats as ss
 from ..files import local_data_path
 from .base import SessionData
-from roicat_support.classifier import load_classifier
-from roicat_support.classifier import get_results_path as get_classifier_results_path
 
 
 @dataclass
@@ -123,6 +121,7 @@ class B2SessionParams:
         It loads the ROICaT classifier to get the label_to_id mapping for
         validating good_labels.
         """
+        from roicat_support.classifier import load_classifier
         classifier = load_classifier()
         self._label_to_id = classifier["label_to_id"]
 
@@ -791,6 +790,7 @@ class B2Session(SessionData):
             self.set_value(key, val)
 
         # Also load ROICaT Classifier Results if they exist
+        from roicat_support.classifier import get_results_path as get_classifier_results_path
         results_path = get_classifier_results_path(self)
         if results_path.exists():
             self.roicat_classifier = joblib.load(results_path)

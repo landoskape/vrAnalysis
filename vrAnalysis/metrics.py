@@ -3,7 +3,6 @@ import itertools
 import numpy as np
 from scipy.stats import gaussian_kde
 from skimage.measure import find_contours
-import matplotlib.pyplot as plt
 
 
 class KernelDensityEstimator:
@@ -229,6 +228,7 @@ def plot_contours(contours, ax=None, **plot_kwargs):
     KernelDensityEstimator.contours : The method that finds the contours.
     """
     if ax is None:
+        import matplotlib.pyplot as plt
         ax = plt.gca()
     for contour in contours:
         ax.plot(contour[:, 0], contour[:, 1], **plot_kwargs)

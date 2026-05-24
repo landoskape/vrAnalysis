@@ -30,7 +30,7 @@ from matplotlib.axes import Axes
 from rastermap import Rastermap
 
 from vrAnalysis import files
-from vrAnalysis.helpers import beeswarm
+from vrAnalysis.helpers.plotting import beeswarm
 from dimilibi import PCA, make_time_splits
 
 

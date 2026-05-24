@@ -8,7 +8,8 @@ import joblib
 
 from vrAnalysis.files import analysis_path
 from vrAnalysis.database import get_database
-from vrAnalysis.helpers import Timer, save_figure, edge2center, fractional_histogram
+from vrAnalysis.helpers import Timer, edge2center
+from vrAnalysis.helpers.plotting import save_figure, fractional_histogram
 from vrAnalysis.processors.spkmaps import SpkmapProcessor
 from vrAnalysis.tracking import Tracker
 from vrAnalysis.metrics import FractionActive

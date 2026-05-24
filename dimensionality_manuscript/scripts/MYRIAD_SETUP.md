@@ -94,7 +94,11 @@ uv pip install numpy"<2" scipy pandas scikit-learn joblib tqdm numpyencoder spee
 uv pip install freezedry
 
 # Step 3: PyTorch CPU-only
-uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+# uv's download can stall on the login node (170 MB wheel). wget is much faster.
+# The filename MUST include the version — uv rejects a bare "torch.whl".
+wget -c "https://download.pytorch.org/whl/cpu/torch-2.6.0%2Bcpu-cp311-cp311-linux_x86_64.whl" \
+    -O "/tmp/torch-2.6.0+cpu-cp311-cp311-linux_x86_64.whl"
+uv pip install "/tmp/torch-2.6.0+cpu-cp311-cp311-linux_x86_64.whl"
 
 # Step 4: install the package itself without pulling in setup.py deps
 uv pip install -e ~/vrAnalysis --no-deps

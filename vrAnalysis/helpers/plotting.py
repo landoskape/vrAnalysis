@@ -174,11 +174,6 @@ def ncmap(name="Spectral", vmin=10, vmax=None):
     return getcolor
 
 
-def edge2center(edges):
-    assert isinstance(edges, np.ndarray) and edges.ndim == 1, "edges must be a 1-d numpy array"
-    return edges[:-1] + np.diff(edges) / 2
-
-
 def beeswarm(y, nbins=None):
     """thanks to: https://python-graph-gallery.com/509-introduction-to-swarm-plot-in-matplotlib/"""
     # Convert y to a NumPy array
