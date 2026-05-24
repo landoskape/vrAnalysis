@@ -61,9 +61,10 @@ python --version            # confirm
 ### 2c. Create virtual environment on Scratch
 
 Use `~/Scratch/` (Lustre, large quota) not `~` (home, tiny quota).
+`$(which python)` may not work in all shells — pass the version string directly:
 
 ```bash
-uv venv ~/Scratch/envs/vrAnalysis --python $(which python)
+uv venv ~/Scratch/envs/vrAnalysis --python=3.11.4
 source ~/Scratch/envs/vrAnalysis/bin/activate
 ```
 
@@ -78,16 +79,24 @@ cd ~/vrAnalysis
 
 Do NOT use `uv pip install -e .` — `setup.py` pulls in matplotlib, jupyterlab,
 pyodbc, syd, and other packages the worker never needs. Install only what the
-worker actually uses:
+worker actually uses.
+
+MYRIAD defaults to the Intel ICC compiler, which fails to compile C extensions
+for numpy, scipy, etc. Use `--only-binary :all:` to force pre-built wheels and
+skip ICC entirely. One dependency (`freezedry`) has a pure-Python transitive dep
+with no wheel, so install it separately without the flag:
 
 ```bash
-# Step 1: minimal deps (all have pre-built wheels — no ICC compilation)
-uv pip install -r ~/vrAnalysis/requirements-myriad.txt
+# Step 1: all scientific deps — force pre-built wheels, no ICC compilation
+uv pip install numpy"<2" scipy pandas scikit-learn joblib tqdm numpyencoder speedystats numba --only-binary :all:
 
-# Step 2: PyTorch CPU-only
+# Step 2: freezedry separately (its dep gitignore-parser is pure Python — no compilation)
+uv pip install freezedry
+
+# Step 3: PyTorch CPU-only
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Step 3: install the package itself without pulling in setup.py deps
+# Step 4: install the package itself without pulling in setup.py deps
 uv pip install -e ~/vrAnalysis --no-deps
 
 # Verify
