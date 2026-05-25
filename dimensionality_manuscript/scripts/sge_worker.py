@@ -35,6 +35,7 @@ def run_worker(
     sessions_file: Path | None = None,
     claim_timeout: int = 60,
     max_jobs: int | None = None,
+    dry_run: bool = False,
 ):
     """Claim and execute jobs until the queue is drained.
 
@@ -51,6 +52,9 @@ def run_worker(
         Minutes before a running job is considered stale and reclaimable.
     max_jobs : int or None
         Stop after this many jobs (useful for testing). None = no limit.
+    dry_run : bool
+        If True, validate session+config but skip analysis and store.put().
+        Marks jobs done immediately. Used by concurrency_test.py.
     """
     db_path = Path(db_path)
     queue = JobQueue(db_path)
@@ -105,7 +109,12 @@ def run_worker(
             n_failed += 1
             continue
 
-        print(f"[{worker_id}] Running: {session_id} | {job_info['analysis_summary']}")
+        print(f"[{worker_id}] {'(dry-run) ' if dry_run else ''}Running: {session_id} | {job_info['analysis_summary']}")
+
+        if dry_run:
+            queue.mark_done(uid)
+            n_done += 1
+            continue
 
         job = Job(session=session, analysis_config=config)
         registry = _get_registry(config.data_config_name, config)
@@ -132,6 +141,7 @@ def main():
     parser.add_argument("--sessions-file", type=Path, default=None, help="JSON session list from export_sessions.py")
     parser.add_argument("--claim-timeout", type=int, default=60, help="Minutes before stale running job is reclaimable (default: 60)")
     parser.add_argument("--max-jobs", type=int, default=None, help="Stop after N jobs (for testing)")
+    parser.add_argument("--dry-run", action="store_true", help="Validate session+config but skip analysis; marks jobs done immediately")
     args = parser.parse_args()
 
     db_path = args.db_path if args.db_path is not None else RegistryPaths.pipeline_v2_db_path
@@ -149,6 +159,7 @@ def main():
         sessions_file=sessions_file,
         claim_timeout=args.claim_timeout,
         max_jobs=args.max_jobs,
+        dry_run=args.dry_run,
     )
 
 

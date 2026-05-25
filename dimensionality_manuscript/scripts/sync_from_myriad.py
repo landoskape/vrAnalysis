@@ -27,6 +27,27 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+def _find_bash() -> str | None:
+    candidates = [
+        Path("C:/Program Files/Git/bin/bash.exe"),
+        Path("C:/Program Files (x86)/Git/bin/bash.exe"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _posix(path: Path) -> str:
+    """Convert a Windows path to MSYS2/Git Bash posix form for rsync."""
+    parts = path.parts
+    if len(parts) > 0 and len(parts[0]) == 3 and parts[0][1:] == ":\\":
+        drive = parts[0][0].lower()
+        rest = "/".join(parts[1:])
+        return f"/{drive}/{rest}"
+    return path.as_posix()
+
 from dimensionality_manuscript.registry import RegistryPaths
 
 REGISTRY_PATHS = RegistryPaths()
@@ -66,16 +87,14 @@ def sync(
     remote_blobs_src = remote_blobs.rstrip("/") + "/"
 
     # ── Step 1: sync blobs ────────────────────────────────────────────────────
-    rsync_cmd = [
-        "rsync",
-        "-avP",
-        "--ignore-existing",   # skip blobs already present locally
-        f"{host}:{remote_blobs_src}",
-        str(local_blobs) + "/",
-    ]
-    print(f"Syncing blobs: {' '.join(rsync_cmd)}")
-    if dry_run:
-        rsync_cmd.insert(1, "--dry-run")
+    dry_flag = "--dry-run " if dry_run else ""
+    rsync_shell_cmd = (
+        f"rsync -avP {dry_flag}--ignore-existing "
+        f"{host}:{remote_blobs_src} {_posix(local_blobs)}/"
+    )
+    bash = _find_bash()
+    rsync_cmd = [bash or "bash", "-c", rsync_shell_cmd]
+    print(f"Syncing blobs: {rsync_shell_cmd}")
     result = subprocess.run(rsync_cmd)
     if result.returncode != 0:
         print("rsync failed.", file=sys.stderr)

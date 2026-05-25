@@ -95,8 +95,8 @@ def plot_stim_nuisance_2D(
     ax_direction.arrow(
         0,
         0,
-        cfg.nuisance_direction[0] * extend_arrow_factor,
-        cfg.nuisance_direction[1] * extend_arrow_factor,
+        cfg.nuisance_direction[0] * cfg.nuisance_amplitude * extend_arrow_factor,
+        cfg.nuisance_direction[1] * cfg.nuisance_amplitude * extend_arrow_factor,
         head_width=arrow_width,
         head_length=arrow_length,
         fc=nuisance_color,
@@ -117,8 +117,8 @@ def plot_stim_nuisance_2D(
     ax_direction.arrow(
         0,
         0,
-        -cfg.nuisance_direction[0] * extend_arrow_factor,
-        -cfg.nuisance_direction[1] * extend_arrow_factor,
+        -cfg.nuisance_direction[0] * cfg.nuisance_amplitude * extend_arrow_factor,
+        -cfg.nuisance_direction[1] * cfg.nuisance_amplitude * extend_arrow_factor,
         head_width=arrow_width,
         head_length=arrow_length,
         fc=nuisance_color,

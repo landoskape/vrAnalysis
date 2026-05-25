@@ -152,24 +152,58 @@ cd /path/to/vrAnalysis
 python -m dimensionality_manuscript.scripts.export_sessions --output sessions.json
 ```
 
-### 3b. Transfer sessions.json and raw data
+### 3b. Install rsync in Git Bash (Windows — one-time)
+
+Windows does not ship rsync. Git Bash does not include it. Install the MSYS2
+binaries into `~/bin` (no admin required):
 
 ```bash
+# In Git Bash:
+curl -L "https://repo.msys2.org/msys/x86_64/rsync-3.3.0-1-x86_64.pkg.tar.zst" -o /tmp/rsync.pkg.tar.zst
+curl -L "https://repo.msys2.org/msys/x86_64/libxxhash-0.8.3-1-x86_64.pkg.tar.zst" -o /tmp/xxhash.pkg.tar.zst
+
+mkdir -p ~/bin
+cd /tmp && bsdtar -xf rsync.pkg.tar.zst && bsdtar -xf xxhash.pkg.tar.zst
+cp /tmp/usr/bin/rsync.exe ~/bin/
+cp /tmp/usr/bin/msys-*.dll ~/bin/ 2>/dev/null || true
+cp /tmp/usr/bin/msys-xxhash-0.dll ~/bin/
+
+export PATH="$HOME/bin:$PATH"
+rsync --version  # confirm MSYS2 rsync, not choco
+```
+
+Add `export PATH="$HOME/bin:$PATH"` to `~/.bashrc` so it persists.
+
+> **Note:** The Chocolatey rsync (`choco install rsync`) does NOT work —
+> it misinterprets Windows drive letters (`D:`) as remote hostnames.
+> Use the MSYS2 binary above instead.
+
+### 3c. Transfer sessions.json and session data
+
+Only three things are needed per session — `oneData/` (neural + behavioural
+arrays), `roicat/` (classifier results), and `vrExperiment*.json` (session
+config). Everything else (`suite2p/`, `spkmaps/`, raw timeline `.npy`, `.mat`
+files) is either already processed into `oneData/` or recomputed on MYRIAD.
+
+Use `transfer_to_myriad.py` to rsync exactly the sessions in your manifest and
+nothing more:
+
+```powershell
 # Session manifest (small)
 scp sessions.json myriad:~/vrAnalysis/sessions.json
 
-# Raw session data (large — mirror your local layout under Scratch/data/)
-rsync -avP --progress \
-    /path/to/local/data/ \
-    myriad:~/Scratch/data/
+# Run from PowerShell — NOT Git Bash (Git Bash expands ~ before Python sees it)
+# If conda activate doesn't work in PowerShell, prefix with: conda run -n vrAnalysis
 
-# If you already have partial results locally and want to seed MYRIAD's DB:
-rsync -avP \
-    /path/to/local/pipeline_v2/results.db \
-    myriad:~/Scratch/dim_manuscript/pipeline_v2/results.db
-rsync -avP \
-    /path/to/local/pipeline_v2/blobs/ \
-    myriad:~/Scratch/dim_manuscript/pipeline_v2/blobs/
+# Dry run first — confirm what will be sent
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --dry-run
+
+# Real transfer (session data only)
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data
+
+# Transfer session data AND seed MYRIAD with local results.db so already-computed
+# jobs are skipped (no blobs needed — the db is enough for workers to skip them)
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-results
 ```
 
 The MYRIAD results DB is created automatically on first run if it does not exist.
@@ -235,19 +269,17 @@ python -m dimensionality_manuscript.scripts.sge_submit \
 
 ## 5. Syncing results back to local
 
-Run **locally** after MYRIAD jobs finish:
+Run **locally** after MYRIAD jobs finish. Requires the MSYS2 rsync installed
+in §3b — the script finds it automatically via `~/bin/rsync.exe`.
 
-```bash
+```powershell
+# Run from PowerShell (not Git Bash — ~ expansion issue)
+
 # Dry run — shows rsync output without transferring
-python -m dimensionality_manuscript.scripts.sync_from_myriad \
-    --host myriad \
-    --dry-run
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad --dry-run
 
 # Real sync
-python -m dimensionality_manuscript.scripts.sync_from_myriad \
-    --host myriad \
-    --remote-db "~/Scratch/dim_manuscript/pipeline_v2/results.db" \
-    --remote-blobs "~/Scratch/dim_manuscript/pipeline_v2/blobs/"
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad
 ```
 
 This:

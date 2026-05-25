@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS job_queue (
 )
 """
 
-_STATUS_VALUES = frozenset({"pending", "running", "done", "failed"})
+_STATUS_VALUES = frozenset({"pending", "running", "done", "failed", "test-block"})
 
 
 class JobQueue:
@@ -216,3 +216,55 @@ class JobQueue:
             return conn.execute(
                 "SELECT COUNT(*) FROM job_queue WHERE status='pending'"
             ).fetchone()[0]
+
+    def claim_for_test(self, n: int) -> list[dict]:
+        """Atomically mark up to n pending jobs as 'test-block' and return them.
+
+        Real workers skip 'test-block' jobs (``claim_next`` only claims
+        ``'pending'`` or stale ``'running'``). Call :meth:`release_test_blocks`
+        when done to restore them to ``'pending'``.
+
+        Parameters
+        ----------
+        n : int
+            Maximum number of jobs to claim.
+
+        Returns
+        -------
+        list[dict]
+            Claimed rows with keys ``result_uid``, ``session_id``,
+            ``analysis_key``, ``analysis_summary``.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT result_uid, session_id, analysis_key, analysis_summary "
+                "FROM job_queue WHERE status='pending' ORDER BY created_at LIMIT ?",
+                (n,),
+            ).fetchall()
+            if rows:
+                uids = [r["result_uid"] for r in rows]
+                placeholders = ",".join("?" for _ in uids)
+                conn.execute(
+                    f"UPDATE job_queue SET status='test-block' WHERE result_uid IN ({placeholders})",
+                    uids,
+                )
+            conn.execute("COMMIT")
+        return [dict(r) for r in rows]
+
+    def release_test_blocks(self) -> int:
+        """Reset all 'test-block' jobs back to 'pending'.
+
+        Returns
+        -------
+        int
+            Number of jobs released.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            cur = conn.execute(
+                "UPDATE job_queue SET status='pending' WHERE status='test-block'"
+            )
+            n = cur.rowcount
+            conn.execute("COMMIT")
+        return n
