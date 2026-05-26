@@ -183,10 +183,12 @@ Add `export PATH="$HOME/bin:$PATH"` to `~/.bashrc` so it persists.
 
 ### 3c. Transfer sessions.json and session data
 
-Only three things are needed per session — `oneData/` (neural + behavioural
-arrays), `roicat/` (classifier results), and `vrExperiment*.json` (session
-config). Everything else (`suite2p/`, `spkmaps/`, raw timeline `.npy`, `.mat`
-files) is either already processed into `oneData/` or recomputed on MYRIAD.
+Three things are needed per session — `oneData/` (neural + behavioural
+arrays), `roicat/` (per-session classifier results), and `vrExperiment*.json`
+(session config). Plus one global file — `analysis/roicat_classification/train_classifier.joblib`
+— which all workers need to construct sessions. Everything else (`suite2p/`,
+`spkmaps/`, raw timeline `.npy`, `.mat` files) is either already processed
+into `oneData/` or recomputed on MYRIAD.
 
 Use `transfer_to_myriad.py` to rsync exactly the sessions in your manifest and
 nothing more:
@@ -223,10 +225,9 @@ cd ~/vrAnalysis
 module load python/3.11.4   # must match version used when creating the venv
 source ~/Scratch/envs/vrAnalysis/bin/activate
 
-# Dry run first — see pending job count and qsub command
-python -m dimensionality_manuscript.scripts.sge_submit \
-    --sessions-file ~/vrAnalysis/sessions.json \
-    --dry-run
+# Dry run first — populates the queue but does NOT submit.
+# Run smoke tests (§5) after this to validate before committing.
+python -m dimensionality_manuscript.scripts.sge_submit --sessions-file ~/vrAnalysis/sessions.json --dry-run
 
 # Submit for real (16 workers, 8h walltime, 16G RAM each)
 python -m dimensionality_manuscript.scripts.sge_submit \
@@ -261,12 +262,18 @@ print(q.status_summary())
 ### Re-queuing failures
 
 ```bash
+# --dry-run still populates the queue (resets failed → pending with --force-repopulate)
+# but does not submit. Inspect the queue summary, then resubmit without --dry-run.
 python -m dimensionality_manuscript.scripts.sge_submit \
     --sessions-file ~/vrAnalysis/sessions.json \
     --force-repopulate \
-    --dry-run   # check count first
+    --dry-run
 
-# Then resubmit without --dry-run
+# Submit workers once queue looks right
+python -m dimensionality_manuscript.scripts.sge_submit \
+    --sessions-file ~/vrAnalysis/sessions.json \
+    --force-repopulate \
+    --n-workers 16
 ```
 
 ---
@@ -342,22 +349,25 @@ the results came from a server — they see a fully-populated local store.
 
 ```
 ~/Scratch/
-├── data/                          ← raw session data (mirrors local storage/)
+├── data/                          ← raw session data + pipeline outputs (storage root)
 │   ├── MOUSE1/
 │   │   └── 2024-01-15/
 │   │       └── 001/
-│   └── ...
-├── dim_manuscript/
-│   └── pipeline_v2/
-│       ├── results.db             ← SQLite results + job_queue tables
-│       └── blobs/
-│           └── <result_uid>.pkl
+│   ├── ...
+│   └── dimensionality-manuscript/
+│       └── cache/
+│           └── pipeline_v2/
+│               ├── results.db     ← SQLite results + job_queue tables
+│               └── blobs/
+│                   └── <result_uid>.pkl
 └── envs/
     └── vrAnalysis/                ← uv virtual environment
 ```
 
 The `paths.toml` `storage` key must point to `~/Scratch/data` so that
 `local_data_path()` resolves session file paths correctly on MYRIAD.
+`RegistryPaths.pipeline_v2_db_path` then resolves to
+`~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/results.db`.
 
 ---
 

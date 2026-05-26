@@ -80,11 +80,6 @@ def submit(
         print("Nothing to do — all results already computed.")
         return
 
-    if dry_run:
-        print("\n[dry-run] Would add jobs to queue and submit:")
-        _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file)
-        return
-
     if force_repopulate:
         n_reset = queue.reset_failed()
         if n_reset:
@@ -93,6 +88,11 @@ def submit(
     n_added = queue.populate(pending_jobs)
     summary = queue.status_summary()
     print(f"\nQueue updated: +{n_added} new | {summary}")
+
+    if dry_run:
+        print("\n[dry-run] Queue populated. Run smoke_test to validate, then re-run without --dry-run to submit.")
+        _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file)
+        return
 
     qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file)
     print(f"\nSubmitting: {' '.join(qsub_cmd)}")

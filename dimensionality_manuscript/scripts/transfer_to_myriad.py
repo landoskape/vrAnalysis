@@ -51,7 +51,7 @@ from dimensionality_manuscript.registry import RegistryPaths
 
 _INCLUDE_SUBDIRS = ["oneData", "roicat"]
 _INCLUDE_GLOBS = ["vrExperiment*.json"]
-_DEFAULT_REMOTE_DB = "~/Scratch/dim_manuscript/pipeline_v2/results.db"
+_DEFAULT_REMOTE_DB = "~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/results.db"
 
 
 def _posix(path: Path) -> str:
@@ -70,6 +70,14 @@ def _posix(path: Path) -> str:
 def build_filter_file(sessions: list[dict], tmp_filter: Path) -> None:
     """Write an rsync filter file covering exactly the needed session paths."""
     lines = []
+
+    # Global analysis files required by all workers (not per-session)
+    lines += [
+        "+ /analysis/",
+        "+ /analysis/roicat_classification/",
+        "+ /analysis/roicat_classification/train_classifier.joblib",
+    ]
+
     seen_mice: set[str] = set()
     seen_dates: set[str] = set()
 
@@ -130,6 +138,41 @@ def _merge_dbs(base: Path, other: Path) -> tuple[int, int]:
     return n_before, n_after - n_before
 
 
+def _count_local_rows_missing_on_remote(local_db: Path, remote_db: Path) -> int:
+    """Count local result rows whose ``result_uid`` is absent from remote.
+
+    Read-only: opens ``remote_db`` and attaches ``local_db``; neither file is modified.
+
+    Parameters
+    ----------
+    local_db : Path
+        Local results.db (reference set).
+    remote_db : Path
+        Remote results.db copy to verify against.
+
+    Returns
+    -------
+    int
+        Number of local rows not found on remote.
+    """
+    conn = sqlite3.connect(remote_db, timeout=30)
+    try:
+        conn.execute("ATTACH DATABASE ? AS local", (str(local_db),))
+        (n_missing,) = conn.execute(
+            """
+            SELECT COUNT(*) FROM local.results AS l
+            WHERE NOT EXISTS (
+                SELECT 1 FROM main.results AS r
+                WHERE r.result_uid = l.result_uid
+            )
+            """
+        ).fetchone()
+        conn.execute("DETACH DATABASE local")
+        return int(n_missing)
+    finally:
+        conn.close()
+
+
 def transfer_results(host: str, remote_db: str, dry_run: bool) -> int:
     """Merge local results.db with MYRIAD's and upload the union.
 
@@ -150,6 +193,7 @@ def transfer_results(host: str, remote_db: str, dry_run: bool) -> int:
         tmp_dir = Path(tmpdir)
         merged = tmp_dir / "merged_results.db"
         shutil.copy2(local_db, merged)
+        print("Local results.db copied to merged_results.db")
 
         # Try to download MYRIAD's db and merge its rows into our copy
         tmp_remote = tmp_dir / "myriad_results.db"
@@ -157,6 +201,7 @@ def transfer_results(host: str, remote_db: str, dry_run: bool) -> int:
             ["scp", f"{host}:{remote_db}", str(tmp_remote)],
             capture_output=True,
         )
+        print(f"Remote DB downloaded to {tmp_remote}")
         if dl.returncode == 0:
             n_before, n_added = _merge_dbs(merged, tmp_remote)
             print(f"  Merged {n_added} new rows from remote (local had {n_before} rows)")
@@ -166,11 +211,34 @@ def transfer_results(host: str, remote_db: str, dry_run: bool) -> int:
         # Ensure remote directory exists
         remote_dir = PurePosixPath(remote_db).parent
         subprocess.run(["ssh", host, f"mkdir -p {remote_dir}"], check=True)
+        print(f"Remote directory {remote_dir} exists (either created or already existed)")
 
         # Upload merged result
         ul = subprocess.run(["scp", str(merged), f"{host}:{remote_db}"])
         if ul.returncode != 0:
             print(f"scp upload exited with code {ul.returncode}", file=sys.stderr)
+
+        else:
+            tmp_remote_after = tmp_dir / "myriad_results_after.db"
+            dl = subprocess.run(
+                ["scp", f"{host}:{remote_db}", str(tmp_remote_after)],
+                capture_output=True,
+            )
+            if dl.returncode != 0:
+                print(
+                    f"  Post-upload verify failed: scp download exited with code {dl.returncode}",
+                    file=sys.stderr,
+                )
+                return 1
+            n_missing = _count_local_rows_missing_on_remote(local_db, tmp_remote_after)
+            if n_missing:
+                print(
+                    f"  Post-upload verify failed: {n_missing} local row(s) missing on remote",
+                    file=sys.stderr,
+                )
+                return 1
+            print("  Post-upload verify: all local rows present on remote")
+
         return ul.returncode
 
 

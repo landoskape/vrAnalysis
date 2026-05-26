@@ -157,13 +157,13 @@ def main():
     parser.add_argument("--host", required=True, help="SSH alias for MYRIAD (from ~/.ssh/config)")
     parser.add_argument(
         "--remote-db",
-        default="~/Scratch/dim_manuscript/pipeline_v2/results.db",
-        help="Path to results.db on MYRIAD (default: ~/Scratch/dim_manuscript/pipeline_v2/results.db)",
+        default="~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/results.db",
+        help="Path to results.db on MYRIAD (default: ~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/results.db)",
     )
     parser.add_argument(
         "--remote-blobs",
-        default="~/Scratch/dim_manuscript/pipeline_v2/blobs/",
-        help="Path to blobs/ on MYRIAD (default: ~/Scratch/dim_manuscript/pipeline_v2/blobs/)",
+        default="~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/blobs/",
+        help="Path to blobs/ on MYRIAD (default: ~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/blobs/)",
     )
     parser.add_argument("--dry-run", "-n", action="store_true", help="Show what would be done without transferring")
     args = parser.parse_args()
