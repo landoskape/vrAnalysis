@@ -147,7 +147,7 @@ def environmentRewardZone(vrexp):
 # ------------------------------------------------- postprocessing functions for creating spatial maps -----------------------------------------------------
 def getBinEdges(vrexp, distStep):
     """get bin edges for virtual position"""
-    roomLength = vrexp.loadone("trials.roomLength")
+    roomLength = vrexp.loadone("trials.roomlength")
     assert np.unique(roomLength).size == 1, f"roomLengths are not all the same in session {vrexp.sessionPrint()}"
     roomLength = roomLength[0]
     numPosition = int(roomLength / distStep)

@@ -122,6 +122,7 @@ class B2SessionParams:
         validating good_labels.
         """
         from roicat_support.classifier import load_classifier
+
         classifier = load_classifier()
         self._label_to_id = classifier["label_to_id"]
 
@@ -464,7 +465,7 @@ class B2Session(SessionData):
         -----
         Part of SessionToSpkmapProtocol.
         """
-        return self.loadone("trials.roomLength")
+        return self.loadone("trials.roomlength")
 
     @property
     def positions(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -791,6 +792,7 @@ class B2Session(SessionData):
 
         # Also load ROICaT Classifier Results if they exist
         from roicat_support.classifier import get_results_path as get_classifier_results_path
+
         results_path = get_classifier_results_path(self)
         if results_path.exists():
             self.roicat_classifier = joblib.load(results_path)
