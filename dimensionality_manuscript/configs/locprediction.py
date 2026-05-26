@@ -35,22 +35,6 @@ def _true_position_bins(frame_behavior: FrameBehavior, placefield: Placefield) -
     return true_env_idx * num_bins + true_pos_idx
 
 
-def _pf_flat(placefield: Placefield) -> np.ndarray:
-    """Reshape placefield (num_envs, num_bins, num_rois) → (num_envs*num_bins, num_rois).
-
-    Row order is environment-major: all bins of env0, then env1, etc.
-    This must match the flat-bin indexing in _true_position_bins:
-        flat_idx = env_idx * num_bins + pos_idx
-    """
-    pf = placefield.placefield
-    assert pf.ndim == 3, f"Expected 3D placefield, got shape {pf.shape}"
-    assert pf.shape[0] == len(
-        placefield.environment
-    ), f"placefield.placefield.shape[0]={pf.shape[0]} != len(environment)={len(placefield.environment)}"
-    assert pf.shape[1] == len(placefield.dist_edges) - 1, f"placefield.placefield.shape[1]={pf.shape[1]} != num_bins={len(placefield.dist_edges) - 1}"
-    return pf.reshape(-1, pf.shape[2])
-
-
 def _estimate_residual_variance(
     spks_tr: np.ndarray,
     frame_behavior_tr: FrameBehavior,
