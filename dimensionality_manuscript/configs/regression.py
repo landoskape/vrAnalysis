@@ -42,7 +42,7 @@ class RegressionConfig(AnalysisConfigBase):
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "oasis"
-    method: str = "best"
+    method: str = "preferred"
     activity_parameters_name: str = "default"
 
     display_name: ClassVar[str] = "regression"

@@ -97,8 +97,8 @@ class RBFPosHyperparameters(HyperparametersBase):
         return {
             "num_basis": (100, 40, 25, 10),
             "basis_width": (5.0, 15.0, 40.0),
-            "alpha_encoder": tuple(torch.logspace(-2, 2, 9).tolist()),
-            "alpha_decoder": tuple(torch.logspace(-2, 2, 9).tolist()),
+            "alpha_encoder": tuple(torch.logspace(-3, 10, 13).tolist()),
+            "alpha_decoder": tuple(torch.logspace(-3, 10, 13).tolist()),
         }
 
     @classmethod
@@ -118,8 +118,8 @@ class RBFPosHyperparameters(HyperparametersBase):
         return {
             "num_basis": trial.suggest_int("num_basis", 10, 100, log=True),
             "basis_width": trial.suggest_float("basis_width", 1.0, 50.0, log=True),
-            "alpha_encoder": trial.suggest_float("alpha_encoder", 1e-2, 1e2, log=True),
-            "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-2, 1e2, log=True),
+            "alpha_encoder": trial.suggest_float("alpha_encoder", 1e-3, 1e10, log=True),
+            "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-3, 1e10, log=True),
         }
 
     @classmethod
@@ -187,8 +187,8 @@ class FullRegressorHyperparameters(HyperparametersBase):
             "speed_num_basis": (10, 5, 3),
             "reward_num_basis_lags": (11, 5, 3),
             "reward_basis_width": (5, 10),
-            "alpha_encoder": tuple(torch.logspace(-2, 2, 9).tolist()),
-            "alpha_decoder": tuple(torch.logspace(-2, 2, 9).tolist()),
+            "alpha_encoder": tuple(torch.logspace(-3, 10, 13).tolist()),
+            "alpha_decoder": tuple(torch.logspace(-3, 10, 13).tolist()),
         }
 
     @classmethod
@@ -215,8 +215,8 @@ class FullRegressorHyperparameters(HyperparametersBase):
             "speed_num_basis": trial.suggest_int("speed_num_basis", 2, 20),
             "reward_num_basis_lags": reward_num_basis_lags,
             "reward_basis_width": reward_basis_width,
-            "alpha_encoder": trial.suggest_float("alpha_encoder", 1e-3, 1e3, log=True),
-            "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-3, 1e3, log=True),
+            "alpha_encoder": trial.suggest_float("alpha_encoder", 1e-3, 1e10, log=True),
+            "alpha_decoder": trial.suggest_float("alpha_decoder", 1e-3, 1e10, log=True),
         }
 
     @classmethod
