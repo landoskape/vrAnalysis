@@ -70,6 +70,36 @@ def make_G(pf: torch.Tensor) -> torch.Tensor:
     return (pf - pf.mean(dim=1, keepdim=True)) / (P - 1) ** 0.5
 
 
+def stimspace_fit_and_score(
+    r0: torch.Tensor,
+    r1: torch.Tensor,
+    r2: torch.Tensor,
+    r3: torch.Tensor,
+    n_components: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit stimspace kernel on (r0, r1) and score on (r2, r3).
+
+    Returns
+    -------
+    cv_var_raw : (n_comp,) float array - signed cv variance before sqrt
+    u : (P, n_comp) float array - position-space eigenvectors
+    """
+    G_train = make_G(r0)
+    cov_pf_test = torch.cov(r1)  # (N, N)
+    pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (P, P)
+
+    n_comp = min(n_components, pf_pf_kernel.shape[0])
+    _, eigvecs = torch.linalg.eigh(pf_pf_kernel)
+    u = eigvecs.flip(1)[:, :n_comp]  # (P, n_comp), descending
+
+    G_cv1 = make_G(r2)
+    G_cv2 = make_G(r3)
+    K = G_cv1.T @ cov_pf_test @ G_cv2  # (P, P)
+    cv_var = torch.sum(u * (K @ u), dim=0)  # (n_comp,)
+
+    return cv_var.cpu().numpy(), u.cpu().numpy()
+
+
 def stimspace_spectrum(
     r0: torch.Tensor,
     r1: torch.Tensor,
@@ -81,20 +111,8 @@ def stimspace_spectrum(
 
     Returns array of shape (n_components,) - sqrt of per-component shared variance.
     """
-    G_train = make_G(r0)
-    cov_pf_test = torch.cov(r1)  # (N, N)
-    pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (P, P)
-
-    n_comp = min(n_components, pf_pf_kernel.shape[0])
-    eigvals, eigvecs = torch.linalg.eigh(pf_pf_kernel)
-    u = eigvecs.flip(1)[:, :n_comp]  # (P, n_comp), descending
-
-    G_cv1 = make_G(r2)
-    G_cv2 = make_G(r3)
-    K = G_cv1.T @ cov_pf_test @ G_cv2  # (P, P)
-    cv_var = torch.sum(u * (K @ u), dim=0)  # (n_comp,)
-
-    return torch.sqrt(cv_var.clamp(min=0)).cpu().numpy()
+    cv_var_raw, _ = stimspace_fit_and_score(r0, r1, r2, r3, n_components)
+    return np.sqrt(np.maximum(cv_var_raw, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +141,7 @@ def run_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict:
 
     # rCVPCA fixed: fit on smooth(r0), score on (r2, r3)
     r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
-    cvpca = CVPCA(num_components=n_comp, center=cfg.center).fit(r0_smooth)
+    cvpca = CVPCA(num_components=n_comp, center=cfg.center, on_stimuli=True).fit(r0_smooth)
     reg_cov = cvpca.score(r2, r3).cpu().numpy()
 
     # stimspace pf-pf
@@ -142,13 +160,91 @@ def run_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict:
 
 
 def run_pair_avg(cfg: SimulationConfig, n_sims: int, device: str = "cpu") -> dict:
-    """Average run_pair over n_sims seeds. Returns mean alpha_cvpca, alpha_stim, ratio."""
+    """Aggregate run_pair over n_sims seeds. Ratio uses median (robust to outliers); alphas use mean."""
     results = [run_pair(cfg, cfg.seed + i, device) for i in tqdm(range(n_sims), desc="running simulations within each trial", leave=False)]
     return {
         "alpha_cvpca": float(np.mean([r["alpha_cvpca"] for r in results])),
         "alpha_stim": float(np.mean([r["alpha_stim"] for r in results])),
-        "ratio": float(np.mean([r["ratio"] for r in results])),
+        "ratio": float(np.median([r["ratio"] for r in results])),
     }
+
+
+def run_full_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict:
+    """Single-seed analysis returning spectra arrays and PCA/stimspace components.
+
+    Returns
+    -------
+    dict with:
+        reg_cov        : (n_comp,) rCVPCA-fixed cross-validated covariance
+        cv_var_raw     : (n_comp,) stimspace cv variance before sqrt (can be negative)
+        stim_spec      : (n_comp,) sqrt(max(cv_var_raw, 0))
+        alpha_cvpca, alpha_stim, ratio : floats
+        cvpca_components   : (P, n_comp) rCVPCA PCA directions (stim/position space, on_stimuli=True)
+        stim_u             : (P, n_comp) stimspace eigenvectors (position space)
+        source_comps_n     : (N, n_comp) source SVD left vectors (neuron space)
+        source_comps_p     : (P, n_comp) source SVD right vectors (position space)
+    """
+    N = cfg.placefield.n_neurons
+    P = cfg.placefield.n_positions
+    R = cfg.n_repeats
+
+    pf_data = generate_placefields(cfg.placefield, R, seed, device)
+    noise = generate_noise(cfg.noise_level, N, P, R, seed + 2000, device)
+    repeats = assemble(pf_data["repeats"], noise)
+    if cfg.normalize:
+        repeats = normalize_by_max(repeats)
+
+    r0, r1, r2, r3 = repeats[0], repeats[1], repeats[2], repeats[3]
+    n_comp = min(cfg.n_components, N - 1, P - 1)
+
+    r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+    cvpca = CVPCA(num_components=n_comp, center=cfg.center, on_stimuli=True).fit(r0_smooth)
+    reg_cov = cvpca.score(r2, r3).cpu().numpy()
+    cvpca_components = cvpca.pca.get_components().cpu().numpy()  # (N, n_comp)
+
+    cv_var_raw, stim_u = stimspace_fit_and_score(r0, r1, r2, r3, n_comp)
+    stim_spec = np.sqrt(np.maximum(cv_var_raw, 0))
+
+    source = pf_data["source"]  # (N, P)
+    u_src, _, v_src = torch.linalg.svd(source, full_matrices=False)
+    source_comps_n = u_src[:, :n_comp].cpu().numpy()  # (N, n_comp)
+    source_comps_p = v_src[:n_comp, :].T.cpu().numpy()  # (P, n_comp)
+
+    end = min(END_DIM, n_comp)
+    alpha_cv, _ = fit_powerlaw_decay(reg_cov, start_idx=START_DIM, end_idx=end, ignore_nans=True, verbose=False)
+    alpha_st, _ = fit_powerlaw_decay(stim_spec, start_idx=START_DIM, end_idx=end, ignore_nans=True, verbose=False)
+    ratio = 0.0
+    if np.isfinite(alpha_cv) and np.isfinite(alpha_st) and alpha_st > 0 and alpha_cv > 0:
+        ratio = float(alpha_cv / alpha_st)
+
+    return {
+        "reg_cov": reg_cov,
+        "cv_var_raw": cv_var_raw,
+        "stim_spec": stim_spec,
+        "alpha_cvpca": float(alpha_cv),
+        "alpha_stim": float(alpha_st),
+        "ratio": ratio,
+        "cvpca_components": cvpca_components,
+        "stim_u": stim_u,
+        "source_comps_n": source_comps_n,
+        "source_comps_p": source_comps_p,
+    }
+
+
+def run_full_simulations(cfg: SimulationConfig, n_sims: int, device: str = "cpu") -> dict:
+    """Stack run_full_pair over n_sims seeds.
+
+    Returns stacked arrays (n_sims, ...) for spectra and components,
+    plus per-component fraction-negative arrays.
+    """
+    results = [run_full_pair(cfg, cfg.seed + i, device) for i in tqdm(range(n_sims), desc="full simulations")]
+    array_keys = ["reg_cov", "cv_var_raw", "stim_spec", "cvpca_components", "stim_u", "source_comps_n", "source_comps_p"]
+    stacked = {k: np.stack([r[k] for r in results]) for k in array_keys}
+    for k in ["alpha_cvpca", "alpha_stim", "ratio"]:
+        stacked[k] = np.array([r[k] for r in results])
+    stacked["frac_neg_reg_cov"] = np.mean(stacked["reg_cov"] < 0, axis=0)
+    stacked["frac_neg_cv_var_raw"] = np.mean(stacked["cv_var_raw"] < 0, axis=0)
+    return stacked
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +424,7 @@ def _collect_spectra(cfg: SimulationConfig, n_sims: int, device: str) -> dict:
         r0, r1, r2, r3 = repeats[0], repeats[1], repeats[2], repeats[3]
 
         r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
-        cvpca = CVPCA(num_components=n_comp, center=cfg.center).fit(r0_smooth)
+        cvpca = CVPCA(num_components=n_comp, center=cfg.center, on_stimuli=True).fit(r0_smooth)
         reg_cov = cvpca.score(r2, r3).cpu().numpy()
 
         stim_spec = stimspace_spectrum(r0_smooth, r1, r2, r3, n_comp)
@@ -392,6 +488,68 @@ def plot_best_spectra(cfg: SimulationConfig, n_sims: int = 10, device: str = "cp
         f"  peak_p={cfg.placefield.peak_exponent}  norm={cfg.normalize}"
     )
     ax.legend(fontsize=9)
+    plt.tight_layout()
+    return fig
+
+
+def plot_frac_neg_pair(stacked: dict) -> plt.Figure:
+    """Fraction-negative curves for rCVPCA-fixed and raw stimspace cv_var."""
+    n_comp = stacked["reg_cov"].shape[1]
+    dims = np.arange(1, n_comp + 1)
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.axhline(0.5, color="gray", lw=0.8, ls="--", alpha=0.5)
+    ax.plot(dims, stacked["frac_neg_reg_cov"], color="steelblue", lw=1.8, label="rCVPCA fixed")
+    ax.plot(dims, stacked["frac_neg_cv_var_raw"], color="tomato", lw=1.8, label="stimspace cv_var (raw, before sqrt)")
+    ax.axvspan(START_DIM + 1, min(END_DIM, n_comp), alpha=0.06, color="gray")
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_xlabel("Dimension")
+    ax.set_ylabel("Fraction < 0")
+    ax.legend(fontsize=9)
+    ax.set_title("Fraction of negative values per component")
+    plt.tight_layout()
+    return fig
+
+
+def plot_component_pair(stacked: dict, n_show: int = 20) -> plt.Figure:
+    """Component comparison: rCVPCA (neuron space) and stimspace (position space) vs source SVD.
+
+    Top row: |cross-correlation| matrix between source and estimated components (first sim).
+    Bottom row: mean subspace overlap across all sims.
+    """
+    n_show = min(n_show, stacked["cvpca_components"].shape[2])
+    xvals = np.arange(1, n_show + 1)
+    extent = [0.5, n_show + 0.5, n_show + 0.5, 0.5]
+
+    pairs = [
+        ("rCVPCA (stim space)", stacked["source_comps_p"][:, :, :n_show], stacked["cvpca_components"][:, :, :n_show]),
+        ("stimspace (position space)", stacked["source_comps_p"][:, :, :n_show], stacked["stim_u"][:, :, :n_show]),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8), height_ratios=[1, 0.5], squeeze=False)
+
+    for col, (title, src, tgt) in enumerate(pairs):
+        # src, tgt: (n_sims, space_dim, n_show)
+        cross0 = src[0].T @ tgt[0]  # (n_show, n_show)
+        cross_all = np.einsum("sda, sdb -> sab", src, tgt)  # (n_sims, n_show_src, n_show_tgt)
+        subspace = np.sum(cross_all**2, axis=1)  # (n_sims, n_show_tgt)
+
+        axes[0, col].imshow(np.abs(cross0), aspect="auto", interpolation="none", extent=extent, cmap="gray_r", vmin=0, vmax=1)
+        axes[0, col].set_title(title, fontsize=10)
+        axes[0, col].set_xlabel("Estimated component")
+        axes[1, col].plot(xvals, np.mean(subspace, axis=0), color="black", lw=1.5)
+        axes[1, col].fill_between(
+            xvals,
+            np.mean(subspace, axis=0) - np.std(subspace, axis=0),
+            np.mean(subspace, axis=0) + np.std(subspace, axis=0),
+            alpha=0.2,
+            color="black",
+        )
+        axes[1, col].set_xlabel("Estimated component")
+        axes[1, col].set_ylim(0, None)
+
+    axes[0, 0].set_ylabel("Source component")
+    axes[1, 0].set_ylabel("Subspace overlap")
     plt.tight_layout()
     return fig
 
