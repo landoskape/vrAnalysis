@@ -346,7 +346,7 @@ class SessionData(ABC):
             Path object pointing to the onedata subdirectory within the
             session data path.
         """
-        return self.data_path / "onedata"
+        return self.data_path / "oneData"
 
     def get_saved_one(self) -> list[Path]:
         """
