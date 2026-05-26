@@ -16,10 +16,14 @@ Generative model
 
 import argparse
 from dataclasses import dataclass, field, replace
-import numpy as np
-import torch
+
 import matplotlib.pyplot as plt
+import numpy as np
+import optuna
+import plotly.graph_objects as go
+import torch
 from tqdm import tqdm
+
 from dimilibi.cvpca import CVPCA
 from dimilibi.helpers import gaussian_filter
 
@@ -552,6 +556,195 @@ def plot_components(results: dict[str, dict], suptitle: str = "") -> plt.Figure:
 
 
 # ---------------------------------------------------------------------------
+# Optuna study
+# ---------------------------------------------------------------------------
+
+_PARAM_NAMES = [
+    "pf_amplitude",
+    "pf_lengthscale",
+    "pf_threshold_pct",
+    "pf_repeat_noise_alpha",
+    "peak_exponent",
+    "noise_level",
+    "smooth_width",
+]
+_PARAM_LABELS = ["pf amp", "pf ls", "threshold %", "repeat α", "peak p", "noise", "smooth"]
+
+
+def frac_neg(cov: np.ndarray) -> np.ndarray:
+    """Cumulative fraction of negative values among the first k components."""
+    return np.array([(cov[:k] < 0).mean() for k in range(1, len(cov) + 1)])
+
+
+def _stack_cumulative_frac_neg(stacked: dict, cov_key: str) -> np.ndarray:
+    """Per-simulation cumulative frac_neg curves, shape (n_simulations, n_components)."""
+    return np.stack([frac_neg(row) for row in stacked[cov_key]])
+
+
+def _compute_asymmetry(stacked: dict) -> float:
+    """Single objective: mean asymmetry after burn_in dims, averaged over raw + smooth variants.
+
+    asymmetry = frac_neg_position[burn_in:] - frac_neg_neuron[burn_in:]
+
+    Positive when position-space hits the noise floor faster than neuron-space.
+    Computed from covariance stacks (not the 1D frac_neg keys in ``run_simulations``).
+    """
+    burn_in = min(int(stacked["burn_in"]), stacked["cov_neuron"].shape[1] - 1)
+    fn_n = _stack_cumulative_frac_neg(stacked, "cov_neuron")
+    fn_p = _stack_cumulative_frac_neg(stacked, "cov_position")
+    fn_sn = _stack_cumulative_frac_neg(stacked, "smooth_cov_neuron")
+    fn_sp = _stack_cumulative_frac_neg(stacked, "smooth_cov_position")
+    asym_raw = fn_p[:, burn_in:].mean() - fn_n[:, burn_in:].mean()
+    asym_smooth = fn_sp[:, burn_in:].mean() - fn_sn[:, burn_in:].mean()
+    return float((asym_raw + asym_smooth) / 2)
+
+
+def _suggest_config(trial: optuna.Trial, base: SimulationConfig) -> SimulationConfig:
+    pf = replace(
+        base.placefield,
+        amplitude=trial.suggest_float("pf_amplitude", 2.0, 30.0, log=True),
+        lengthscale=trial.suggest_float("pf_lengthscale", 2.0, 20.0, log=True),
+        threshold_pct=trial.suggest_float("pf_threshold_pct", 20.0, 85.0),
+        repeat_noise_alpha=trial.suggest_float("pf_repeat_noise_alpha", 0.0, 0.9),
+        peak_exponent=trial.suggest_float("peak_exponent", 0.1, 4.0),
+    )
+    return replace(
+        base,
+        placefield=pf,
+        noise_level=trial.suggest_float("noise_level", 0.1, 5.0, log=True),
+        smooth_width=trial.suggest_float("smooth_width", 0.5, 20.0, log=True),
+    )
+
+
+def config_from_optuna_params(params: dict, base: SimulationConfig) -> SimulationConfig:
+    """Rebuild ``SimulationConfig`` from Optuna trial params, keeping non-tuned fields from ``base``."""
+    pf = replace(
+        base.placefield,
+        amplitude=params["pf_amplitude"],
+        lengthscale=params["pf_lengthscale"],
+        threshold_pct=params["pf_threshold_pct"],
+        repeat_noise_alpha=params["pf_repeat_noise_alpha"],
+        peak_exponent=params["peak_exponent"],
+    )
+    return replace(
+        base,
+        placefield=pf,
+        noise_level=params["noise_level"],
+        smooth_width=params["smooth_width"],
+    )
+
+
+def run_optuna_study(
+    base: SimulationConfig,
+    n_trials: int = 200,
+    n_sims_per_trial: int = 5,
+    device: str = "cpu",
+    seed: int = 0,
+) -> optuna.Study:
+    """Single-objective Optuna study maximizing asymmetry after burn_in dims.
+
+    asymmetry = mean(frac_neg_position - frac_neg_neuron) over dims > burn_in,
+    averaged across raw and smooth variants.
+    Uses TPE. n_sims_per_trial controls seed-averaging noise within each trial.
+    """
+    trial_base = replace(base, n_simulations=n_sims_per_trial)
+    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
+
+    def objective(trial: optuna.Trial) -> float:
+        cfg = _suggest_config(trial, trial_base)
+        stacked = run_simulations(cfg, device)
+        trial.set_user_attr("burn_in", int(stacked["burn_in"]))
+        return _compute_asymmetry(stacked)
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    return study
+
+
+def _completed_trials(study: optuna.Study) -> tuple[list, np.ndarray]:
+    trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    return trials, np.array([t.value for t in trials])
+
+
+def plot_optuna_results(study: optuna.Study) -> dict[str, go.Figure]:
+    """Return 'history' and 'parallel' Plotly figures for a single-objective study."""
+    trials, values = _completed_trials(study)
+    trial_nums = np.array([t.number for t in trials])
+    running_best = np.maximum.accumulate(values)
+
+    hover = [
+        (
+            f"trial={t.number}  asymmetry={t.value:.4f}  burn_in={t.user_attrs.get('burn_in', '?')}<br>"
+            f"pf_amp={t.params['pf_amplitude']:.2f}  ls={t.params['pf_lengthscale']:.2f}  thr={t.params['pf_threshold_pct']:.1f}<br>"
+            f"pf_alpha={t.params['pf_repeat_noise_alpha']:.2f}  peak_p={t.params['peak_exponent']:.2f}<br>"
+            f"noise={t.params['noise_level']:.2f}  smooth={t.params['smooth_width']:.2f}"
+        )
+        for t in trials
+    ]
+
+    fig_hist = go.Figure()
+    fig_hist.add_trace(
+        go.Scatter(
+            x=trial_nums,
+            y=values,
+            mode="markers",
+            marker=dict(color=values, colorscale="Viridis", size=6, opacity=0.7, showscale=True, colorbar=dict(title="asymmetry")),
+            text=hover,
+            hoverinfo="text",
+            name="trials",
+        )
+    )
+    fig_hist.add_trace(
+        go.Scatter(
+            x=trial_nums,
+            y=running_best,
+            mode="lines",
+            line=dict(color="red", width=2),
+            name="running best",
+        )
+    )
+    fig_hist.update_layout(
+        title="Optimization history — asymmetry",
+        xaxis_title="Trial",
+        yaxis_title="Asymmetry",
+        height=400,
+        width=800,
+    )
+
+    all_params = {name: [t.params[name] for t in trials] for name in _PARAM_NAMES}
+    dimensions = [dict(label=lbl, values=all_params[name]) for name, lbl in zip(_PARAM_NAMES, _PARAM_LABELS)]
+    dimensions.append(dict(label="asymmetry", values=values.tolist()))
+
+    fig_par = go.Figure(
+        go.Parcoords(
+            line=dict(color=values, colorscale="Viridis", showscale=True, colorbar=dict(title="asymmetry")),
+            dimensions=dimensions,
+        )
+    )
+    fig_par.update_layout(title="Parallel coordinates — colored by asymmetry", height=500, width=1100)
+
+    return {"history": fig_hist, "parallel": fig_par}
+
+
+def print_best_configs(study: optuna.Study, top_n: int = 5) -> None:
+    """Print top_n trials sorted by asymmetry."""
+    trials, _ = _completed_trials(study)
+    top = sorted(trials, key=lambda t: t.value, reverse=True)[:top_n]
+
+    print(f"\n=== Top {top_n} configs by asymmetry ===")
+    for rank, t in enumerate(top, 1):
+        p = t.params
+        burn_in = t.user_attrs.get("burn_in", "?")
+        print(
+            f"#{rank}  asymmetry={t.value:.4f}  trial={t.number}  burn_in={burn_in}\n"
+            f"    pf_amp={p['pf_amplitude']:.2f}  ls={p['pf_lengthscale']:.2f}  "
+            f"thr={p['pf_threshold_pct']:.1f}  alpha={p['pf_repeat_noise_alpha']:.2f}  "
+            f"peak_p={p['peak_exponent']:.2f}\n"
+            f"    noise={p['noise_level']:.2f}  smooth={p['smooth_width']:.2f}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -636,6 +829,19 @@ def build_parser(defaults: SimulationConfig = BASE) -> argparse.ArgumentParser:
         action="store_true",
         help="After main heatmaps, also plot smooth vs peak_exponent=1 comparison",
     )
+    g_run.add_argument(
+        "--optimize",
+        action="store_true",
+        help="After the normal run, maximize neuron/position asymmetry with Optuna, then re-run with the best trial",
+    )
+    g_run.add_argument("--n-trials", type=int, default=200, help="Optuna trials when --optimize is set")
+    g_run.add_argument(
+        "--n-sims-per-trial",
+        type=int,
+        default=5,
+        help="Simulations per Optuna trial (seed averaging); does not change --n-simulations for normal runs",
+    )
+    g_run.add_argument("--optuna-seed", type=int, default=0, help="TPE sampler seed when --optimize is set")
     return parser
 
 
@@ -665,22 +871,20 @@ def config_from_args(args: argparse.Namespace) -> SimulationConfig:
     )
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Run simulations and/or placefield plots from CLI arguments."""
-    args = build_parser().parse_args(argv)
-    cfg = config_from_args(args)
+def _run_default_pipeline(cfg: SimulationConfig, args: argparse.Namespace, suptitle: str) -> None:
+    """Ensemble cvPCA plots, placefield heatmaps, and optional peaky comparison."""
     device = args.device
 
     if not args.skip_simulations:
         print(f"Simulation ({cfg.n_simulations} runs, device={device})...")
         result = run_simulations(cfg, device=device)
-        print(f"  burn_in={result['burn_in']}  (spatial_rank + ns_modes)")
+        print(f"  burn_in={result['burn_in']}  (spatial_rank)")
         dim_hi = min(79, cfg.n_components - 1)
         dim_mid = min(39, cfg.n_components - 1)
         for key, label in [("frac_neg_cov_neuron", "neuron  "), ("frac_neg_cov_position", "position")]:
             fn = result[key]
             print(f"  {label} frac<0 @dim{dim_mid + 1}/dim{dim_hi + 1}: {fn[dim_mid]:.2f} / {fn[dim_hi]:.2f}")
-        plot_results({"run": result}, suptitle="Neuron vs position cvPCA")
+        plot_results({"run": result}, suptitle=suptitle)
         plt.show()
 
     print("\nPlacefield heatmaps...")
@@ -692,6 +896,34 @@ def main(argv: list[str] | None = None) -> None:
         print("\nPlacefield heatmaps (peaky comparison, p=1)...")
         plot_placefields(peaky_cfg, device=device)
         plt.show()
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run simulations and/or placefield plots from CLI arguments."""
+    args = build_parser().parse_args(argv)
+    cfg = config_from_args(args)
+
+    _run_default_pipeline(cfg, args, suptitle="Neuron vs position cvPCA")
+
+    if not args.optimize:
+        return
+
+    print("\nRunning Optuna study...")
+    study = run_optuna_study(
+        cfg,
+        n_trials=args.n_trials,
+        n_sims_per_trial=args.n_sims_per_trial,
+        device=args.device,
+        seed=args.optuna_seed,
+    )
+    print_best_configs(study)
+
+    figs = plot_optuna_results(study)
+    figs["history"].show()
+    figs["parallel"].show()
+
+    cfg_best = config_from_optuna_params(study.best_trial.params, cfg)
+    _run_default_pipeline(cfg_best, args, suptitle="Neuron vs position cvPCA (best Optuna trial)")
 
 
 if __name__ == "__main__":
