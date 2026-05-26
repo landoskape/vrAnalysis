@@ -1,5 +1,4 @@
 from pathlib import Path
-from tkinter import Tk
 import json
 import numpy as np
 import joblib
@@ -43,6 +42,8 @@ def getCopyString(mouseName, datestr="", session="", server=serverPath(), toClip
     sourceString = Path(server / mouseName / datestr / session)
     targetString = Path(localDataPath() / mouseName / datestr / session)
     cmdPromptCommand = f"robocopy {sourceString} {targetString} /s /xf *.tif *.mj2"
+    from tkinter import Tk
+
     if toClipboard:
         tkManager = Tk()
         tkManager.clipboard_append(cmdPromptCommand)
@@ -54,6 +55,8 @@ def copyDataToStorage(mouseName, datestr="", session="", toClipboard=True):
     sourceString = Path(localDataPath() / mouseName / datestr / session)
     targetString = Path(storagePath() / mouseName / datestr / session)
     cmdPromptCommand = f"robocopy {sourceString} {targetString} /s"
+    from tkinter import Tk
+
     if toClipboard:
         tkManager = Tk()
         tkManager.clipboard_append(cmdPromptCommand)
