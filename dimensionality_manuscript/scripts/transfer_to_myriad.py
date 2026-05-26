@@ -11,6 +11,9 @@ either already processed into oneData or recomputed on MYRIAD.
 Pass --include-results to also upload the local results.db so MYRIAD workers
 skip sessions already computed locally (avoids redundant recomputation).
 
+Pass --include-population-cache to upload the local population-registry cache
+so MYRIAD workers reuse the same train/test splits instead of regenerating them.
+
 Usage
 -----
     # Dry run (see what would be sent):
@@ -35,6 +38,14 @@ Usage
         --host myriad \\
         --remote-data ~/Scratch/data \\
         --include-results
+
+    # Upload population cache so MYRIAD uses the same train/test splits:
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad \\
+        --sessions-file sessions.json \\
+        --local-data D:/localData \\
+        --host myriad \\
+        --remote-data ~/Scratch/data \\
+        --include-population-cache
 """
 
 import argparse
@@ -52,6 +63,7 @@ from dimensionality_manuscript.registry import RegistryPaths
 _INCLUDE_SUBDIRS = ["oneData", "roicat"]
 _INCLUDE_GLOBS = ["vrExperiment*.json"]
 _DEFAULT_REMOTE_DB = "~/Scratch/data/dimensionality-manuscript/cache/pipeline_v2/results.db"
+_DEFAULT_REMOTE_CACHE = "~/Scratch/data/dimensionality-manuscript/cache"
 
 
 def _posix(path: Path) -> str:
@@ -242,6 +254,42 @@ def transfer_results(host: str, remote_db: str, dry_run: bool) -> int:
         return ul.returncode
 
 
+def transfer_population_cache(host: str, remote_cache: str, dry_run: bool) -> int:
+    """Rsync the local population-registry cache to MYRIAD.
+
+    The population registry holds train/test split indices (one .joblib per session).
+    Uploading it ensures MYRIAD workers reuse the same splits rather than regenerating
+    them randomly, which would make cross-analysis comparisons inconsistent.
+    """
+    local_registry = RegistryPaths().registry_path
+    if not local_registry.exists():
+        print(f"No local population-registry at {local_registry} — skipping.", file=sys.stderr)
+        return 0
+
+    n_files = sum(1 for _ in local_registry.glob("*.joblib"))
+    print(f"\nPopulation registry: {local_registry} ({n_files} .joblib files)")
+
+    remote_registry = remote_cache.rstrip("/") + "/population-registry/"
+    src = _posix(local_registry).rstrip("/") + "/"
+    dst = f"{host}:{remote_registry}"
+
+    dry_flag = "--dry-run " if dry_run else ""
+    rsync_cmd = f"rsync -avP {dry_flag}{src} {dst}"
+
+    # Ensure remote directory exists
+    if not dry_run:
+        subprocess.run(["ssh", host, f"mkdir -p {remote_registry}"], check=True)
+
+    bash = _find_bash()
+    cmd = [bash, "-c", rsync_cmd] if bash else ["bash", "-c", rsync_cmd]
+
+    print("Command:", rsync_cmd)
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"\nrsync exited with code {result.returncode}", file=sys.stderr)
+    return result.returncode
+
+
 def transfer(
     sessions: list[dict],
     local_data: Path,
@@ -299,6 +347,16 @@ def main():
         default=_DEFAULT_REMOTE_DB,
         help=f"Remote path for results.db (default: {_DEFAULT_REMOTE_DB})",
     )
+    parser.add_argument(
+        "--include-population-cache",
+        action="store_true",
+        help="Upload local population-registry cache so MYRIAD workers reuse the same train/test splits",
+    )
+    parser.add_argument(
+        "--remote-cache",
+        default=_DEFAULT_REMOTE_CACHE,
+        help=f"Remote path for the manuscript cache directory (default: {_DEFAULT_REMOTE_CACHE})",
+    )
     args = parser.parse_args()
 
     if not args.sessions_file.exists():
@@ -320,7 +378,12 @@ def main():
             sys.exit(rc)
 
     if args.include_results:
-        sys.exit(transfer_results(args.host, args.remote_db, args.dry_run))
+        rc = transfer_results(args.host, args.remote_db, args.dry_run)
+        if rc != 0:
+            sys.exit(rc)
+
+    if args.include_population_cache:
+        sys.exit(transfer_population_cache(args.host, args.remote_cache, args.dry_run))
 
     sys.exit(0)
 

@@ -209,9 +209,19 @@ conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_
 # Transfer session data AND seed MYRIAD with local results.db so already-computed
 # jobs are skipped (no blobs needed — the db is enough for workers to skip them)
 conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-results
+
+# Upload population-registry cache so MYRIAD workers reuse the same train/test
+# splits — required if analyses depend on PopulationConfig (regression, subspace, etc.)
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-population-cache
 ```
 
 The MYRIAD results DB is created automatically on first run if it does not exist.
+
+> **Why `--include-population-cache`?**  `PopulationConfig` caches per-session
+> train/test split indices in `{storage}/dimensionality-manuscript/cache/population-registry/`
+> (one `.joblib` per session).  If MYRIAD workers don't find these files they
+> regenerate the splits randomly — breaking cross-analysis comparisons.  Upload
+> the local cache once so all workers load the same splits.
 
 ---
 
@@ -362,8 +372,10 @@ the results came from a server — they see a fully-populated local store.
 │   ├── ...
 │   └── dimensionality-manuscript/
 │       └── cache/
+│           ├── population-registry/   ← train/test split cache (transfer_to_myriad --include-population-cache)
+│           │   └── <session>_<hash>.joblib
 │           └── pipeline_v2/
-│               ├── results.db     ← SQLite results + job_queue tables
+│               ├── results.db         ← SQLite results + job_queue tables
 │               └── blobs/
 │                   └── <result_uid>.pkl
 └── envs/
@@ -406,8 +418,14 @@ conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.export_sessi
 conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data
 conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-results
 
+# Upload population-registry cache (required for regression/subspace/locpred analyses)
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-population-cache
+
 # Skip rsync, upload results.db only
 conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --host myriad --skip-transfer --include-results
+
+# Skip rsync, upload population cache only
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --host myriad --skip-transfer --include-population-cache
 
 # Sync results back
 conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad
