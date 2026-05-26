@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,19 +14,35 @@ from .store import result_uid as _result_uid
 
 _BUSY_TIMEOUT_MS = 30_000
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS job_queue (
-    result_uid   TEXT PRIMARY KEY,
-    session_id   TEXT NOT NULL,
-    analysis_key TEXT NOT NULL,
-    analysis_summary TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending',
-    claimed_by   TEXT,
-    claimed_at   TIMESTAMP,
-    completed_at TIMESTAMP,
-    error        TEXT,
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+_SCHEMA_BATCHES = """
+CREATE TABLE IF NOT EXISTS job_batches (
+    batch_id   TEXT PRIMARY KEY,
+    analyses   TEXT,
+    n_jobs     INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
+"""
+
+_SCHEMA_QUEUE = """
+CREATE TABLE IF NOT EXISTS job_queue (
+    result_uid       TEXT NOT NULL,
+    batch_id         TEXT NOT NULL REFERENCES job_batches(batch_id),
+    session_id       TEXT NOT NULL,
+    analysis_key     TEXT NOT NULL,
+    analysis_summary TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    claimed_by       TEXT,
+    claimed_at       TIMESTAMP,
+    completed_at     TIMESTAMP,
+    error            TEXT,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (result_uid, batch_id)
+)
+"""
+
+_SCHEMA_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_job_queue_batch_status
+ON job_queue(batch_id, status, created_at)
 """
 
 _STATUS_VALUES = frozenset({"pending", "running", "done", "failed", "test-block"})
@@ -33,9 +51,11 @@ _STATUS_VALUES = frozenset({"pending", "running", "done", "failed", "test-block"
 class JobQueue:
     """Persistent job queue stored in a SQLite table alongside the results store.
 
-    Multiple SGE workers can safely call :meth:`claim_next` concurrently.
-    SQLite's ``BEGIN IMMEDIATE`` serialises the claim transaction so each
-    pending job is claimed by exactly one worker.
+    Each :meth:`create_batch` call produces an isolated batch.  Workers are
+    bound to a specific batch and only claim jobs from it.  Multiple SGE workers
+    can safely call :meth:`claim_next` concurrently — SQLite ``BEGIN IMMEDIATE``
+    serialises the claim transaction so each pending job is claimed by exactly
+    one worker.
 
     Parameters
     ----------
@@ -46,11 +66,10 @@ class JobQueue:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         with self._connect() as conn:
-            conn.execute(_SCHEMA)
+            self._migrate(conn)
 
     @contextmanager
     def _connect(self):
-        """Yield an autocommit connection. Caller manages transactions explicitly."""
         conn = sqlite3.connect(self.db_path, timeout=_BUSY_TIMEOUT_MS / 1000)
         conn.row_factory = sqlite3.Row
         conn.isolation_level = None  # autocommit — we issue BEGIN/COMMIT manually
@@ -61,14 +80,75 @@ class JobQueue:
         finally:
             conn.close()
 
-    def populate(self, jobs: list[Job]) -> int:
-        """Insert pending jobs into the queue, skipping duplicates.
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        # Detect old schema (no batch_id column) and drop to recreate.
+        # The queue is ephemeral — results.db is the source of truth.
+        try:
+            conn.execute("SELECT batch_id FROM job_queue LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("DROP TABLE IF EXISTS job_queue")
+            conn.execute("DROP TABLE IF EXISTS job_batches")
+        conn.execute(_SCHEMA_BATCHES)
+        conn.execute(_SCHEMA_QUEUE)
+        conn.execute(_SCHEMA_INDEX)
+
+    # ── Batch management ──────────────────────────────────────────────────────
+
+    def create_batch(self, analyses: list[str] | None = None) -> str:
+        """Create a new batch and return its ID.
+
+        Parameters
+        ----------
+        analyses : list[str] or None
+            Analysis types included in this batch (for display only). ``None``
+            means all analyses.
+
+        Returns
+        -------
+        str
+            Unique batch identifier (``"YYYYMMDD_HHMMSS_<8hex>"``).
+        """
+        batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+        analyses_json = json.dumps(sorted(analyses)) if analyses else None
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            conn.execute(
+                "INSERT INTO job_batches (batch_id, analyses) VALUES (?, ?)",
+                (batch_id, analyses_json),
+            )
+            conn.execute("COMMIT")
+        return batch_id
+
+    def list_batches(self) -> list[dict]:
+        """Return all batches with per-status job counts, newest first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT b.batch_id, b.analyses, b.n_jobs, b.created_at,
+                       SUM(CASE WHEN q.status='pending'    THEN 1 ELSE 0 END) AS pending,
+                       SUM(CASE WHEN q.status='running'    THEN 1 ELSE 0 END) AS running,
+                       SUM(CASE WHEN q.status='done'       THEN 1 ELSE 0 END) AS done,
+                       SUM(CASE WHEN q.status='failed'     THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN q.status='test-block' THEN 1 ELSE 0 END) AS test_block
+                FROM job_batches b
+                LEFT JOIN job_queue q ON q.batch_id = b.batch_id
+                GROUP BY b.batch_id
+                ORDER BY b.created_at DESC
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Queue population ──────────────────────────────────────────────────────
+
+    def populate(self, jobs: list[Job], batch_id: str) -> int:
+        """Insert pending jobs into a batch, skipping duplicates.
 
         Parameters
         ----------
         jobs : list[Job]
-            Jobs to enqueue. Already-queued ``result_uid`` values are ignored
-            (``INSERT OR IGNORE``).
+            Jobs to enqueue.
+        batch_id : str
+            Batch to insert into (must exist — call :meth:`create_batch` first).
 
         Returns
         -------
@@ -78,6 +158,7 @@ class JobQueue:
         rows = [
             (
                 _result_uid(job.session.session_uid, job.analysis_config.key()),
+                batch_id,
                 job.session.session_uid,
                 job.analysis_config.key(),
                 job.analysis_config.summary(),
@@ -86,17 +167,28 @@ class JobQueue:
         ]
         with self._connect() as conn:
             conn.execute("BEGIN")
-            before = conn.execute("SELECT COUNT(*) FROM job_queue").fetchone()[0]
+            before = conn.execute(
+                "SELECT COUNT(*) FROM job_queue WHERE batch_id=?", (batch_id,)
+            ).fetchone()[0]
             conn.executemany(
-                "INSERT OR IGNORE INTO job_queue (result_uid, session_id, analysis_key, analysis_summary) VALUES (?,?,?,?)",
+                "INSERT OR IGNORE INTO job_queue "
+                "(result_uid, batch_id, session_id, analysis_key, analysis_summary) "
+                "VALUES (?,?,?,?,?)",
                 rows,
             )
-            after = conn.execute("SELECT COUNT(*) FROM job_queue").fetchone()[0]
+            after = conn.execute(
+                "SELECT COUNT(*) FROM job_queue WHERE batch_id=?", (batch_id,)
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE job_batches SET n_jobs=? WHERE batch_id=?", (after, batch_id)
+            )
             conn.execute("COMMIT")
         return after - before
 
-    def claim_next(self, worker_id: str, timeout_minutes: int = 60) -> dict | None:
-        """Atomically claim the next available job.
+    # ── Worker interface ──────────────────────────────────────────────────────
+
+    def claim_next(self, worker_id: str, batch_id: str, timeout_minutes: int = 60) -> dict | None:
+        """Atomically claim the next available job in a batch.
 
         A job is claimable if its ``status`` is ``'pending'``, or if it is
         ``'running'`` but its ``claimed_at`` timestamp is older than
@@ -106,98 +198,76 @@ class JobQueue:
         ----------
         worker_id : str
             Unique identifier for this worker (e.g. ``"$JOB_ID.$SGE_TASK_ID"``).
+        batch_id : str
+            Batch to claim from.
         timeout_minutes : int
-            Minutes after which a running job is considered stale and reclaimable.
+            Minutes after which a running job is considered stale.
 
         Returns
         -------
         dict or None
-            Row dict with keys ``result_uid``, ``session_id``, ``analysis_key``,
-            ``analysis_summary``, or ``None`` if no claimable job exists.
+            Row dict with keys ``result_uid``, ``batch_id``, ``session_id``,
+            ``analysis_key``, ``analysis_summary``, or ``None`` if no claimable
+            job exists in this batch.
         """
         stale_interval = f"-{timeout_minutes} minutes"
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
-                SELECT result_uid, session_id, analysis_key, analysis_summary
+                SELECT result_uid, batch_id, session_id, analysis_key, analysis_summary
                 FROM job_queue
-                WHERE status = 'pending'
-                   OR (status = 'running' AND claimed_at < datetime('now', ?))
+                WHERE batch_id = ?
+                  AND (status = 'pending'
+                       OR (status = 'running' AND claimed_at < datetime('now', ?)))
                 ORDER BY created_at
                 LIMIT 1
                 """,
-                (stale_interval,),
+                (batch_id, stale_interval),
             ).fetchone()
             if row is None:
                 conn.execute("ROLLBACK")
                 return None
             conn.execute(
-                "UPDATE job_queue SET status='running', claimed_by=?, claimed_at=datetime('now') WHERE result_uid=?",
-                (worker_id, row["result_uid"]),
+                "UPDATE job_queue SET status='running', claimed_by=?, claimed_at=datetime('now') "
+                "WHERE result_uid=? AND batch_id=?",
+                (worker_id, row["result_uid"], batch_id),
             )
             conn.execute("COMMIT")
         return dict(row)
 
-    def mark_done(self, uid: str) -> None:
+    def mark_done(self, uid: str, batch_id: str) -> None:
         """Mark a job as successfully completed."""
         with self._connect() as conn:
             conn.execute("BEGIN")
             conn.execute(
-                "UPDATE job_queue SET status='done', completed_at=datetime('now') WHERE result_uid=?",
-                (uid,),
+                "UPDATE job_queue SET status='done', completed_at=datetime('now') "
+                "WHERE result_uid=? AND batch_id=?",
+                (uid, batch_id),
             )
             conn.execute("COMMIT")
 
-    def mark_failed(self, uid: str, error: str) -> None:
-        """Mark a job as failed and store the error/traceback.
-
-        Parameters
-        ----------
-        uid : str
-            ``result_uid`` of the failed job.
-        error : str
-            Error message or formatted traceback.
-        """
+    def mark_failed(self, uid: str, batch_id: str, error: str) -> None:
+        """Mark a job as failed and store the error/traceback."""
         with self._connect() as conn:
             conn.execute("BEGIN")
             conn.execute(
-                "UPDATE job_queue SET status='failed', completed_at=datetime('now'), error=? WHERE result_uid=?",
-                (error[:4096], uid),
+                "UPDATE job_queue SET status='failed', completed_at=datetime('now'), error=? "
+                "WHERE result_uid=? AND batch_id=?",
+                (error[:4096], uid, batch_id),
             )
             conn.execute("COMMIT")
 
-    def reset_failed(self, result_uids: list[str] | None = None) -> int:
-        """Re-queue failed jobs so workers will retry them.
+    # ── Status ────────────────────────────────────────────────────────────────
+
+    def status_summary(self, batch_id: str | None = None) -> dict[str, int]:
+        """Return job counts grouped by status.
 
         Parameters
         ----------
-        result_uids : list[str] or None
-            Specific UIDs to reset. If ``None``, all failed jobs are reset.
-
-        Returns
-        -------
-        int
-            Number of jobs reset to pending.
-        """
-        with self._connect() as conn:
-            conn.execute("BEGIN")
-            if result_uids is None:
-                cur = conn.execute(
-                    "UPDATE job_queue SET status='pending', claimed_by=NULL, claimed_at=NULL, error=NULL WHERE status='failed'"
-                )
-            else:
-                placeholders = ",".join("?" for _ in result_uids)
-                cur = conn.execute(
-                    f"UPDATE job_queue SET status='pending', claimed_by=NULL, claimed_at=NULL, error=NULL WHERE status='failed' AND result_uid IN ({placeholders})",
-                    result_uids,
-                )
-            n = cur.rowcount
-            conn.execute("COMMIT")
-        return n
-
-    def status_summary(self) -> dict[str, int]:
-        """Return job counts grouped by status.
+        batch_id : str or None
+            If given, count only jobs in that batch. If ``None``, count across
+            all batches.
 
         Returns
         -------
@@ -205,61 +275,45 @@ class JobQueue:
             E.g. ``{"pending": 120, "running": 4, "done": 56, "failed": 2}``.
         """
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT status, COUNT(*) FROM job_queue GROUP BY status"
-            ).fetchall()
+            if batch_id is not None:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM job_queue WHERE batch_id=? GROUP BY status",
+                    (batch_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM job_queue GROUP BY status"
+                ).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def pending_count(self) -> int:
-        """Number of pending (unclaimed) jobs."""
-        with self._connect() as conn:
-            return conn.execute(
-                "SELECT COUNT(*) FROM job_queue WHERE status='pending'"
-            ).fetchone()[0]
+    # ── Smoke test support ────────────────────────────────────────────────────
 
     def claim_for_test(self, n: int) -> list[dict]:
-        """Atomically mark up to n pending jobs as 'test-block' and return them.
+        """Atomically mark up to n pending jobs (any batch) as 'test-block'.
 
         Real workers skip 'test-block' jobs (``claim_next`` only claims
         ``'pending'`` or stale ``'running'``). Call :meth:`release_test_blocks`
-        when done to restore them to ``'pending'``.
-
-        Parameters
-        ----------
-        n : int
-            Maximum number of jobs to claim.
-
-        Returns
-        -------
-        list[dict]
-            Claimed rows with keys ``result_uid``, ``session_id``,
-            ``analysis_key``, ``analysis_summary``.
+        to restore them to ``'pending'``.
         """
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                "SELECT result_uid, session_id, analysis_key, analysis_summary "
+                "SELECT result_uid, batch_id, session_id, analysis_key, analysis_summary "
                 "FROM job_queue WHERE status='pending' ORDER BY created_at LIMIT ?",
                 (n,),
             ).fetchall()
             if rows:
-                uids = [r["result_uid"] for r in rows]
-                placeholders = ",".join("?" for _ in uids)
-                conn.execute(
-                    f"UPDATE job_queue SET status='test-block' WHERE result_uid IN ({placeholders})",
-                    uids,
-                )
+                for r in rows:
+                    conn.execute(
+                        "UPDATE job_queue SET status='test-block' "
+                        "WHERE result_uid=? AND batch_id=?",
+                        (r["result_uid"], r["batch_id"]),
+                    )
             conn.execute("COMMIT")
         return [dict(r) for r in rows]
 
     def release_test_blocks(self) -> int:
-        """Reset all 'test-block' jobs back to 'pending'.
-
-        Returns
-        -------
-        int
-            Number of jobs released.
-        """
+        """Reset all 'test-block' jobs back to 'pending'."""
         with self._connect() as conn:
             conn.execute("BEGIN")
             cur = conn.execute(

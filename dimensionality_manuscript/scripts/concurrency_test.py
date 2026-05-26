@@ -45,8 +45,10 @@ def concurrency_test(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_db = Path(tmpdir) / "concurrency_test.db"
 
-        # Seed temp DB with N pending jobs copied from real queue
-        JobQueue(tmp_db)  # creates schema
+        # Seed temp DB: create a batch and copy N pending jobs from the real queue.
+        tmp_queue = JobQueue(tmp_db)  # creates schema
+        test_batch_id = tmp_queue.create_batch()
+
         src = sqlite3.connect(db_path)
         src.row_factory = sqlite3.Row
         rows = src.execute(
@@ -58,18 +60,22 @@ def concurrency_test(
 
         dst = sqlite3.connect(tmp_db)
         dst.executemany(
-            "INSERT INTO job_queue (result_uid, session_id, analysis_key, analysis_summary) "
-            "VALUES (?,?,?,?)",
-            [(r["result_uid"], r["session_id"], r["analysis_key"], r["analysis_summary"]) for r in rows],
+            "INSERT INTO job_queue (result_uid, batch_id, session_id, analysis_key, analysis_summary) "
+            "VALUES (?,?,?,?,?)",
+            [(r["result_uid"], test_batch_id, r["session_id"], r["analysis_key"], r["analysis_summary"]) for r in rows],
+        )
+        dst.execute(
+            "UPDATE job_batches SET n_jobs=? WHERE batch_id=?", (len(rows), test_batch_id)
         )
         dst.commit()
         dst.close()
 
-        print(f"Temp DB seeded with {len(rows)} jobs. Spawning {n_workers} workers...\n")
+        print(f"Temp DB seeded with {len(rows)} jobs in batch {test_batch_id}. Spawning {n_workers} workers...\n")
 
         base_cmd = [
             sys.executable, "-m", "dimensionality_manuscript.scripts.sge_worker",
             "--db-path", str(tmp_db),
+            "--batch-id", test_batch_id,
             "--dry-run",
             "--max-jobs", str(n_jobs),
         ]
@@ -85,7 +91,7 @@ def concurrency_test(
             rc_str = "ok" if p.returncode == 0 else f"exit {p.returncode}"
             print(f"  Worker conctest.{i}: {rc_str}")
 
-        final = JobQueue(tmp_db).status_summary()
+        final = JobQueue(tmp_db).status_summary(test_batch_id)
         print(f"\nTemp queue final: {final}")
 
         done = final.get("done", 0)

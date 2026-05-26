@@ -23,6 +23,10 @@ if [ -z "$DIM_MANUSCRIPT_DB_PATH" ]; then
     echo "ERROR: DIM_MANUSCRIPT_DB_PATH not set. Use sge_submit.py to submit." >&2
     exit 1
 fi
+if [ -z "$DIM_MANUSCRIPT_BATCH_ID" ]; then
+    echo "ERROR: DIM_MANUSCRIPT_BATCH_ID not set. Use sge_submit.py to submit." >&2
+    exit 1
+fi
 if [ -z "$DIM_MANUSCRIPT_SESSIONS_FILE" ]; then
     echo "ERROR: DIM_MANUSCRIPT_SESSIONS_FILE not set. Run export_sessions.py locally first." >&2
     exit 1
@@ -47,12 +51,14 @@ WORKER_ID="${JOB_ID}.${SGE_TASK_ID}"
 mkdir -p logs
 echo "[$WORKER_ID] Starting on $(hostname) at $(date)"
 echo "[$WORKER_ID] DB:       $DIM_MANUSCRIPT_DB_PATH"
+echo "[$WORKER_ID] Batch:    $DIM_MANUSCRIPT_BATCH_ID"
 echo "[$WORKER_ID] Sessions: $DIM_MANUSCRIPT_SESSIONS_FILE"
 echo "[$WORKER_ID] Repo:     $REPO_DIR"
 
 python -m dimensionality_manuscript.scripts.sge_worker \
     --worker-id "$WORKER_ID" \
     --db-path "$DIM_MANUSCRIPT_DB_PATH" \
+    --batch-id "$DIM_MANUSCRIPT_BATCH_ID" \
     --sessions-file "$DIM_MANUSCRIPT_SESSIONS_FILE"
 
 EXIT_CODE=$?

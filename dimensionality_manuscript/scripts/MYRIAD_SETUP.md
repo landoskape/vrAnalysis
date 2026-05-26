@@ -245,34 +245,40 @@ python -m dimensionality_manuscript.scripts.sge_submit \
 
 ### Monitoring
 
+Each `sge_submit` call creates a named batch (``YYYYMMDD_HHMMSS_<8hex>``).
+Workers are bound to their batch — re-submitting never disturbs active workers.
+
 ```bash
 qstat -u $USER              # SGE job status
 qstat -j JOB_ID             # detailed status for one job
 tail -f logs/dim_manuscript.JOB_ID.1.log   # live worker log
 
-# Queue summary (from Python):
+# List all batches with per-status counts:
 python -c "
 from dimensionality_manuscript.pipeline import JobQueue
 from dimensionality_manuscript.registry import RegistryPaths
-q = JobQueue(RegistryPaths.pipeline_v2_db_path)
-print(q.status_summary())
+for b in JobQueue(RegistryPaths.pipeline_v2_db_path).list_batches():
+    print(b['batch_id'], 'pending=%d running=%d done=%d failed=%d' % (b['pending'], b['running'], b['done'], b['failed']))
+"
+
+# Status of a specific batch:
+python -c "
+from dimensionality_manuscript.pipeline import JobQueue
+from dimensionality_manuscript.registry import RegistryPaths
+print(JobQueue(RegistryPaths.pipeline_v2_db_path).status_summary('BATCH_ID_HERE'))
 "
 ```
 
-### Re-queuing failures
+### Re-submitting
+
+Failed jobs in a batch stay as-is.  To retry them, just re-run `sge_submit` —
+it creates a fresh batch containing only jobs not yet in the results store
+(which includes any that failed, since they produced no result).
 
 ```bash
-# --dry-run still populates the queue (resets failed → pending with --force-repopulate)
-# but does not submit. Inspect the queue summary, then resubmit without --dry-run.
+# Re-submit remaining/failed work (creates a new batch):
 python -m dimensionality_manuscript.scripts.sge_submit \
     --sessions-file ~/vrAnalysis/sessions.json \
-    --force-repopulate \
-    --dry-run
-
-# Submit workers once queue looks right
-python -m dimensionality_manuscript.scripts.sge_submit \
-    --sessions-file ~/vrAnalysis/sessions.json \
-    --force-repopulate \
     --n-workers 16
 ```
 
@@ -413,11 +419,17 @@ python -m dimensionality_manuscript.scripts.smoke_test --n-jobs 2 --sessions-fil
 # Smoke test: concurrency check
 python -m dimensionality_manuscript.scripts.concurrency_test --n-jobs 6 --n-workers 3 --sessions-file ~/vrAnalysis/sessions.json
 
-# Dry-run submit
+# Dry-run submit (creates batch, no qsub — use for smoke test)
 python -m dimensionality_manuscript.scripts.sge_submit --sessions-file ~/vrAnalysis/sessions.json --dry-run
 
-# Real submit
+# Real submit (creates new batch, submits workers)
 python -m dimensionality_manuscript.scripts.sge_submit --sessions-file ~/vrAnalysis/sessions.json --n-workers 16
+
+# Submit subset of analyses
+python -m dimensionality_manuscript.scripts.sge_submit --sessions-file ~/vrAnalysis/sessions.json --analyses cvpca stimspace --n-workers 8
+
+# List batches and status
+python -c "from dimensionality_manuscript.pipeline import JobQueue; from dimensionality_manuscript.registry import RegistryPaths; [print(b['batch_id'], b['pending'], b['running'], b['done'], b['failed']) for b in JobQueue(RegistryPaths.pipeline_v2_db_path).list_batches()]"
 
 # Check queue
 python -c "from dimensionality_manuscript.pipeline import JobQueue; from dimensionality_manuscript.registry import RegistryPaths; print(JobQueue(RegistryPaths.pipeline_v2_db_path).status_summary())"

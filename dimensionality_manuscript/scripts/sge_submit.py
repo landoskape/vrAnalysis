@@ -6,10 +6,13 @@ Usage
 
 Run on the MYRIAD login node after transferring data. This script:
 1. Collects pending (session, config) pairs not yet in the results store.
-2. Inserts them into the job_queue table in the results database.
-3. Submits an SGE array job whose workers drain the queue concurrently.
+2. Creates a new batch and inserts those jobs into the job_queue table.
+3. Submits an SGE array job whose workers drain that batch concurrently.
 
-Use --dry-run to inspect the queue without submitting.
+Each call creates an independent batch so re-submitting never disturbs active
+workers.  Workers are bound to their batch via DIM_MANUSCRIPT_BATCH_ID.
+
+Use --dry-run to populate the batch without submitting.
 """
 
 import argparse
@@ -36,9 +39,11 @@ def submit(
     walltime: str = "8:00:00",
     mem: str = "16G",
     dry_run: bool = False,
-    force_repopulate: bool = False,
-):
-    """Populate queue and optionally submit SGE array job.
+) -> str | None:
+    """Create a batch, populate the queue, and optionally submit an SGE array job.
+
+    Each call produces an independent batch.  Re-submitting while workers are
+    active creates a new batch and leaves the active one untouched.
 
     Parameters
     ----------
@@ -54,9 +59,13 @@ def submit(
     mem : str
         SGE memory per slot (``mem``), e.g. ``"16G"``.
     dry_run : bool
-        If True, show what would be queued/submitted without doing it.
-    force_repopulate : bool
-        If True, reset all failed jobs to pending before populating.
+        If True, populate the batch but do not submit via qsub.
+        Useful for inspecting what would run before committing.
+
+    Returns
+    -------
+    str or None
+        The batch_id created, or None if there was nothing to do.
     """
     db_path = REGISTRY_PATHS.pipeline_v2_db_path
     store = ResultsStore(db_path)
@@ -78,29 +87,28 @@ def submit(
 
     if not pending_jobs:
         print("Nothing to do — all results already computed.")
-        return
+        _print_batch_summary(queue)
+        return None
 
-    if force_repopulate:
-        n_reset = queue.reset_failed()
-        if n_reset:
-            print(f"Reset {n_reset} failed jobs to pending.")
-
-    n_added = queue.populate(pending_jobs)
-    summary = queue.status_summary()
-    print(f"\nQueue updated: +{n_added} new | {summary}")
+    batch_id = queue.create_batch(analyses)
+    n_added = queue.populate(pending_jobs, batch_id)
+    summary = queue.status_summary(batch_id)
+    print(f"\nBatch:        {batch_id}")
+    print(f"Jobs added:   {n_added} | {summary}")
 
     if dry_run:
-        print("\n[dry-run] Queue populated. Run smoke_test to validate, then re-run without --dry-run to submit.")
-        _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file)
-        return
+        print("\n[dry-run] Batch populated. Run smoke_test to validate, then re-run without --dry-run to submit.")
+        _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file, batch_id)
+        return batch_id
 
-    qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file)
+    qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file, batch_id)
     print(f"\nSubmitting: {' '.join(qsub_cmd)}")
     result = subprocess.run(qsub_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"qsub failed:\n{result.stderr}")
         raise SystemExit(1)
     print(result.stdout.strip())
+    return batch_id
 
 
 def _build_qsub_command(
@@ -109,8 +117,9 @@ def _build_qsub_command(
     mem: str,
     db_path: Path,
     sessions_file: Path | None,
+    batch_id: str,
 ) -> list[str]:
-    env_vars = f"DIM_MANUSCRIPT_DB_PATH={db_path}"
+    env_vars = f"DIM_MANUSCRIPT_DB_PATH={db_path},DIM_MANUSCRIPT_BATCH_ID={batch_id}"
     if sessions_file is not None:
         env_vars += f",DIM_MANUSCRIPT_SESSIONS_FILE={Path(sessions_file).resolve()}"
     return [
@@ -127,14 +136,21 @@ def _build_qsub_command(
     ]
 
 
-def _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file):
+def _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file, batch_id):
     from collections import Counter
-
     type_counts = Counter(j.analysis_config.display_name for j in pending_jobs)
     for analysis_type, count in sorted(type_counts.items()):
         print(f"  {analysis_type}: {count} jobs")
-    qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file)
+    qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file, batch_id)
     print(f"\nqsub command: {' '.join(qsub_cmd)}")
+
+
+def _print_batch_summary(queue: JobQueue) -> None:
+    batches = queue.list_batches()
+    if batches:
+        print("\nExisting batches (newest first):")
+        for b in batches[:5]:
+            print(f"  {b['batch_id']}  pending={b['pending']} running={b['running']} done={b['done']} failed={b['failed']}")
 
 
 def main():
@@ -144,8 +160,7 @@ def main():
     parser.add_argument("--n-workers", type=int, default=16, help="Number of parallel SGE worker slots (default: 16)")
     parser.add_argument("--walltime", default="8:00:00", help="SGE wall-clock limit, e.g. 8:00:00 (default: 8:00:00)")
     parser.add_argument("--mem", default="16G", help="SGE memory per slot, e.g. 16G (default: 16G)")
-    parser.add_argument("--dry-run", "-n", action="store_true", help="Show what would be done without submitting")
-    parser.add_argument("--force-repopulate", action="store_true", help="Reset failed jobs to pending before populating")
+    parser.add_argument("--dry-run", "-n", action="store_true", help="Populate batch but do not submit via qsub")
     args = parser.parse_args()
 
     submit(
@@ -155,7 +170,6 @@ def main():
         walltime=args.walltime,
         mem=args.mem,
         dry_run=args.dry_run,
-        force_repopulate=args.force_repopulate,
     )
 
 

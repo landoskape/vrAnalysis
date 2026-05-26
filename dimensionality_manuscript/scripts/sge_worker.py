@@ -32,12 +32,13 @@ from dimensionality_manuscript.scripts.run import (
 def run_worker(
     worker_id: str,
     db_path: Path,
+    batch_id: str,
     sessions_file: Path | None = None,
     claim_timeout: int = 60,
     max_jobs: int | None = None,
     dry_run: bool = False,
 ):
-    """Claim and execute jobs until the queue is drained.
+    """Claim and execute jobs until the batch queue is drained.
 
     Parameters
     ----------
@@ -45,6 +46,8 @@ def run_worker(
         Unique identifier for this worker (e.g. ``"12345.3"`` from SGE).
     db_path : Path
         Path to the SQLite results database.
+    batch_id : str
+        Batch to drain. Workers only claim jobs from their own batch.
     sessions_file : Path or None
         JSON session list from export_sessions.py. Required on MYRIAD.
         If None, falls back to the live vrSessions database.
@@ -80,16 +83,16 @@ def run_worker(
     n_done = 0
     n_failed = 0
 
-    print(f"[{worker_id}] Starting. Queue: {queue.status_summary()}")
+    print(f"[{worker_id}] Starting. Batch: {batch_id}. Queue: {queue.status_summary(batch_id)}")
 
     while True:
         if max_jobs is not None and (n_done + n_failed) >= max_jobs:
             print(f"[{worker_id}] Reached max_jobs={max_jobs}. Stopping.")
             break
 
-        job_info = queue.claim_next(worker_id, timeout_minutes=claim_timeout)
+        job_info = queue.claim_next(worker_id, batch_id, timeout_minutes=claim_timeout)
         if job_info is None:
-            print(f"[{worker_id}] Queue empty. Done. ({n_done} succeeded, {n_failed} failed)")
+            print(f"[{worker_id}] Batch {batch_id} empty. Done. ({n_done} succeeded, {n_failed} failed)")
             break
 
         uid = job_info["result_uid"]
@@ -100,19 +103,19 @@ def run_worker(
         config = configs_by_key.get(analysis_key)
 
         if session is None:
-            queue.mark_failed(uid, f"Unknown session_id: {session_id!r}")
+            queue.mark_failed(uid, batch_id, f"Unknown session_id: {session_id!r}")
             n_failed += 1
             continue
 
         if config is None:
-            queue.mark_failed(uid, f"Unknown analysis_key: {analysis_key!r}")
+            queue.mark_failed(uid, batch_id, f"Unknown analysis_key: {analysis_key!r}")
             n_failed += 1
             continue
 
         print(f"[{worker_id}] {'(dry-run) ' if dry_run else ''}Running: {session_id} | {job_info['analysis_summary']}")
 
         if dry_run:
-            queue.mark_done(uid)
+            queue.mark_done(uid, batch_id)
             n_done += 1
             continue
 
@@ -122,21 +125,22 @@ def run_worker(
         try:
             ok = _execute_job(job, registry, store, snapshot_path=None)
             if ok:
-                queue.mark_done(uid)
+                queue.mark_done(uid, batch_id)
                 n_done += 1
             else:
-                queue.mark_failed(uid, "Job returned False (see worker log for details)")
+                queue.mark_failed(uid, batch_id, "Job returned False (see worker log for details)")
                 n_failed += 1
         except Exception:
             error_msg = traceback.format_exc()
             print(f"[{worker_id}] FAILED: {session_id} | {error_msg}")
-            queue.mark_failed(uid, error_msg)
+            queue.mark_failed(uid, batch_id, error_msg)
             n_failed += 1
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SGE worker: drain job queue")
+    parser = argparse.ArgumentParser(description="SGE worker: drain job queue batch")
     parser.add_argument("--worker-id", required=True, help="Unique worker ID (e.g. $JOB_ID.$SGE_TASK_ID)")
+    parser.add_argument("--batch-id", type=str, default=None, help="Batch to drain (injected via DIM_MANUSCRIPT_BATCH_ID)")
     parser.add_argument("--db-path", type=Path, default=None, help="Path to results.db (default: RegistryPaths default)")
     parser.add_argument("--sessions-file", type=Path, default=None, help="JSON session list from export_sessions.py")
     parser.add_argument("--claim-timeout", type=int, default=60, help="Minutes before stale running job is reclaimable (default: 60)")
@@ -146,7 +150,11 @@ def main():
 
     db_path = args.db_path if args.db_path is not None else RegistryPaths.pipeline_v2_db_path
 
-    # Also accept env vars injected by sge_submit.py via qsub -v
+    # Accept env vars injected by sge_submit.py via qsub -v
+    batch_id = args.batch_id or os.environ.get("DIM_MANUSCRIPT_BATCH_ID")
+    if not batch_id:
+        raise SystemExit("ERROR: --batch-id or DIM_MANUSCRIPT_BATCH_ID required")
+
     sessions_file = args.sessions_file
     if sessions_file is None:
         env_val = os.environ.get("DIM_MANUSCRIPT_SESSIONS_FILE")
@@ -156,6 +164,7 @@ def main():
     run_worker(
         worker_id=args.worker_id,
         db_path=db_path,
+        batch_id=batch_id,
         sessions_file=sessions_file,
         claim_timeout=args.claim_timeout,
         max_jobs=args.max_jobs,
