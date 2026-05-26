@@ -37,6 +37,8 @@ class RegressionConfig(AnalysisConfigBase):
         Hyperparameter optimization method.
     """
 
+    schema_version: str = "v2"
+
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "oasis"
