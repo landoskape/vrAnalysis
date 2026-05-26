@@ -75,6 +75,74 @@ def _hard_e_step(
     return new_fb, pred_bin_idx
 
 
+def _kl_js_from_log_likelihood(
+    log_likelihood_a: np.ndarray,
+    log_likelihood_b: np.ndarray,
+    *,
+    temperature: float = 1.0,
+    eps: float = 1e-9,
+) -> tuple[dict[str, float], np.ndarray]:
+    """KL(p||q) and symmetric JS between softmax posteriors per frame.
+
+    Parameters
+    ----------
+    log_likelihood_a, log_likelihood_b : np.ndarray
+        Log-scores, shape (frames, total_bins).
+    temperature : float
+        Softmax temperature.
+    eps : float
+        Floor for probabilities.
+
+    Returns
+    -------
+    scalars : dict
+        ``mean_kl``, ``loss``, and ``js_div``.
+    traj : np.ndarray
+        Per-frame KL(p || q), shape (frames,).
+    """
+    log_pa = log_softmax(log_likelihood_a / temperature, axis=1)
+    log_pb = log_softmax(log_likelihood_b / temperature, axis=1)
+    p = np.exp(log_pa)
+    q = np.exp(log_pb)
+    q_safe = np.maximum(q, eps)
+    p_safe = np.maximum(p, eps)
+    kl_pq = np.sum(p * (log_pa - np.log(q_safe)), axis=1)
+    kl_qp = np.sum(q * (log_pb - np.log(p_safe)), axis=1)
+    js = 0.5 * (kl_pq + kl_qp)
+    traj = kl_pq.astype(float)
+    mean_kl = float(np.mean(traj))
+    return {"loss": mean_kl, "js_div": float(np.mean(js))}, traj
+
+
+def _partition_kept_rois(idx_keep_rois: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Randomly partition kept ROIs into two disjoint halves.
+
+    Parameters
+    ----------
+    idx_keep_rois : np.ndarray
+        Boolean mask of shape (n_neurons,) from full-population QC.
+    seed : int
+        RNG seed for reproducible splits.
+
+    Returns
+    -------
+    mask_a, mask_b : np.ndarray
+        Disjoint boolean masks covering all kept ROIs.
+        If the kept count is odd, the extra ROI is assigned to half B.
+    """
+    kept = np.flatnonzero(idx_keep_rois)
+    if len(kept) < 2:
+        raise ValueError(f"Need at least 2 kept ROIs for agreement split, got {len(kept)}")
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(kept))
+    mid = len(perm) // 2
+    mask_a = np.zeros_like(idx_keep_rois, dtype=bool)
+    mask_b = np.zeros_like(idx_keep_rois, dtype=bool)
+    mask_a[kept[perm[:mid]]] = True
+    mask_b[kept[perm[mid:]]] = True
+    return mask_a, mask_b
+
+
 # ---------------------------------------------------------------------------
 # Likelihood classes
 # ---------------------------------------------------------------------------
@@ -367,6 +435,58 @@ class EnvSwapFraction(LossBase):
         return {"fraction": float(np.mean(traj))}, traj
 
 
+@dataclass
+class AgreementLoss(LossBase):
+    """KL divergence between position posteriors from two independent decoders.
+
+    Pair-only: use :meth:`from_pair` with log-likelihood matrices from two halves.
+    Standard :meth:`__call__` is not supported (no ground-truth bin index).
+    """
+
+    name: ClassVar[str] = "agreement"
+    eps: float = 1e-9
+    default_temperature: float = 1.0
+
+    def __call__(
+        self,
+        log_likelihood: np.ndarray,
+        true_bin_idx: np.ndarray,
+        **kwargs,
+    ) -> tuple[dict[str, float], np.ndarray]:
+        raise NotImplementedError("AgreementLoss requires from_pair(log_likelihood_a, log_likelihood_b).")
+
+    def from_pair(
+        self,
+        log_likelihood_a: np.ndarray,
+        log_likelihood_b: np.ndarray,
+        *,
+        temperature: float | None = None,
+    ) -> tuple[dict[str, float], np.ndarray]:
+        """Compute per-frame KL and JS between softmax posteriors.
+
+        Parameters
+        ----------
+        log_likelihood_a, log_likelihood_b : np.ndarray
+            Log-scores, shape (frames, total_bins).
+        temperature : float or None
+            Softmax temperature. Default uses ``default_temperature``.
+
+        Returns
+        -------
+        scalars : dict
+            ``mean_kl``, ``loss`` (same as mean_kl), and symmetric ``js_div``.
+        traj : np.ndarray
+            Per-frame KL(p || q), shape (frames,).
+        """
+        t = temperature if temperature is not None else self.default_temperature
+        return _kl_js_from_log_likelihood(
+            log_likelihood_a,
+            log_likelihood_b,
+            temperature=t,
+            eps=self.eps,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Dispatchers
 # ---------------------------------------------------------------------------
@@ -387,7 +507,10 @@ _LOSS_REGISTRY: dict[str, Callable[..., LossBase]] = {
     "rank_metric": RankOrderingMetric,
     "distance_error": DistanceErrorLoss,
     "env_swap": EnvSwapFraction,
+    "agreement": AgreementLoss,
 }
+
+_PAIR_ONLY_LOSSES = frozenset({"agreement"})
 
 
 def _get_likelihood_methods(
@@ -412,7 +535,10 @@ def _get_loss_methods(
     names: tuple[str, ...],
     dist_edges: np.ndarray,
     only_with_hyperparameters: bool = False,
+    exclude_pair_only: bool = False,
 ) -> dict[str, LossBase]:
+    if exclude_pair_only:
+        names = tuple(n for n in names if n not in _PAIR_ONLY_LOSSES)
     out: dict[str, LossBase] = {}
     for name in names:
         if name not in _LOSS_REGISTRY:
@@ -645,7 +771,10 @@ class LocPredConfig(AnalysisConfigBase):
         Loss/metric functions to evaluate.
         Options: "cross_entropy", "rank_loss_logistic_mean", "rank_loss_logistic_sum",
         "rank_loss_hinge_mean", "rank_loss_hinge_sum", "rank_metric",
-        "distance_error", "env_swap".
+        "distance_error", "env_swap", "agreement".
+    agreement_split_seed : int
+        RNG seed for random partition of ``idx_keep_rois`` into two halves when
+        computing agreement loss.
     """
 
     schema_version: str = "v1"
@@ -659,9 +788,18 @@ class LocPredConfig(AnalysisConfigBase):
     fraction_active_cutoff: float = 0.1
     spks_type: SpksTypes = "oasis"
     likelihood_methods: tuple[str, ...] = ("poisson", "gaussian", "diag_gaussian", "von_mises_fisher")
-    loss_methods: tuple[str, ...] = ("cross_entropy", "rank_loss_logistic_mean", "rank_loss_hinge_mean", "rank_metric", "distance_error", "env_swap")
+    loss_methods: tuple[str, ...] = (
+        "cross_entropy",
+        "rank_loss_logistic_mean",
+        "rank_loss_hinge_mean",
+        "rank_metric",
+        "distance_error",
+        "env_swap",
+        "agreement",
+    )
     fit_iterations: int = 4
     predict_likelihood: str = "diag_gaussian"
+    agreement_split_seed: int = 0
     display_name: ClassVar[str] = "locprediction"
 
     _result_handling: ClassVar[dict[str, str]] = {
@@ -670,6 +808,8 @@ class LocPredConfig(AnalysisConfigBase):
         "loss_scalar": "skip",
         "true_bin_score": "skip",
         "iteration_position_bins_tr": "skip",
+        "idx_keep_rois_half_a": "skip",
+        "idx_keep_rois_half_b": "skip",
     }
 
     @staticmethod
@@ -693,6 +833,7 @@ class LocPredConfig(AnalysisConfigBase):
             f"loss_methods={','.join(self.loss_methods)}",
             f"fit_iterations={self.fit_iterations}",
             f"predict_likelihood={self.predict_likelihood}",
+            f"agreement_split_seed={self.agreement_split_seed}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -872,6 +1013,8 @@ class LocPredConfig(AnalysisConfigBase):
         hyperparameters: dict[str, dict[str, float]] | None = None,
         split: "SplitName" = "test",
         iteration: int = -1,
+        fit_a: LocPredFit | None = None,
+        fit_b: LocPredFit | None = None,
     ) -> dict:
         """Compute log-likelihoods and losses on a held-out split.
 
@@ -887,6 +1030,8 @@ class LocPredConfig(AnalysisConfigBase):
             Registry split to evaluate on. Default "test".
         iteration : int
             Which EM iteration's placefield to use. Default -1 (last iteration).
+        fit_a, fit_b : LocPredFit or None
+            Split-half fits required when ``"agreement"`` is in ``loss_methods``.
 
         Returns
         -------
@@ -901,8 +1046,8 @@ class LocPredConfig(AnalysisConfigBase):
         pf = fit.iteration_placefields[iteration]
         dvar = fit.iteration_diag_variances[iteration]
 
-        spks_te, frame_behavior_te = self._get_split_arrays(session, registry, split)
-        spks_te = self._apply_norm(spks_te, fit.norm_value)
+        spks_raw, frame_behavior_te = self._get_split_arrays(session, registry, split)
+        spks_te = self._apply_norm(spks_raw, fit.norm_value)
         spks_te = spks_te[:, fit.idx_keep_rois]
 
         # Drop test frames whose environment didn't appear in training data.
@@ -918,7 +1063,7 @@ class LocPredConfig(AnalysisConfigBase):
         # Likelihood: use a model p(x=bin | r, theta) to predict the likelihood of each position bin given the neural activity and the PF learned in fit()
         # Loss: measure how well that likelihood estimates the true position bin
         lik_methods = _get_likelihood_methods(self.likelihood_methods, dvar)
-        loss_methods = _get_loss_methods(self.loss_methods, fit.dist_edges)
+        loss_methods = _get_loss_methods(self.loss_methods, fit.dist_edges, exclude_pair_only=True)
 
         # Prepare our output dicts
         likelihood_matrix: dict[str, np.ndarray] = {}
@@ -949,6 +1094,39 @@ class LocPredConfig(AnalysisConfigBase):
                     key = combo if k in ("loss", "fraction") else f"{combo}_{k}"
                     loss_scalar[key] = v
 
+        if "agreement" in self.loss_methods:
+            if fit_a is None or fit_b is None:
+                raise ValueError("score() requires fit_a and fit_b when 'agreement' is in loss_methods")
+            pf_a = fit_a.iteration_placefields[iteration]
+            pf_b = fit_b.iteration_placefields[iteration]
+            dvar_a = fit_a.iteration_diag_variances[iteration]
+            dvar_b = fit_b.iteration_diag_variances[iteration]
+
+            spks_a = self._apply_norm(spks_raw.copy(), fit_a.norm_value)[:, fit_a.idx_keep_rois]
+            spks_b = self._apply_norm(spks_raw.copy(), fit_b.norm_value)[:, fit_b.idx_keep_rois]
+            shared_envs = np.intersect1d(pf_a.environment, pf_b.environment)
+            idx_agreement = np.isin(frame_behavior_te.environment, shared_envs)
+            spks_a = spks_a[idx_agreement]
+            spks_b = spks_b[idx_agreement]
+
+            agreement_loss = AgreementLoss()
+            for lik_name in self.likelihood_methods:
+                lik_a = _get_likelihood_methods((lik_name,), dvar_a)[lik_name]
+                lik_b = _get_likelihood_methods((lik_name,), dvar_b)[lik_name]
+                ll_a = lik_a(spks_a, pf_a)
+                ll_b = lik_b(spks_b, pf_b)
+
+                temperature = 1.0
+                if hyperparameters is not None:
+                    temperature = hyperparameters.get(lik_name, {}).get("cross_entropy", temperature)
+
+                scalars, traj = agreement_loss.from_pair(ll_a, ll_b, temperature=temperature)
+                combo = f"{lik_name}_agreement"
+                loss_trajectory[combo] = traj
+                for k, v in scalars.items():
+                    key = combo if k in ("loss", "fraction") else f"{combo}_{k}"
+                    loss_scalar[key] = v
+
         return dict(
             likelihood_matrix=likelihood_matrix,
             loss_trajectory=loss_trajectory,
@@ -972,16 +1150,38 @@ class LocPredConfig(AnalysisConfigBase):
         stacked across iterations: loss_scalar values are arrays of shape (fit_iterations,),
         loss_trajectory arrays are shape (fit_iterations, frames), and likelihood_matrix arrays
         are shape (fit_iterations, frames, total_bins).
+
+        When ``"agreement"`` is in ``loss_methods``, also fits two random halves of
+        ``idx_keep_rois`` and scores split-half KL agreement via :meth:`score`.
         """
         fit = self.fit(session, registry, split=train_split)
+        fit_a: LocPredFit | None = None
+        fit_b: LocPredFit | None = None
+        mask_a: np.ndarray | None = None
+        mask_b: np.ndarray | None = None
+        if "agreement" in self.loss_methods:
+            mask_a, mask_b = _partition_kept_rois(fit.idx_keep_rois, self.agreement_split_seed)
+            fit_a = self.fit(session, registry, split=train_split, idx_rois=mask_a)
+            fit_b = self.fit(session, registry, split=train_split, idx_rois=mask_b)
+
         all_results = []
         for i in range(self.fit_iterations):
             hyperparameters = self.optimize(session, registry, fit, split=val_split, iteration=i)
-            result = self.score(session, registry, fit, hyperparameters=hyperparameters, split=test_split, iteration=i)
-            all_results.append(result)
+            all_results.append(
+                self.score(
+                    session,
+                    registry,
+                    fit,
+                    hyperparameters=hyperparameters,
+                    split=test_split,
+                    iteration=i,
+                    fit_a=fit_a,
+                    fit_b=fit_b,
+                )
+            )
 
         first = all_results[0]
-        return dict(
+        out = dict(
             likelihood_matrix={k: np.stack([r["likelihood_matrix"][k] for r in all_results]) for k in first["likelihood_matrix"]},
             loss_trajectory={k: np.stack([r["loss_trajectory"][k] for r in all_results]) for k in first["loss_trajectory"]},
             loss_scalar={k: np.array([r["loss_scalar"][k] for r in all_results]) for k in first["loss_scalar"]},
@@ -990,6 +1190,10 @@ class LocPredConfig(AnalysisConfigBase):
             idx_keep_rois=fit.idx_keep_rois,
             iteration_position_bins_tr=fit.iteration_position_bins_tr,
         )
+        if mask_a is not None and mask_b is not None:
+            out["idx_keep_rois_half_a"] = mask_a
+            out["idx_keep_rois_half_b"] = mask_b
+        return out
 
 
 # ---------------------------------------------------------------------------
