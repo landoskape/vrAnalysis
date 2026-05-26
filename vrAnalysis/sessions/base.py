@@ -6,7 +6,7 @@ from typing import Optional, Union, Any, List
 from types import SimpleNamespace
 import numpy as np
 from scipy.sparse import csc_array, save_npz, load_npz
-from ..helpers import PrettyDatetime
+from ..helpers.typing import PrettyDatetime
 
 
 class LoadingRecipe:

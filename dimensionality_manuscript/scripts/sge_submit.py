@@ -115,16 +115,21 @@ def _build_qsub_command(
         env_vars += f",DIM_MANUSCRIPT_SESSIONS_FILE={Path(sessions_file).resolve()}"
     return [
         "qsub",
-        "-t", f"1-{n_workers}",
-        "-l", f"h_rt={walltime}",
-        "-l", f"mem={mem}",
-        "-v", env_vars,
+        "-t",
+        f"1-{n_workers}",
+        "-l",
+        f"h_rt={walltime}",
+        "-l",
+        f"mem={mem}",
+        "-v",
+        env_vars,
         str(_WORKER_SCRIPT),
     ]
 
 
 def _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file):
     from collections import Counter
+
     type_counts = Counter(j.analysis_config.display_name for j in pending_jobs)
     for analysis_type, count in sorted(type_counts.items()):
         print(f"  {analysis_type}: {count} jobs")

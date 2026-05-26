@@ -9,6 +9,11 @@ numpy<2
 scipy
 pandas
 scikit-learn
+scikit-image
+matplotlib
+syd
+opencv-python
+umap-learn
 
 # Pipeline infrastructure
 joblib
@@ -16,6 +21,7 @@ tqdm
 freezedry
 numpyencoder
 speedystats
+optuna
 
 # Numerical JIT
 numba

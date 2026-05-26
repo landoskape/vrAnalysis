@@ -54,7 +54,7 @@ exec bash
 ```bash
 module avail 2>&1 | grep -i python
 # Look for python/3.11.x — exact name varies
-module load python/3.11.6  # adjust version
+module load python/3.11.4  # adjust version
 python --version            # confirm
 ```
 
@@ -65,6 +65,8 @@ Use `~/Scratch/` (Lustre, large quota) not `~` (home, tiny quota).
 
 ```bash
 uv venv ~/Scratch/envs/vrAnalysis --python=3.11.4
+# module load must precede activation — the venv links against libpython from the module
+module load python/3.11.4   # must match version used when creating the venv
 source ~/Scratch/envs/vrAnalysis/bin/activate
 ```
 
@@ -77,9 +79,8 @@ cd ~/vrAnalysis
 
 ### 2e. Install dependencies
 
-Do NOT use `uv pip install -e .` — `setup.py` pulls in matplotlib, jupyterlab,
-pyodbc, syd, and other packages the worker never needs. Install only what the
-worker actually uses.
+Do NOT use `uv pip install -e .` — `setup.py` pulls in jupyterlab, pyodbc,
+and other packages the worker never needs. Install only what the worker uses.
 
 MYRIAD defaults to the Intel ICC compiler, which fails to compile C extensions
 for numpy, scipy, etc. Use `--only-binary :all:` to force pre-built wheels and
@@ -88,7 +89,9 @@ with no wheel, so install it separately without the flag:
 
 ```bash
 # Step 1: all scientific deps — force pre-built wheels, no ICC compilation
-uv pip install numpy"<2" scipy pandas scikit-learn joblib tqdm numpyencoder speedystats numba --only-binary :all:
+# numpy<2 must be last — opencv-python has a loose numpy constraint and can bump to numpy 2.x
+uv pip install scikit-image matplotlib syd joblib tqdm numpyencoder speedystats numba optuna opencv-python umap-learn --only-binary :all:
+uv pip install scipy pandas scikit-learn "numpy<2" --only-binary :all:
 
 # Step 2: freezedry separately (its dep gitignore-parser is pure Python — no compilation)
 uv pip install freezedry
@@ -217,6 +220,7 @@ Run on the **MYRIAD login node**:
 ```bash
 ssh myriad
 cd ~/vrAnalysis
+module load python/3.11.4   # must match version used when creating the venv
 source ~/Scratch/envs/vrAnalysis/bin/activate
 
 # Dry run first — see pending job count and qsub command
@@ -267,10 +271,52 @@ python -m dimensionality_manuscript.scripts.sge_submit \
 
 ---
 
-## 5. Syncing results back to local
+## 5. Smoke tests (run on MYRIAD login node before submitting)
+
+Two scripts validate the pipeline before committing to a full job array run.
+Both are safe to run while the real queue is live. Run them on the login node
+where `results.db` and `sessions.json` live.
+
+```bash
+ssh myriad
+cd ~/vrAnalysis
+module load python/3.11.4   # must match version used when creating the venv
+source ~/Scratch/envs/vrAnalysis/bin/activate
+```
+
+### 5a. Resolution check
+
+Verifies that N queued jobs resolve to known sessions and analysis configs:
+
+```bash
+python -m dimensionality_manuscript.scripts.smoke_test --n-jobs 2 --sessions-file ~/vrAnalysis/sessions.json
+```
+
+Reports `[OK]` or `[FAIL]` per job, then restores all jobs to `pending`.
+A `FAIL` means `session_id` or `analysis_key` is unrecognised — usually a
+stale queue (re-populate with `sge_submit.py`) or a missing entry in `sessions.json`.
+
+### 5b. Concurrency check
+
+Proves that W workers draining the same queue don't double-claim jobs.
+Copies N pending jobs to a temp DB, spawns W local worker processes in
+dry-run mode, then asserts every job ends up `done` exactly once:
+
+```bash
+python -m dimensionality_manuscript.scripts.concurrency_test --n-jobs 6 --n-workers 3 --sessions-file ~/vrAnalysis/sessions.json
+```
+
+The real DB is never touched — workers run against the temp copy.
+`PASS` confirms SQLite `BEGIN IMMEDIATE` atomicity holds under concurrent access,
+which is the same guarantee the SGE array relies on.
+
+---
+
+## 6. Syncing results back to local
 
 Run **locally** after MYRIAD jobs finish. Requires the MSYS2 rsync installed
 in §3b — the script finds it automatically via `~/bin/rsync.exe`.
+
 
 ```powershell
 # Run from PowerShell (not Git Bash — ~ expansion issue)
@@ -292,7 +338,7 @@ the results came from a server — they see a fully-populated local store.
 
 ---
 
-## 6. Scratch disk layout on MYRIAD
+## 7. Scratch disk layout on MYRIAD
 
 ```
 ~/Scratch/
@@ -315,10 +361,11 @@ The `paths.toml` `storage` key must point to `~/Scratch/data` so that
 
 ---
 
-## 7. Common problems
+## 8. Common problems
 
 | Problem | Fix |
 |---------|-----|
+| `libpython3.11.so.1.0: cannot open shared object file` | Run `module load python/3.11.4` before activating the venv — the module provides the shared library the venv links against |
 | `uv: command not found` on compute node | Check `~/.local/bin` is on PATH in `~/.bashrc`; or use full path `~/.local/bin/uv` |
 | `venv not found at ...` | Wrong `VRANALYSIS_VENV`; check path or unset env var to use default |
 | `paths.toml not found` | Create it from `paths.toml.example` (see §2f) |
@@ -330,21 +377,38 @@ The `paths.toml` `storage` key must point to `~/Scratch/data` so that
 
 ---
 
-## 8. Quick reference
+## 9. Quick reference
 
+**Local** (conda env):
+```powershell
+# Export sessions
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.export_sessions --output sessions.json
+
+# Transfer data (+ optionally seed results.db)
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-results
+
+# Skip rsync, upload results.db only
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --host myriad --skip-transfer --include-results
+
+# Sync results back
+conda run -n vrAnalysis python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad
+```
+
+**MYRIAD** (`module load python/3.11.4 && source ~/Scratch/envs/vrAnalysis/bin/activate` first):
 ```bash
-# Local: export sessions
-python -m dimensionality_manuscript.scripts.export_sessions --output sessions.json
+# Smoke test: resolution check
+python -m dimensionality_manuscript.scripts.smoke_test --n-jobs 2 --sessions-file ~/vrAnalysis/sessions.json
 
-# MYRIAD: dry-run submit
-python -m dimensionality_manuscript.scripts.sge_submit --sessions-file sessions.json --dry-run
+# Smoke test: concurrency check
+python -m dimensionality_manuscript.scripts.concurrency_test --n-jobs 6 --n-workers 3 --sessions-file ~/vrAnalysis/sessions.json
 
-# MYRIAD: real submit
-python -m dimensionality_manuscript.scripts.sge_submit --sessions-file sessions.json --n-workers 16
+# Dry-run submit
+python -m dimensionality_manuscript.scripts.sge_submit --sessions-file ~/vrAnalysis/sessions.json --dry-run
 
-# MYRIAD: check queue
+# Real submit
+python -m dimensionality_manuscript.scripts.sge_submit --sessions-file ~/vrAnalysis/sessions.json --n-workers 16
+
+# Check queue
 python -c "from dimensionality_manuscript.pipeline import JobQueue; from dimensionality_manuscript.registry import RegistryPaths; print(JobQueue(RegistryPaths.pipeline_v2_db_path).status_summary())"
-
-# Local: sync back
-python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad
 ```

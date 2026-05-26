@@ -1,6 +1,4 @@
 import traceback
-import pyodbc
-from IPython.display import Markdown, display
 from datetime import datetime, date
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,7 +13,7 @@ from . import fileManagement as fm
 
 
 def errorPrint(text):
-    # supporting function for printing error messages but continuing
+    from IPython.display import Markdown, display
     display(Markdown(f"<font color=red>{text}</font>"))
 
 
@@ -212,6 +210,7 @@ class base_database:
         assert self.host_type in driverString, failureMessage
 
         # Return a connection to the database
+        import pyodbc
         return pyodbc.connect(driverString[self.host_type])
 
     @contextmanager
