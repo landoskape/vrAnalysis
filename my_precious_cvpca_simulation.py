@@ -7,20 +7,18 @@ Generative model
 
     S_r : spatial signal (n_neurons, n_positions)
         Thresholded GP place fields. Each neuron has a source field drawn from
-        GP(0, K_source). Optional per-repeat noise adds GP(0, K_noise) variation.
+        GP(0, K_source). Optional peaky_transform reshapes each field to a
+        generalized Gaussian (exponent p) at its GP peak. Optional per-repeat
+        noise adds GP(0, K_noise) variation.
 
     noise_r : IID Gaussian, independent per neuron / position / repeat.
 """
 
+import argparse
 from dataclasses import dataclass, field, replace
-from typing import Optional
-
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-import optuna
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from tqdm import tqdm
 from dimilibi.cvpca import CVPCA
 from dimilibi.helpers import gaussian_filter
@@ -53,6 +51,13 @@ class PlacefieldConfig:
         0 = perfectly reproducible repeats; 1 = noise as large as source.
     repeat_noise_lengthscale : float
         Lengthscale for per-repeat GP noise kernel.
+    peak_exponent : float or None
+        If set, reshape each thresholded field to a generalized Gaussian
+        A * exp(-(|theta - phi| / sigma)^p) centered on its GP peak (phi).
+        p=2 is Gaussian-like; p=1 is Laplace-like (pointy); p<1 is sharper.
+        None disables the transform (default GP bump shape after thresholding).
+    peak_sigma_scale : float
+        Multiplier on the width (sigma) estimated from each field before reshaping.
     """
 
     n_neurons: int = 500
@@ -62,6 +67,8 @@ class PlacefieldConfig:
     amplitude: float = 10.0
     repeat_noise_alpha: float = 0.3
     repeat_noise_lengthscale: float = 5.0
+    peak_exponent: float | None = None
+    peak_sigma_scale: float = 1.0
 
 
 @dataclass
@@ -101,10 +108,12 @@ class SimulationConfig:
 # ---------------------------------------------------------------------------
 
 
-def _rbf_kernel(n_positions: int, lengthscale: float, device: str) -> torch.Tensor:
+def _rbf_kernel(n_positions: int, lengthscale: float, device: str, exponent: float | None = None) -> torch.Tensor:
     pos = torch.arange(n_positions, dtype=torch.float32, device=device)
     diff = pos.unsqueeze(0) - pos.unsqueeze(1)
-    return torch.exp(-0.5 * diff**2 / lengthscale**2)
+    if exponent is None or exponent >= 2.0:
+        exponent = 2.0
+    return torch.exp(-torch.abs(diff / lengthscale) ** exponent)
 
 
 def _sample_gp(kernel: torch.Tensor, n_samples: int, generator: torch.Generator) -> torch.Tensor:
@@ -122,6 +131,55 @@ def estimate_spatial_rank(source: torch.Tensor, var_threshold: float = 0.90) -> 
     cumvar = torch.cumsum(S**2, dim=0) / (S**2).sum()
     n = int((cumvar < var_threshold).sum()) + 1
     return max(1, min(n, len(S)))
+
+
+def peaky_transform(
+    fields: torch.Tensor,
+    peak_exponent: float,
+    sigma_scale: float = 1.0,
+    min_sigma: float = 0.5,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Reshape place fields to pointy generalized Gaussians at each row's peak.
+
+      Keeps peak location and amplitude from the input (typically a thresholded GP
+    sample) but replaces the spatial profile with
+      A * exp(-(|theta - phi| / sigma)^p).
+
+      Parameters
+      ----------
+      fields : torch.Tensor
+          Non-negative fields, shape (n_neurons, n_positions).
+      peak_exponent : float
+          Exponent p in the generalized Gaussian. Smaller p yields pointier peaks.
+      sigma_scale : float
+          Multiplier on per-field width estimated from the input profile.
+      min_sigma : float
+          Lower bound on sigma in bin units.
+      eps : float
+          Small constant for numerical stability.
+
+      Returns
+      -------
+      torch.Tensor
+          Transformed fields, same shape as ``fields``.
+    """
+    n_positions = fields.shape[1]
+    positions = torch.arange(n_positions, dtype=fields.dtype, device=fields.device)
+
+    peak_idx = fields.argmax(dim=1)
+    peak_amp = fields.gather(1, peak_idx.unsqueeze(1)).squeeze(1).clamp(min=eps)
+    phi = peak_idx.to(fields.dtype)
+
+    dist = torch.abs(positions.unsqueeze(0) - phi.unsqueeze(1))
+    weights = fields.clamp(min=0)
+    mass = weights.sum(dim=1).clamp(min=eps)
+    mean_d = (weights * dist).sum(dim=1) / mass
+    var_d = (weights * (dist - mean_d.unsqueeze(1)) ** 2).sum(dim=1) / mass
+    sigma = (var_d.clamp(min=eps).sqrt() * sigma_scale).clamp(min=min_sigma)
+
+    profile = torch.exp(-((dist / sigma.unsqueeze(1)) ** peak_exponent))
+    return peak_amp.unsqueeze(1) * profile
 
 
 # ---------------------------------------------------------------------------
@@ -142,20 +200,24 @@ def generate_placefields(cfg: PlacefieldConfig, n_repeats: int, seed: int, devic
     def rng(s):
         return torch.Generator(device=device).manual_seed(s)
 
-    K_source = _rbf_kernel(cfg.n_positions, cfg.lengthscale, device)
+    K_source = _rbf_kernel(cfg.n_positions, cfg.lengthscale, device, exponent=cfg.peak_exponent)
     K_noise = _rbf_kernel(cfg.n_positions, cfg.repeat_noise_lengthscale, device)
 
     raw = _sample_gp(K_source, cfg.n_neurons, rng(seed))  # (N, P)
     threshold = torch.quantile(raw, cfg.threshold_pct / 100.0, dim=1, keepdim=True)
-    source = torch.relu(raw - threshold)  # (N, P)
+    source = cfg.amplitude * torch.relu(raw - threshold)  # (N, P)
+
+    # Need this adjustment for flat peaks (p > 2.0), will remove any multi-peaked gaussians!
+    if cfg.peak_exponent is not None and cfg.peak_exponent > 2.0:
+        source = peaky_transform(source, cfg.peak_exponent, sigma_scale=cfg.peak_sigma_scale)
 
     repeats = []
     for r in range(n_repeats):
         if cfg.repeat_noise_alpha > 0:
             noise = _sample_gp(K_noise, cfg.n_neurons, rng(seed + 100 * (r + 1)))  # (N, P)
-            repeat = cfg.amplitude * torch.relu(source + cfg.repeat_noise_alpha * noise)
+            repeat = torch.relu(source + cfg.repeat_noise_alpha * noise)
         else:
-            repeat = cfg.amplitude * source.clone()
+            repeat = source.clone()
         repeats.append(repeat)
 
     return {"source": source, "repeats": repeats, "spatial_rank": estimate_spatial_rank(source)}
@@ -182,45 +244,6 @@ def normalize_by_max(repeats: list[torch.Tensor]) -> list[torch.Tensor]:
     max_val = torch.stack(repeats, dim=0).amax(dim=(0, 2), keepdim=False)  # (N,)
     max_val = max_val.unsqueeze(1).clamp(min=1e-8)
     return [r / max_val for r in repeats]
-
-
-# ---------------------------------------------------------------------------
-# Population generator
-# ---------------------------------------------------------------------------
-
-
-def generate_population(cfg: SimulationConfig, device: str = "cpu") -> tuple[list[torch.Tensor], dict]:
-    """Assemble one population dataset and return its component signals.
-
-    Returns
-    -------
-    repeats : list of n_repeats (n_neurons, n_positions) tensors
-        Final assembled (and optionally normalized) data.
-    extras : dict
-        source : (n_neurons, n_positions)  thresholded GP source fields
-        spatial_repeats : list of (n_neurons, n_positions)  spatial signal per repeat
-        noise_repeats : list of (n_neurons, n_positions)  IID noise per repeat
-        spatial_rank : int
-    """
-    N = cfg.placefield.n_neurons
-    P = cfg.placefield.n_positions
-    R = cfg.n_repeats
-
-    pf_data = generate_placefields(cfg.placefield, R, cfg.seed, device)
-    noise_repeats = generate_noise(cfg.noise_level, N, P, R, cfg.seed + 2000, device)
-
-    spatial_repeats = pf_data["repeats"]
-    repeats = assemble(spatial_repeats, noise_repeats)
-    if cfg.normalize:
-        repeats = normalize_by_max(repeats)
-
-    extras = {
-        "source": pf_data["source"],
-        "spatial_repeats": spatial_repeats,
-        "noise_repeats": noise_repeats,
-        "spatial_rank": pf_data["spatial_rank"],
-    }
-    return repeats, extras
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +443,7 @@ def plot_population(repeats: list[torch.Tensor], extras: dict, cfg: SimulationCo
     fig.suptitle(
         f"spatial_rank={sr}  "
         f"pf_amp={cfg.placefield.amplitude:.1f} pf_ls={cfg.placefield.lengthscale:.1f}  "
+        f"peak_p={cfg.placefield.peak_exponent}  "
         f"noise={cfg.noise_level:.1f}  normalize={cfg.normalize}",
         fontsize=10,
     )
@@ -552,17 +576,123 @@ BASE = SimulationConfig(
 )
 
 
-if __name__ == "__main__":
-    # Base result: fraction-negative curves + placefield heatmaps
-    print(f"Base simulation ({BASE.n_simulations} runs)...")
-    base_result = run_simulations(BASE)
-    print(f"  burn_in={base_result['burn_in']}  (spatial_rank + ns_modes)")
-    for key, label in [("frac_neg_cov_neuron", "neuron  "), ("frac_neg_cov_position", "position")]:
-        fn = base_result[key]
-        print(f"  {label} frac<0 @dim40/dim79: {fn[39]:.2f} / {fn[78]:.2f}")
-    plot_results({"base": base_result}, suptitle="Neuron vs position cvPCA (base config)")
-    plt.show()
+def build_parser(defaults: SimulationConfig = BASE) -> argparse.ArgumentParser:
+    """Build CLI parser; defaults match ``defaults`` (``BASE`` by default)."""
+    pf = defaults.placefield
+    parser = argparse.ArgumentParser(
+        description="Neuron vs position cvPCA simulation with GP place fields.",
+    )
+    g_pf = parser.add_argument_group("place fields")
+    g_pf.add_argument("--n-neurons", type=int, default=pf.n_neurons)
+    g_pf.add_argument("--n-positions", type=int, default=pf.n_positions)
+    g_pf.add_argument("--lengthscale", type=float, default=pf.lengthscale)
+    g_pf.add_argument("--threshold-pct", type=float, default=pf.threshold_pct)
+    g_pf.add_argument("--amplitude", type=float, default=pf.amplitude)
+    g_pf.add_argument("--repeat-noise-alpha", type=float, default=pf.repeat_noise_alpha)
+    g_pf.add_argument("--repeat-noise-lengthscale", type=float, default=pf.repeat_noise_lengthscale)
+    g_pf.add_argument(
+        "--peak-exponent",
+        type=float,
+        default=pf.peak_exponent,
+        metavar="P",
+        help="Generalized Gaussian exponent p (pointy peaks; omit arg default=None = smooth GP bumps)",
+    )
+    g_pf.add_argument("--peak-sigma-scale", type=float, default=pf.peak_sigma_scale)
+
+    g_sim = parser.add_argument_group("simulation")
+    g_sim.add_argument("--noise-level", type=float, default=defaults.noise_level)
+    g_sim.add_argument("--n-repeats", type=int, default=defaults.n_repeats)
+    g_sim.add_argument(
+        "--normalize",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.normalize,
+        help="Normalize each neuron by max firing rate across repeats",
+    )
+    g_sim.add_argument(
+        "--center",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.center,
+        help="Center data in CVPCA",
+    )
+    g_sim.add_argument("--smooth-width", type=float, default=defaults.smooth_width)
+    g_sim.add_argument("--n-components", type=int, default=defaults.n_components)
+    g_sim.add_argument("--n-simulations", type=int, default=defaults.n_simulations)
+    g_sim.add_argument("--seed", type=int, default=defaults.seed)
+    g_sim.add_argument(
+        "--device",
+        default="cpu",
+        choices=("cpu", "cuda"),
+        help="Torch device for generation and analysis",
+    )
+
+    g_run = parser.add_argument_group("run control")
+    g_run.add_argument(
+        "--skip-simulations",
+        action="store_true",
+        help="Only plot placefield heatmaps (skip cvPCA ensemble)",
+    )
+    g_run.add_argument(
+        "--compare-peaky",
+        action="store_true",
+        help="After main heatmaps, also plot smooth vs peak_exponent=1 comparison",
+    )
+    return parser
+
+
+def config_from_args(args: argparse.Namespace) -> SimulationConfig:
+    """Construct ``SimulationConfig`` from parsed CLI arguments."""
+    placefield = PlacefieldConfig(
+        n_neurons=args.n_neurons,
+        n_positions=args.n_positions,
+        lengthscale=args.lengthscale,
+        threshold_pct=args.threshold_pct,
+        amplitude=args.amplitude,
+        repeat_noise_alpha=args.repeat_noise_alpha,
+        repeat_noise_lengthscale=args.repeat_noise_lengthscale,
+        peak_exponent=args.peak_exponent,
+        peak_sigma_scale=args.peak_sigma_scale,
+    )
+    return SimulationConfig(
+        placefield=placefield,
+        noise_level=args.noise_level,
+        n_repeats=args.n_repeats,
+        normalize=args.normalize,
+        center=args.center,
+        smooth_width=args.smooth_width,
+        n_components=args.n_components,
+        n_simulations=args.n_simulations,
+        seed=args.seed,
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run simulations and/or placefield plots from CLI arguments."""
+    args = build_parser().parse_args(argv)
+    cfg = config_from_args(args)
+    device = args.device
+
+    if not args.skip_simulations:
+        print(f"Simulation ({cfg.n_simulations} runs, device={device})...")
+        result = run_simulations(cfg, device=device)
+        print(f"  burn_in={result['burn_in']}  (spatial_rank + ns_modes)")
+        dim_hi = min(79, cfg.n_components - 1)
+        dim_mid = min(39, cfg.n_components - 1)
+        for key, label in [("frac_neg_cov_neuron", "neuron  "), ("frac_neg_cov_position", "position")]:
+            fn = result[key]
+            print(f"  {label} frac<0 @dim{dim_mid + 1}/dim{dim_hi + 1}: {fn[dim_mid]:.2f} / {fn[dim_hi]:.2f}")
+        plot_results({"run": result}, suptitle="Neuron vs position cvPCA")
+        plt.show()
 
     print("\nPlacefield heatmaps...")
-    plot_placefields(BASE)
+    plot_placefields(cfg, device=device)
     plt.show()
+
+    if args.compare_peaky and cfg.placefield.peak_exponent is None:
+        peaky_cfg = replace(cfg, placefield=replace(cfg.placefield, peak_exponent=1.0))
+        print("\nPlacefield heatmaps (peaky comparison, p=1)...")
+        plot_placefields(peaky_cfg, device=device)
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()
