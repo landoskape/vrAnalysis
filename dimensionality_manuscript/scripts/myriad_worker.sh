@@ -16,7 +16,7 @@
 #$ -pe smp 1
 #$ -cwd
 #$ -j y
-#$ -o logs/dim_manuscript.$JOB_ID.$TASK_ID.log
+#$ -o /home/$USER/vrAnalysis/dimensionality_manuscript/scripts/logs/dim_manuscript.$JOB_ID.$TASK_ID.log
 
 # ── Validate injected env vars ────────────────────────────────────────────────
 if [ -z "$DIM_MANUSCRIPT_DB_PATH" ]; then
@@ -48,7 +48,7 @@ cd "$REPO_DIR" || { echo "ERROR: could not cd to $REPO_DIR" >&2; exit 1; }
 
 # ── Worker ───────────────────────────────────────────────────────────────────
 WORKER_ID="${JOB_ID}.${SGE_TASK_ID}"
-mkdir -p logs
+mkdir -p "$(dirname "$0")/logs"
 echo "[$WORKER_ID] Starting on $(hostname) at $(date)"
 echo "[$WORKER_ID] DB:       $DIM_MANUSCRIPT_DB_PATH"
 echo "[$WORKER_ID] Batch:    $DIM_MANUSCRIPT_BATCH_ID"
