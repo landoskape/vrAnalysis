@@ -30,6 +30,7 @@ from dimensionality_manuscript.scripts.run import (
 REGISTRY_PATHS = RegistryPaths()
 
 _WORKER_SCRIPT = Path(__file__).parent / "myriad_worker.sh"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def submit(
@@ -119,7 +120,11 @@ def _build_qsub_command(
     sessions_file: Path | None,
     batch_id: str,
 ) -> list[str]:
-    env_vars = f"DIM_MANUSCRIPT_DB_PATH={db_path},DIM_MANUSCRIPT_BATCH_ID={batch_id}"
+    env_vars = (
+        f"DIM_MANUSCRIPT_DB_PATH={db_path},"
+        f"DIM_MANUSCRIPT_BATCH_ID={batch_id},"
+        f"DIM_MANUSCRIPT_REPO={_REPO_ROOT}"
+    )
     if sessions_file is not None:
         env_vars += f",DIM_MANUSCRIPT_SESSIONS_FILE={Path(sessions_file).resolve()}"
     return [

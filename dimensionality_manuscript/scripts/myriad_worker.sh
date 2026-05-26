@@ -32,23 +32,38 @@ if [ -z "$DIM_MANUSCRIPT_SESSIONS_FILE" ]; then
     exit 1
 fi
 
-# ── Environment ───────────────────────────────────────────────────────────────
-# Activate the uv-managed virtual environment (created once on login node).
-# Default: ~/Scratch/envs/vrAnalysis — override by setting VRANALYSIS_VENV.
+# ── Repo (do not use $0 — SGE stages this script under /var/opt/sge/...) ─────
+REPO_DIR="${DIM_MANUSCRIPT_REPO:-$HOME/vrAnalysis}"
+cd "$REPO_DIR" || { echo "ERROR: could not cd to $REPO_DIR" >&2; exit 1; }
+
+# ── Python module + venv ──────────────────────────────────────────────────────
+# The venv links against libpython from the module; compute nodes do not load it
+# automatically (unlike an interactive login shell).
+if [ -f /etc/profile.d/modules.sh ]; then
+    # shellcheck source=/dev/null
+    source /etc/profile.d/modules.sh
+elif [ -f /usr/share/Modules/init/bash ]; then
+    # shellcheck source=/dev/null
+    source /usr/share/Modules/init/bash
+fi
+PYTHON_MODULE="${VRANALYSIS_PYTHON_MODULE:-python/3.11.4}"
+if ! module load "$PYTHON_MODULE"; then
+    echo "ERROR: module load $PYTHON_MODULE failed. Set VRANALYSIS_PYTHON_MODULE or see MYRIAD_SETUP.md." >&2
+    exit 1
+fi
+
 VENV="${VRANALYSIS_VENV:-$HOME/Scratch/envs/vrAnalysis}"
 if [ ! -f "$VENV/bin/activate" ]; then
     echo "ERROR: venv not found at $VENV. See MYRIAD_SETUP.md." >&2
     exit 1
 fi
+# shellcheck source=/dev/null
 source "$VENV/bin/activate"
-
-# ── Repo ─────────────────────────────────────────────────────────────────────
-REPO_DIR="$(dirname "$(dirname "$(dirname "$(realpath "$0")")")")"
-cd "$REPO_DIR" || { echo "ERROR: could not cd to $REPO_DIR" >&2; exit 1; }
 
 # ── Worker ───────────────────────────────────────────────────────────────────
 WORKER_ID="${JOB_ID}.${SGE_TASK_ID}"
-mkdir -p "$(dirname "$0")/logs"
+LOG_DIR="$REPO_DIR/dimensionality_manuscript/scripts/logs"
+mkdir -p "$LOG_DIR"
 echo "[$WORKER_ID] Starting on $(hostname) at $(date)"
 echo "[$WORKER_ID] DB:       $DIM_MANUSCRIPT_DB_PATH"
 echo "[$WORKER_ID] Batch:    $DIM_MANUSCRIPT_BATCH_ID"

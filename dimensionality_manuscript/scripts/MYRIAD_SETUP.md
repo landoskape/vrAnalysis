@@ -381,7 +381,9 @@ The `paths.toml` `storage` key must point to `~/Scratch/data` so that
 
 | Problem | Fix |
 |---------|-----|
-| `libpython3.11.so.1.0: cannot open shared object file` | Run `module load python/3.11.4` before activating the venv — the module provides the shared library the venv links against |
+| `libpython3.11.so.1.0: cannot open shared object file` | `myriad_worker.sh` loads `python/3.11.4` before the venv; if your module name differs, set `VRANALYSIS_PYTHON_MODULE` in `qsub -v` or edit the worker default |
+| `Repo: /var/opt/sge` in worker log | Old worker used `$0` to find the repo; SGE stages scripts under `/var/opt/sge`. Update `myriad_worker.sh` and re-submit (uses `DIM_MANUSCRIPT_REPO` from `sge_submit.py`) |
+| `mkdir: ... /var/opt/sge/.../logs: Permission denied` | Same as above — harmless warning on old scripts; logs still go to `#$ -o` under `~/vrAnalysis/.../logs/` |
 | `uv: command not found` on compute node | Check `~/.local/bin` is on PATH in `~/.bashrc`; or use full path `~/.local/bin/uv` |
 | `venv not found at ...` | Wrong `VRANALYSIS_VENV`; check path or unset env var to use default |
 | `paths.toml not found` | Create it from `paths.toml.example` (see §2f) |
