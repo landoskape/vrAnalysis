@@ -777,7 +777,7 @@ class LocPredConfig(AnalysisConfigBase):
         computing agreement loss.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     data_config_name: str = "default"
 
     norm_method: str = "zero-one"
@@ -815,7 +815,6 @@ class LocPredConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "norm_scale": [1.0, 50.0],
             "smooth_width": [None, 5.0],
         }
 
