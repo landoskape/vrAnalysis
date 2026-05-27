@@ -56,12 +56,10 @@ class PlacefieldConfig:
     repeat_noise_lengthscale : float
         Lengthscale for per-repeat GP noise kernel.
     peak_exponent : float or None
-        If set, reshape each thresholded field to a generalized Gaussian
-        A * exp(-(|theta - phi| / sigma)^p) centered on its GP peak (phi).
-        p=2 is Gaussian-like; p=1 is Laplace-like (pointy); p<1 is sharper.
-        None disables the transform (default GP bump shape after thresholding).
+        Exponent used for source GP smoothness. Values above 2 use an amplitude
+        warp after sampling because the corresponding kernel is not PSD.
     peak_sigma_scale : float
-        Multiplier on the width (sigma) estimated from each field before reshaping.
+        Width-like scale for the post-GP amplitude warp when peak_exponent > 2.
     """
 
     n_neurons: int = 500
@@ -73,6 +71,73 @@ class PlacefieldConfig:
     repeat_noise_lengthscale: float = 5.0
     peak_exponent: float | None = None
     peak_sigma_scale: float = 1.0
+
+
+@dataclass
+class TilburyPlacefieldConfig:
+    """Per-neuron double generalized-Gaussian place field generation (Tilbury model).
+
+    Each neuron's firing-rate curve is:
+
+        f(θ) = b + A₁·exp(-(|θ−φ₁|/σ₁±)^p₁) + A₂·exp(-(|θ−φ₂|/σ₂±)^p₂)
+
+    where σ± is piecewise: σ_left when θ < φ, σ_right when θ ≥ φ.
+
+    All per-neuron parameters are sampled independently from distributions whose
+    shape is controlled here. Setting distribution spreads to 0 and
+    ``amplitude_ratio_beta`` large recovers the single-symmetric-Gaussian limit.
+
+    Parameters
+    ----------
+    n_neurons, n_positions : int
+        Population and track size.
+    amplitude_mean : float
+        Mean of primary amplitude A₁ (log-normal).
+    amplitude_spread : float
+        Std of log(A₁). 0 → all neurons share ``amplitude_mean``.
+    amplitude_ratio_beta : float
+        Shape parameter β of Beta(1, β) for A₂/A₁. Large β → A₂ ≈ 0 (single
+        bump); β = 1 → uniform [0, 1].
+    peak_separation_scale : float
+        Std (in position bins) of the offset φ₂ − φ₁ ~ Normal(0, scale).
+        0 → both bumps coincide.
+    sigma_mean : float
+        Mean of bump width σ (log-normal, shared prior for both bumps).
+    sigma_spread : float
+        Std of log(σ). 0 → all bumps share ``sigma_mean``.
+    sigma_asym_std : float
+        Std of log(σ_right / σ_left) ~ LogNormal(0, sigma_asym_std).
+        0 → symmetric bumps (σ_left = σ_right).
+    exponent_mean : float
+        Mean of generalized-Gaussian exponent p (log-normal). 2 → standard Gaussian.
+    exponent_spread : float
+        Std of log(p). 0 → all neurons get ``exponent_mean`` exactly.
+    baseline : float
+        Additive baseline b shared across all neurons.
+    repeat_noise_alpha : float
+        Amplitude of per-repeat RBF-GP noise relative to the source field.
+    repeat_noise_lengthscale : float
+        Lengthscale of per-repeat GP noise kernel.
+    repeat_noise_threshold_pct : float
+        Percentile threshold applied per-neuron to each noisy repeat (0 = no threshold).
+        Values below the threshold are clipped to zero, creating sparse repeats.
+    """
+
+    n_neurons: int = 500
+    n_positions: int = 100
+    amplitude_mean: float = 10.0
+    amplitude_spread: float = 0.5
+    amplitude_ratio_beta: float = 5.0
+    peak_separation_scale: float = 20.0
+    sigma_mean: float = 8.0
+    sigma_spread: float = 0.3
+    sigma_asym_std: float = 0.0
+    exponent_mean: float = 2.0
+    exponent_spread: float = 0.0
+    baseline: float = 0.0
+    repeat_noise_alpha: float = 0.3
+    repeat_noise_lengthscale: float = 5.0
+    repeat_noise_threshold_pct: float = 60.0
 
 
 @dataclass
@@ -101,10 +166,12 @@ class SimulationConfig:
     n_repeats: int = 3
     normalize: bool = True
     center: bool = True
-    smooth_width: float = 3.0
+    smooth_width: float | None = None
     n_components: int = 80
     n_simulations: int = 10
     seed: int = 42
+    generation_path: str = "rbf"
+    tilbury: TilburyPlacefieldConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -141,49 +208,38 @@ def peaky_transform(
     fields: torch.Tensor,
     peak_exponent: float,
     sigma_scale: float = 1.0,
-    min_sigma: float = 0.5,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    """Reshape place fields to pointy generalized Gaussians at each row's peak.
+    """Warp thresholded GP fields toward generalized-Gaussian peak shapes.
 
-      Keeps peak location and amplitude from the input (typically a thresholded GP
-    sample) but replaces the spatial profile with
-      A * exp(-(|theta - phi| / sigma)^p).
+    This preserves the GP sample's peak locations and multi-peak structure while
+    changing the local amplitude profile. For ``peak_exponent=2`` and
+    ``sigma_scale=1``, the transform is the identity on positive values.
 
-      Parameters
-      ----------
-      fields : torch.Tensor
-          Non-negative fields, shape (n_neurons, n_positions).
-      peak_exponent : float
-          Exponent p in the generalized Gaussian. Smaller p yields pointier peaks.
-      sigma_scale : float
-          Multiplier on per-field width estimated from the input profile.
-      min_sigma : float
-          Lower bound on sigma in bin units.
-      eps : float
-          Small constant for numerical stability.
+    Parameters
+    ----------
+    fields : torch.Tensor
+        Non-negative fields, shape (n_neurons, n_positions).
+    peak_exponent : float
+        Target generalized-Gaussian exponent.
+    sigma_scale : float
+        Width-like scale applied in amplitude space. Larger values broaden peaks.
+    eps : float
+        Small constant for numerical stability.
 
-      Returns
-      -------
-      torch.Tensor
-          Transformed fields, same shape as ``fields``.
+    Returns
+    -------
+    torch.Tensor
+        Transformed fields, same shape as ``fields``.
     """
-    n_positions = fields.shape[1]
-    positions = torch.arange(n_positions, dtype=fields.dtype, device=fields.device)
+    fields = fields.clamp(min=0)
+    peak_amp = fields.amax(dim=1, keepdim=True).clamp(min=eps)
+    normalized = (fields / peak_amp).clamp(min=eps, max=1.0)
+    scale = max(float(sigma_scale), eps)
 
-    peak_idx = fields.argmax(dim=1)
-    peak_amp = fields.gather(1, peak_idx.unsqueeze(1)).squeeze(1).clamp(min=eps)
-    phi = peak_idx.to(fields.dtype)
-
-    dist = torch.abs(positions.unsqueeze(0) - phi.unsqueeze(1))
-    weights = fields.clamp(min=0)
-    mass = weights.sum(dim=1).clamp(min=eps)
-    mean_d = (weights * dist).sum(dim=1) / mass
-    var_d = (weights * (dist - mean_d.unsqueeze(1)) ** 2).sum(dim=1) / mass
-    sigma = (var_d.clamp(min=eps).sqrt() * sigma_scale).clamp(min=min_sigma)
-
-    profile = torch.exp(-((dist / sigma.unsqueeze(1)) ** peak_exponent))
-    return peak_amp.unsqueeze(1) * profile
+    warped_distance = -torch.log(normalized)
+    warped = torch.exp(-(warped_distance ** (peak_exponent / 2.0)) / (scale**peak_exponent))
+    return torch.where(fields > 0, peak_amp * warped, torch.zeros_like(fields))
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +267,8 @@ def generate_placefields(cfg: PlacefieldConfig, n_repeats: int, seed: int, devic
     threshold = torch.quantile(raw, cfg.threshold_pct / 100.0, dim=1, keepdim=True)
     source = cfg.amplitude * torch.relu(raw - threshold)  # (N, P)
 
-    # Need this adjustment for flat peaks (p > 2.0), will remove any multi-peaked gaussians!
+    # Kernels with exponent > 2 are not generally PSD, so sample an RBF GP and
+    # warp amplitudes instead of replacing the field with a single fitted peak.
     if cfg.peak_exponent is not None and cfg.peak_exponent > 2.0:
         source = peaky_transform(source, cfg.peak_exponent, sigma_scale=cfg.peak_sigma_scale)
 
@@ -222,6 +279,155 @@ def generate_placefields(cfg: PlacefieldConfig, n_repeats: int, seed: int, devic
             repeat = torch.relu(source + cfg.repeat_noise_alpha * noise)
         else:
             repeat = source.clone()
+        repeats.append(repeat)
+
+    return {"source": source, "repeats": repeats, "spatial_rank": estimate_spatial_rank(source)}
+
+
+def _sample_tilbury_params(cfg: TilburyPlacefieldConfig, seed: int, device: str) -> dict:
+    """Sample per-neuron Tilbury parameters from the distributions in ``cfg``.
+
+    Returns
+    -------
+    dict with keys ``phi``, ``A``, ``sigma_left``, ``sigma_right``, ``p``,
+    each a tensor of shape (n_neurons, 2) on ``device``.
+    """
+    N = cfg.n_neurons
+    P = cfg.n_positions
+
+    def _rng(s: int) -> torch.Generator:
+        return torch.Generator().manual_seed(s)  # CPU; tensors moved to device below
+
+    # Primary amplitude A1 ~ LogNormal(log(amplitude_mean), amplitude_spread)
+    if cfg.amplitude_spread > 0:
+        A1 = torch.exp(float(np.log(cfg.amplitude_mean)) + cfg.amplitude_spread * torch.randn(N, generator=_rng(seed)))
+    else:
+        A1 = torch.full((N,), float(cfg.amplitude_mean))
+
+    # Ratio A2/A1 ~ Beta(1, amplitude_ratio_beta) via inverse CDF: X = 1 - U^(1/beta)
+    U = torch.rand(N, generator=_rng(seed + 1))
+    ratio = 1.0 - U.pow(1.0 / max(cfg.amplitude_ratio_beta, 1e-6))
+    A2 = ratio * A1
+
+    # Primary peak position: uniform over [0, P)
+    phi1 = torch.rand(N, generator=_rng(seed + 2)) * P
+
+    # Secondary peak: phi1 + Normal(0, peak_separation_scale), clipped to [0, P-1]
+    if cfg.peak_separation_scale > 0:
+        offset = cfg.peak_separation_scale * torch.randn(N, generator=_rng(seed + 3))
+        phi2 = (phi1 + offset).clamp(0.0, float(P - 1))
+    else:
+        phi2 = phi1.clone()
+
+    # Sigma base per bump ~ LogNormal(log(sigma_mean), sigma_spread)
+    def _sigma_base(s: int) -> torch.Tensor:
+        if cfg.sigma_spread > 0:
+            return torch.exp(float(np.log(cfg.sigma_mean)) + cfg.sigma_spread * torch.randn(N, generator=_rng(s)))
+        return torch.full((N,), float(cfg.sigma_mean))
+
+    sb1 = _sigma_base(seed + 4)
+    sb2 = _sigma_base(seed + 5)
+
+    # Asymmetry: log(sigma_right / sigma_left) ~ Normal(0, sigma_asym_std)
+    # sigma_left  = sigma_base / sqrt(asym)
+    # sigma_right = sigma_base * sqrt(asym)   (geometric mean preserved)
+    def _asym(s: int) -> torch.Tensor:
+        if cfg.sigma_asym_std > 0:
+            return torch.exp(cfg.sigma_asym_std * torch.randn(N, generator=_rng(s)))
+        return torch.ones(N)
+
+    asym1 = _asym(seed + 6)
+    asym2 = _asym(seed + 7)
+    sigma1_left = sb1 / asym1.sqrt()
+    sigma1_right = sb1 * asym1.sqrt()
+    sigma2_left = sb2 / asym2.sqrt()
+    sigma2_right = sb2 * asym2.sqrt()
+
+    # Exponent p ~ LogNormal(log(exponent_mean), exponent_spread)
+    def _exponent(s: int) -> torch.Tensor:
+        if cfg.exponent_spread > 0:
+            return torch.exp(float(np.log(cfg.exponent_mean)) + cfg.exponent_spread * torch.randn(N, generator=_rng(s)))
+        return torch.full((N,), float(cfg.exponent_mean))
+
+    p1 = _exponent(seed + 8)
+    p2 = _exponent(seed + 9)
+
+    # Stack bump dimension: (N, 2)
+    params = {
+        "phi": torch.stack([phi1, phi2], dim=1),
+        "A": torch.stack([A1, A2], dim=1),
+        "sigma_left": torch.stack([sigma1_left, sigma2_left], dim=1),
+        "sigma_right": torch.stack([sigma1_right, sigma2_right], dim=1),
+        "p": torch.stack([p1, p2], dim=1),
+    }
+    return {k: v.to(device) for k, v in params.items()}
+
+
+def _eval_tilbury(
+    theta: torch.Tensor,
+    phi: torch.Tensor,
+    A: torch.Tensor,
+    sigma_left: torch.Tensor,
+    sigma_right: torch.Tensor,
+    p: torch.Tensor,
+    baseline: float = 0.0,
+) -> torch.Tensor:
+    """Evaluate double generalized-Gaussian fields for all neurons.
+
+    Parameters
+    ----------
+    theta : (P,) float tensor — position values
+    phi, A, sigma_left, sigma_right, p : (N, 2) float tensors — per-neuron params
+    baseline : float — additive offset
+
+    Returns
+    -------
+    (N, P) float tensor
+    """
+    diff = theta[None, None, :] - phi[:, :, None]  # (N, 2, P)
+    sigma = torch.where(diff < 0, sigma_left[:, :, None], sigma_right[:, :, None])  # (N, 2, P)
+    bumps = A[:, :, None] * torch.exp(-((torch.abs(diff) / sigma.clamp(min=1e-6)) ** p[:, :, None]))  # (N, 2, P)
+    return baseline + bumps.sum(dim=1)  # (N, P)
+
+
+def generate_placefields_tilbury(cfg: TilburyPlacefieldConfig, n_repeats: int, seed: int, device: str = "cpu") -> dict:
+    """Generate Tilbury double-Gaussian place field repeats.
+
+    Same return structure as ``generate_placefields``:
+
+    Returns
+    -------
+    dict with:
+        source  : (n_neurons, n_positions) — thresholded source fields
+        repeats : list of n_repeats tensors, each (n_neurons, n_positions)
+        spatial_rank : int
+    """
+
+    def rng(s: int) -> torch.Generator:
+        return torch.Generator(device=device).manual_seed(s)
+
+    N, P = cfg.n_neurons, cfg.n_positions
+    theta = torch.arange(P, dtype=torch.float32, device=device)
+
+    params = _sample_tilbury_params(cfg, seed, device)
+    # Source is the equation directly — no thresholding.
+    # A >= 0 and exp >= 0, so raw >= baseline (>= 0 for default baseline=0).
+    source = _eval_tilbury(theta, params["phi"], params["A"], params["sigma_left"], params["sigma_right"], params["p"], cfg.baseline)  # (N, P)
+
+    # Per-repeat spatially-correlated noise — RBF GP, same model as rbf path
+    K_noise = _rbf_kernel(P, cfg.repeat_noise_lengthscale, device)
+    repeats = []
+    for r in range(n_repeats):
+        if cfg.repeat_noise_alpha > 0:
+            noise = _sample_gp(K_noise, N, rng(seed + 100 * (r + 1)))  # (N, P)
+            noisy = source + cfg.repeat_noise_alpha * noise
+        else:
+            noisy = source
+        if cfg.repeat_noise_threshold_pct > 0:
+            thr = torch.quantile(noisy, cfg.repeat_noise_threshold_pct / 100.0, dim=1, keepdim=True)
+            repeat = torch.relu(noisy - thr)
+        else:
+            repeat = torch.relu(noisy)
         repeats.append(repeat)
 
     return {"source": source, "repeats": repeats, "spatial_rank": estimate_spatial_rank(source)}
@@ -331,11 +537,16 @@ def run_analysis(repeats: list[torch.Tensor], source: torch.Tensor, normalize: b
 
 
 def run_simulation(cfg: SimulationConfig, device: str = "cpu") -> dict:
-    N = cfg.placefield.n_neurons
-    P = cfg.placefield.n_positions
     R = cfg.n_repeats
+    if cfg.generation_path == "tilbury":
+        if cfg.tilbury is None:
+            raise ValueError("cfg.tilbury must be set when generation_path='tilbury'")
+        N, P = cfg.tilbury.n_neurons, cfg.tilbury.n_positions
+        pf_data = generate_placefields_tilbury(cfg.tilbury, R, cfg.seed, device)
+    else:
+        N, P = cfg.placefield.n_neurons, cfg.placefield.n_positions
+        pf_data = generate_placefields(cfg.placefield, R, cfg.seed, device)
 
-    pf_data = generate_placefields(cfg.placefield, R, cfg.seed, device)
     noise = generate_noise(cfg.noise_level, N, P, R, cfg.seed + 2000, device)
 
     repeats = assemble(pf_data["repeats"], noise)
@@ -383,11 +594,18 @@ def run_simulations(cfg: SimulationConfig, device: str = "cpu") -> dict:
 # ---------------------------------------------------------------------------
 
 
-def plot_placefields(cfg: SimulationConfig, device: str = "cpu") -> plt.Figure:
+def plot_placefields(cfg: SimulationConfig, num_show: int = 5, device: str = "cpu") -> plt.Figure:
     """Heatmaps of train and test placefields (with all noise), sorted by train peak position."""
-    N, P, R = cfg.placefield.n_neurons, cfg.placefield.n_positions, cfg.n_repeats
+    R = cfg.n_repeats
+    if cfg.generation_path == "tilbury":
+        if cfg.tilbury is None:
+            raise ValueError("cfg.tilbury must be set when generation_path='tilbury'")
+        N, P = cfg.tilbury.n_neurons, cfg.tilbury.n_positions
+        pf_data = generate_placefields_tilbury(cfg.tilbury, R, cfg.seed, device)
+    else:
+        N, P = cfg.placefield.n_neurons, cfg.placefield.n_positions
+        pf_data = generate_placefields(cfg.placefield, R, cfg.seed, device)
 
-    pf_data = generate_placefields(cfg.placefield, R, cfg.seed, device)
     noise = generate_noise(cfg.noise_level, N, P, R, cfg.seed + 2000, device)
     repeats = assemble(pf_data["repeats"], noise)
 
@@ -399,17 +617,127 @@ def plot_placefields(cfg: SimulationConfig, device: str = "cpu") -> plt.Figure:
     sort_idx = np.argsort(np.argmax(train, axis=1))
 
     vmax = max(train.max(), test.max())
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
 
-    for ax, data, title in [(axes[0], train, "Train (repeat 1)"), (axes[1], test, "Test (repeat 2)")]:
-        im = ax.imshow(data[sort_idx], aspect="auto", interpolation="none", vmin=0, vmax=vmax)
-        ax.set_title(title)
-        ax.set_xlabel("Position bin")
-        ax.set_ylabel("Neuron (sorted by train peak)")
-        plt.colorbar(im, ax=ax, label="activity")
+    num_neurons = train.shape[0]
+    idx_neurons_show = np.random.choice(num_neurons, size=num_show, replace=False)
+    colormap = plt.get_cmap("viridis")
+    color_vals = np.linspace(0, 1, num_show)
+    colors = [colormap(val) for val in color_vals]
+
+    for icol, (data, title) in enumerate(zip([train, test], ["Train (repeat 1)", "Test (repeat 2)"])):
+        im = axes[0, icol].imshow(data[sort_idx], aspect="auto", interpolation="none", vmin=0, vmax=vmax)
+        axes[0, icol].set_title(title)
+        axes[0, icol].set_xlabel("Position bin")
+        axes[0, icol].set_ylabel("Neuron (sorted by train peak)")
+        plt.colorbar(im, ax=axes[0, icol], label="activity")
+
+        for ineuron, neuron in enumerate(idx_neurons_show):
+            axes[1, icol].plot(data[neuron, :], color=colors[ineuron])
+
+        axes[1, icol].set_xlabel("Position bin")
+        axes[1, icol].set_ylabel("Activity")
 
     burn_in = pf_data["spatial_rank"]
     fig.suptitle(f"spatial_rank={pf_data['spatial_rank']} burn_in={burn_in}", fontsize=10)
+    plt.tight_layout()
+    return fig
+
+
+def plot_example_placefields(
+    cfg: SimulationConfig,
+    num_examples: int = 20,
+    seed: int | None = None,
+    normalize: bool = True,
+    center_align: bool = True,
+    with_noise: bool = False,
+    device: str = "cpu",
+) -> plt.Figure:
+    """Overlaid source place fields, peak-aligned to the position axis center.
+
+    Each neuron's field is rolled so its argmax sits at P//2, removing preferred
+    position as a confound and exposing shape variety directly.  All-zero fields
+    (fully silenced by threshold) are excluded before sampling.
+
+    Parameters
+    ----------
+    cfg : SimulationConfig
+        Config for either "rbf" or "tilbury" generation path.
+    num_examples : int
+        Number of example neurons to draw and overlay.
+    seed : int or None
+        RNG seed for generation; defaults to ``cfg.seed``.
+    normalize : bool
+        If True, normalize each field by its source peak before plotting.
+    center_align : bool
+        If True, roll each field so its argmax (from source) lands at P//2.
+    with_noise : bool
+        If True, plot the first noisy repeat instead of the clean source.
+        Peak alignment is still derived from the source argmax.
+    device : str
+        Torch device.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if seed is None:
+        seed = cfg.seed
+
+    R = cfg.n_repeats
+    if cfg.generation_path == "tilbury":
+        if cfg.tilbury is None:
+            raise ValueError("cfg.tilbury must be set when generation_path='tilbury'")
+        P = cfg.tilbury.n_positions
+        pf_data = generate_placefields_tilbury(cfg.tilbury, R, seed, device)
+    else:
+        P = cfg.placefield.n_positions
+        pf_data = generate_placefields(cfg.placefield, R, seed, device)
+
+    source = pf_data["source"].cpu().numpy()  # (N, P) — used for alignment + active mask
+    display = pf_data["repeats"][0].cpu().numpy() if with_noise else source  # (N, P)
+
+    # Drop all-zero neurons (based on source, not repeat)
+    active = np.where(source.max(axis=1) > 0)[0]
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(active, size=min(num_examples, len(active)), replace=False)
+
+    src_fields = source[idx]  # for alignment reference
+    fields = display[idx]  # what gets plotted
+
+    # Peak-align using source argmax as reference shift
+    if center_align:
+        center = P // 2
+        shifts = [center - int(np.argmax(f)) for f in src_fields]
+        aligned = np.stack([np.roll(f, s) for f, s in zip(fields, shifts)])
+        src_peak = np.stack([np.roll(f, s) for f, s in zip(src_fields, shifts)])
+    else:
+        center = 0
+        aligned = fields
+        src_peak = src_fields
+
+    if normalize:
+        peak = src_peak.max(axis=1, keepdims=True).clip(min=1e-8)
+        aligned = aligned / peak
+
+    x = np.arange(P) - center  # offset from peak
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    cmap = plt.get_cmap("tab10")
+    for i, f in enumerate(aligned):
+        ax.plot(x, f, alpha=1.0, lw=1.0, color=cmap(i % 10))
+
+    ax.axvline(0, color="gray", lw=0.8, ls="--", alpha=0.6)
+
+    ax.set_xlabel("Position offset from peak (bins)")
+    ax.set_ylabel("Activity" + (" (normalized)" if normalize else ""))
+    if cfg.generation_path == "tilbury" and cfg.tilbury is not None:
+        tb = cfg.tilbury
+        detail = f"p_m={tb.exponent_mean:.1f}  sig_asym={tb.sigma_asym_std:.1f}  A2_beta={tb.amplitude_ratio_beta:.1f}"
+    else:
+        detail = f"ls={cfg.placefield.lengthscale:.1f}  peak_p={cfg.placefield.peak_exponent}"
+    noise_tag = " (repeat)" if with_noise else ""
+    ax.set_title(f"Example placefields{noise_tag} — {cfg.generation_path} — {detail}")
     plt.tight_layout()
     return fig
 
@@ -444,11 +772,14 @@ def plot_population(repeats: list[torch.Tensor], extras: dict, cfg: SimulationCo
     axes[0].set_ylabel("Neuron (sorted by source peak)")
 
     sr = extras["spatial_rank"]
+    if cfg.generation_path == "tilbury" and cfg.tilbury is not None:
+        path_detail = f"path=tilbury  p_m={cfg.tilbury.exponent_mean:.1f}  A2_beta={cfg.tilbury.amplitude_ratio_beta:.1f}"
+    else:
+        path_detail = (
+            f"path=rbf  pf_amp={cfg.placefield.amplitude:.1f}  pf_ls={cfg.placefield.lengthscale:.1f}  peak_p={cfg.placefield.peak_exponent}"
+        )
     fig.suptitle(
-        f"spatial_rank={sr}  "
-        f"pf_amp={cfg.placefield.amplitude:.1f} pf_ls={cfg.placefield.lengthscale:.1f}  "
-        f"peak_p={cfg.placefield.peak_exponent}  "
-        f"noise={cfg.noise_level:.1f}  normalize={cfg.normalize}",
+        f"spatial_rank={sr}  {path_detail}  noise={cfg.noise_level:.1f}  normalize={cfg.normalize}",
         fontsize=10,
     )
     plt.tight_layout()

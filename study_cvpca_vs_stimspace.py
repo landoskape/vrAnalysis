@@ -30,9 +30,11 @@ from dimilibi.helpers import fit_powerlaw_decay, gaussian_filter
 from my_precious_cvpca_simulation import (
     PlacefieldConfig,
     SimulationConfig,
+    TilburyPlacefieldConfig,
     assemble,
     generate_noise,
     generate_placefields,
+    generate_placefields_tilbury,
     normalize_by_max,
 )
 
@@ -43,7 +45,7 @@ from my_precious_cvpca_simulation import (
 START_DIM = 8
 END_DIM = 20
 
-_PARAM_NAMES = [
+_PARAM_NAMES_RBF = [
     "pf_amplitude",
     "pf_lengthscale",
     "pf_threshold_pct",
@@ -52,11 +54,53 @@ _PARAM_NAMES = [
     "peak_exponent",
     "peak_sigma_scale",
     "noise_level",
+    "smooth",
     "smooth_width",
     "normalize",
     "center",
 ]
-_PARAM_LABELS = ["pf amp", "pf ls", "thr%", "rep a", "rep ls", "peak p", "s scale", "noise", "smooth", "norm", "center"]
+_PARAM_LABELS_RBF = ["pf amp", "pf ls", "thr%", "rep a", "rep ls", "peak p", "s scale", "noise", "smooth", "norm", "center"]
+
+# Legacy alias so existing code using _PARAM_NAMES still works
+_PARAM_NAMES = _PARAM_NAMES_RBF
+_PARAM_LABELS = _PARAM_LABELS_RBF
+
+_PARAM_NAMES_TILBURY = [
+    "tb_amplitude_mean",
+    "tb_amplitude_spread",
+    "tb_amplitude_ratio_beta",
+    "tb_peak_separation_scale",
+    "tb_sigma_mean",
+    "tb_sigma_spread",
+    "tb_sigma_asym_std",
+    "tb_exponent_mean",
+    "tb_exponent_spread",
+    "tb_repeat_noise_alpha",
+    "tb_repeat_noise_lengthscale",
+    "tb_repeat_noise_threshold_pct",
+    "noise_level",
+    "smooth_width",
+    "normalize",
+    "center",
+]
+_PARAM_LABELS_TILBURY = [
+    "amp mean",
+    "amp std",
+    "A2/A1 beta",
+    "peak sep",
+    "sig mean",
+    "sig std",
+    "sig asym",
+    "p mean",
+    "p std",
+    "rep alpha",
+    "rep ls",
+    "rep thr",
+    "noise",
+    "smooth",
+    "norm",
+    "center",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +130,7 @@ def stimspace_fit_and_score(
     """
     G_train = make_G(r0)
     cov_pf_test = torch.cov(r1)  # (N, N)
-    pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (P, P)
+    pf_pf_kernel = G_train.T @ G_train  # (P, P) # (NOTE: Getting rid of the central covariance matrix here --- using pf direction instead!)
 
     n_comp = min(n_components, pf_pf_kernel.shape[0])
     _, eigvecs = torch.linalg.eigh(pf_pf_kernel)
@@ -120,16 +164,25 @@ def stimspace_spectrum(
 # ---------------------------------------------------------------------------
 
 
+def _dispatch_placefields(cfg: SimulationConfig, seed: int, device: str) -> tuple[dict, int, int]:
+    """Return (pf_data, N, P) dispatching on cfg.generation_path."""
+    if cfg.generation_path == "tilbury":
+        if cfg.tilbury is None:
+            raise ValueError("cfg.tilbury must be set when generation_path='tilbury'")
+        tb = cfg.tilbury
+        return generate_placefields_tilbury(tb, cfg.n_repeats, seed, device), tb.n_neurons, tb.n_positions
+    pf = cfg.placefield
+    return generate_placefields(pf, cfg.n_repeats, seed, device), pf.n_neurons, pf.n_positions
+
+
 def run_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict:
     """Single-seed rCVPCA-fixed vs stimspace analysis.
 
     Returns dict with alpha_cvpca, alpha_stim, ratio (0.0 on failure).
     """
-    N = cfg.placefield.n_neurons
-    P = cfg.placefield.n_positions
     R = cfg.n_repeats
 
-    pf_data = generate_placefields(cfg.placefield, R, seed, device)
+    pf_data, N, P = _dispatch_placefields(cfg, seed, device)
     noise = generate_noise(cfg.noise_level, N, P, R, seed + 2000, device)
     repeats = assemble(pf_data["repeats"], noise)
 
@@ -140,7 +193,10 @@ def run_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict:
     n_comp = min(cfg.n_components, N - 1, P - 1)
 
     # rCVPCA fixed: fit on smooth(r0), score on (r2, r3)
-    r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+    if cfg.smooth_width is not None:
+        r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+    else:
+        r0_smooth = r0
     cvpca = CVPCA(num_components=n_comp, center=cfg.center, on_stimuli=True).fit(r0_smooth)
     reg_cov = cvpca.score(r2, r3).cpu().numpy()
 
@@ -184,11 +240,9 @@ def run_full_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict
         source_comps_n     : (N, n_comp) source SVD left vectors (neuron space)
         source_comps_p     : (P, n_comp) source SVD right vectors (position space)
     """
-    N = cfg.placefield.n_neurons
-    P = cfg.placefield.n_positions
     R = cfg.n_repeats
 
-    pf_data = generate_placefields(cfg.placefield, R, seed, device)
+    pf_data, N, P = _dispatch_placefields(cfg, seed, device)
     noise = generate_noise(cfg.noise_level, N, P, R, seed + 2000, device)
     repeats = assemble(pf_data["repeats"], noise)
     if cfg.normalize:
@@ -197,7 +251,11 @@ def run_full_pair(cfg: SimulationConfig, seed: int, device: str = "cpu") -> dict
     r0, r1, r2, r3 = repeats[0], repeats[1], repeats[2], repeats[3]
     n_comp = min(cfg.n_components, N - 1, P - 1)
 
-    r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+    if cfg.smooth_width is not None:
+        r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+    else:
+        r0_smooth = r0
+
     cvpca = CVPCA(num_components=n_comp, center=cfg.center, on_stimuli=True).fit(r0_smooth)
     reg_cov = cvpca.score(r2, r3).cpu().numpy()
     cvpca_components = cvpca.pca.get_components().cpu().numpy()  # (N, n_comp)
@@ -252,7 +310,7 @@ def run_full_simulations(cfg: SimulationConfig, n_sims: int, device: str = "cpu"
 # ---------------------------------------------------------------------------
 
 
-def suggest_config(trial: optuna.Trial, base: SimulationConfig) -> SimulationConfig:
+def suggest_config_rbf(trial: optuna.Trial, base: SimulationConfig) -> SimulationConfig:
     pf = replace(
         base.placefield,
         amplitude=trial.suggest_float("pf_amplitude", 2.0, 30.0, log=True),
@@ -260,20 +318,64 @@ def suggest_config(trial: optuna.Trial, base: SimulationConfig) -> SimulationCon
         threshold_pct=trial.suggest_float("pf_threshold_pct", 20.0, 85.0),
         repeat_noise_alpha=trial.suggest_float("pf_repeat_noise_alpha", 0.0, 0.9),
         repeat_noise_lengthscale=trial.suggest_float("pf_repeat_noise_lengthscale", 1.0, 15.0, log=True),
-        peak_exponent=trial.suggest_float("peak_exponent", 0.1, 4.0),
+        peak_exponent=trial.suggest_float("peak_exponent", 0.1, 2.0),
         peak_sigma_scale=trial.suggest_float("peak_sigma_scale", 0.1, 3.0),
     )
+    smooth = trial.suggest_categorical("smooth", [True, False])
+    smooth_width = None if not smooth else trial.suggest_float("smooth_width", 0.5, 20.0, log=True)
     return replace(
         base,
         placefield=pf,
-        noise_level=trial.suggest_float("noise_level", 0.1, 5.0, log=True),
-        smooth_width=trial.suggest_float("smooth_width", 0.5, 20.0, log=True),
+        noise_level=trial.suggest_float("noise_level", 0.001, 5.0, log=True),
+        smooth_width=smooth_width,
         normalize=trial.suggest_categorical("normalize", [True, False]),
         center=trial.suggest_categorical("center", [True, False]),
     )
 
 
-def config_from_params(params: dict, base: SimulationConfig) -> SimulationConfig:
+def suggest_config_tilbury(trial: optuna.Trial, base: SimulationConfig) -> SimulationConfig:
+    tb_base = (
+        base.tilbury
+        if base.tilbury is not None
+        else TilburyPlacefieldConfig(
+            n_neurons=base.placefield.n_neurons,
+            n_positions=base.placefield.n_positions,
+        )
+    )
+    tb = replace(
+        tb_base,
+        amplitude_mean=trial.suggest_float("tb_amplitude_mean", 2.0, 30.0, log=True),
+        amplitude_spread=trial.suggest_float("tb_amplitude_spread", 0.0, 1.5),
+        amplitude_ratio_beta=trial.suggest_float("tb_amplitude_ratio_beta", 1.0, 50.0, log=True),
+        peak_separation_scale=trial.suggest_float("tb_peak_separation_scale", 0.0, 50.0),
+        sigma_mean=trial.suggest_float("tb_sigma_mean", 2.0, 20.0, log=True),
+        sigma_spread=trial.suggest_float("tb_sigma_spread", 0.0, 1.5),
+        sigma_asym_std=trial.suggest_float("tb_sigma_asym_std", 0.0, 1.5),
+        exponent_mean=trial.suggest_float("tb_exponent_mean", 0.5, 4.0, log=True),
+        exponent_spread=trial.suggest_float("tb_exponent_spread", 0.0, 1.0),
+        repeat_noise_alpha=trial.suggest_float("tb_repeat_noise_alpha", 0.0, 0.9),
+        repeat_noise_lengthscale=trial.suggest_float("tb_repeat_noise_lengthscale", 1.0, 15.0, log=True),
+        repeat_noise_threshold_pct=trial.suggest_float("tb_repeat_noise_threshold_pct", 0.0, 85.0),
+    )
+    smooth = trial.suggest_categorical("smooth", [True, False])
+    smooth_width = None if not smooth else trial.suggest_float("smooth_width", 0.5, 20.0, log=True)
+    return replace(
+        base,
+        tilbury=tb,
+        noise_level=trial.suggest_float("noise_level", 0.001, 5.0, log=True),
+        smooth_width=smooth_width,
+        normalize=trial.suggest_categorical("normalize", [True, False]),
+        center=trial.suggest_categorical("center", [True, False]),
+    )
+
+
+def suggest_config(trial: optuna.Trial, base: SimulationConfig) -> SimulationConfig:
+    if base.generation_path == "tilbury":
+        return suggest_config_tilbury(trial, base)
+    return suggest_config_rbf(trial, base)
+
+
+def config_from_params_rbf(params: dict, base: SimulationConfig) -> SimulationConfig:
     pf = replace(
         base.placefield,
         amplitude=params["pf_amplitude"],
@@ -284,14 +386,56 @@ def config_from_params(params: dict, base: SimulationConfig) -> SimulationConfig
         peak_exponent=params["peak_exponent"],
         peak_sigma_scale=params["peak_sigma_scale"],
     )
+    smooth_width = params.get("smooth_width", None)
     return replace(
         base,
         placefield=pf,
         noise_level=params["noise_level"],
-        smooth_width=params["smooth_width"],
+        smooth_width=smooth_width,
         normalize=params["normalize"],
         center=params["center"],
     )
+
+
+def config_from_params_tilbury(params: dict, base: SimulationConfig) -> SimulationConfig:
+    tb_base = (
+        base.tilbury
+        if base.tilbury is not None
+        else TilburyPlacefieldConfig(
+            n_neurons=base.placefield.n_neurons,
+            n_positions=base.placefield.n_positions,
+        )
+    )
+    tb = replace(
+        tb_base,
+        amplitude_mean=params["tb_amplitude_mean"],
+        amplitude_spread=params["tb_amplitude_spread"],
+        amplitude_ratio_beta=params["tb_amplitude_ratio_beta"],
+        peak_separation_scale=params["tb_peak_separation_scale"],
+        sigma_mean=params["tb_sigma_mean"],
+        sigma_spread=params["tb_sigma_spread"],
+        sigma_asym_std=params["tb_sigma_asym_std"],
+        exponent_mean=params["tb_exponent_mean"],
+        exponent_spread=params["tb_exponent_spread"],
+        repeat_noise_alpha=params["tb_repeat_noise_alpha"],
+        repeat_noise_lengthscale=params["tb_repeat_noise_lengthscale"],
+        repeat_noise_threshold_pct=params["tb_repeat_noise_threshold_pct"],
+    )
+    smooth_width = params.get("smooth_width", None)
+    return replace(
+        base,
+        tilbury=tb,
+        noise_level=params["noise_level"],
+        smooth_width=smooth_width,
+        normalize=params["normalize"],
+        center=params["center"],
+    )
+
+
+def config_from_params(params: dict, base: SimulationConfig) -> SimulationConfig:
+    if base.generation_path == "tilbury":
+        return config_from_params_tilbury(params, base)
+    return config_from_params_rbf(params, base)
 
 
 def run_study(
@@ -304,11 +448,15 @@ def run_study(
     study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
 
     def objective(trial: optuna.Trial) -> float:
-        cfg = suggest_config(trial, base)
-        result = run_pair_avg(cfg, n_sims_per_trial, device)
-        trial.set_user_attr("alpha_cvpca", result["alpha_cvpca"])
-        trial.set_user_attr("alpha_stim", result["alpha_stim"])
-        return result["ratio"]
+        try:
+            cfg = suggest_config(trial, base)
+            result = run_pair_avg(cfg, n_sims_per_trial, device)
+            trial.set_user_attr("alpha_cvpca", result["alpha_cvpca"])
+            trial.set_user_attr("alpha_stim", result["alpha_stim"])
+            return result["ratio"]
+        except Exception as exc:
+            trial.set_user_attr("error", repr(exc))
+            raise optuna.TrialPruned() from exc
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
@@ -325,46 +473,92 @@ def _completed(study: optuna.Study) -> tuple[list, np.ndarray]:
     return trials, np.array([t.value for t in trials])
 
 
+def _format_smooth_width(t: optuna.Trial) -> str:
+    smooth_width = t.params.get("smooth_width", None)
+    if smooth_width is None:
+        return "None"
+    else:
+        return f"{smooth_width:.2f}"
+
+
+def _study_is_tilbury(study: optuna.Study) -> bool:
+    """Detect generation path from trial params (tilbury params start with 'tb_')."""
+    trials, _ = _completed(study)
+    if not trials:
+        return False
+    return any(k.startswith("tb_") for k in trials[0].params)
+
+
 def print_best_configs(study: optuna.Study, top_n: int = 5) -> None:
     trials, _ = _completed(study)
     top = sorted(trials, key=lambda t: t.value, reverse=True)[:top_n]
+    is_tilbury = _study_is_tilbury(study)
 
     print(f"\n=== Top {top_n} configs by alpha_cvpca/alpha_stim ratio ===")
     for rank, t in enumerate(top, 1):
         p = t.params
-        a_cv = t.user_attrs.get("alpha_cvpca", "?")
-        a_st = t.user_attrs.get("alpha_stim", "?")
-        print(
-            f"#{rank}  ratio={t.value:.4f}  trial={t.number}"
-            f"  alpha_cvpca={a_cv:.3f}  alpha_stim={a_st:.3f}\n"
-            f"    pf_amp={p['pf_amplitude']:.2f}  ls={p['pf_lengthscale']:.2f}"
-            f"  thr={p['pf_threshold_pct']:.1f}  rep_a={p['pf_repeat_noise_alpha']:.2f}"
-            f"  rep_ls={p['pf_repeat_noise_lengthscale']:.2f}\n"
-            f"    peak_p={p['peak_exponent']:.2f}  s_scale={p['peak_sigma_scale']:.2f}"
-            f"  noise={p['noise_level']:.2f}  smooth={p['smooth_width']:.2f}"
-            f"  norm={p['normalize']}  center={p['center']}"
-        )
+        a_cv = t.user_attrs.get("alpha_cvpca", float("nan"))
+        a_st = t.user_attrs.get("alpha_stim", float("nan"))
+        if is_tilbury:
+            print(
+                f"#{rank}  ratio={t.value:.4f}  trial={t.number}"
+                f"  alpha_cvpca={a_cv:.3f}  alpha_stim={a_st:.3f}\n"
+                f"    amp_m={p['tb_amplitude_mean']:.2f}  amp_s={p['tb_amplitude_spread']:.2f}"
+                f"  A2_beta={p['tb_amplitude_ratio_beta']:.2f}  sep={p['tb_peak_separation_scale']:.2f}\n"
+                f"    sig_m={p['tb_sigma_mean']:.2f}  sig_s={p['tb_sigma_spread']:.2f}"
+                f"  sig_asym={p['tb_sigma_asym_std']:.2f}  p_m={p['tb_exponent_mean']:.2f}"
+                f"  p_s={p['tb_exponent_spread']:.2f}\n"
+                f"    rep_a={p['tb_repeat_noise_alpha']:.2f}  rep_ls={p['tb_repeat_noise_lengthscale']:.2f}"
+                f"  rep_thr={p['tb_repeat_noise_threshold_pct']:.1f}"
+                f"  noise={p['noise_level']:.3f}"
+                f"  smooth={_format_smooth_width(t)}  norm={p['normalize']}  center={p['center']}"
+            )
+        else:
+            print(
+                f"#{rank}  ratio={t.value:.4f}  trial={t.number}"
+                f"  alpha_cvpca={a_cv:.3f}  alpha_stim={a_st:.3f}\n"
+                f"    pf_amp={p['pf_amplitude']:.2f}  ls={p['pf_lengthscale']:.2f}"
+                f"  thr={p['pf_threshold_pct']:.1f}  rep_a={p['pf_repeat_noise_alpha']:.2f}"
+                f"  rep_ls={p['pf_repeat_noise_lengthscale']:.2f}\n"
+                f"    peak_p={p['peak_exponent']:.2f}  s_scale={p['peak_sigma_scale']:.2f}"
+                f"  noise={p['noise_level']:.2f}  smooth={_format_smooth_width(t)}"
+                f"  norm={p['normalize']}  center={p['center']}"
+            )
 
 
 def plot_study(study: optuna.Study) -> dict[str, go.Figure]:
     trials, values = _completed(study)
     trial_nums = np.array([t.number for t in trials])
     running_best = np.maximum.accumulate(values)
+    is_tilbury = _study_is_tilbury(study)
+    param_names = _PARAM_NAMES_TILBURY if is_tilbury else _PARAM_NAMES_RBF
+    param_labels = _PARAM_LABELS_TILBURY if is_tilbury else _PARAM_LABELS_RBF
 
-    hover = [
-        (
-            f"trial={t.number}  ratio={t.value:.4f}<br>"
-            f"a_cv={t.user_attrs.get('alpha_cvpca', '?'):.3f}  a_st={t.user_attrs.get('alpha_stim', '?'):.3f}<br>"
-            f"pf_amp={t.params['pf_amplitude']:.2f}  ls={t.params['pf_lengthscale']:.2f}"
-            f"  thr={t.params['pf_threshold_pct']:.1f}<br>"
-            f"rep_a={t.params['pf_repeat_noise_alpha']:.2f}"
-            f"  rep_ls={t.params['pf_repeat_noise_lengthscale']:.2f}<br>"
-            f"peak_p={t.params['peak_exponent']:.2f}  s_scale={t.params['peak_sigma_scale']:.2f}<br>"
-            f"noise={t.params['noise_level']:.2f}  smooth={t.params['smooth_width']:.2f}"
-            f"  norm={t.params['normalize']}  center={t.params['center']}"
+    def _hover(t: optuna.Trial) -> str:
+        p = t.params
+        a_cv = t.user_attrs.get("alpha_cvpca", float("nan"))
+        a_st = t.user_attrs.get("alpha_stim", float("nan"))
+        base = f"trial={t.number}  ratio={t.value:.4f}<br>a_cv={a_cv:.3f}  a_st={a_st:.3f}<br>"
+        if is_tilbury:
+            return (
+                base + f"amp_m={p['tb_amplitude_mean']:.2f}  A2_beta={p['tb_amplitude_ratio_beta']:.2f}"
+                f"  sep={p['tb_peak_separation_scale']:.2f}<br>"
+                f"sig_m={p['tb_sigma_mean']:.2f}  sig_asym={p['tb_sigma_asym_std']:.2f}"
+                f"  p_m={p['tb_exponent_mean']:.2f}  p_s={p['tb_exponent_spread']:.2f}<br>"
+                f"noise={p['noise_level']:.3f}  smooth={_format_smooth_width(t)}"
+                f"  norm={p['normalize']}  center={p['center']}"
+            )
+        return (
+            base + f"pf_amp={p['pf_amplitude']:.2f}  ls={p['pf_lengthscale']:.2f}"
+            f"  thr={p['pf_threshold_pct']:.1f}<br>"
+            f"rep_a={p['pf_repeat_noise_alpha']:.2f}"
+            f"  rep_ls={p['pf_repeat_noise_lengthscale']:.2f}<br>"
+            f"peak_p={p['peak_exponent']:.2f}  s_scale={p['peak_sigma_scale']:.2f}<br>"
+            f"noise={p['noise_level']:.2f}  smooth={_format_smooth_width(t)}"
+            f"  norm={p['normalize']}  center={p['center']}"
         )
-        for t in trials
-    ]
+
+    hover = [_hover(t) for t in trials]
 
     fig_hist = go.Figure()
     fig_hist.add_trace(
@@ -387,8 +581,8 @@ def plot_study(study: optuna.Study) -> dict[str, go.Figure]:
         width=800,
     )
 
-    all_params = {name: [t.params[name] for t in trials] for name in _PARAM_NAMES}
-    dimensions = [dict(label=lbl, values=all_params[name]) for name, lbl in zip(_PARAM_NAMES, _PARAM_LABELS)]
+    all_params = {name: [t.params.get(name, None) for t in trials] for name in param_names}
+    dimensions = [dict(label=lbl, values=all_params[name]) for name, lbl in zip(param_names, param_labels)]
     dimensions.append(dict(label="ratio", values=values.tolist()))
 
     fig_par = go.Figure(
@@ -409,13 +603,19 @@ def plot_study(study: optuna.Study) -> dict[str, go.Figure]:
 
 def _collect_spectra(cfg: SimulationConfig, n_sims: int, device: str) -> dict:
     """Run n_sims seeds, collect per-seed reg_cov and stim_spec arrays."""
-    reg_covs, stim_specs = [], []
-    N, P, R = cfg.placefield.n_neurons, cfg.placefield.n_positions, cfg.n_repeats
+    reg_covs, stim_specs, true_specs = [], [], []
+    if cfg.generation_path == "tilbury":
+        if cfg.tilbury is None:
+            raise ValueError("cfg.tilbury must be set when generation_path='tilbury'")
+        N, P = cfg.tilbury.n_neurons, cfg.tilbury.n_positions
+    else:
+        N, P = cfg.placefield.n_neurons, cfg.placefield.n_positions
+    R = cfg.n_repeats
     n_comp = min(cfg.n_components, N - 1, P - 1)
 
     for i in tqdm(range(n_sims), desc="collecting spectra", leave=False):
         seed = cfg.seed + i
-        pf_data = generate_placefields(cfg.placefield, R, seed, device)
+        pf_data, _, _ = _dispatch_placefields(cfg, seed, device)
         noise = generate_noise(cfg.noise_level, N, P, R, seed + 2000, device)
         repeats = assemble(pf_data["repeats"], noise)
         if cfg.normalize:
@@ -423,23 +623,38 @@ def _collect_spectra(cfg: SimulationConfig, n_sims: int, device: str) -> dict:
 
         r0, r1, r2, r3 = repeats[0], repeats[1], repeats[2], repeats[3]
 
-        r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+        if cfg.smooth_width is not None:
+            r0_smooth = gaussian_filter(r0, cfg.smooth_width, axis=1)
+        else:
+            r0_smooth = r0
+
         cvpca = CVPCA(num_components=n_comp, center=cfg.center, on_stimuli=True).fit(r0_smooth)
         reg_cov = cvpca.score(r2, r3).cpu().numpy()
+        reg_cov = reg_cov * (N - 1) / (P - 1)
 
         stim_spec = stimspace_spectrum(r0_smooth, r1, r2, r3, n_comp)
 
+        # Get true spec (potentially with normalization)
+        if cfg.normalize:
+            source = normalize_by_max([pf_data["source"]])[0]
+        else:
+            source = pf_data["source"]
+
+        true_spec = np.flip(np.linalg.eigh(np.cov(source))[0])[:n_comp]
+
         reg_covs.append(reg_cov)
         stim_specs.append(stim_spec)
+        true_specs.append(true_spec)
 
     return {
         "reg_cov": np.stack(reg_covs),  # (n_sims, n_comp)
         "stim_spec": np.stack(stim_specs),  # (n_sims, n_comp)
+        "true_spec": np.stack(true_specs),  # (n_sims, n_comp)
         "n_comp": n_comp,
     }
 
 
-def plot_best_spectra(cfg: SimulationConfig, n_sims: int = 10, device: str = "cpu") -> plt.Figure:
+def plot_best_spectra(cfg: SimulationConfig, n_sims: int = 10, device: str = "cpu", start_dim: int = START_DIM, end_dim: int = END_DIM) -> plt.Figure:
     """Log-log plot of rCVPCA-fixed and stimspace spectra for cfg, with power-law fit lines."""
     data = _collect_spectra(cfg, n_sims, device)
     n_comp = data["n_comp"]
@@ -447,17 +662,22 @@ def plot_best_spectra(cfg: SimulationConfig, n_sims: int = 10, device: str = "cp
 
     mean_rc = data["reg_cov"].mean(axis=0)
     mean_ss = data["stim_spec"].mean(axis=0)
+    mean_true = data["true_spec"].mean(axis=0)
     std_rc = data["reg_cov"].std(axis=0)
     std_ss = data["stim_spec"].std(axis=0)
+    std_true = data["true_spec"].std(axis=0)
 
-    end = min(END_DIM, n_comp)
-    alpha_cv, amp_cv = fit_powerlaw_decay(mean_rc, start_idx=START_DIM, end_idx=end, ignore_nans=True, verbose=False)
-    alpha_st, amp_st = fit_powerlaw_decay(mean_ss, start_idx=START_DIM, end_idx=end, ignore_nans=True, verbose=False)
+    end = min(end_dim, n_comp)
+    alpha_cv, amp_cv = fit_powerlaw_decay(mean_rc, start_idx=start_dim, end_idx=end, ignore_nans=True, verbose=False)
+    alpha_st, amp_st = fit_powerlaw_decay(mean_ss, start_idx=start_dim, end_idx=end, ignore_nans=True, verbose=False)
+    alpha_true, amp_true = fit_powerlaw_decay(mean_true, start_idx=start_dim, end_idx=end, ignore_nans=True, verbose=False)
 
-    fit_dims = np.arange(START_DIM + 1, end + 1, dtype=float)
+    fit_dims = np.arange(start_dim + 1, end + 1, dtype=float)
     fit_rc = amp_cv * fit_dims ** (-alpha_cv) if np.isfinite(alpha_cv) else None
     fit_ss = amp_st * fit_dims ** (-alpha_st) if np.isfinite(alpha_st) else None
+    fit_true = amp_true * fit_dims ** (-alpha_true) if np.isfinite(alpha_true) else None
 
+    # plot
     fig, ax = plt.subplots(figsize=(7, 5))
 
     # rCVPCA fixed
@@ -474,26 +694,53 @@ def plot_best_spectra(cfg: SimulationConfig, n_sims: int = 10, device: str = "cp
     if fit_ss is not None:
         ax.plot(fit_dims, fit_ss, color="tomato", lw=1.2, ls="--")
 
+    # true spectrum
+    pos_true = np.where(mean_true > 0, mean_true, np.nan)
+    ax.plot(dims, pos_true, color="black", lw=2, label=f"true (a={alpha_true:.2f})")
+    ax.fill_between(dims, np.where(mean_true - std_true > 0, mean_true - std_true, np.nan), mean_true + std_true, color="black", alpha=0.2)
+    if fit_true is not None:
+        ax.plot(fit_dims, fit_true, color="black", lw=1.2, ls="--")
+
     # mark fit range
-    ax.axvspan(START_DIM + 1, end, alpha=0.06, color="gray", label=f"fit range {START_DIM+1}-{end}")
+    ax.axvspan(start_dim + 1, end, alpha=0.06, color="gray", label=f"fit range {start_dim+1}-{end}")
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Dimension")
     ax.set_ylabel("Spectrum")
     ratio = alpha_cv / alpha_st if (np.isfinite(alpha_cv) and np.isfinite(alpha_st) and alpha_st > 0) else float("nan")
+    smooth_width_string = "None" if cfg.smooth_width is None else f"{cfg.smooth_width:.2f}"
+    if cfg.generation_path == "tilbury":
+        tb = cfg.tilbury
+        path_info = f"path=tilbury  p_m={tb.exponent_mean:.2f}  A2_beta={tb.amplitude_ratio_beta:.1f}"
+    else:
+        path_info = f"path=rbf  peak_p={cfg.placefield.peak_exponent}"
     ax.set_title(
         f"Best config spectra  (ratio={ratio:.3f}, n_sims={n_sims})\n"
-        f"smooth={cfg.smooth_width:.2f}  noise={cfg.noise_level:.2f}"
-        f"  peak_p={cfg.placefield.peak_exponent}  norm={cfg.normalize}"
+        f"smooth={smooth_width_string}  noise={cfg.noise_level:.2f}"
+        f"  {path_info}  norm={cfg.normalize}"
     )
     ax.legend(fontsize=9)
     plt.tight_layout()
     return fig
 
 
-def plot_frac_neg_pair(stacked: dict) -> plt.Figure:
-    """Fraction-negative curves for rCVPCA-fixed and raw stimspace cv_var."""
+def plot_frac_neg_pair(stacked: dict | SimulationConfig, n_sims: int | None = None, device: str = "cpu") -> plt.Figure:
+    """Fraction-negative curves for rCVPCA-fixed and raw stimspace cv_var.
+
+    Parameters
+    ----------
+    stacked : dict or SimulationConfig
+        Precomputed stacked-results dict or a ``SimulationConfig`` to run first.
+    n_sims : int, optional
+        Simulations to run when ``stacked`` is a config.
+    device : str
+        Torch device when ``stacked`` is a config.
+    """
+    if not isinstance(stacked, dict):
+        cfg = stacked
+        n_sims = n_sims if n_sims is not None else cfg.n_simulations
+        stacked = run_full_simulations(cfg, n_sims=n_sims, device=device)
     n_comp = stacked["reg_cov"].shape[1]
     dims = np.arange(1, n_comp + 1)
 
@@ -511,12 +758,30 @@ def plot_frac_neg_pair(stacked: dict) -> plt.Figure:
     return fig
 
 
-def plot_component_pair(stacked: dict, n_show: int = 20) -> plt.Figure:
+def plot_component_pair(stacked: dict | SimulationConfig, n_show: int = 20, n_sims: int | None = None, device: str = "cpu") -> plt.Figure:
     """Component comparison: rCVPCA (neuron space) and stimspace (position space) vs source SVD.
+
+    Parameters
+    ----------
+    stacked : dict or SimulationConfig
+        Either a precomputed stacked-results dict (from ``run_full_simulations``)
+        or a ``SimulationConfig`` — in which case ``run_full_simulations`` is called
+        internally using ``n_sims`` (defaults to ``cfg.n_simulations``).
+    n_show : int
+        Number of components to display.
+    n_sims : int, optional
+        Simulations to run when ``stacked`` is a config. Ignored otherwise.
+    device : str
+        Torch device when ``stacked`` is a config. Ignored otherwise.
 
     Top row: |cross-correlation| matrix between source and estimated components (first sim).
     Bottom row: mean subspace overlap across all sims.
     """
+    if not isinstance(stacked, dict):
+        cfg = stacked
+        n_sims = n_sims if n_sims is not None else cfg.n_simulations
+        stacked = run_full_simulations(cfg, n_sims=n_sims, device=device)
+
     n_show = min(n_show, stacked["cvpca_components"].shape[2])
     xvals = np.arange(1, n_show + 1)
     extent = [0.5, n_show + 0.5, n_show + 0.5, 0.5]
@@ -576,6 +841,36 @@ BASE = SimulationConfig(
     n_components=80,
     n_simulations=5,
     seed=42,
+    generation_path="rbf",
+)
+
+BASE_TILBURY = SimulationConfig(
+    placefield=PlacefieldConfig(n_neurons=500, n_positions=100),  # fallback; tilbury overrides N/P
+    tilbury=TilburyPlacefieldConfig(
+        n_neurons=500,
+        n_positions=100,
+        amplitude_mean=10.0,
+        amplitude_spread=0.5,
+        amplitude_ratio_beta=5.0,
+        peak_separation_scale=20.0,
+        sigma_mean=8.0,
+        sigma_spread=0.3,
+        sigma_asym_std=0.0,
+        exponent_mean=2.0,
+        exponent_spread=0.0,
+        repeat_noise_alpha=0.3,
+        repeat_noise_lengthscale=5.0,
+        repeat_noise_threshold_pct=60.0,
+    ),
+    noise_level=1.0,
+    n_repeats=4,
+    normalize=True,
+    center=True,
+    smooth_width=3.0,
+    n_components=80,
+    n_simulations=5,
+    seed=42,
+    generation_path="tilbury",
 )
 
 
@@ -589,24 +884,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--top-n", type=int, default=5)
+    parser.add_argument(
+        "--generation-path",
+        default="rbf",
+        choices=("rbf", "tilbury"),
+        help="Placefield generation model: 'rbf' (GP kernel, default) or 'tilbury' (double generalized-Gaussian)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
-    base = replace(
-        BASE,
-        placefield=replace(BASE.placefield, n_neurons=args.n_neurons, n_positions=args.n_positions),
-        n_components=args.n_components,
-        n_simulations=args.n_sims_per_trial,
-        seed=args.seed,
-    )
+    if args.generation_path == "tilbury":
+        base = replace(
+            BASE_TILBURY,
+            tilbury=replace(
+                BASE_TILBURY.tilbury,
+                n_neurons=args.n_neurons,
+                n_positions=args.n_positions,
+            ),
+            placefield=replace(BASE_TILBURY.placefield, n_neurons=args.n_neurons, n_positions=args.n_positions),
+            n_components=args.n_components,
+            n_simulations=args.n_sims_per_trial,
+            seed=args.seed,
+        )
+    else:
+        base = replace(
+            BASE,
+            placefield=replace(BASE.placefield, n_neurons=args.n_neurons, n_positions=args.n_positions),
+            n_components=args.n_components,
+            n_simulations=args.n_sims_per_trial,
+            seed=args.seed,
+        )
 
     if base.n_repeats < 4:
         raise ValueError(f"n_repeats must be >= 4 for 4-fold structure, got {base.n_repeats}")
 
-    print(f"Running Optuna study: {args.n_trials} trials, {args.n_sims_per_trial} sims/trial, device={args.device}")
+    print(f"Running Optuna study: {args.n_trials} trials, {args.n_sims_per_trial} sims/trial, device={args.device}, path={args.generation_path}")
     study = run_study(base, n_trials=args.n_trials, n_sims_per_trial=args.n_sims_per_trial, device=args.device, seed=args.seed)
 
     print_best_configs(study, top_n=args.top_n)
