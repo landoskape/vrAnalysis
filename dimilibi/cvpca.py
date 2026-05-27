@@ -5,6 +5,7 @@ from .pca import PCA
 from .helpers import vector_correlation, gaussian_filter, VectorizedGoldenSectionSearch
 from .metrics import mse
 
+
 class CVPCA:
     """
     Original Cross-Validated Principal Component Analysis
@@ -518,6 +519,7 @@ class LegacyCVPCA:
                 data_repeat1 = data_repeat1.T
                 data_repeat2 = data_repeat2.T
             from _old_vrAnalysis import helpers as old_helpers
+
             covariance = old_helpers.shuff_cvPCA(data_repeat1.T.numpy(), data_repeat2.T.numpy(), nshuff=1, center=self.center)
             covariance = np.nanmean(covariance, axis=0)
             return covariance
