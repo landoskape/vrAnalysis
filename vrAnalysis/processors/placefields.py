@@ -248,6 +248,10 @@ class FrameBehavior:
         }
         return pd.DataFrame(data)
 
+    def get_env_then_pos_idx(self) -> np.ndarray:
+        """Get a temporal sorting index that sorts by environment then position."""
+        return np.lexsort((self.position, self.environment))
+
 
 @dataclass
 class FrameBehaviorEstimate:
