@@ -417,7 +417,7 @@ class RegressionModel(ABC, Generic[H]):
         report = self.Report(
             metrics=metrics,
             predicted_data=predicted_data,
-            target_data=target_data,
+            target_data=target_data.numpy(),
             trained_model=trained_model,
             hyperparameters=hyperparameters,
             extras=extras,

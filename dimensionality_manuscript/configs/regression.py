@@ -23,6 +23,10 @@ from ..registry import (
 from ..pipeline.base import AnalysisConfigBase
 
 
+VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
+VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigbase"]
+
+
 @dataclass(frozen=True)
 class RegressionConfig(AnalysisConfigBase):
     """Configuration for regression model scoring.
@@ -51,7 +55,8 @@ class RegressionConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(MODEL_NAMES),
-            "activity_parameters_name": list(ACTIVITY_PARAMETERS_NAMES),
+            "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
+            "spks_type": list(VALID_SPKS_TYPES),
         }
 
     def validate(self):
