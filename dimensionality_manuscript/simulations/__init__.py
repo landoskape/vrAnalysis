@@ -41,6 +41,34 @@ from .shared_variance import (
     stimulus_space_kappa_modes,
 )
 from .utilities import get_orthogonal_direction, generate_orthonormal, find_commute_space, find_commute_space_gated
+from .placefield_generator import (
+    PlacefieldConfig,
+    TilburyConfig,
+    SimConfig,
+    generate_repeats,
+    generate_noise,
+    assemble,
+    normalize_by_max,
+    estimate_spatial_rank,
+    peaky_transform,
+)
+from .placefield_analysis import (
+    run_neuron_position,
+    run_cvpca_stimspace,
+    run_cvpca_stimspace_avg,
+    run_cvpca_stimspace_stack,
+    suggest_config,
+    config_from_params,
+    run_study,
+    plot_placefields,
+    plot_example_placefields,
+    plot_neuron_position,
+    plot_spectra,
+    plot_frac_neg,
+    plot_component_alignment,
+    plot_study,
+    print_best_configs,
+)
 
 __all__ = [
     "CovariancePairConfig",
@@ -81,4 +109,30 @@ __all__ = [
     "generate_orthonormal",
     "find_commute_space",
     "find_commute_space_gated",
+    # placefield_generator
+    "PlacefieldConfig",
+    "TilburyConfig",
+    "SimConfig",
+    "generate_repeats",
+    "generate_noise",
+    "assemble",
+    "normalize_by_max",
+    "estimate_spatial_rank",
+    "peaky_transform",
+    # placefield_analysis
+    "run_neuron_position",
+    "run_cvpca_stimspace",
+    "run_cvpca_stimspace_avg",
+    "run_cvpca_stimspace_stack",
+    "suggest_config",
+    "config_from_params",
+    "run_study",
+    "plot_placefields",
+    "plot_example_placefields",
+    "plot_neuron_position",
+    "plot_spectra",
+    "plot_frac_neg",
+    "plot_component_alignment",
+    "plot_study",
+    "print_best_configs",
 ]
