@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,8 +30,7 @@ def _value_to_array(key: str, value: Any, session_id: str) -> np.ndarray | None:
     if isinstance(value, torch.Tensor):
         return value.cpu().numpy()
     warnings.warn(
-        f"Skipping result key {key!r} (session={session_id}): "
-        f"type {type(value).__name__!r} is not an ndarray or scalar.",
+        f"Skipping result key {key!r} (session={session_id}): " f"type {type(value).__name__!r} is not an ndarray or scalar.",
         stacklevel=3,
     )
     return None
@@ -181,6 +181,7 @@ class ResultsAggregator:
         self._ragged_keys = {k for k, h in self._result_handling.items() if h == "ragged"}
         self._skip_keys = {k for k, h in self._result_handling.items() if h == "skip"}
         self._discovered_keys: set[str] = set()
+        self._key_to_config: dict[str, Any] = {}
 
         self._arrays_backend: dict[str, np.ndarray] = {}
         self._objects_backend: dict[str, np.ndarray] = {}
@@ -237,6 +238,7 @@ class ResultsAggregator:
         obj._cells = {}
         obj.variation_index = {}
         obj._session_index = {}
+        obj._key_to_config = {}
         obj._param_names = list(param_axes.keys())
         obj._param_shape = tuple(len(v) for v in param_axes.values())
         obj.arrays = arrays
@@ -255,9 +257,12 @@ class ResultsAggregator:
 
         variations = config_class.generate_variations()
         self.variation_index = {}
+        self._key_to_config = {}
         for var in variations:
+            k = var.key()
             idx = tuple(self.param_axes[name].index(getattr(var, name)) for name in self._param_names)
-            self.variation_index[var.key()] = idx
+            self.variation_index[k] = idx
+            self._key_to_config[k] = var
 
         self._session_index = {s.session_uid: i for i, s in enumerate(self.sessions)}
         self.session_ids = [s.session_uid for s in self.sessions]
@@ -290,9 +295,7 @@ class ResultsAggregator:
         return keys
 
     def _known_skip_keys(self) -> set[str]:
-        return self._skip_keys | {k for k in self._discovered_keys if self._result_handling.get(k, "pad") == "skip"} | set(
-            self._objects_backend
-        )
+        return self._skip_keys | {k for k in self._discovered_keys if self._result_handling.get(k, "pad") == "skip"} | set(self._objects_backend)
 
     def _peek_discover_keys(self) -> None:
         if self._discovered_keys or not self._cells:
@@ -304,12 +307,12 @@ class ResultsAggregator:
 
     def _fetch_result(self, ref: _CellRef) -> dict | None:
         try:
-            cfg = self.config_class.from_key(ref.row["analysis_key"])
+            analysis_key = ref.row["analysis_key"]
+            cfg = self._key_to_config.get(analysis_key) or self.config_class.from_key(analysis_key)
             return cfg.get_result(self.store, ref.row)
         except Exception as exc:
             warnings.warn(
-                f"get_result failed for session={ref.row['session_id']} "
-                f"key={ref.row['analysis_key']}: {exc}",
+                f"get_result failed for session={ref.row['session_id']} " f"key={ref.row['analysis_key']}: {exc}",
                 stacklevel=2,
             )
             return None
@@ -416,16 +419,27 @@ class ResultsAggregator:
         pad_triples: list[tuple[int, tuple[int, ...], dict[str, np.ndarray]]] = []
         obj_triples: list[tuple[int, tuple[int, ...], dict]] = []
 
-        for ref in cells:
-            if not self._cell_needs_materialize(
+        cells_to_fetch = [
+            ref
+            for ref in cells
+            if self._cell_needs_materialize(
                 ref,
                 key_set,
                 load_pad=load_pad,
                 load_ragged=load_ragged,
                 load_objects=load_objects,
-            ):
-                continue
-            result = self._fetch_result(ref)
+            )
+        ]
+
+        n_workers = min(8, len(cells_to_fetch))
+        if n_workers > 1:
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                futures = {executor.submit(self._fetch_result, ref): ref for ref in cells_to_fetch}
+                raw_results = [(futures[f], f.result()) for f in as_completed(futures)]
+        else:
+            raw_results = [(ref, self._fetch_result(ref)) for ref in cells_to_fetch]
+
+        for ref, result in raw_results:
             if result is None:
                 continue
             pad_part, skip_part = self._extract_from_result(

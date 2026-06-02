@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar
 import numpy as np
 
 if TYPE_CHECKING:
+    from syd import Viewer
     from ..registry import PopulationRegistry
     from vrAnalysis.sessions import B2Session
     from .aggregate import ResultsAggregator
@@ -129,7 +130,7 @@ class AnalysisConfigBase:
 
     def build_syd(
         self,
-        viewer,
+        viewer: Viewer,
         results: ResultsAggregator,
         include_get_results: bool = True,
         squeeze_ones: bool = True,
