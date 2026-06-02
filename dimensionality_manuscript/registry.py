@@ -15,6 +15,7 @@ from .regression_models.hyperparameters import HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
 from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
 from .subspace_analysis.stimspace import StimSpaceSubspace
+from .model_metadata_io import ModelMetadata, load_model_metadata
 
 # Type alias for model names
 ModelName = Literal[
@@ -622,6 +623,11 @@ MODEL_NAMES: tuple[ModelName] = (
     "rrr",
     "rrr_no_intercept",
 )
+
+
+MODEL_METADATA: dict[ModelName, ModelMetadata] = load_model_metadata(MODEL_NAMES)
+
+from .model_plot_locator import ModelPlotLocator, PlotLayer, select_models
 
 SUBSPACE_NAMES: tuple[SubspaceName] = (
     "pca_subspace",
