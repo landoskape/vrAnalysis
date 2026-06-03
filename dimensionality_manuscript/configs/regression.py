@@ -24,7 +24,7 @@ from ..pipeline.base import AnalysisConfigBase
 
 
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
-VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigbase"]
+VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 
 
 @dataclass(frozen=True)
