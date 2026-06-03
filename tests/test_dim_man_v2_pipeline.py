@@ -278,6 +278,55 @@ def test_store_invalidate_all():
         assert list(store._blob_dir.glob("*.pkl")) == []
 
 
+def test_plan_invalidate_param_filters_matches_delete():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        cfg_default = RegressionConfig(activity_parameters_name="default")
+        cfg_raw = RegressionConfig(activity_parameters_name="raw")
+        sid = "test_session"
+        store.put(sid, cfg_default, {"score": 1})
+        store.put(sid, cfg_raw, {"score": 2})
+
+        plan = store.plan_invalidate(
+            analysis_type="regression",
+            param_filters={"activity_parameters_name": "raw"},
+        )
+        rows = store.rows_matching_invalidate_plan(plan)
+        assert len(rows) == 1
+        assert rows[0]["analysis_key"] == cfg_raw.key()
+
+        n = store.invalidate(analysis_type="regression", param_filters={"activity_parameters_name": "raw"})
+        assert n == 1
+        assert store.has(sid, cfg_default)
+        assert not store.has(sid, cfg_raw)
+
+
+def test_store_invalidate_param_filters():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        cfg_default = RegressionConfig(activity_parameters_name="default")
+        cfg_raw = RegressionConfig(activity_parameters_name="raw")
+        sid = "test_session"
+        store.put(sid, cfg_default, {"score": 1})
+        store.put(sid, cfg_raw, {"score": 2})
+        n = store.invalidate(
+            analysis_type="regression",
+            param_filters={"activity_parameters_name": "raw"},
+        )
+        assert n == 1
+        assert store.has(sid, cfg_default)
+        assert not store.has(sid, cfg_raw)
+        assert not store._blob_path(store._uid(sid, cfg_raw)).exists()
+
+
+def test_generate_variations_matching():
+    configs = RegressionConfig.generate_variations_matching({"activity_parameters_name": "raw"})
+    assert configs
+    assert all(c.activity_parameters_name == "raw" for c in configs)
+    assert len(configs) < len(RegressionConfig.generate_variations())
+    assert len({c.key() for c in configs}) == len(configs)
+
+
 # -- Job -----------------------------------------------------------------------
 
 

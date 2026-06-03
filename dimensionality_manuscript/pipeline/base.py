@@ -7,7 +7,7 @@ import json
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
 from itertools import product
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 import numpy as np
 
 if TYPE_CHECKING:
@@ -84,6 +84,47 @@ class AnalysisConfigBase:
         fields = list(grid.keys())
         values = list(grid.values())
         return [cls(**dict(zip(fields, combo))) for combo in product(*values)]
+
+    @classmethod
+    def generate_variations_matching(cls, param_filters: dict[str, Any]) -> list[AnalysisConfigBase]:
+        """Cartesian product of ``_param_grid()`` with fixed parameter values.
+
+        Fields listed in ``param_filters`` are held constant; all other grid
+        axes vary as in :meth:`generate_variations`. Fields not in
+        ``_param_grid()`` (e.g. ``schema_version``) are passed through as
+        fixed constructor kwargs.
+
+        Parameters
+        ----------
+        param_filters : dict
+            ``{field_name: value}`` constraints. Every returned config has
+            ``getattr(cfg, name) == value`` for each entry.
+
+        Returns
+        -------
+        list of AnalysisConfigBase
+        """
+        from dataclasses import fields
+
+        if not param_filters:
+            return cls.generate_variations()
+
+        field_names = {f.name for f in fields(cls)}
+        unknown = set(param_filters) - field_names
+        if unknown:
+            raise ValueError(f"Unknown field(s) for {cls.__name__}: {sorted(unknown)}")
+
+        grid = dict(cls._param_grid())
+        fixed: dict[str, Any] = {}
+        for name, value in param_filters.items():
+            if name in grid:
+                grid[name] = [value]
+            else:
+                fixed[name] = value
+
+        grid_fields = list(grid.keys())
+        grid_values = list(grid.values())
+        return [cls(**{**dict(zip(grid_fields, combo)), **fixed}) for combo in product(*grid_values)]
 
     @classmethod
     def from_key(cls, key: str) -> AnalysisConfigBase:

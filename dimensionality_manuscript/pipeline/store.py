@@ -6,9 +6,10 @@ import hashlib
 import pickle
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 from freezedry import freezedry
@@ -66,6 +67,48 @@ def result_uid(session_id: str, analysis_key: str) -> str:
 
 
 BASE_STORE_PATH = RegistryPaths.pipeline_v2_db_path
+
+
+def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
+    """Map ``analysis_type`` (config ``display_name``) to config class."""
+    from ..configs import (
+        CVPCAConfig,
+        ExpMaxConfig,
+        LocPredConfig,
+        LocPredCrossVal,
+        PlacefieldStructureConfig,
+        PopulationConfig,
+        RegressionConfig,
+        StimSpaceConfig,
+        SubspaceConfig,
+    )
+
+    classes = (
+        CVPCAConfig,
+        ExpMaxConfig,
+        LocPredConfig,
+        LocPredCrossVal,
+        PlacefieldStructureConfig,
+        PopulationConfig,
+        RegressionConfig,
+        StimSpaceConfig,
+        SubspaceConfig,
+    )
+    return {cls.display_name: cls for cls in classes}
+
+
+@dataclass(frozen=True)
+class InvalidatePlan:
+    """SQL plan for :meth:`ResultsStore.invalidate` (no side effects)."""
+
+    where: str
+    params: tuple[Any, ...]
+    mode: Literal["equality", "param_filters"]
+    analysis_keys: tuple[str, ...] = ()
+    param_filters: dict[str, Any] = field(default_factory=dict)
+    analysis_type: str | None = None
+    schema_version: str | None = None
+    config_variation_count: int = 0
 
 
 class ResultsStore:
@@ -213,34 +256,189 @@ class ResultsStore:
         schema_version: str | None = None,
         analysis_cfg: AnalysisConfigBase | None = None,
         analysis_type: str | None = None,
-    ):
-        """Delete results matching at least one filter.
+        param_filters: dict[str, Any] | None = None,
+    ) -> int:
+        """Delete results matching the given filters (combined with AND).
 
         Parameters
         ----------
         schema_version : str, optional
             Delete results with this schema version.
         analysis_cfg : AnalysisConfigBase, optional
-            Delete results with this analysis key.
+            Delete results with this analysis key (all sessions).
         analysis_type : str, optional
-            Delete results with this analysis type.
+            Delete results with this analysis type (``display_name``).
+        param_filters : dict, optional
+            Delete results whose config matches these field values. Requires
+            ``analysis_type``. Expands the config param grid with fixed values
+            (e.g. ``{"activity_parameters_name": "raw"}`` invalidates every
+            regression combo that used raw activity parameters). Cannot be
+            combined with ``analysis_cfg``.
+
+        Returns
+        -------
+        int
+            Number of result rows deleted.
         """
-        filters = {
+        if analysis_cfg is not None and param_filters is not None:
+            raise ValueError("Cannot pass both analysis_cfg and param_filters.")
+
+        plan = self.plan_invalidate(
+            schema_version=schema_version,
+            analysis_cfg=analysis_cfg,
+            analysis_type=analysis_type,
+            param_filters=param_filters,
+        )
+        return self._execute_invalidate_plan(plan)
+
+    def plan_invalidate(
+        self,
+        *,
+        schema_version: str | None = None,
+        analysis_cfg: AnalysisConfigBase | None = None,
+        analysis_type: str | None = None,
+        param_filters: dict[str, Any] | None = None,
+        analysis_key: str | None = None,
+    ) -> InvalidatePlan:
+        """Build the SQL plan used by :meth:`invalidate` without deleting anything.
+
+        Parameters
+        ----------
+        schema_version : str, optional
+            Match this schema version column.
+        analysis_cfg : AnalysisConfigBase, optional
+            Match this config's ``analysis_key``.
+        analysis_type : str, optional
+            Match this analysis type.
+        param_filters : dict, optional
+            Expand the current config param grid with fixed values; requires
+            ``analysis_type``.
+        analysis_key : str, optional
+            Match a single 16-char analysis key (alternative to ``analysis_cfg``).
+
+        Returns
+        -------
+        InvalidatePlan
+        """
+        if analysis_cfg is not None and param_filters is not None:
+            raise ValueError("Cannot pass both analysis_cfg and param_filters.")
+        if analysis_cfg is not None and analysis_key is not None:
+            raise ValueError("Cannot pass both analysis_cfg and analysis_key.")
+        if analysis_key is not None and param_filters is not None:
+            raise ValueError("Cannot pass both analysis_key and param_filters.")
+
+        if param_filters is not None:
+            if analysis_type is None:
+                raise ValueError("analysis_type is required when param_filters is set.")
+            if not param_filters:
+                raise ValueError("param_filters must be non-empty.")
+            return self._plan_invalidate_param_filters(
+                analysis_type=analysis_type,
+                param_filters=param_filters,
+                schema_version=schema_version,
+            )
+
+        filters: dict[str, Any] = {
             "schema_version": schema_version,
-            "analysis_key": analysis_cfg.key() if analysis_cfg is not None else None,
+            "analysis_key": analysis_key if analysis_key is not None else (analysis_cfg.key() if analysis_cfg is not None else None),
             "analysis_type": analysis_type,
         }
         active = {k: v for k, v in filters.items() if v is not None}
         if not active:
             raise ValueError("At least one filter is required. Use invalidate_all() to delete everything.")
         where = " AND ".join(f"{k}=?" for k in active)
+        return InvalidatePlan(
+            where=where,
+            params=tuple(active.values()),
+            mode="equality",
+            schema_version=schema_version,
+            analysis_type=analysis_type,
+        )
+
+    def rows_matching_invalidate_plan(self, plan: InvalidatePlan) -> list[dict]:
+        """Return full result rows that :meth:`invalidate` would remove."""
+        sql = f"SELECT * FROM results WHERE {plan.where}"
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT result_uid FROM results WHERE {where}", tuple(active.values())).fetchall()
-            uids = [row[0] for row in rows]
-            conn.execute(f"DELETE FROM results WHERE {where}", tuple(active.values()))
+            rows = conn.execute(sql, plan.params).fetchall()
+        return [dict(zip(_COLUMN_NAMES, row)) for row in rows]
+
+    def blob_paths_for_invalidate_plan(self, plan: InvalidatePlan) -> list[tuple[str, Path, bool, int | None]]:
+        """Return ``(result_uid, path, exists, size_bytes)`` for each row in the plan."""
+        out: list[tuple[str, Path, bool, int | None]] = []
+        for row in self.rows_matching_invalidate_plan(plan):
+            uid = row["result_uid"]
+            path = self._blob_path(uid)
+            if path.exists():
+                out.append((uid, path, True, path.stat().st_size))
+            else:
+                out.append((uid, path, False, None))
+        return out
+
+    def _plan_invalidate_param_filters(
+        self,
+        *,
+        analysis_type: str,
+        param_filters: dict[str, Any],
+        schema_version: str | None,
+    ) -> InvalidatePlan:
+        """Build DELETE plan for ``param_filters`` (current config class only)."""
+        config_classes = _analysis_config_classes()
+        if analysis_type not in config_classes:
+            available = ", ".join(sorted(config_classes))
+            raise ValueError(f"Unknown analysis_type {analysis_type!r}. Available: {available}")
+
+        config_cls = config_classes[analysis_type]
+        configs = config_cls.generate_variations_matching(param_filters)
+        analysis_keys = tuple(cfg.key() for cfg in configs)
+        if not analysis_keys:
+            return InvalidatePlan(
+                where="0",
+                params=(),
+                mode="param_filters",
+                analysis_keys=(),
+                param_filters=dict(param_filters),
+                analysis_type=analysis_type,
+                schema_version=schema_version,
+                config_variation_count=0,
+            )
+
+        sql_filters: dict[str, Any] = {"analysis_type": analysis_type}
+        if schema_version is not None:
+            sql_filters["schema_version"] = schema_version
+
+        placeholders = ",".join("?" for _ in analysis_keys)
+        sql_filters["analysis_key__in"] = list(analysis_keys)
+        where_parts: list[str] = []
+        params: list[Any] = []
+        for key, value in sql_filters.items():
+            if key == "analysis_key__in":
+                where_parts.append(f"analysis_key IN ({placeholders})")
+                params.extend(value)
+            else:
+                where_parts.append(f"{key}=?")
+                params.append(value)
+        return InvalidatePlan(
+            where=" AND ".join(where_parts),
+            params=tuple(params),
+            mode="param_filters",
+            analysis_keys=analysis_keys,
+            param_filters=dict(param_filters),
+            analysis_type=analysis_type,
+            schema_version=schema_version,
+            config_variation_count=len(configs),
+        )
+
+    def _execute_invalidate_plan(self, plan: InvalidatePlan) -> int:
+        """Delete rows and blobs described by ``plan``."""
+        if plan.where == "0":
+            return 0
+        uids = [row["result_uid"] for row in self.rows_matching_invalidate_plan(plan)]
+        with self._connect() as conn:
+            conn.execute(f"DELETE FROM results WHERE {plan.where}", plan.params)
         for uid in uids:
             self._blob_path(uid).unlink(missing_ok=True)
             self._blob_cache.pop(uid, None)
+        return len(uids)
 
     def invalidate_all(self):
         """Delete all results and their blob files."""
@@ -256,6 +454,7 @@ class ResultsStore:
         *,
         analysis_type: str | None = None,
         session_ids: list[str] | None = None,
+        schema_version: str | None = None,
     ) -> list[dict] | pd.DataFrame:
         """Return metadata for stored results (no blob data).
 
@@ -267,6 +466,8 @@ class ResultsStore:
             If given, only rows with this ``analysis_type`` are returned.
         session_ids : list of str, optional
             If given, only rows whose ``session_id`` is in this list are returned.
+        schema_version : str, optional
+            If given, only rows with this ``schema_version`` are returned.
         """
         clauses: list[str] = []
         params: list = []
@@ -282,6 +483,9 @@ class ResultsStore:
             placeholders = ",".join("?" for _ in session_ids)
             clauses.append(f"session_id IN ({placeholders})")
             params.extend(session_ids)
+        if schema_version is not None:
+            clauses.append("schema_version=?")
+            params.append(schema_version)
         sql = _SUMMARY_SQL
         if clauses:
             sql = f"{_SUMMARY_SQL} WHERE {' AND '.join(clauses)}"
