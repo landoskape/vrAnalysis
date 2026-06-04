@@ -112,6 +112,14 @@ _MODEL_CACHE_SUBDIRS: list[tuple[str, str]] = [
 # ── Preview (dry-run) ─────────────────────────────────────────────────────────
 
 
+def _has_errors_table(conn, schema: str = "main") -> bool:
+    """Return True if the given schema (main or remote) has an errors table."""
+    (n,) = conn.execute(
+        f"SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type='table' AND name='errors'"
+    ).fetchone()
+    return bool(n)
+
+
 def _print_db_delta(local_db: Path, remote_db: Path) -> None:
     """Print per-config summary of new rows in remote_db relative to local_db."""
     if not local_db.exists():
@@ -129,7 +137,7 @@ def _print_db_delta(local_db: Path, remote_db: Path) -> None:
         (n_local,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
         (n_remote,) = conn.execute("SELECT COUNT(*) FROM remote.results").fetchone()
         (n_new,) = conn.execute("SELECT COUNT(*) FROM remote.results WHERE result_uid NOT IN (SELECT result_uid FROM results)").fetchone()
-        print(f"  local={n_local}  remote={n_remote}  new={n_new}")
+        print(f"  Results:  local={n_local}  remote={n_remote}  new={n_new}")
         if n_new > 0:
             rows = conn.execute(
                 """
@@ -147,6 +155,17 @@ def _print_db_delta(local_db: Path, remote_db: Path) -> None:
             print("  " + "-" * 58)
             for atype, sver, n, stored, nsess in rows:
                 print(f"  {(atype or '?'):<25} {(sver or '?'):<6} {n:>6} {(stored or 0):>6} {nsess:>9}")
+        if _has_errors_table(conn, "remote"):
+            (n_err_remote,) = conn.execute("SELECT COUNT(*) FROM remote.errors").fetchone()
+            if _has_errors_table(conn, "main"):
+                (n_err_local,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+                (n_err_new,) = conn.execute(
+                    "SELECT COUNT(*) FROM remote.errors WHERE result_uid NOT IN (SELECT result_uid FROM errors)"
+                ).fetchone()
+            else:
+                n_err_local = 0
+                n_err_new = n_err_remote
+            print(f"\n  Errors:   local={n_err_local}  remote={n_err_remote}  new={n_err_new}")
         conn.execute("DETACH DATABASE remote")
     finally:
         conn.close()
@@ -235,7 +254,7 @@ def _check_db_collisions(local_db: Path, remote_db: Path) -> None:
         (n_remote,) = conn.execute("SELECT COUNT(*) FROM remote.results").fetchone()
         (n_shared,) = conn.execute("SELECT COUNT(*) FROM results WHERE result_uid IN (SELECT result_uid FROM remote.results)").fetchone()
         n_union = n_local + n_remote - n_shared
-        print(f"  local={n_local}  remote={n_remote}  shared={n_shared}  union={n_union}")
+        print(f"  Results:  local={n_local}  remote={n_remote}  shared={n_shared}  union={n_union}")
         if n_shared == 0:
             print("  union == local+remote — no overlaps, all remote rows are new")
         else:
@@ -256,6 +275,17 @@ def _check_db_collisions(local_db: Path, remote_db: Path) -> None:
                     print(f"    {uid} ({atype}): result_stored local={ls} remote={rs}")
             else:
                 print(f"  All {n_shared} shared rows have identical content — safe to skip")
+        if _has_errors_table(conn, "remote"):
+            (n_err_remote,) = conn.execute("SELECT COUNT(*) FROM remote.errors").fetchone()
+            if _has_errors_table(conn, "main"):
+                (n_err_local,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+                (n_err_shared,) = conn.execute(
+                    "SELECT COUNT(*) FROM errors WHERE result_uid IN (SELECT result_uid FROM remote.errors)"
+                ).fetchone()
+            else:
+                n_err_local = 0
+                n_err_shared = 0
+            print(f"  Errors:   local={n_err_local}  remote={n_err_remote}  shared={n_err_shared}")
         conn.execute("DETACH DATABASE remote")
     finally:
         conn.close()
@@ -356,12 +386,20 @@ def sync(host: str, remote_db: str, remote_blobs: str) -> None:
             raise SystemExit(1)
 
         print(f"\nMerging results from {tmp_db} → {local_db}")
-        n_before, n_added = _merge_results(local_db, tmp_db)
-        print(f"Rows before: {n_before}  |  New rows added: {n_added}  |  Total: {n_before + n_added}")
+        n_before, n_added, n_err_before, n_err_added = _merge_results(local_db, tmp_db)
+        print(f"Results — before: {n_before}  new: {n_added}  total: {n_before + n_added}")
+        if n_err_before or n_err_added:
+            print(f"Errors   — before: {n_err_before}  new: {n_err_added}  total: {n_err_before + n_err_added}")
 
 
-def _merge_results(local_db: Path, remote_db: Path) -> tuple[int, int]:
-    """Merge results table from remote_db into local_db. Returns (rows_before, rows_added)."""
+def _merge_results(local_db: Path, remote_db: Path) -> tuple[int, int, int, int]:
+    """Merge results and errors tables from remote_db into local_db.
+
+    Returns
+    -------
+    tuple
+        (results_before, results_added, errors_before, errors_added)
+    """
     conn = sqlite3.connect(local_db, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     try:
@@ -370,11 +408,22 @@ def _merge_results(local_db: Path, remote_db: Path) -> tuple[int, int]:
         conn.execute("INSERT OR IGNORE INTO results SELECT * FROM remote.results")
         conn.commit()
         (n_after,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
+
+        n_err_before = 0
+        n_err_after = 0
+        if _has_errors_table(conn, "remote"):
+            if _has_errors_table(conn, "main"):
+                (n_err_before,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+            conn.execute("INSERT OR IGNORE INTO errors SELECT * FROM remote.errors")
+            conn.commit()
+            if _has_errors_table(conn, "main"):
+                (n_err_after,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+
         conn.execute("DETACH DATABASE remote")
         conn.commit()
     finally:
         conn.close()
-    return n_before, n_after - n_before
+    return n_before, n_after - n_before, n_err_before, n_err_after - n_err_before
 
 
 def sync_model_caches(host: str, remote_cache: str) -> None:

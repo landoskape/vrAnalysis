@@ -25,6 +25,7 @@ from dimensionality_manuscript.scripts.run import (
     build_analysis_configs,
     collect_sessions,
     collect_sessions_from_file,
+    _parse_param_filters,
 )
 
 REGISTRY_PATHS = RegistryPaths()
@@ -40,6 +41,8 @@ def submit(
     walltime: str = "8:00:00",
     mem: str = "16G",
     dry_run: bool = False,
+    skip_errors: bool = False,
+    param_filters: dict | None = None,
 ) -> str | None:
     """Create a batch, populate the queue, and optionally submit an SGE array job.
 
@@ -62,6 +65,8 @@ def submit(
     dry_run : bool
         If True, populate the batch but do not submit via qsub.
         Useful for inspecting what would run before committing.
+    skip_errors : bool
+        If True, omit (session, config) pairs that already have a recorded error.
 
     Returns
     -------
@@ -77,13 +82,14 @@ def submit(
     else:
         sessions = collect_sessions()
 
-    analysis_configs = build_analysis_configs(include=analyses)
+    analysis_configs = build_analysis_configs(include=analyses, param_filters=param_filters)
     plan = AnalysisPlan(analysis_configs=analysis_configs)
-    pending_jobs = plan._collect_jobs(sessions, store, force_remake=False)
+    pending_jobs, n_skipped = plan._collect_jobs(sessions, store, force_remake=False, skip_errors=skip_errors)
 
+    skip_suffix = f" ({n_skipped} skipped — recorded errors)" if n_skipped else ""
     print(f"Sessions:         {len(sessions)}")
     print(f"Analysis configs: {len(analysis_configs)}")
-    print(f"Pending jobs:     {len(pending_jobs)}")
+    print(f"Pending jobs:     {len(pending_jobs)}{skip_suffix}")
     print(f"Database:         {db_path}")
     print()
 
@@ -167,6 +173,13 @@ def main():
     parser.add_argument("--walltime", default="8:00:00", help="SGE wall-clock limit, e.g. 8:00:00 (default: 8:00:00)")
     parser.add_argument("--mem", default="16G", help="SGE memory per slot, e.g. 16G (default: 16G)")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Populate batch but do not submit via qsub")
+    parser.add_argument("--skip-errors", action="store_true", help="Omit (session, config) pairs that already have a recorded error")
+    parser.add_argument(
+        "--param-filters",
+        nargs="+",
+        metavar="KEY=VALUE",
+        help="Filter config grid by fixed param values, e.g. --param-filters model_name=rrr spks_type=oasis",
+    )
     args = parser.parse_args()
 
     submit(
@@ -176,6 +189,8 @@ def main():
         walltime=args.walltime,
         mem=args.mem,
         dry_run=args.dry_run,
+        skip_errors=args.skip_errors,
+        param_filters=_parse_param_filters(args.param_filters),
     )
 
 

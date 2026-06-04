@@ -46,6 +46,24 @@ _INSERT_SQL = "INSERT OR REPLACE INTO results ({}) VALUES ({})".format(
 _SUMMARY_SQL = "SELECT * FROM results"
 _SUMMARY_COLUMNS = _COLUMN_NAMES
 
+_ERROR_COLUMNS = (
+    ("result_uid", "TEXT PRIMARY KEY"),
+    ("session_id", "TEXT NOT NULL"),
+    ("analysis_key", "TEXT NOT NULL"),
+    ("analysis_summary", "TEXT"),
+    ("analysis_type", "TEXT"),
+    ("schema_version", "TEXT"),
+    ("error_message", "TEXT"),
+    ("traceback", "TEXT"),
+    ("failed_at", "TIMESTAMP"),
+)
+_ERROR_COLUMN_NAMES = tuple(name for name, _ in _ERROR_COLUMNS)
+_ERROR_SCHEMA = "CREATE TABLE IF NOT EXISTS errors (\n    {}\n)".format(",\n    ".join(f"{name} {sqltype}" for name, sqltype in _ERROR_COLUMNS))
+_ERROR_INSERT_SQL = "INSERT OR REPLACE INTO errors ({}) VALUES ({})".format(
+    ", ".join(_ERROR_COLUMN_NAMES),
+    ", ".join("?" for _ in _ERROR_COLUMN_NAMES),
+)
+
 
 def result_uid(session_id: str, analysis_key: str) -> str:
     """Compute the unified hash for a (session, analysis) pair.
@@ -137,6 +155,7 @@ class ResultsStore:
         self._blob_cache_maxsize = blob_cache_maxsize
         with self._connect() as conn:
             conn.execute(_SCHEMA)
+            conn.execute(_ERROR_SCHEMA)
 
     @property
     def _blob_dir(self) -> Path:
@@ -251,6 +270,94 @@ class ResultsStore:
     def clear_blob_cache(self) -> None:
         """Clear the in-memory unpickled blob cache."""
         self._blob_cache.clear()
+
+    # ── Error table ───────────────────────────────────────────────────────────
+
+    def put_error(
+        self,
+        session_id: str,
+        analysis_cfg: AnalysisConfigBase,
+        error_message: str,
+        traceback: str | None = None,
+    ) -> None:
+        """Record a failed result. Overwrites any previous error for this key."""
+        uid = self._uid(session_id, analysis_cfg)
+        values = (
+            uid,
+            session_id,
+            analysis_cfg.key(),
+            analysis_cfg.summary(),
+            analysis_cfg.display_name,
+            analysis_cfg.schema_version,
+            error_message,
+            traceback,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        with self._connect() as conn:
+            conn.execute(_ERROR_INSERT_SQL, values)
+
+    def has_error(self, session_id: str, analysis_cfg: AnalysisConfigBase) -> bool:
+        """Return True if a recorded error exists for this (session, config) pair."""
+        uid = self._uid(session_id, analysis_cfg)
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1 FROM errors WHERE result_uid=?", (uid,)).fetchone()
+        return row is not None
+
+    def clear_error(self, session_id: str, analysis_cfg: AnalysisConfigBase) -> bool:
+        """Delete the error record for this key. Returns True if a row was deleted."""
+        uid = self._uid(session_id, analysis_cfg)
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM errors WHERE result_uid=?", (uid,))
+            deleted = cursor.rowcount
+        return deleted > 0
+
+    def get_errors(
+        self,
+        *,
+        analysis_type: str | None = None,
+        session_ids: list[str] | None = None,
+        schema_version: str | None = None,
+        as_dataframe: bool = False,
+    ) -> "list[dict] | pd.DataFrame":
+        """Return metadata for recorded errors (no blob data).
+
+        Parameters
+        ----------
+        analysis_type : str, optional
+            If given, only rows with this ``analysis_type`` are returned.
+        session_ids : list of str, optional
+            If given, only rows whose ``session_id`` is in this list are returned.
+        schema_version : str, optional
+            If given, only rows with this ``schema_version`` are returned.
+        as_dataframe : bool
+            If True, return a pandas DataFrame instead of a list of dicts.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if analysis_type is not None:
+            clauses.append("analysis_type=?")
+            params.append(analysis_type)
+        if session_ids is not None:
+            if not session_ids:
+                records: list[dict] = []
+                if as_dataframe:
+                    return pd.DataFrame(records, columns=list(_ERROR_COLUMN_NAMES))
+                return records
+            placeholders = ",".join("?" for _ in session_ids)
+            clauses.append(f"session_id IN ({placeholders})")
+            params.extend(session_ids)
+        if schema_version is not None:
+            clauses.append("schema_version=?")
+            params.append(schema_version)
+        sql = "SELECT * FROM errors"
+        if clauses:
+            sql = f"{sql} WHERE {' AND '.join(clauses)}"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        records = [dict(zip(_ERROR_COLUMN_NAMES, row)) for row in rows]
+        if as_dataframe:
+            return pd.DataFrame(records, columns=list(_ERROR_COLUMN_NAMES))
+        return records
 
     def invalidate(
         self,
@@ -515,6 +622,29 @@ class ResultsStore:
                 if row is not None:
                     found += 1
         return found / total
+
+    def missing_sessions_for_config(
+        self,
+        sessions: list,
+        analysis_cfg: AnalysisConfigBase,
+    ) -> list[str]:
+        """Return session_ids in ``sessions`` with no result for this config."""
+        uids_to_sid = {
+            result_uid(ses.session_uid, analysis_cfg.key()): ses.session_uid
+            for ses in sessions
+        }
+        if not uids_to_sid:
+            return []
+        placeholders = ",".join("?" for _ in uids_to_sid)
+        with self._connect() as conn:
+            found = {
+                row[0]
+                for row in conn.execute(
+                    f"SELECT result_uid FROM results WHERE result_uid IN ({placeholders})",
+                    list(uids_to_sid),
+                ).fetchall()
+            }
+        return [sid for uid, sid in uids_to_sid.items() if uid not in found]
 
     def snapshot_codebase(self) -> Path:
         """Save a zip snapshot of the codebase and return its path.

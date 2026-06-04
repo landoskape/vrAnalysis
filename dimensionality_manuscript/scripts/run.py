@@ -30,9 +30,22 @@ from dimensionality_manuscript import (
 REGISTRY_PATHS = RegistryPaths()
 
 
-def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisConfigBase]:
-    """All valid CVPCAConfig variations (Cartesian product minus invalid combos)."""
-    _mapping: dict[str, AnalysisConfigBase] = {
+def build_analysis_configs(
+    include: list[str] | None = None,
+    param_filters: dict | None = None,
+) -> list[AnalysisConfigBase]:
+    """All valid config variations (Cartesian product minus invalid combos).
+
+    Parameters
+    ----------
+    include : list of str or None
+        Analysis type names to include. None = all.
+    param_filters : dict or None
+        Fixed param values to filter the grid, e.g. ``{"model_name": "rrr"}``.
+        Applied per config class; classes that don't have the specified fields
+        are skipped with a warning.
+    """
+    _mapping: dict[str, type[AnalysisConfigBase]] = {
         "population": PopulationConfig,
         "regression": RegressionConfig,
         "vector_gain_rank": VectorGainRankConfig,
@@ -48,10 +61,16 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
 
     configs = []
     for key in include:
-        if key in _mapping:
-            configs.extend(_mapping[key].generate_variations())
+        if key not in _mapping:
+            raise ValueError(f"Unknown analysis config key {key!r}. Available: {', '.join(_mapping.keys())}")
+        cls = _mapping[key]
+        if param_filters:
+            try:
+                configs.extend(cls.generate_variations_matching(param_filters))
+            except ValueError as e:
+                print(f"  [skip {key}] {e}")
         else:
-            raise ValueError(f"Unknown analysis config key {key!r}. " f"Available: {', '.join(_mapping.keys())}")
+            configs.extend(cls.generate_variations())
     return configs
 
 
@@ -84,6 +103,9 @@ def run(
     n_jobs: int = 1,
     dry_run: bool = False,
     max_jobs: int | None = None,
+    skip_errors: bool = False,
+    show_missing: bool = False,
+    param_filters: dict | None = None,
 ):
     """Set up and execute the full analysis plan.
 
@@ -101,17 +123,24 @@ def run(
         If True, print what would be done without executing.
     max_jobs : int or None
         Maximum number of analysis jobs to run. None = no limit.
+    skip_errors : bool
+        Skip (session, config) pairs that already have a recorded error.
+    show_missing : bool
+        When dry_run is True, also print the session IDs under each config group.
     """
     db_path = REGISTRY_PATHS.pipeline_v2_db_path
     store = ResultsStore(db_path)
     sessions = collect_sessions()
-    analysis_configs = build_analysis_configs(include=analyses)
+    analysis_configs = build_analysis_configs(include=analyses, param_filters=param_filters)
+
+    analysis_types = list({cfg.display_name for cfg in analysis_configs})
+    n_errors = sum(len(store.get_errors(analysis_type=at)) for at in analysis_types)
 
     print(f"Sessions: {len(sessions)}")
     print(f"Analysis configs: {len(analysis_configs)}")
     print(f"Total combinations: {len(sessions) * len(analysis_configs)}")
     print(f"Store: {db_path}")
-    print(f"Current coverage: {store.coverage(sessions, analysis_configs):.1%}")
+    print(f"Current coverage: {store.coverage(sessions, analysis_configs):.1%} | Errors recorded: {n_errors}")
     print()
 
     plan = AnalysisPlan(analysis_configs=analysis_configs)
@@ -123,6 +152,8 @@ def run(
         snapshot_codebase=snapshot_codebase,
         dry_run=dry_run,
         max_jobs=max_jobs,
+        skip_errors=skip_errors,
+        show_sessions=show_missing,
     )
 
     if not dry_run:
@@ -137,6 +168,14 @@ def main():
     parser.add_argument("--n-jobs", type=int, default=4, help="Number of parallel workers (default: 8)")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Show what would be done without executing")
     parser.add_argument("--max-jobs", type=int, default=None, help="Maximum number of analysis jobs to run")
+    parser.add_argument("--skip-errors", action="store_true", help="Skip (session, config) pairs that already have a recorded error")
+    parser.add_argument("--show-missing", action="store_true", help="With --dry-run, print session IDs under each config group")
+    parser.add_argument(
+        "--param-filters",
+        nargs="+",
+        metavar="KEY=VALUE",
+        help="Filter config grid by fixed param values, e.g. --param-filters model_name=rrr spks_type=oasis",
+    )
     args = parser.parse_args()
 
     run(
@@ -146,7 +185,22 @@ def main():
         n_jobs=args.n_jobs,
         dry_run=args.dry_run,
         max_jobs=args.max_jobs,
+        skip_errors=args.skip_errors,
+        show_missing=args.show_missing,
+        param_filters=_parse_param_filters(args.param_filters),
     )
+
+
+def _parse_param_filters(raw: list[str] | None) -> dict | None:
+    if not raw:
+        return None
+    out = {}
+    for token in raw:
+        if "=" not in token:
+            raise ValueError(f"--param-filters expects KEY=VALUE pairs, got {token!r}")
+        k, _, v = token.partition("=")
+        out[k.strip()] = v.strip()
+    return out
 
 
 if __name__ == "__main__":

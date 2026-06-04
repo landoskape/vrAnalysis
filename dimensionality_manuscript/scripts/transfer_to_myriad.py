@@ -143,6 +143,13 @@ def _merge_dbs(base: Path, other: Path) -> tuple[int, int]:
         conn.execute("INSERT OR IGNORE INTO results SELECT * FROM other.results")
         conn.commit()
         (n_after,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
+        # Also merge errors table if other DB has one
+        (has_other_errors,) = conn.execute(
+            "SELECT COUNT(*) FROM other.sqlite_master WHERE type='table' AND name='errors'"
+        ).fetchone()
+        if has_other_errors:
+            conn.execute("INSERT OR IGNORE INTO errors SELECT * FROM other.errors")
+            conn.commit()
         conn.execute("DETACH DATABASE other")
         conn.commit()
     finally:

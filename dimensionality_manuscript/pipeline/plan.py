@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import gc
+import traceback as _traceback
 
 import joblib
 import torch
@@ -88,7 +89,13 @@ def _execute_job(
         )
         return True
     except Exception as e:
-        print(f"Error {job}: {e}")
+        msg = str(e)
+        trace = _traceback.format_exc()
+        print(f"Error {job}: {msg}")
+        try:
+            store.put_error(job.session.session_uid, job.analysis_config, msg, trace)
+        except Exception:
+            pass
         return False
     finally:
         job.session.clear_cache()
@@ -113,6 +120,7 @@ class AnalysisPlan:
         *,
         truncated: int = 0,
         label: str = "Dry run",
+        show_sessions: bool = False,
     ) -> None:
         """Print grouped config summary with session counts per unique config.
 
@@ -124,6 +132,8 @@ class AnalysisPlan:
             Number of additional jobs omitted from ``jobs`` (e.g. ``--max-jobs``).
         label : str
             Prefix for the summary line (e.g. ``"Dry run"`` or ``"Pending"``).
+        show_sessions : bool
+            If True, print the individual session IDs under each config group.
         """
         from dataclasses import asdict
         from collections import defaultdict
@@ -151,6 +161,9 @@ class AnalysisPlan:
                 f" | {combo_str}"
                 f" | {len(groups[k])} sessions"
             )
+            if show_sessions:
+                for sid in sorted(groups[k]):
+                    print(f"         {sid}")
         if truncated:
             print(f"\n  ... and {truncated} more jobs (use --max-jobs to increase)")
 
@@ -163,6 +176,8 @@ class AnalysisPlan:
         snapshot_codebase: bool = True,
         dry_run: bool = False,
         max_jobs: int | None = None,
+        skip_errors: bool = False,
+        show_sessions: bool = False,
     ):
         """Run all analysis/data config combinations across sessions.
 
@@ -182,17 +197,26 @@ class AnalysisPlan:
             If True, print the job list without executing anything.
         max_jobs : int or None
             Maximum number of jobs to run. None = no limit.
+        skip_errors : bool
+            If True, skip (session, config) pairs that already have a recorded error.
+        show_sessions : bool
+            If True (dry_run only), print session IDs under each config group.
         """
-        all_jobs = self._collect_jobs(sessions, store, force_remake)
+        all_jobs, n_skipped = self._collect_jobs(sessions, store, force_remake, skip_errors=skip_errors)
         if not all_jobs:
-            print("All results already computed.")
+            msg = "All results already computed."
+            if n_skipped:
+                msg += f" ({n_skipped} skipped due to recorded errors.)"
+            print(msg)
             return
 
         jobs = all_jobs[:max_jobs] if max_jobs is not None else all_jobs
         truncated = len(all_jobs) - len(jobs)
 
         if dry_run:
-            self.print_job_groups(jobs, truncated=truncated)
+            self.print_job_groups(jobs, truncated=truncated, show_sessions=show_sessions)
+            if n_skipped:
+                print(f"\n  ({n_skipped} additional jobs skipped — already have recorded errors)")
             return
 
         snapshot_path: str | None = None
@@ -240,12 +264,24 @@ class AnalysisPlan:
         sessions: list[B2Session],
         store: ResultsStore,
         force_remake: bool,
-    ) -> list[Job]:
-        """Return Jobs for (session, analysis_config) pairs not yet in store."""
+        skip_errors: bool = False,
+    ) -> tuple[list[Job], int]:
+        """Return (jobs, n_skipped) for (session, analysis_config) pairs not yet in store.
+
+        Parameters
+        ----------
+        skip_errors : bool
+            If True, omit pairs that already have a recorded error.
+            ``n_skipped`` counts how many were omitted for this reason.
+        """
         jobs = []
+        n_skipped = 0
         for session in sessions:
             sid = session.session_uid
             for acfg in self.analysis_configs:
                 if force_remake or not store.has(sid, acfg):
+                    if skip_errors and store.has_error(sid, acfg):
+                        n_skipped += 1
+                        continue
                     jobs.append(Job(session=session, analysis_config=acfg))
-        return jobs
+        return jobs, n_skipped
