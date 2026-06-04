@@ -212,7 +212,7 @@ class FrameBehavior:
             idx=self.idx[idx],
         )
 
-    def position_by_environment(self) -> np.ndarray:
+    def position_by_environment(self, with_offset: bool = False) -> np.ndarray:
         """Get the position by environment.
 
         Returns
@@ -220,12 +220,17 @@ class FrameBehavior:
         position_by_environment : np.ndarray
             An array of shape (num_environments, num_frames) with the position for each frame in each environment.
             Na values are used for frames where no position data is available.
+        with_offset : bool
+            Offset position by environment_index * max_position
         """
         environments = np.unique(self.environment)
         position_by_environment = np.full((len(environments), len(self.position)), np.nan)
         for ienv, env in enumerate(environments):
             idx_env = self.environment == env
             position_by_environment[ienv, idx_env] = self.position[idx_env]
+        if with_offset:
+            max_position = np.max(self.position)
+            position_by_environment += np.arange(len(environments)).reshape(-1, 1) * max_position
         return position_by_environment
 
     def __len__(self) -> int:
