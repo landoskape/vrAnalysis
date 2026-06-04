@@ -17,11 +17,13 @@ from dimensionality_manuscript import (
     AnalysisConfigBase,
     CVPCAConfig,
     RegressionConfig,
+    VectorGainRankConfig,
     SubspaceConfig,
     StimSpaceConfig,
     PopulationConfig,
     ExpMaxConfig,
     LocPredConfig,
+    PFPredQualityConfig,
     ResultsStore,
 )
 
@@ -33,11 +35,13 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
     _mapping: dict[str, AnalysisConfigBase] = {
         "population": PopulationConfig,
         "regression": RegressionConfig,
+        "vector_gain_rank": VectorGainRankConfig,
         "cvpca": CVPCAConfig,
         "subspace": SubspaceConfig,
         "stimspace": StimSpaceConfig,
         "expmax": ExpMaxConfig,
         "locpred": LocPredConfig,
+        "pfpred_quality": PFPredQualityConfig,
     }
     if include is None:
         include = list(_mapping.keys())
@@ -54,6 +58,7 @@ def build_analysis_configs(include: list[str] | None = None) -> list[AnalysisCon
 def collect_sessions() -> list[B2Session]:
     """All imaging sessions from the vrSessions database."""
     from vrAnalysis.database import get_database
+
     sessiondb = get_database("vrSessions")
     return list(sessiondb.iter_sessions(imaging=True))
 
