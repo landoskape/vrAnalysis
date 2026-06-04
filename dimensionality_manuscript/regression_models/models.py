@@ -26,6 +26,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         internal: bool = False,
         gain: bool = False,
         vector_gain: bool = False,
+        rank: int = 1,
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
@@ -38,6 +39,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         self.internal = internal
         self.gain = gain
         self.vector_gain = vector_gain
+        self.rank = rank
         self.hyperparameters = hyperparameters
 
     def train(
@@ -113,11 +115,15 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             source_deviation = source_data.numpy() - source_prediction
             target_deviation = target_data.numpy() - target_prediction
             full_deviation = np.concatenate([source_deviation, target_deviation], axis=0)
-            U = randomized_svd(full_deviation, n_components=1, n_iter=100)[0]
+            U = randomized_svd(full_deviation, n_components=self.rank, n_iter=100)[0]
 
             num_source = source_data.shape[0]
-            arousal_coefficients_source = U[:num_source, 0]
-            arousal_coefficients_target = U[num_source:, 0]
+            if self.rank == 1:
+                arousal_coefficients_source = U[:num_source, 0]
+                arousal_coefficients_target = U[num_source:, 0]
+            else:
+                arousal_coefficients_source = U[:num_source, :]
+                arousal_coefficients_target = U[num_source:, :]
             arousal_coefficients = (arousal_coefficients_target, arousal_coefficients_source)
 
         if self.gain and self.vector_gain:
@@ -229,8 +235,13 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
                 # Then multiplying the arousal estimate by target neuron arousal coefficients
                 # Then adding that to the prediction for the target neurons
                 source_deviation = source_data.numpy() - source_prediction.numpy()
-                arousal_estimate = arousal_coefficients_source @ source_deviation
-                arousal_activity_target = np.reshape(arousal_coefficients_target, (-1, 1)) * np.reshape(arousal_estimate, (1, -1))
+                if arousal_coefficients_source.ndim == 1:
+                    # rank-1: scalar arousal estimate per time point
+                    arousal_estimate = arousal_coefficients_source @ source_deviation
+                    arousal_activity_target = np.reshape(arousal_coefficients_target, (-1, 1)) * np.reshape(arousal_estimate, (1, -1))
+                else:
+                    # rank > 1: full low-rank reconstruction
+                    arousal_activity_target = arousal_coefficients_target @ (arousal_coefficients_source.T @ source_deviation)
 
             else:
                 # If the model has a gain component, we need to fit the a scalar gain value for
