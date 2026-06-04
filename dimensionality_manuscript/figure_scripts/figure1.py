@@ -1,6 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 import matplotlib as mpl
+from matplotlib.colors import LogNorm
 from syd import Viewer
 
 from vrAnalysis.helpers import sort_by_preferred_environment, vectorRSquared
@@ -13,6 +14,8 @@ from vrAnalysis.processors.placefields import get_frame_behavior, get_placefield
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.spkmaps import Maps, Reliability
 
+from dimensionality_manuscript.configs.pfpred_quality import PFPredQualityConfig, _kde_r2
+
 plt.rcParams["font.size"] = 12
 
 EXAMPLE_MOUSE_NAME = "ATL027"
@@ -21,6 +24,7 @@ EXAMPLE_SESSION_ID = "701"
 EXAMPLE_SPKS_TYPE = "sigrebase"
 EXAMPLE_ENV = 0
 EXAMPLE_ROI = 96
+_PFPRED_KDE_GRID = PFPredQualityConfig().kde_grid
 
 
 def _seed_roi_filtered_viewer(
@@ -365,12 +369,18 @@ class R2PlacefieldFocus(Viewer):
         self.num_envs = len(smp.get_env_maps().environments)
         self.add_integer("env", value=idx_env, min=0, max=self.num_envs - 1)
         self.add_selection("roi", value=0, options=list(range(self.num_rois)))
+        self.add_selection("cloud_style", value="hex", options=["hex", "scatter"])
+        self.add_selection("hex_count_norm", value="linear", options=["linear", "log"])
+        self.add_float("cloud_alpha", value=0.55, min=0.0, max=1.0)
         self.on_change("env", self.recompute_arrays)
         self.recompute_arrays(self.state)
 
     def recompute_arrays(self, state):
         self.idx_env = state["env"]
         self.spks_valid, self.pfpred_valid, self.r2, self.reliability = _r2_placefield_arrays(self.session, self.smp, self.idx_env)
+        kde_result = _kde_r2(self.r2, self.reliability.values[self.idx_env], _PFPRED_KDE_GRID)
+        self.kde_grid = kde_result["r2_kde_grid"]
+        self.kde_mean = kde_result["r2_kde_mean"]
 
     def plot(self, state):
         roi = state["roi"]
@@ -411,23 +421,54 @@ class R2PlacefieldFocus(Viewer):
         min_r2 = np.nanmin(r2)
         max_r2 = np.nanmax(r2)
         max_tick_r2 = np.round(np.nanmax(r2), 1)
+        rel_env = reliability.values[idx_env]
+        valid = np.isfinite(r2) & np.isfinite(rel_env)
+        cloud_alpha = state["cloud_alpha"]
+        if state["cloud_style"] == "hex":
+            hex_norm = LogNorm(vmin=1) if state["hex_count_norm"] == "log" else None
+            ax[1].hexbin(
+                rel_env[valid],
+                r2[valid],
+                gridsize=30,
+                cmap="Greys",
+                mincnt=1,
+                linewidths=0,
+                norm=hex_norm,
+                alpha=cloud_alpha,
+                zorder=1,
+            )
+            kde_color = "black"
+        elif state["cloud_style"] == "scatter":
+            ax[1].plot(
+                rel_env[valid],
+                r2[valid],
+                markerfacecolor="k",
+                markeredgecolor="none",
+                marker=".",
+                markersize=10,
+                linestyle="none",
+                alpha=cloud_alpha,
+                zorder=1,
+            )
+            kde_color = "blue"
+        else:
+            raise ValueError(f"Invalid cloud_style: {state['cloud_style']!r}")
         ax[1].plot(
-            reliability.values[idx_env],
-            r2,
-            markerfacecolor="k",
-            markeredgecolor="none",
-            marker=".",
-            markersize=10,
-            linestyle="none",
-            alpha=0.1,
+            self.kde_grid,
+            self.kde_mean,
+            color=kde_color,
+            linewidth=1,
+            zorder=5,
         )
         ax[1].plot(
-            reliability.values[idx_env][roi],
+            rel_env[roi],
             r2[roi],
             markerfacecolor="r",
             markeredgecolor="none",
             marker=".",
             markersize=15,
+            linestyle="none",
+            zorder=10,
         )
         ax[1].set_xlim(-1, 1)
         ax[1].set_xlabel("Spatial Reliability")
@@ -710,17 +751,42 @@ def example_r2_placefield(
     session: B2Session,
     roi: int = EXAMPLE_ROI,
     idx_env: int = 0,
+    cloud_style: str = "hex",
+    cloud_alpha: float | None = None,
+    hex_count_norm: str = "linear",
     return_syd_viewer: bool = False,
 ):
     """
     Two-panel plot of activity vs PF prediction and R² vs spatial reliability.
+
+    Parameters
+    ----------
+    cloud_style : {"hex", "scatter"}
+        How to draw all ROIs on the R² vs reliability panel.
+    cloud_alpha : float or None
+        Opacity for the hexbin or scatter cloud. Defaults to 0.55 for hex and
+        0.1 for scatter when None.
+    hex_count_norm : {"linear", "log"}
+        Color mapping for hexbin counts (ignored when ``cloud_style="scatter"``).
+        ``log`` uses ``matplotlib.colors.LogNorm`` so sparse regions are visible
+        when a few bins dominate the count range.
     """
+    if cloud_style not in ("hex", "scatter"):
+        raise ValueError(f"cloud_style must be 'hex' or 'scatter', got {cloud_style!r}")
+    if hex_count_norm not in ("linear", "log"):
+        raise ValueError(f"hex_count_norm must be 'linear' or 'log', got {hex_count_norm!r}")
+    if cloud_alpha is None:
+        cloud_alpha = 0.55 if cloud_style == "hex" else 0.1
+
     smp = SMPs.SpkmapProcessor(session, params=SMPs.SpkmapParams())
     smp.get_env_maps().pop_nan_positions()
 
     viewer = R2PlacefieldFocus(session, smp, idx_env)
     viewer.update_integer("env", value=idx_env)
     viewer.update_selection("roi", value=roi)
+    viewer.update_selection("cloud_style", value=cloud_style)
+    viewer.update_selection("hex_count_norm", value=hex_count_norm)
+    viewer.update_float("cloud_alpha", value=cloud_alpha)
 
     if return_syd_viewer:
         return viewer
