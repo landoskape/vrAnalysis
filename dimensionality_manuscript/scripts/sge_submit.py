@@ -85,6 +85,11 @@ def submit(
     print(f"Analysis configs: {len(analysis_configs)}")
     print(f"Pending jobs:     {len(pending_jobs)}")
     print(f"Database:         {db_path}")
+    print()
+
+    if pending_jobs:
+        plan.print_job_groups(pending_jobs, label="Pending")
+        print()
 
     if not pending_jobs:
         print("Nothing to do — all results already computed.")
@@ -99,7 +104,7 @@ def submit(
 
     if dry_run:
         print("\n[dry-run] Batch populated. Run smoke_test to validate, then re-run without --dry-run to submit.")
-        _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file, batch_id)
+        _print_queue_preview(n_workers, walltime, mem, db_path, sessions_file, batch_id)
         return batch_id
 
     qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file, batch_id)
@@ -141,13 +146,9 @@ def _build_qsub_command(
     ]
 
 
-def _print_queue_preview(pending_jobs, n_workers, walltime, mem, db_path, sessions_file, batch_id):
-    from collections import Counter
-    type_counts = Counter(j.analysis_config.display_name for j in pending_jobs)
-    for analysis_type, count in sorted(type_counts.items()):
-        print(f"  {analysis_type}: {count} jobs")
+def _print_queue_preview(n_workers, walltime, mem, db_path, sessions_file, batch_id):
     qsub_cmd = _build_qsub_command(n_workers, walltime, mem, db_path, sessions_file, batch_id)
-    print(f"\nqsub command: {' '.join(qsub_cmd)}")
+    print(f"qsub command: {' '.join(qsub_cmd)}")
 
 
 def _print_batch_summary(queue: JobQueue) -> None:

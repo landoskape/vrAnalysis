@@ -107,6 +107,53 @@ class AnalysisPlan:
 
     analysis_configs: list[AnalysisConfigBase] = field(default_factory=list)
 
+    def print_job_groups(
+        self,
+        jobs: list[Job],
+        *,
+        truncated: int = 0,
+        label: str = "Dry run",
+    ) -> None:
+        """Print grouped config summary with session counts per unique config.
+
+        Parameters
+        ----------
+        jobs : list of Job
+            Jobs to summarize (typically pending or about to run).
+        truncated : int
+            Number of additional jobs omitted from ``jobs`` (e.g. ``--max-jobs``).
+        label : str
+            Prefix for the summary line (e.g. ``"Dry run"`` or ``"Pending"``).
+        """
+        from dataclasses import asdict
+        from collections import defaultdict
+
+        groups: dict[str, list] = defaultdict(list)
+        group_cfg: dict[str, AnalysisConfigBase] = {}
+        for job in jobs:
+            k = job.analysis_config.key()
+            groups[k].append(job.session.session_uid)
+            group_cfg[k] = job.analysis_config
+
+        n_sessions = len({job.session.session_uid for job in jobs})
+        print(
+            f"{label}: {len(jobs)} jobs | {len(group_cfg)} unique configs | {n_sessions} sessions"
+            + (f" ({truncated} more jobs skipped)" if truncated else "")
+            + ":\n"
+        )
+        for i, (k, cfg) in enumerate(group_cfg.items(), 1):
+            raw = asdict(cfg)
+            combo = {key: val for key, val in raw.items() if key not in ("schema_version", "data_config_name")}
+            combo_str = ", ".join(f"{key}={val!r}" for key, val in combo.items()) if combo else "(no params)"
+            print(
+                f"  [{i:>3}] {cfg.display_name} {cfg.schema_version}"
+                f" | data={cfg.data_config_name}"
+                f" | {combo_str}"
+                f" | {len(groups[k])} sessions"
+            )
+        if truncated:
+            print(f"\n  ... and {truncated} more jobs (use --max-jobs to increase)")
+
     def analyze(
         self,
         sessions: list[B2Session],
@@ -145,35 +192,7 @@ class AnalysisPlan:
         truncated = len(all_jobs) - len(jobs)
 
         if dry_run:
-            from dataclasses import asdict
-            from collections import defaultdict
-
-            # Group sessions per unique config
-            groups: dict[str, list] = defaultdict(list)
-            group_cfg: dict[str, AnalysisConfigBase] = {}
-            for job in jobs:
-                k = job.analysis_config.key()
-                groups[k].append(job.session.session_uid)
-                group_cfg[k] = job.analysis_config
-
-            n_sessions = len({job.session.session_uid for job in jobs})
-            print(
-                f"Dry run: {len(jobs)} jobs | {len(groups)} unique configs | {n_sessions} sessions"
-                + (f" ({truncated} more jobs skipped)" if truncated else "")
-                + ":\n"
-            )
-            for i, (k, cfg) in enumerate(group_cfg.items(), 1):
-                raw = asdict(cfg)
-                combo = {key: val for key, val in raw.items() if key not in ("schema_version", "data_config_name")}
-                combo_str = ", ".join(f"{key}={val!r}" for key, val in combo.items()) if combo else "(no params)"
-                print(
-                    f"  [{i:>3}] {cfg.display_name} {cfg.schema_version}"
-                    f" | data={cfg.data_config_name}"
-                    f" | {combo_str}"
-                    f" | {len(groups[k])} sessions"
-                )
-            if truncated:
-                print(f"\n  ... and {truncated} more jobs (use --max-jobs to increase)")
+            self.print_job_groups(jobs, truncated=truncated)
             return
 
         snapshot_path: str | None = None
