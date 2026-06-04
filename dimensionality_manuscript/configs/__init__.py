@@ -1,7 +1,8 @@
 from .cvpca import CVPCAConfig
 from .data_config import DataConfig, get_data_config, list_data_configs
+from .pfpred_quality import PFPredQualityConfig
 from .population import PopulationConfig
-from .regression import RegressionConfig
+from .regression import RegressionConfig, VectorGainRankConfig
 from .subspace import SubspaceConfig
 from .stimspace import StimSpaceConfig
 from .expmax import ExpMaxConfig
@@ -15,8 +16,10 @@ from .placefield_structure import (
 __all__ = [
     "CVPCAConfig",
     "DataConfig",
+    "PFPredQualityConfig",
     "PopulationConfig",
     "RegressionConfig",
+    "VectorGainRankConfig",
     "SubspaceConfig",
     "StimSpaceConfig",
     "ExpMaxConfig",
