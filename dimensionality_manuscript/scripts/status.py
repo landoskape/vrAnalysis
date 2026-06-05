@@ -74,6 +74,9 @@ def status(
     group_by: list[str] | None = None,
     show_errors: bool = False,
     include_error_types: bool = False,
+    clear_errors: bool = False,
+    clear_errors_analysis_type: str | None = None,
+    clear_errors_schema_version: str | None = None,
 ):
     """Print a summary of the ResultsStore contents.
 
@@ -133,6 +136,19 @@ def status(
         print()
         print_error_summary(store, include_error_types=include_error_types)
 
+    if clear_errors:
+        n = store.clear_errors_bulk(
+            analysis_type=clear_errors_analysis_type,
+            schema_version=clear_errors_schema_version,
+        )
+        filters = []
+        if clear_errors_analysis_type:
+            filters.append(f"analysis_type={clear_errors_analysis_type!r}")
+        if clear_errors_schema_version:
+            filters.append(f"schema_version={clear_errors_schema_version!r}")
+        filter_str = f" ({', '.join(filters)})" if filters else " (all)"
+        print(f"\nCleared {n} error row(s){filter_str}.")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Show ResultsStore contents")
@@ -140,6 +156,9 @@ def main():
     parser.add_argument("--group-by", nargs="+", default=None, help="Columns to group by (default: analysis_type schema_version)")
     parser.add_argument("--show-errors", action="store_true", help="Summarise recorded errors grouped by config")
     parser.add_argument("--include-error-types", action="store_true", help="With --show-errors, print unique error messages per config group")
+    parser.add_argument("--clear-errors", action="store_true", help="Delete error rows (optionally filtered by --clear-errors-analysis-type / --clear-errors-schema-version)")
+    parser.add_argument("--clear-errors-analysis-type", default=None, help="With --clear-errors, only delete errors for this analysis_type")
+    parser.add_argument("--clear-errors-schema-version", default=None, help="With --clear-errors, only delete errors for this schema_version")
     args = parser.parse_args()
 
     status(
@@ -147,6 +166,9 @@ def main():
         group_by=args.group_by,
         show_errors=args.show_errors,
         include_error_types=args.include_error_types,
+        clear_errors=args.clear_errors,
+        clear_errors_analysis_type=args.clear_errors_analysis_type,
+        clear_errors_schema_version=args.clear_errors_schema_version,
     )
 
 

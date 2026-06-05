@@ -311,6 +311,36 @@ class ResultsStore:
             deleted = cursor.rowcount
         return deleted > 0
 
+    def clear_errors_bulk(
+        self,
+        *,
+        analysis_type: str | None = None,
+        schema_version: str | None = None,
+    ) -> int:
+        """Delete error rows matching the given filters. Returns number of rows deleted.
+
+        Parameters
+        ----------
+        analysis_type : str, optional
+            If given, only delete errors with this analysis_type.
+        schema_version : str, optional
+            If given, only delete errors with this schema_version.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if analysis_type is not None:
+            clauses.append("analysis_type=?")
+            params.append(analysis_type)
+        if schema_version is not None:
+            clauses.append("schema_version=?")
+            params.append(schema_version)
+        sql = "DELETE FROM errors"
+        if clauses:
+            sql = f"{sql} WHERE {' AND '.join(clauses)}"
+        with self._connect() as conn:
+            cursor = conn.execute(sql, params)
+            return cursor.rowcount
+
     def get_errors(
         self,
         *,
