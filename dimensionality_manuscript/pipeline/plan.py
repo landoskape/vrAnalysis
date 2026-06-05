@@ -87,6 +87,7 @@ def _execute_job(
             result,
             snapshot_path=snapshot_path,
         )
+        store.clear_error(job.session.session_uid, job.analysis_config)
         return True
     except Exception as e:
         msg = str(e)
