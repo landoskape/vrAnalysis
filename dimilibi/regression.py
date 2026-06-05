@@ -378,7 +378,7 @@ class ReducedRankRegression(RidgeRegression):
             Xt = X.transpose(0, 1)
             gram = Xt @ X
 
-            K = self._beta_ols.transpose(0, 1) @ gram @ self._beta_ols
+            K = (self._beta_ols.transpose(0, 1) @ gram @ self._beta_ols).contiguous()
             evals, V = torch.linalg.eigh(K)
 
             idx = torch.argsort(evals, descending=True)
