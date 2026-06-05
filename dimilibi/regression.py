@@ -1,5 +1,6 @@
 from typing import Optional
 from copy import copy
+import numpy as np
 import torch
 from .metrics import measure_r2
 
@@ -378,11 +379,11 @@ class ReducedRankRegression(RidgeRegression):
             Xt = X.transpose(0, 1)
             gram = Xt @ X
 
-            K = (self._beta_ols.transpose(0, 1) @ gram @ self._beta_ols).contiguous()
-            evals, V = torch.linalg.eigh(K)
-
-            idx = torch.argsort(evals, descending=True)
-            self._Xbeta_V = V[:, idx]  # (q, q), plays role of "V" from SVD
+            K = (self._beta_ols.transpose(0, 1) @ gram @ self._beta_ols).cpu().numpy()
+            _, V_np = np.linalg.eigh(K)
+            # eigh returns ascending order; flip to descending
+            V = torch.from_numpy(V_np[:, ::-1].copy()).to(dtype=self._beta_ols.dtype, device=self._beta_ols.device)
+            self._Xbeta_V = V
 
         # Store the rank restraint matrix and coefficients
         self._rank_restraint = self._Xbeta_V[:, : self.rank] @ self._Xbeta_V[:, : self.rank].T
