@@ -67,7 +67,7 @@ def main():
         for cfg in rrr_configs:
             dk = cfg.data_config_name
             if dk not in registries:
-                registries[dk] = PopulationRegistry(registry_params=cfg.to_registry_params())
+                registries[dk] = PopulationRegistry(registry_params=cfg.data_config.to_registry_params())
             registry = registries[dk]
 
             label = f"{session.session_uid} / {cfg.display_name}"
