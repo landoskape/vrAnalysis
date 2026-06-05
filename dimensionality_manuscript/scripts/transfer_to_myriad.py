@@ -17,35 +17,16 @@ so MYRIAD workers reuse the same train/test splits instead of regenerating them.
 Usage
 -----
     # Dry run (see what would be sent):
-    python -m dimensionality_manuscript.scripts.transfer_to_myriad \\
-        --sessions-file sessions.json \\
-        --local-data D:/localData \\
-        --host myriad \\
-        --remote-data ~/Scratch/data \\
-        --dry-run
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --dry-run
 
     # Real transfer (session data only):
-    python -m dimensionality_manuscript.scripts.transfer_to_myriad \\
-        --sessions-file sessions.json \\
-        --local-data D:/localData \\
-        --host myriad \\
-        --remote-data ~/Scratch/data
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data
 
     # Also seed MYRIAD with local results so already-computed jobs are skipped:
-    python -m dimensionality_manuscript.scripts.transfer_to_myriad \\
-        --sessions-file sessions.json \\
-        --local-data D:/localData \\
-        --host myriad \\
-        --remote-data ~/Scratch/data \\
-        --include-results
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-results
 
     # Upload population cache so MYRIAD uses the same train/test splits:
-    python -m dimensionality_manuscript.scripts.transfer_to_myriad \\
-        --sessions-file sessions.json \\
-        --local-data D:/localData \\
-        --host myriad \\
-        --remote-data ~/Scratch/data \\
-        --include-population-cache
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-population-cache
 """
 
 import argparse
@@ -144,9 +125,7 @@ def _merge_dbs(base: Path, other: Path) -> tuple[int, int]:
         conn.commit()
         (n_after,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
         # Also merge errors table if other DB has one
-        (has_other_errors,) = conn.execute(
-            "SELECT COUNT(*) FROM other.sqlite_master WHERE type='table' AND name='errors'"
-        ).fetchone()
+        (has_other_errors,) = conn.execute("SELECT COUNT(*) FROM other.sqlite_master WHERE type='table' AND name='errors'").fetchone()
         if has_other_errors:
             conn.execute("INSERT OR IGNORE INTO errors SELECT * FROM other.errors")
             conn.commit()
