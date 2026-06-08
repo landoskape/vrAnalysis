@@ -8,8 +8,9 @@ from typing import ClassVar, Optional
 from vrAnalysis.sessions import B2Session, SpksTypes
 
 from ..pipeline.base import AnalysisConfigBase
-from ..registry import PopulationRegistry
+from ..registry import PopulationRegistry, get_activity_parameters
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
+from .regression import VALID_SPKS_TYPES
 
 
 @dataclass(frozen=True)
@@ -18,8 +19,6 @@ class StimSpaceConfig(AnalysisConfigBase):
 
     Parameters
     ----------
-    center : bool
-        Whether to center neural activity before analysis.
     normalize : bool
         Whether to normalize placefield matrices by per-neuron peak response.
     use_fast_sampling : bool
@@ -36,15 +35,21 @@ class StimSpaceConfig(AnalysisConfigBase):
         Spike type to use.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "even"
 
-    normalize: bool = False
+    activity_parameters_name: str = "raw"
     use_fast_sampling: bool = True
-    reliability_threshold: Optional[float] = None
-    fraction_active_threshold: Optional[float] = None
+    reliability_threshold: Optional[float] = (
+        0.2  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
+    )
+    fraction_active_threshold: Optional[float] = (
+        0.05  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
+    )
     num_bins: int = 100
-    smooth_width: Optional[float] = None
+    smooth_width: Optional[float] = (
+        5.0  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
+    )
     spks_type: SpksTypes = "oasis"
     directions_from_placefield_only: bool = False
     cross_validated_placefield_kernel: bool = False
@@ -54,9 +59,11 @@ class StimSpaceConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "reliability_threshold": [None, 0.2],
-            "fraction_active_threshold": [None, 0.05],
-            "smooth_width": [None, 5.0],
+            "spks_type": list(VALID_SPKS_TYPES),
+            # "activity_parameters_name": ["raw", "default"],
+            # "reliability_threshold": [None, 0.2],
+            # "fraction_active_threshold": [None, 0.05],
+            # "smooth_width": [None, 5.0],
             "directions_from_placefield_only": [False, True],
             "cross_validated_placefield_kernel": [False, True],
         }
@@ -64,7 +71,8 @@ class StimSpaceConfig(AnalysisConfigBase):
     def summary(self) -> str:
         parts = [
             self.display_name,
-            f"norm={self.normalize}",
+            f"spks={self.spks_type}",
+            f"ap={self.activity_parameters_name}",
             f"fast={self.use_fast_sampling}",
             f"rel={self.reliability_threshold}",
             f"frac={self.fraction_active_threshold}",
@@ -81,9 +89,10 @@ class StimSpaceConfig(AnalysisConfigBase):
         from ..subspace_analysis.stimspace import StimSpaceSubspace
 
         hyps = PlaceFieldHyperparameters(num_bins=self.num_bins, smooth_width=self.smooth_width)
+        ap = get_activity_parameters(self.activity_parameters_name)
         model = StimSpaceSubspace(
             registry,
-            normalize=self.normalize,
+            activity_parameters=ap,
             use_fast_sampling=self.use_fast_sampling,
             reliability_threshold=self.reliability_threshold,
             fraction_active_threshold=self.fraction_active_threshold,

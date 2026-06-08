@@ -12,7 +12,7 @@ import torch
 from tqdm import tqdm
 
 from dimensionality_manuscript.configs.stimspace import StimSpaceConfig
-from dimensionality_manuscript.registry import PopulationRegistry
+from dimensionality_manuscript.registry import PopulationRegistry, get_activity_parameters
 from dimensionality_manuscript.regression_models.hyperparameters import PlaceFieldHyperparameters
 from dimensionality_manuscript.subspace_analysis.stimspace import StimSpaceSubspace
 from vrAnalysis.database import get_database
@@ -48,8 +48,7 @@ def _build_model(cfg: StimSpaceConfig, registry: PopulationRegistry) -> StimSpac
     """Construct a StimSpaceSubspace matching ``StimSpaceConfig.process``."""
     return StimSpaceSubspace(
         registry,
-        centered=cfg.center,
-        normalize=cfg.normalize,
+        activity_parameters=get_activity_parameters(cfg.activity_parameters_name),
         use_fast_sampling=cfg.use_fast_sampling,
         reliability_threshold=cfg.reliability_threshold,
         fraction_active_threshold=cfg.fraction_active_threshold,

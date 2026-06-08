@@ -17,8 +17,10 @@ from ..registry import (
     SubspaceName,
     PopulationRegistry,
     get_subspace,
+    get_activity_parameters,
 )
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
+from .regression import VALID_SPKS_TYPES
 from ..pipeline.base import AnalysisConfigBase
 
 
@@ -39,13 +41,15 @@ class SubspaceConfig(AnalysisConfigBase):
         Gaussian smoothing width for place fields. None means no smoothing.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "even"
 
     subspace_name: SubspaceName = "covcov_subspace"
     spks_type: SpksTypes = "oasis"
     num_bins: int = 100
     smooth_width: float | None = None
+    centered: bool = False
+    activity_parameters_name: str = "raw"
 
     display_name: ClassVar[str] = "subspace"
 
@@ -57,13 +61,13 @@ class SubspaceConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "subspace_name": ["pca_subspace", "svca_subspace", "covcov_subspace", "covcov_crossvalidated_subspace"],
+            "spks_type": list(VALID_SPKS_TYPES),
             "smooth_width": [5.0, None],
+            "centered": [True, False],
+            "activity_parameters_name": ["raw", "default"],
         }
 
     def validate(self):
-        if self.subspace_name == "cvpca_subspace":
-            raise ValueError("cvpca_subspace is broken and cannot be used in SubspaceConfig.")
         if self.subspace_name not in SUBSPACE_NAMES:
             raise ValueError(f"Unknown subspace_name {self.subspace_name!r}. " f"Available: {', '.join(SUBSPACE_NAMES)}")
 
@@ -76,11 +80,16 @@ class SubspaceConfig(AnalysisConfigBase):
             f"smooth={self.smooth_width}",
             self.schema_version,
         ]
+        if self.centered:
+            parts.append("centered")
+        if self.activity_parameters_name != "raw":
+            parts.append(f"ap={self.activity_parameters_name}")
         return "_".join(parts)
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> None:
         """Measure subspace on this session."""
-        model = get_subspace(self.subspace_name, registry)
+        ap = get_activity_parameters(self.activity_parameters_name)
+        model = get_subspace(self.subspace_name, registry, centered=self.centered, activity_parameters=ap)
         hyps = PlaceFieldHyperparameters(num_bins=self.num_bins, smooth_width=self.smooth_width)
         subspace = model.fit(session, spks_type=self.spks_type, hyperparameters=hyps)
         score = model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)

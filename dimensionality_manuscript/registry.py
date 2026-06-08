@@ -107,7 +107,6 @@ class RegistryPaths:
     hyperparameter_path: Path = cache_path / "hyperparameters"
     score_path: Path = cache_path / "scores"
     error_path: Path = cache_path / "errors"
-    subspace_hyperparameter_path: Path = cache_path / "subspace-hyperparameters"
     subspace_score_path: Path = cache_path / "subspace-scores"
     subspace_error_path: Path = cache_path / "subspace-errors"
     pf1d_internals_path: Path = cache_path / "pf1d_internals"
@@ -126,7 +125,6 @@ class RegistryPaths:
         self.hyperparameter_path.mkdir(parents=True, exist_ok=True)
         self.score_path.mkdir(parents=True, exist_ok=True)
         self.error_path.mkdir(parents=True, exist_ok=True)
-        self.subspace_hyperparameter_path.mkdir(parents=True, exist_ok=True)
         self.subspace_score_path.mkdir(parents=True, exist_ok=True)
         self.subspace_error_path.mkdir(parents=True, exist_ok=True)
         self.pf1d_internals_path.mkdir(parents=True, exist_ok=True)
@@ -631,10 +629,10 @@ from .model_plot_locator import ModelPlotLocator, PlotLayer, select_models
 
 SUBSPACE_NAMES: tuple[SubspaceName] = (
     "pca_subspace",
+    "svca_subspace",
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
     "stimspace_subspace",
-    "svca_subspace",
 )
 
 ACTIVITY_PARAMETERS_REGISTRY: dict[str, ActivityParameters] = {
@@ -892,7 +890,8 @@ def get_subspace(
     subspace_name: Literal["pca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    correlation: bool = False,
+    centered: bool = False,
+    activity_parameters: ActivityParameters | str = "raw",
 ) -> PCASubspace: ...
 
 
@@ -901,7 +900,8 @@ def get_subspace(
     subspace_name: Literal["covcov_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    correlation: bool = False,
+    centered: bool = False,
+    activity_parameters: ActivityParameters | str = "raw",
 ) -> CovCovSubspace: ...
 
 
@@ -910,7 +910,8 @@ def get_subspace(
     subspace_name: Literal["covcov_crossvalidated_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    correlation: bool = False,
+    centered: bool = False,
+    activity_parameters: ActivityParameters | str = "raw",
 ) -> CovCovCrossvalidatedSubspace: ...
 
 
@@ -919,7 +920,8 @@ def get_subspace(
     subspace_name: Literal["svca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    correlation: bool = False,
+    centered: bool = False,
+    activity_parameters: ActivityParameters | str = "raw",
 ) -> SVCASubspace: ...
 
 
@@ -928,7 +930,8 @@ def get_subspace(
     subspace_name: Literal["stimspace_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    correlation: bool = False,
+    centered: bool = False,
+    activity_parameters: ActivityParameters | str = "raw",
 ) -> StimSpaceSubspace: ...
 
 
@@ -936,7 +939,8 @@ def get_subspace(
     subspace_name: SubspaceName,
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    correlation: bool = False,
+    centered: bool = False,
+    activity_parameters: ActivityParameters | str = "raw",
 ) -> SubspaceModel:
     """Get a subspace model object for a subspace name.
 
@@ -948,8 +952,13 @@ def get_subspace(
         The population registry to use for the subspace model.
     match_dimensions : bool
         Whether to match the dimensions of the activity and placefields. Default is False.
-    correlation : bool
-        Whether to use correlation instead of covariance. Default is False.
+    centered : bool
+        Whether to center data before the linear algebra step. Ignored for stimspace_subspace
+        (always centered). Default is False.
+    activity_parameters : ActivityParameters or str
+        Controls data scaling. Pass an ``ActivityParameters`` instance or a registry name
+        (``"raw"``, ``"default"``, ``"preserved"``). The ``center`` field is ignored;
+        use ``centered`` instead. Default is ``"raw"`` (no scaling).
 
     Returns
     -------
@@ -959,14 +968,21 @@ def get_subspace(
     if subspace_name not in SUBSPACE_NAMES:
         raise ValueError(f"Subspace {subspace_name} not found in registry.")
 
+    if isinstance(activity_parameters, str):
+        resolved_ap = get_activity_parameters(activity_parameters)
+    else:
+        resolved_ap = activity_parameters
+
     if subspace_name == "pca_subspace":
-        return PCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+        return PCASubspace(population_registry, centered=centered, activity_parameters=resolved_ap, match_dimensions=match_dimensions)
     if subspace_name == "covcov_subspace":
-        return CovCovSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+        return CovCovSubspace(population_registry, centered=centered, activity_parameters=resolved_ap, match_dimensions=match_dimensions)
     if subspace_name == "covcov_crossvalidated_subspace":
-        return CovCovCrossvalidatedSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+        return CovCovCrossvalidatedSubspace(
+            population_registry, centered=centered, activity_parameters=resolved_ap, match_dimensions=match_dimensions
+        )
     if subspace_name == "svca_subspace":
-        return SVCASubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+        return SVCASubspace(population_registry, centered=centered, activity_parameters=resolved_ap, match_dimensions=match_dimensions)
     if subspace_name == "stimspace_subspace":
-        return StimSpaceSubspace(population_registry, match_dimensions=match_dimensions, correlation=correlation)
+        return StimSpaceSubspace(population_registry, activity_parameters=resolved_ap, match_dimensions=match_dimensions)
     raise ValueError(f"Subspace {subspace_name} not found in registry.")

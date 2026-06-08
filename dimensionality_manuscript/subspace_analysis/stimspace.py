@@ -22,6 +22,7 @@ from vrAnalysis.processors.placefields import FrameBehavior, Placefield, get_pla
 from vrAnalysis.sessions import B2Session, SpksTypes
 from dimilibi import PCA
 
+from ..regression_models.base import ActivityParameters
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 from .base import SubspaceModel, Subspace
 
@@ -112,9 +113,8 @@ class StimSpaceSubspace(SubspaceModel):
     def __init__(
         self,
         registry,
-        hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         autosave: bool = True,
-        normalize: bool = True,
+        activity_parameters: ActivityParameters = ActivityParameters(center=False, scale=False, scale_type="none"),
         use_fast_sampling: bool = True,
         reliability_threshold: Optional[float] = None,
         fraction_active_threshold: Optional[float] = None,
@@ -123,10 +123,9 @@ class StimSpaceSubspace(SubspaceModel):
     ) -> None:
         super().__init__(
             registry,
-            hyperparameters=hyperparameters,
             autosave=autosave,
+            activity_parameters=activity_parameters,
         )
-        self.normalize = normalize
         self.use_fast_sampling = use_fast_sampling
         self.reliability_threshold = reliability_threshold
         self.fraction_active_threshold = fraction_active_threshold
@@ -196,30 +195,13 @@ class StimSpaceSubspace(SubspaceModel):
 
         return idx_keep
 
-    def _get_norm_values(self, session: B2Session, spks_type: SpksTypes, idx_keep: np.ndarray, min_norm: float = 1.0) -> torch.Tensor:
-        """
-        Get a global norm value for each neuron computed by taking the 99.5% percentile value of the spks
-        """
-        if not self.normalize:
-            return torch.ones(len(idx_keep), dtype=torch.float32)
-
-        data = self.get_session_data(session, spks_type, "full")[0]
-        data = data[idx_keep]
-        norm_values = torch.quantile(data, torch.tensor(0.995), dim=1, keepdim=True)
-        norm_values[norm_values < min_norm] = min_norm
-        return norm_values
-
     def _preprocess_data(
         self,
         data: torch.Tensor,
         idx_keep: np.ndarray,
-        norm_values: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        """Apply neuron filtering and optional normalization."""
-        data = data[idx_keep]
-        if norm_values is not None:
-            data = data / norm_values
-        return data
+        """Apply neuron filtering."""
+        return data[idx_keep]
 
     def _compute_placefield_folds(
         self,
@@ -336,7 +318,7 @@ class StimSpaceSubspace(SubspaceModel):
         session: B2Session,
         spks_type: SpksTypes,
         fold_specs: Sequence[StimSpaceFoldSpec],
-        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         *,
         prep_state: Optional[StimSpacePrepState] = None,
     ) -> tuple[StimSpaceFolds, StimSpacePrepState]:
@@ -349,7 +331,7 @@ class StimSpaceSubspace(SubspaceModel):
         fold_specs : sequence of StimSpaceFoldSpec
             Logical folds to load (test0/test1 are added automatically when
             ``cross_validated_placefield_kernel`` is enabled and ``test`` is requested).
-        hyperparameters : PlaceFieldHyperparameters, optional
+        hyperparameters : PlaceFieldHyperparameters
         prep_state : StimSpacePrepState, optional
             When provided (score path), reuses neuron mask, position mask, and test-half
             indices from fit. When ``None`` (fit path), computes them.
@@ -360,9 +342,6 @@ class StimSpaceSubspace(SubspaceModel):
         prep_state : StimSpacePrepState
             Preparation state for reuse at score (new state when ``prep_state`` was ``None``).
         """
-        if hyperparameters is None:
-            hyperparameters = self.hyperparameters
-
         dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
         fold_specs = list(fold_specs)
 
@@ -380,15 +359,13 @@ class StimSpaceSubspace(SubspaceModel):
             idx_test_split0 = prep_state.idx_test_split0
             idx_test_split1 = prep_state.idx_test_split1
 
-        norm_values = self._get_norm_values(session, spks_type, idx_keep) if self.normalize else None
-
         activity: dict[str, torch.Tensor] = {}
         frame_behaviors: dict[str, FrameBehavior] = {}
         smooth_widths: dict[str, Optional[float]] = {}
 
         for spec in fold_specs:
             data, frame_behavior, _ = self.get_session_data(session, spks_type, spec.registry_split, use_cell_split=False)
-            activity[spec.name] = self._preprocess_data(data, idx_keep, norm_values)
+            activity[spec.name] = self._preprocess_data(data, idx_keep)
             frame_behaviors[spec.name] = frame_behavior
             smooth_widths[spec.name] = spec.smooth_width
 
@@ -434,7 +411,7 @@ class StimSpaceSubspace(SubspaceModel):
         session: B2Session,
         spks_type: SpksTypes = "oasis",
         split: "SplitName" = "train",
-        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         nan_safe: bool = False,
     ) -> Subspace:
         """
@@ -450,9 +427,6 @@ class StimSpaceSubspace(SubspaceModel):
         nan_safe : bool
             If True, allow NaNs in placefield matrices (bins not visited in a fold).
         """
-        if hyperparameters is None:
-            hyperparameters = self.hyperparameters
-
         folds, prep = self.get_processed_folds(
             session,
             spks_type,
@@ -506,7 +480,7 @@ class StimSpaceSubspace(SubspaceModel):
         subspace: Subspace,
         spks_type: SpksTypes = "oasis",
         split: "SplitName" = "not_train",
-        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+        hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         nan_safe: bool = False,
     ) -> dict:
         """
@@ -514,9 +488,6 @@ class StimSpaceSubspace(SubspaceModel):
 
         split isn't used!
         """
-        if hyperparameters is None:
-            hyperparameters = self.hyperparameters
-
         prep = StimSpacePrepState.from_extras(subspace.extras)
         folds, _ = self.get_processed_folds(
             session,
@@ -576,8 +547,6 @@ class StimSpaceSubspace(SubspaceModel):
 
     def _get_model_name(self) -> str:
         base = "stimspace_subspace"
-        if self.normalize:
-            base += "_norm"
         if self.use_fast_sampling:
             base += "_fast"
         if self.reliability_threshold is not None:

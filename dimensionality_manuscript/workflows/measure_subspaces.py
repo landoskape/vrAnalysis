@@ -36,16 +36,12 @@ SPKS_TYPES: tuple[SpksTypes] = (
     # "deconvolved",
 )
 
-METHOD = "optuna"
-
-correlation = False
-
 if __name__ == "__main__":
     sessiondb = get_database("vrSessions")
     registry = PopulationRegistry()
 
     for subspace_name in tqdm(SUBSPACE_NAMES, desc="Testing different subspace types"):
-        subspace_model = get_subspace(subspace_name, registry, correlation=correlation)
+        subspace_model = get_subspace(subspace_name, registry)
 
         for spks_type in SPKS_TYPES:
             for isession, session in enumerate(tqdm(sessiondb.iter_sessions(imaging=True, session_params=dict(spks_type=spks_type)))):
