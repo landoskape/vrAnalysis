@@ -13,6 +13,36 @@ Each call creates an independent batch so re-submitting never disturbs active
 workers.  Workers are bound to their batch via DIM_MANUSCRIPT_BATCH_ID.
 
 Use --dry-run to populate the batch without submitting.
+
+Examples
+--------
+Dry run (inspect what would be submitted before committing):
+
+    python -m dimensionality_manuscript.scripts.sge_submit --dry-run
+
+Submit all analyses (16 workers, default walltime and memory):
+
+    python -m dimensionality_manuscript.scripts.sge_submit --n-workers 16
+
+Submit only specific analysis types with a custom sessions file:
+
+    python -m dimensionality_manuscript.scripts.sge_submit \\
+        --analyses cvpca stimspace \\
+        --n-workers 8
+
+Retry failed jobs (creates a new batch; already-completed results are skipped):
+
+    python -m dimensionality_manuscript.scripts.sge_submit --n-workers 16
+
+Retry only jobs that don't have a recorded error:
+
+    python -m dimensionality_manuscript.scripts.sge_submit --skip-errors --n-workers 16
+
+Filter to a specific model and spike type:
+
+    python -m dimensionality_manuscript.scripts.sge_submit \\
+        --param-filters model_name=rrr spks_type=oasis \\
+        --n-workers 8
 """
 
 import argparse
@@ -54,8 +84,8 @@ def submit(
     analyses : list[str] or None
         Subset of analysis types to queue. None = all.
     sessions_file : Path or None
-        JSON file from export_sessions.py. Required on MYRIAD (no Access DB).
-        If None, falls back to the live vrSessions database (local use only).
+        JSON file from export_sessions.py. If None, falls back to the live
+        vrSessions database (local use only; not available on MYRIAD).
     n_workers : int
         Number of parallel SGE worker slots (``-t 1-N``).
     walltime : str
@@ -168,7 +198,7 @@ def _print_batch_summary(queue: JobQueue) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Queue SGE jobs and submit to MYRIAD")
     parser.add_argument("--analyses", nargs="+", help="Analysis types to queue (default: all)")
-    parser.add_argument("--sessions-file", type=Path, default=None, help="JSON session list from export_sessions.py (required on MYRIAD)")
+    parser.add_argument("--sessions-file", type=Path, default=_REPO_ROOT / "sessions.json", help="JSON session list from export_sessions.py (default: <repo>/sessions.json)")
     parser.add_argument("--n-workers", type=int, default=16, help="Number of parallel SGE worker slots (default: 16)")
     parser.add_argument("--walltime", default="8:00:00", help="SGE wall-clock limit, e.g. 8:00:00 (default: 8:00:00)")
     parser.add_argument("--mem", default="16G", help="SGE memory per slot, e.g. 16G (default: 16G)")
