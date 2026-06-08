@@ -114,9 +114,7 @@ _MODEL_CACHE_SUBDIRS: list[tuple[str, str]] = [
 
 def _has_errors_table(conn, schema: str = "main") -> bool:
     """Return True if the given schema (main or remote) has an errors table."""
-    (n,) = conn.execute(
-        f"SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type='table' AND name='errors'"
-    ).fetchone()
+    (n,) = conn.execute(f"SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type='table' AND name='errors'").fetchone()
     return bool(n)
 
 
@@ -159,9 +157,7 @@ def _print_db_delta(local_db: Path, remote_db: Path) -> None:
             (n_err_remote,) = conn.execute("SELECT COUNT(*) FROM remote.errors").fetchone()
             if _has_errors_table(conn, "main"):
                 (n_err_local,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
-                (n_err_new,) = conn.execute(
-                    "SELECT COUNT(*) FROM remote.errors WHERE result_uid NOT IN (SELECT result_uid FROM errors)"
-                ).fetchone()
+                (n_err_new,) = conn.execute("SELECT COUNT(*) FROM remote.errors WHERE result_uid NOT IN (SELECT result_uid FROM errors)").fetchone()
             else:
                 n_err_local = 0
                 n_err_new = n_err_remote
@@ -279,9 +275,7 @@ def _check_db_collisions(local_db: Path, remote_db: Path) -> None:
             (n_err_remote,) = conn.execute("SELECT COUNT(*) FROM remote.errors").fetchone()
             if _has_errors_table(conn, "main"):
                 (n_err_local,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
-                (n_err_shared,) = conn.execute(
-                    "SELECT COUNT(*) FROM errors WHERE result_uid IN (SELECT result_uid FROM remote.errors)"
-                ).fetchone()
+                (n_err_shared,) = conn.execute("SELECT COUNT(*) FROM errors WHERE result_uid IN (SELECT result_uid FROM remote.errors)").fetchone()
             else:
                 n_err_local = 0
                 n_err_shared = 0
