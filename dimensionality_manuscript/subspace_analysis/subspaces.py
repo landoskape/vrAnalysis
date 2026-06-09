@@ -12,7 +12,7 @@ def _cov_or_gram(X: torch.Tensor, centered: bool) -> torch.Tensor:
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield
 from dimilibi import PCA, SVCA
-from .base import SubspaceModel, Subspace
+from .base import SubspaceModel, Subspace, _eigvalsh_numpy
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 
 if TYPE_CHECKING:
@@ -324,9 +324,9 @@ class CovCovSubspace(SubspaceModel):
             train_eval_placefields_root @ train_evecs_placefields.T @ placefield_cov @ train_evecs_placefields @ train_eval_placefields_root
         )
 
-        variance_activity = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_activity)), 0.0))
-        variance_placefields = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_placefields)), 0.0))
-        variance_placefield_placefield = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_pfpf)), 0.0))
+        variance_activity = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_activity)), 0.0))
+        variance_placefields = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_placefields)), 0.0))
+        variance_placefield_placefield = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_pfpf)), 0.0))
 
         return dict(
             variance_activity=variance_activity,

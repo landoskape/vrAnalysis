@@ -24,7 +24,7 @@ from dimilibi import PCA
 
 from ..regression_models.base import ActivityParameters
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
-from .base import SubspaceModel, Subspace
+from .base import SubspaceModel, Subspace, _eigh_numpy, _eigvalsh_numpy
 
 if TYPE_CHECKING:
     from ..registry import SplitName
@@ -453,14 +453,14 @@ class StimSpaceSubspace(SubspaceModel):
 
         pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (S, S)
         pf_full_kernel = G_train.T @ cov_data_test @ G_train  # (S, S)
-        u_pf_full = torch.fliplr(torch.linalg.eigh(pf_full_kernel)[1])
+        u_pf_full = torch.fliplr(_eigh_numpy(pf_full_kernel)[1])
 
         if self.directions_from_placefield_only:
             # Just learn directions via a single fold placefield covariance (SxS!)
-            u_pf_pf = torch.fliplr(torch.linalg.eigh(G_train.T @ G_train)[1])
+            u_pf_pf = torch.fliplr(_eigh_numpy(G_train.T @ G_train)[1])
         else:
             # Use symmetric placefield kernel of train / test / train
-            u_pf_pf = torch.fliplr(torch.linalg.eigh(pf_pf_kernel)[1])
+            u_pf_pf = torch.fliplr(_eigh_numpy(pf_pf_kernel)[1])
 
         return Subspace(
             subspace_activity=pca_activity,
@@ -533,9 +533,9 @@ class StimSpaceSubspace(SubspaceModel):
             train_eval_placefields_root @ train_evecs_placefields.T @ test_placefield_cov @ train_evecs_placefields @ train_eval_placefields_root
         )
 
-        variance_activity = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_activity)), 0.0))
-        variance_placefields = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_placefields)), 0.0))
-        variance_placefield_placefield = torch.sqrt(torch.clamp_min(torch.flipud(torch.linalg.eigvalsh(inner_block_pfpf)), 0.0))
+        variance_activity = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_activity)), 0.0))
+        variance_placefields = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_placefields)), 0.0))
+        variance_placefield_placefield = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_pfpf)), 0.0))
 
         return dict(
             variance_activity=variance_activity,

@@ -14,6 +14,17 @@ if TYPE_CHECKING:
     from vrAnalysis.processors.placefields import FrameBehavior
 
 
+def _eigh_numpy(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Eigendecomposition via numpy to avoid PyTorch LAPACK bugs (e.g. illegal SVD argument)."""
+    vals, vecs = np.linalg.eigh(A.numpy())
+    return torch.from_numpy(vals.copy()), torch.from_numpy(vecs.copy())
+
+
+def _eigvalsh_numpy(A: torch.Tensor) -> torch.Tensor:
+    """Eigenvalues via numpy to avoid PyTorch LAPACK bugs (e.g. illegal SVD argument)."""
+    return torch.from_numpy(np.linalg.eigvalsh(A.numpy()).copy())
+
+
 class Subspace(NamedTuple):
     subspace_activity: Union["PCA", "SVCA", "torch.Tensor"]
     subspace_placefields: Union["PCA", "SVCA", "torch.Tensor"]
