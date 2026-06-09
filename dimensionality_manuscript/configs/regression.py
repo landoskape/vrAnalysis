@@ -100,16 +100,16 @@ class RegressionConfig(AnalysisConfigBase):
         return score
 
 
-_VECTOR_GAIN_RANK_MAX_RANK: int = 100
+_VECTOR_GAIN_RANK_MAX_RANK: int = 200
 
 
 @dataclass(frozen=True)
 class VectorGainRankConfig(AnalysisConfigBase):
     """Score external_placefield_1d_vector_gain at each SVD rank from 1 to max_rank.
 
-    Fits N=100 SVD components in one pass using existing best hyperparameters
+    Fits N=200 SVD components in one pass using existing best hyperparameters
     (rank-agnostic cache shared with RegressionConfig), then evaluates MSE and R²
-    at each rank 1…100 on the test split.
+    at each rank 1…200 on the test split.
 
     Parameters
     ----------
