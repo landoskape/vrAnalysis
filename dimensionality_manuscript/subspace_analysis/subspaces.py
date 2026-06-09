@@ -38,7 +38,7 @@ class PCASubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T
+        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T.contiguous()
 
         # Check for NaNs and filter if needed
         placefield_extended, train_data = self._check_and_filter_nans(placefield_extended, train_data, nan_safe=nan_safe)
@@ -75,7 +75,7 @@ class PCASubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T
+        placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T.contiguous()
 
         # Check for NaNs and filter if needed
         placefield_extended, _ = self._check_and_filter_nans(placefield_extended, test_data, nan_safe=nan_safe)
@@ -134,8 +134,8 @@ class SVCASubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T
-        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T
+        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T.contiguous()
+        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T.contiguous()
 
         # Check for NaNs and filter if needed
         # Note: We need to filter both source and target together to keep them aligned
@@ -205,8 +205,8 @@ class SVCASubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T
-        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T
+        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T.contiguous()
+        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T.contiguous()
 
         idx_nan_samples = torch.any(torch.isnan(placefield_source_extended), dim=0) | torch.any(torch.isnan(placefield_target_extended), dim=0)
 
@@ -261,7 +261,7 @@ class CovCovSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_extended = torch.tensor(placefield.flattened()).T
+        placefield_extended = torch.tensor(placefield.flattened()).T.contiguous()
 
         # Check for NaNs and filter if needed
         placefield_extended, train_data = self._check_and_filter_nans(placefield_extended, train_data, nan_safe=nan_safe)
@@ -301,7 +301,7 @@ class CovCovSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield_extended = torch.tensor(placefield.flattened()).T
+        placefield_extended = torch.tensor(placefield.flattened()).T.contiguous()
 
         # Check for NaNs and filter if needed
         placefield_extended, _ = self._check_and_filter_nans(placefield_extended, test_data, nan_safe=nan_safe)
@@ -381,7 +381,7 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T
+        placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T.contiguous()
 
         # Check for NaNs and filter if needed
         placefield0_extended, train0_data = self._check_and_filter_nans(placefield0_extended, train0_data, nan_safe=nan_safe)
@@ -460,7 +460,7 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T
+        placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T.contiguous()
         placefield1 = get_placefield(
             test1_data.T.numpy(),
             frame_behavior_test1,
@@ -468,7 +468,7 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             average=True,
             smooth_width=hyperparameters.smooth_width,
         )
-        placefield1_extended = torch.tensor(placefield1.placefield).reshape(-1, num_neurons).T
+        placefield1_extended = torch.tensor(placefield1.placefield).reshape(-1, num_neurons).T.contiguous()
 
         # Check for NaNs and filter if needed
         placefield0_extended, test0_data = self._check_and_filter_nans(placefield0_extended, test0_data, nan_safe=nan_safe)
