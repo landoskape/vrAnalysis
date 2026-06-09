@@ -2,9 +2,10 @@ import numpy as np
 from matplotlib import pyplot as plt
 import matplotlib as mpl
 from matplotlib.colors import LogNorm
+from matplotlib.lines import Line2D
 from syd import Viewer
 
-from vrAnalysis.helpers import sort_by_preferred_environment, vectorRSquared
+from vrAnalysis.helpers import sort_by_preferred_environment, vectorRSquared, edge2center
 from vrAnalysis.helpers.plotting import format_spines
 from vrAnalysis.helpers.vrsupport import _jit_reliability_loo
 from vrAnalysis.sessions import B2Session
@@ -15,8 +16,9 @@ from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.spkmaps import Maps, Reliability
 
 from dimensionality_manuscript.configs.pfpred_quality import PFPredQualityConfig, _kde_r2
+from dimensionality_manuscript import ResultsAggregator
 
-plt.rcParams["font.size"] = 12
+plt.rcParams["font.size"] = 18
 
 EXAMPLE_MOUSE_NAME = "ATL027"
 EXAMPLE_DATE = "2023-07-27"
@@ -147,18 +149,30 @@ class StackedRasterFocus(Viewer):
         )
 
         for a in ax:
-            a.set_xticks([0, num_frames - 1])
+            a.set_xticks([])
             a.set_xticklabels([])
-            a.set_yticks([0, num_rois - 1])
+            a.set_yticks([])
             a.set_yticklabels([])
 
-        ax[0].set_title("Deconvolved Calcium Activity")
-        ax[1].set_title("Prediction From Place Field")
-        ax[2].set_title("Residuals")
-        ax[2].set_xlabel(f"{num_frames} Imaging Frames")
-        ax[0].set_ylabel(f"{num_rois} ROIs")
-        ax[1].set_ylabel(f"{num_rois} ROIs")
-        ax[2].set_ylabel(f"{num_rois} ROIs")
+        panel_titles = (
+            "Deconvolved Calcium Activity",
+            "Prediction From Place Field",
+            "Residuals",
+        )
+        for a, title in zip(ax, panel_titles):
+            a.text(
+                1.0,
+                1.0,
+                title,
+                transform=a.transAxes,
+                ha="right",
+                va="top",
+                color="black",
+            )
+        ax[2].set_xlabel("Imaging Frames")
+        ax[0].set_ylabel("ROIs")
+        ax[1].set_ylabel("ROIs")
+        ax[2].set_ylabel("ROIs")
 
         for spine in ["top", "right", "bottom", "left"]:
             ax[0].spines[spine].set_visible(False)
@@ -362,7 +376,8 @@ class TraversalFocus(Viewer):
 class R2PlacefieldFocus(Viewer):
     """Two-panel R² vs reliability plot with selectable ROI and environment."""
 
-    def __init__(self, session: B2Session, smp: SMPs.SpkmapProcessor, idx_env: int):
+    def __init__(self, results: ResultsAggregator, session: B2Session, smp: SMPs.SpkmapProcessor, idx_env: int):
+        self.results = results
         self.session = session
         self.smp = smp
         self.num_rois = session.spks[:, session.idx_rois].shape[1]
@@ -374,6 +389,8 @@ class R2PlacefieldFocus(Viewer):
         self.add_float("cloud_alpha", value=0.55, min=0.0, max=1.0)
         self.on_change("env", self.recompute_arrays)
         self.recompute_arrays(self.state)
+
+        self.output = self.results.sel()
 
     def recompute_arrays(self, state):
         self.idx_env = state["env"]
@@ -391,7 +408,7 @@ class R2PlacefieldFocus(Viewer):
         reliability = self.reliability
 
         plt.close("all")
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5), layout="constrained")
+        fig, ax = plt.subplots(1, 3, figsize=(15, 5), layout="constrained")
 
         ax0max = np.max([np.nanmax(spks_valid.T[roi]), np.nanmax(pfpred_valid.T[roi])])
         ax[0].plot(
@@ -473,6 +490,35 @@ class R2PlacefieldFocus(Viewer):
         ax[1].set_xlim(-1, 1)
         ax[1].set_xlabel("Spatial Reliability")
         ax[1].set_ylabel(r"$R^2$(Activity, PF Pred.)")
+        ax1ylim = ax[1].get_ylim()
+
+        linewidth_example = 1
+        linewidth_average = 1.5
+        alpha_example = 0.3
+        alpha_highlight = 0.7
+        idx = self.results.param_axes["spks_type"].index(self.session.params.spks_type)
+        idx_to_example = np.where(self.results.mouse_names == self.session.mouse_name)[0][0]
+        kde_grid = self.output["r2_kde_grid"][0, idx]
+        kde_mean = self.output["r2_kde_mean"][:, idx]
+        ax[2].plot(kde_grid, kde_mean.T, color=("k", alpha_example), linewidth=linewidth_example)
+        ax[2].plot(kde_grid, kde_mean[idx_to_example].T, color=("blue", alpha_highlight), linewidth=linewidth_example)
+        ax[2].plot(kde_grid, np.nanmean(kde_mean, axis=0), color="k", linewidth=linewidth_average)
+        ax[2].set_xlim(-1, 1)
+        ax[2].set_xlabel("Spatial Reliability")
+        ax[2].set_ylabel(r"$R^2$(Activity, PF Pred.)")
+        legend_elements = [
+            Line2D([0], [0], color="k", alpha=alpha_example, linewidth=linewidth_example, label="mouse"),
+            Line2D([0], [0], color="blue", alpha=alpha_highlight, linewidth=linewidth_example, label="example"),
+            Line2D([0], [0], color="k", linewidth=linewidth_average, label="average"),
+        ]
+        ax[2].legend(handles=legend_elements)
+        ax2ylim = ax[2].get_ylim()
+
+        ax12ylim = (min(ax1ylim[0], ax2ylim[0]), max(ax1ylim[1], ax2ylim[1]))
+        ax[1].set_ylim(ax12ylim)
+        ax[2].set_ylim(ax12ylim)
+
+        # Format spines once ylims have been set
         format_spines(
             ax[1],
             x_pos=-0.02,
@@ -484,7 +530,17 @@ class R2PlacefieldFocus(Viewer):
             tick_length=4,
             spines_visible=["left", "bottom"],
         )
-
+        format_spines(
+            ax[2],
+            x_pos=-0.02,
+            y_pos=-0.02,
+            xbounds=[-1, 1],
+            ybounds=[min_r2, max_r2],
+            xticks=[-1, 0, 1],
+            yticks=[0, max_tick_r2],
+            tick_length=4,
+            spines_visible=["left", "bottom"],
+        )
         return fig
 
 
@@ -653,7 +709,15 @@ def example_placefield(
             ax_consistency.set_xlim(-1.05, 1.05)
             ax_consistency.set_ylim(spkmap.shape[0] + 0.5, -0.5)
             ax_consistency.set_xlabel(r"$\sigma$")
-            ax_consistency.text(-0.5, half_trial_number, r"$\sigma = \mathrm{corr}(<other\ trials>)$", ha="center", va="center", rotation=90)
+            ax_consistency.text(
+                -0.5,
+                half_trial_number,
+                r"$\sigma = \mathrm{corr}(\langle\mathrm{other\ trials}\rangle)$",
+                ha="center",
+                va="center",
+                rotation=90,
+            )
+
             format_spines(
                 ax_consistency,
                 x_pos=-0.02,
@@ -748,6 +812,7 @@ def example_traversal(
 
 
 def example_r2_placefield(
+    results_average: ResultsAggregator,
     session: B2Session,
     roi: int = EXAMPLE_ROI,
     idx_env: int = 0,
@@ -781,7 +846,7 @@ def example_r2_placefield(
     smp = SMPs.SpkmapProcessor(session, params=SMPs.SpkmapParams())
     smp.get_env_maps().pop_nan_positions()
 
-    viewer = R2PlacefieldFocus(session, smp, idx_env)
+    viewer = R2PlacefieldFocus(results_average, session, smp, idx_env)
     viewer.update_integer("env", value=idx_env)
     viewer.update_selection("roi", value=roi)
     viewer.update_selection("cloud_style", value=cloud_style)
