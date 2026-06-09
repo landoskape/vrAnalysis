@@ -57,9 +57,7 @@ def print_error_summary(store: ResultsStore, include_error_types: bool = False) 
     n_sessions_total = len({e["session_id"] for e in errors})
     print(f"Errors: {len(errors)} total | {len(groups)} unique configs | {n_sessions_total} sessions\n")
 
-    for i, ((atype, summary), rows) in enumerate(
-        sorted(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1]))), 1
-    ):
+    for i, ((atype, summary), rows) in enumerate(sorted(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1]))), 1):
         n_sessions = len({r["session_id"] for r in rows})
         schema = rows[0].get("schema_version") or ""
         print(f"  [{i:>3}] {atype} {schema} | {summary} | {n_sessions} sessions")
@@ -156,7 +154,11 @@ def main():
     parser.add_argument("--group-by", nargs="+", default=None, help="Columns to group by (default: analysis_type schema_version)")
     parser.add_argument("--show-errors", action="store_true", help="Summarise recorded errors grouped by config")
     parser.add_argument("--include-error-types", action="store_true", help="With --show-errors, print unique error messages per config group")
-    parser.add_argument("--clear-errors", action="store_true", help="Delete error rows (optionally filtered by --clear-errors-analysis-type / --clear-errors-schema-version)")
+    parser.add_argument(
+        "--clear-errors",
+        action="store_true",
+        help="Delete error rows (optionally filtered by --clear-errors-analysis-type / --clear-errors-schema-version)",
+    )
     parser.add_argument("--clear-errors-analysis-type", default=None, help="With --clear-errors, only delete errors for this analysis_type")
     parser.add_argument("--clear-errors-schema-version", default=None, help="With --clear-errors, only delete errors for this schema_version")
     args = parser.parse_args()

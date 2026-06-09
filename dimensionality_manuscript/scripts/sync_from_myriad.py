@@ -3,8 +3,7 @@
 Run this locally after MYRIAD jobs finish. It:
 1. rsyncs blob .pkl files from MYRIAD into the local blobs directory.
 2. Downloads the MYRIAD results.db and merges new rows into the local DB.
-3. Optionally rsyncs self-cached model joblib files (regression/subspace scores
-   and hyperparameters) when --include-model-caches is passed.
+3. Optionally rsyncs self-cached model joblib files (regression/subspace scores) when --include-model-caches is passed.
 
 After syncing, ResultsStore and ResultsAggregator work transparently — they
 see the merged results exactly as if everything had run locally.
@@ -105,7 +104,6 @@ _MODEL_CACHE_SUBDIRS: list[tuple[str, str]] = [
     ("scores", "score_path"),
     ("hyperparameters", "hyperparameter_path"),
     ("subspace-scores", "subspace_score_path"),
-    ("subspace-hyperparameters", "subspace_hyperparameter_path"),
 ]
 
 
@@ -423,8 +421,7 @@ def _merge_results(local_db: Path, remote_db: Path) -> tuple[int, int, int, int]
 def sync_model_caches(host: str, remote_cache: str) -> None:
     """Rsync regression/subspace joblib caches from MYRIAD to local.
 
-    Pulls scores/, hyperparameters/, subspace-scores/, and
-    subspace-hyperparameters/ from the remote cache root. Uses
+    Pulls scores/, hyperparameters/, and subspace-scores/ from the remote cache root. Uses
     --ignore-existing so local files are never overwritten.
     """
     registry_paths = RegistryPaths()
