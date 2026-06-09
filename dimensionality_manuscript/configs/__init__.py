@@ -3,6 +3,7 @@ from .data_config import DataConfig, get_data_config, list_data_configs
 from .pfpred_quality import PFPredQualityConfig
 from .population import PopulationConfig
 from .regression import RegressionConfig, VectorGainRankConfig
+from .rrrlatents_to_rbfpos import RRRLatentsToRBFPosConfig
 from .subspace import SubspaceConfig
 from .stimspace import StimSpaceConfig
 from .expmax import ExpMaxConfig
@@ -19,6 +20,7 @@ __all__ = [
     "PFPredQualityConfig",
     "PopulationConfig",
     "RegressionConfig",
+    "RRRLatentsToRBFPosConfig",
     "VectorGainRankConfig",
     "SubspaceConfig",
     "StimSpaceConfig",
