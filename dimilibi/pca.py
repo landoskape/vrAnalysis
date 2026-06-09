@@ -70,19 +70,21 @@ class PytorchPCA:
         """
         data = as_tensor(data)
 
-        # U: (num_features, num_features), S: (min(num_features, num_samples)), V: (num_samples, num_samples)
-        # .contiguous() required: old LAPACK (e.g. Myriad) rejects non-contiguous strides as illegal LDA
-        U, S, _ = torch.linalg.svd(data.T.contiguous(), full_matrices=False)
+        # Use numpy SVD: PyTorch's linalg.svd mis-computes LWORK (arg 12 to SGESDD) on
+        # some LAPACK versions (observed on Myriad/MKL), causing an internal assert failure.
+        # numpy manages workspace internally and is not affected.
+        # data is (num_samples, num_features); SVD on data.T gives U (num_features, k).
+        data_np = data.numpy()
+        U_np, S_np, _ = np.linalg.svd(data_np.T, full_matrices=False)
+        U = torch.from_numpy(U_np.copy())
+        S = torch.from_numpy(S_np.copy())
 
-        # Store singular values
         if self.num_components is not None:
             S = S[: self.num_components]
-            # Components are the first num_components columns of U
-            # Transpose to match sklearn convention: (num_components, num_features)
             U = U[:, : self.num_components]
 
         self._singular_values_ = S
-        self._components_ = U.T
+        self._components_ = U.T.contiguous()
         self._fitted = True
         return self
 
