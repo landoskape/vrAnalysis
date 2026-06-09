@@ -161,11 +161,7 @@ def _build_qsub_command(
     sessions_file: Path | None,
     batch_id: str,
 ) -> list[str]:
-    env_vars = (
-        f"DIM_MANUSCRIPT_DB_PATH={db_path},"
-        f"DIM_MANUSCRIPT_BATCH_ID={batch_id},"
-        f"DIM_MANUSCRIPT_REPO={_REPO_ROOT}"
-    )
+    env_vars = f"DIM_MANUSCRIPT_DB_PATH={db_path}," f"DIM_MANUSCRIPT_BATCH_ID={batch_id}," f"DIM_MANUSCRIPT_REPO={_REPO_ROOT}"
     if sessions_file is not None:
         env_vars += f",DIM_MANUSCRIPT_SESSIONS_FILE={Path(sessions_file).resolve()}"
     return [
@@ -198,7 +194,12 @@ def _print_batch_summary(queue: JobQueue) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Queue SGE jobs and submit to MYRIAD")
     parser.add_argument("--analyses", nargs="+", help="Analysis types to queue (default: all)")
-    parser.add_argument("--sessions-file", type=Path, default=_REPO_ROOT / "sessions.json", help="JSON session list from export_sessions.py (default: <repo>/sessions.json)")
+    parser.add_argument(
+        "--sessions-file",
+        type=Path,
+        default=_REPO_ROOT / "sessions.json",
+        help="JSON session list from export_sessions.py (default: <repo>/sessions.json)",
+    )
     parser.add_argument("--n-workers", type=int, default=16, help="Number of parallel SGE worker slots (default: 16)")
     parser.add_argument("--walltime", default="8:00:00", help="SGE wall-clock limit, e.g. 8:00:00 (default: 8:00:00)")
     parser.add_argument("--mem", default="16G", help="SGE memory per slot, e.g. 16G (default: 16G)")
