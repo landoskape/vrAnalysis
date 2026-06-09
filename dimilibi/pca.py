@@ -71,7 +71,8 @@ class PytorchPCA:
         data = as_tensor(data)
 
         # U: (num_features, num_features), S: (min(num_features, num_samples)), V: (num_samples, num_samples)
-        U, S, _ = torch.linalg.svd(data.T, full_matrices=False)
+        # .contiguous() required: old LAPACK (e.g. Myriad) rejects non-contiguous strides as illegal LDA
+        U, S, _ = torch.linalg.svd(data.T.contiguous(), full_matrices=False)
 
         # Store singular values
         if self.num_components is not None:
