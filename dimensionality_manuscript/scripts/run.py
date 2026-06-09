@@ -24,7 +24,7 @@ from dimensionality_manuscript import (
     ExpMaxConfig,
     LocPredConfig,
     PFPredQualityConfig,
-    RRRLatentsToRBFPosConfig,
+    RRRToExternalLatentsConfig,
     ResultsStore,
 )
 
@@ -56,7 +56,7 @@ def build_analysis_configs(
         "expmax": ExpMaxConfig,
         "locpred": LocPredConfig,
         "pfpred_quality": PFPredQualityConfig,
-        "rrr_to_rbfpos": RRRLatentsToRBFPosConfig,
+        "rrr_to_external_latents": RRRToExternalLatentsConfig,
     }
     if include is None:
         include = list(_mapping.keys())

@@ -10,7 +10,7 @@ from .configs import (
     LocPredConfig,
     LocPredCrossVal,
     PFPredQualityConfig,
-    RRRLatentsToRBFPosConfig,
+    RRRToExternalLatentsConfig,
     get_data_config,
     list_data_configs,
 )
@@ -30,7 +30,7 @@ __all__ = [
     "LocPredConfig",
     "LocPredCrossVal",
     "PFPredQualityConfig",
-    "RRRLatentsToRBFPosConfig",
+    "RRRToExternalLatentsConfig",
     "get_data_config",
     "list_data_configs",
     "AnalysisPlan",
