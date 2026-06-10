@@ -201,9 +201,8 @@ def measure_r2(
     y_true = _ensure_tensor(y_true)
     ss_res = ((y_true - y_pred) ** 2).sum(dim=dim)
     ss_tot = ((y_true - y_true.mean(dim=dim, keepdim=True)) ** 2).sum(dim=dim)
-    r2 = 1 - ss_res / ss_tot
-    r2[ss_res == 0] = 1.0
-    r2[ss_tot == 0] = 0.0
+    r2 = torch.where(ss_tot != 0, 1 - ss_res / ss_tot, torch.zeros_like(ss_tot))
+    r2 = torch.where(ss_res == 0, torch.ones_like(r2), r2)
     if reduce == "mean":
         return r2.mean().item()
     else:
