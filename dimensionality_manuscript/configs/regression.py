@@ -100,9 +100,6 @@ class RegressionConfig(AnalysisConfigBase):
         return score
 
 
-_VECTOR_GAIN_RANK_MAX_RANK: int = 200
-
-
 @dataclass(frozen=True)
 class VectorGainRankConfig(AnalysisConfigBase):
     """Score external_placefield_1d_vector_gain at each SVD rank from 1 to max_rank.
@@ -128,6 +125,8 @@ class VectorGainRankConfig(AnalysisConfigBase):
     method: str = "preferred"
     activity_parameters_name: str = "default"
 
+    # Separate this from other parameters
+    max_rank: ClassVar[int] = 200
     display_name: ClassVar[str] = "vector_gain_rank"
 
     @staticmethod
@@ -156,7 +155,6 @@ class VectorGainRankConfig(AnalysisConfigBase):
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
         """Fit external_placefield_1d_vector_gain with N=200 SVD ranks and score at each rank."""
-        max_rank = _VECTOR_GAIN_RANK_MAX_RANK
         activity_parameters = get_activity_parameters(self.activity_parameters_name)
         _shared_kwargs = dict(
             registry=registry,
@@ -168,7 +166,7 @@ class VectorGainRankConfig(AnalysisConfigBase):
         # rank=1 for hyp lookup/optimization — same cache key as RegressionConfig, same SVD cost
         hyp_model = PlaceFieldModel(**_shared_kwargs, rank=1)
         # rank=max_rank for the actual multi-rank fit
-        fit_model = PlaceFieldModel(**_shared_kwargs, rank=max_rank)
+        fit_model = PlaceFieldModel(**_shared_kwargs, rank=self.max_rank)
 
         hyperparameters = hyp_model.get_best_hyperparameters(
             session,
@@ -207,8 +205,8 @@ class VectorGainRankConfig(AnalysisConfigBase):
         # Precompute latent projections for all ranks at once: (max_rank, T)
         latent = U_source.T @ source_deviation
 
-        scores: dict = defaultdict(lambda: np.full(max_rank, np.nan))
-        for rank in range(1, max_rank + 1):
+        scores: dict = defaultdict(lambda: np.full(self.max_rank, np.nan))
+        for rank in range(1, self.max_rank + 1):
             arousal_activity = U_target[:, :rank] @ latent[:rank, :]  # (n_target, T)
             prediction = target_prediction + arousal_activity
             _mse = float(mse(prediction, target_data_np, reduce="mean", dim=None))
