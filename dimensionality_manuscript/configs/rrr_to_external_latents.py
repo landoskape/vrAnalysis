@@ -35,8 +35,9 @@ VALID_LEAK_MODELS: list[str] = [
 ]
 
 
-def _zscore(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
-    return (x - x.mean(dim=dim, keepdims=True)) / x.std(dim=dim, keepdims=True)
+def _zscore(x: torch.Tensor, dim: int = 0, eps: float = 1e-8) -> torch.Tensor:
+    std = x.std(dim=dim, keepdims=True).clamp(min=eps)
+    return (x - x.mean(dim=dim, keepdims=True)) / std
 
 
 def _get_external_keys(model_name: str) -> tuple[str, str]:
