@@ -40,16 +40,10 @@ class StimSpaceConfig(AnalysisConfigBase):
 
     activity_parameters_name: str = "raw"
     use_fast_sampling: bool = True
-    reliability_threshold: Optional[float] = (
-        0.2  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
-    )
-    fraction_active_threshold: Optional[float] = (
-        0.05  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
-    )
+    reliability_threshold: Optional[float] = None
+    fraction_active_threshold: Optional[float] = None
     num_bins: int = 100
-    smooth_width: Optional[float] = (
-        5.0  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
-    )
+    smooth_width: Optional[float] = None
     spks_type: SpksTypes = "oasis"
 
     # from running the spks_type / directions / cv_kernel combinations, these two make very small differences across the board.
