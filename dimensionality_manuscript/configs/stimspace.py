@@ -51,7 +51,11 @@ class StimSpaceConfig(AnalysisConfigBase):
         5.0  # reset to None after testing which directions_from_placefield and cross_validated_placefield_kernel are best!
     )
     spks_type: SpksTypes = "oasis"
-    directions_from_placefield_only: bool = False
+
+    # from running the spks_type / directions / cv_kernel combinations, these two make very small differences across the board.
+    # I'm using directions=True because that seems least noisy
+    # And cross_validated_placefield_kernel=False because that is what matches the other kappa style spectrum analysis most.
+    directions_from_placefield_only: bool = True
     cross_validated_placefield_kernel: bool = False
 
     display_name: ClassVar[str] = "stimspace"
@@ -60,12 +64,10 @@ class StimSpaceConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "spks_type": list(VALID_SPKS_TYPES),
-            # "activity_parameters_name": ["raw", "default"],
-            # "reliability_threshold": [None, 0.2],
-            # "fraction_active_threshold": [None, 0.05],
-            # "smooth_width": [None, 5.0],
-            "directions_from_placefield_only": [False, True],
-            "cross_validated_placefield_kernel": [False, True],
+            "activity_parameters_name": ["raw", "default"],
+            "reliability_threshold": [None, 0.2],
+            "fraction_active_threshold": [None, 0.05],
+            "smooth_width": [None, 5.0],
         }
 
     def summary(self) -> str:
