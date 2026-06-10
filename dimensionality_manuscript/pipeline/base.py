@@ -8,8 +8,6 @@ from abc import abstractmethod
 from dataclasses import asdict, dataclass
 from itertools import product
 from typing import TYPE_CHECKING, Any, ClassVar
-import numpy as np
-
 if TYPE_CHECKING:
     from syd import Viewer
     from ..registry import PopulationRegistry
@@ -232,30 +230,22 @@ class AnalysisConfigBase:
         viewer.add_selection("session_id", options=results.session_ids, value=results.session_ids[0])
         viewer.add_selection("mouse", options=unique_mice, value=unique_mice[0] if unique_mice else "")
         viewer.add_boolean("filter_by_ses_or_mouse", value=False)
-        viewer._dm_results = results
-        viewer._dm_mouse_results = None
-
         if include_get_results:
 
             def get_result(state: dict) -> tuple[dict, list[str]]:
                 param_kwargs = {k: state[k] for k in param_axes if k in filter_by}
                 view_by = state["view_by"]
-                if view_by == "mouse_average":
-                    if viewer._dm_mouse_results is None:
-                        viewer._dm_mouse_results = viewer._dm_results.average_by_mouse()
-                    source = viewer._dm_mouse_results
-                else:
-                    source = viewer._dm_results
-                sliced, axes_names = source.sel(
+                sliced, axes_names = results.sel(
                     squeeze_ones=squeeze_ones,
                     return_param_sizes=True,
+                    average_by_mouse=(view_by == "mouse_average"),
                     **param_kwargs,
                 )
                 if state["filter_by_ses_or_mouse"]:
                     if view_by == "mouse_average":
-                        idx = np.where(source.mouse_names == state["mouse"])[0][0]
+                        idx = results.unique_mice.index(state["mouse"])
                     else:
-                        idx = source.session_ids.index(state["session_id"])
+                        idx = results.session_ids.index(state["session_id"])
                     sliced = {k: v[idx] for k, v in sliced.items()}
                 return sliced, axes_names
 

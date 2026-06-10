@@ -268,6 +268,11 @@ class ResultsAggregator:
         self.session_ids = [s.session_uid for s in self.sessions]
         self.mouse_names = np.array([s.mouse_name for s in self.sessions])
 
+    @property
+    def unique_mice(self) -> list[str]:
+        """Unique mouse names in first-seen order."""
+        return list(dict.fromkeys(self.mouse_names.tolist()))
+
     def _build_index(self) -> None:
         session_ids = list(self._session_index.keys())
         records = self.store.summary_table(
@@ -615,6 +620,7 @@ class ResultsAggregator:
         return_param_sizes: bool = False,
         keys: list[str] | None = None,
         load_ragged: bool | None = None,
+        average_by_mouse: bool = False,
         **params,
     ) -> dict[str, np.ndarray] | tuple[dict[str, np.ndarray], dict[str, list]]:
         """Return arrays sliced to specific param values, with those dims squeezed."""
@@ -638,6 +644,23 @@ class ResultsAggregator:
             if k in self._ragged_keys and not load_ragged:
                 continue
             out[k] = v[idx_tuple]
+
+        if average_by_mouse:
+            effective_mouse_names = (
+                self.mouse_names[self.mouse_names == mouse] if mouse is not None else self.mouse_names
+            )
+            unique_mice = list(dict.fromkeys(effective_mouse_names.tolist()))
+            n_mice = len(unique_mice)
+            averaged = {}
+            for k, v in out.items():
+                if v.dtype == object:
+                    continue
+                mice_out = np.full((n_mice,) + v.shape[1:], np.nan)
+                for i, m in enumerate(unique_mice):
+                    mask = effective_mouse_names == m
+                    mice_out[i] = np.nanmean(v[mask], axis=0)
+                averaged[k] = mice_out
+            out = averaged
 
         if squeeze_ones and out:
             _example = next(iter(out.values()))
