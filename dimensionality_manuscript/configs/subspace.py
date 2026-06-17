@@ -23,10 +23,15 @@ from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 from .regression import VALID_SPKS_TYPES
 from ..pipeline.base import AnalysisConfigBase
 
+VALID_SUBSPACE_NAMES: list[SubspaceName] = [
+    "covcov_subspace",
+    "covcov_crossvalidated_subspace",
+]
+
 
 @dataclass(frozen=True)
 class SubspaceConfig(AnalysisConfigBase):
-    """Configuration for subspace measurements (match_dimensions=True).
+    """Configuration for subspace measurements (see shared_variance.md).
 
     Parameters
     ----------
@@ -45,7 +50,7 @@ class SubspaceConfig(AnalysisConfigBase):
     data_config_name: str = "even"
 
     subspace_name: SubspaceName = "covcov_subspace"
-    spks_type: SpksTypes = "oasis"
+    spks_type: SpksTypes = "sigrebase"
     num_bins: int = 100
     smooth_width: float | None = None
     centered: bool = False
@@ -61,10 +66,11 @@ class SubspaceConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "spks_type": list(VALID_SPKS_TYPES),
+            # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
             "smooth_width": [5.0, None],
             "centered": [True, False],
             "activity_parameters_name": ["raw", "default"],
+            "subspace_name": list(VALID_SUBSPACE_NAMES),
         }
 
     def validate(self):

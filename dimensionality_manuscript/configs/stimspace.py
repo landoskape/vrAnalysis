@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar, Optional
 
+import torch
+
 from vrAnalysis.sessions import B2Session, SpksTypes
 
 from ..pipeline.base import AnalysisConfigBase
@@ -35,7 +37,7 @@ class StimSpaceConfig(AnalysisConfigBase):
         Spike type to use.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "even"
 
     activity_parameters_name: str = "raw"
@@ -44,20 +46,18 @@ class StimSpaceConfig(AnalysisConfigBase):
     fraction_active_threshold: Optional[float] = None
     num_bins: int = 100
     smooth_width: Optional[float] = None
-    spks_type: SpksTypes = "oasis"
+    spks_type: SpksTypes = "sigrebase"
 
-    # from running the spks_type / directions / cv_kernel combinations, these two make very small differences across the board.
+    # from running the spks_type / directions combinations, this makes very small differences across the board.
     # I'm using directions=True because that seems least noisy
-    # And cross_validated_placefield_kernel=False because that is what matches the other kappa style spectrum analysis most.
     directions_from_placefield_only: bool = True
-    cross_validated_placefield_kernel: bool = False
 
     display_name: ClassVar[str] = "stimspace"
 
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "spks_type": list(VALID_SPKS_TYPES),
+            # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
             "activity_parameters_name": ["raw", "default"],
             "reliability_threshold": [None, 0.2],
             "fraction_active_threshold": [None, 0.05],
@@ -75,7 +75,6 @@ class StimSpaceConfig(AnalysisConfigBase):
             f"bins={self.num_bins}",
             f"smooth={self.smooth_width}",
             f"dir_from_pf={self.directions_from_placefield_only}",
-            f"cv_pf_kernel={self.cross_validated_placefield_kernel}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -93,6 +92,9 @@ class StimSpaceConfig(AnalysisConfigBase):
             reliability_threshold=self.reliability_threshold,
             fraction_active_threshold=self.fraction_active_threshold,
             directions_from_placefield_only=self.directions_from_placefield_only,
-            cross_validated_placefield_kernel=self.cross_validated_placefield_kernel,
         )
-        return model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)
+        metrics = model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)
+        cv_variance_scale = model.compute_cv_variance_scale(session, spks_type=self.spks_type, hyperparameters=hyps)
+        for key, val in cv_variance_scale.items():
+            metrics[key] = val.cpu().numpy() if isinstance(val, torch.Tensor) else val
+        return metrics
