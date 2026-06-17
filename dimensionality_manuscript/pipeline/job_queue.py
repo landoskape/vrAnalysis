@@ -138,6 +138,28 @@ class JobQueue:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def clear(self) -> tuple[int, int]:
+        """Delete all rows from ``job_queue`` and ``job_batches``.
+
+        Empties both planning tables (the tables themselves are kept). Use to
+        reset the queue, which otherwise accumulates a batch on every
+        ``sge_submit`` run. The results store is unaffected.
+
+        Returns
+        -------
+        tuple[int, int]
+            ``(n_jobs, n_batches)`` — number of rows deleted from
+            ``job_queue`` and ``job_batches`` respectively.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            (n_jobs,) = conn.execute("SELECT COUNT(*) FROM job_queue").fetchone()
+            (n_batches,) = conn.execute("SELECT COUNT(*) FROM job_batches").fetchone()
+            conn.execute("DELETE FROM job_queue")
+            conn.execute("DELETE FROM job_batches")
+            conn.execute("COMMIT")
+        return n_jobs, n_batches
+
     # ── Queue population ──────────────────────────────────────────────────────
 
     def populate(self, jobs: list[Job], batch_id: str) -> int:

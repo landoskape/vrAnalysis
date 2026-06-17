@@ -8,6 +8,7 @@ from abc import abstractmethod
 from dataclasses import asdict, dataclass
 from itertools import product
 from typing import TYPE_CHECKING, Any, ClassVar
+
 if TYPE_CHECKING:
     from syd import Viewer
     from ..registry import PopulationRegistry
@@ -238,7 +239,7 @@ class AnalysisConfigBase:
                 sliced, axes_names = results.sel(
                     squeeze_ones=squeeze_ones,
                     return_param_sizes=True,
-                    average_by_mouse=(view_by == "mouse_average"),
+                    avg_by_mouse=(view_by == "mouse_average"),
                     **param_kwargs,
                 )
                 if state["filter_by_ses_or_mouse"]:

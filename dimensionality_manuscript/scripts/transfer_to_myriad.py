@@ -14,6 +14,14 @@ skip sessions already computed locally (avoids redundant recomputation).
 Pass --include-population-cache to upload the local population-registry cache
 so MYRIAD workers reuse the same train/test splits instead of regenerating them.
 
+Pass --total-sync to make results.db identical on local and MYRIAD: remote rows
+are pulled into local first (so nothing is lost), then the union is pushed back
+so both sides match. This is DB-only — blob files are not touched.
+
+Pass --clear-queue to empty the job_batches/job_queue planning tables on MYRIAD.
+These grow on every sge_submit run; clearing them leaves results untouched.
+When combined with --total-sync the queue is cleared as part of the same upload.
+
 Usage
 -----
     # Dry run (see what would be sent):
@@ -27,6 +35,14 @@ Usage
 
     # Upload population cache so MYRIAD uses the same train/test splits:
     python -m dimensionality_manuscript.scripts.transfer_to_myriad --sessions-file sessions.json --local-data D:/localData --host myriad --remote-data ~/Scratch/data --include-population-cache
+
+    # Reset: make results.db identical on both sides and clear the MYRIAD queue
+    # (no session transfer; preview first with --dry-run):
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --skip-transfer --host myriad --total-sync --clear-queue --dry-run
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --skip-transfer --host myriad --total-sync --clear-queue
+
+    # Just clear the MYRIAD job queue (results untouched):
+    python -m dimensionality_manuscript.scripts.transfer_to_myriad --skip-transfer --host myriad --clear-queue
 """
 
 import argparse
@@ -38,6 +54,7 @@ import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from dimensionality_manuscript.pipeline import JobQueue
 from dimensionality_manuscript.registry import RegistryPaths
 
 
@@ -240,6 +257,170 @@ def transfer_results(host: str, remote_db: str, dry_run: bool) -> int:
         return ul.returncode
 
 
+def _db_result_count(db_path: Path) -> int:
+    """Return the number of rows in the ``results`` table (0 if file/table absent)."""
+    if not db_path.exists():
+        return 0
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        (n,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
+        return int(n)
+    finally:
+        conn.close()
+
+
+def _clear_queue_tables(db_path: Path) -> tuple[int, int]:
+    """Empty the ``job_queue``/``job_batches`` tables of a db file.
+
+    Returns ``(n_jobs, n_batches)`` cleared.
+    """
+    return JobQueue(db_path).clear()
+
+
+def total_sync(host: str, remote_db: str, dry_run: bool, clear_queue: bool = False) -> int:
+    """Make ``results.db`` identical on local and MYRIAD via a union of rows.
+
+    Downloads the remote DB, merges remote rows into the local DB (so local
+    becomes the union), then uploads a copy whose rows are the same union (so
+    remote becomes identical to local). The remote queue tables are preserved
+    unless ``clear_queue`` is True. Blob files are not touched (DB-only).
+
+    Parameters
+    ----------
+    host : str
+        SSH host alias for MYRIAD.
+    remote_db : str
+        Path to ``results.db`` on MYRIAD.
+    dry_run : bool
+        If True, report counts and make no changes.
+    clear_queue : bool
+        If True, empty the queue tables in the uploaded DB so the remote queue
+        is cleared as part of the sync.
+
+    Returns
+    -------
+    int
+        Process-style return code (0 on success).
+    """
+    local_db = RegistryPaths.pipeline_v2_db_path
+    if not local_db.exists():
+        print(f"No local results.db at {local_db} — nothing to sync.", file=sys.stderr)
+        return 0
+
+    print(f"\nTotal sync (union): {local_db} <-> {host}:{remote_db}")
+    n_local = _db_result_count(local_db)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_dir = Path(tmpdir)
+        tmp_remote = tmp_dir / "myriad_results.db"
+        dl = subprocess.run(["scp", f"{host}:{remote_db}", str(tmp_remote)], capture_output=True)
+        remote_present = dl.returncode == 0
+
+        if remote_present:
+            n_remote = _db_result_count(tmp_remote)
+            new_to_remote = _count_local_rows_missing_on_remote(local_db, tmp_remote)
+            new_to_local = _count_local_rows_missing_on_remote(tmp_remote, local_db)
+            n_union = n_local + new_to_local
+            print(f"  local={n_local}  remote={n_remote}  union={n_union}")
+            print(f"  new -> remote: {new_to_remote}   new -> local: {new_to_local}")
+        else:
+            print("  Remote DB not found — local will be uploaded as the full DB")
+            n_union = n_local
+            print(f"  local={n_local}  remote=0  union={n_union}")
+
+        if clear_queue:
+            print("  queue tables on remote will be cleared")
+
+        if dry_run:
+            print("  (dry run — no changes made)")
+            return 0
+
+        # ── Make local the union ──────────────────────────────────────────────
+        if remote_present:
+            n_before, n_added = _merge_dbs(local_db, tmp_remote)
+            print(f"  Merged {n_added} remote row(s) into local (local had {n_before})")
+
+        # ── Build the upload DB (union results, remote queue preserved) ───────
+        upload_db = tmp_dir / "upload_results.db"
+        if remote_present:
+            shutil.copy2(tmp_remote, upload_db)
+            _merge_dbs(upload_db, local_db)
+        else:
+            shutil.copy2(local_db, upload_db)
+
+        if clear_queue:
+            n_jobs, n_batches = _clear_queue_tables(upload_db)
+            print(f"  Cleared remote queue: {n_jobs} job row(s) across {n_batches} batch(es)")
+
+        # ── Upload and verify ─────────────────────────────────────────────────
+        remote_dir = PurePosixPath(remote_db).parent
+        subprocess.run(["ssh", host, f"mkdir -p {remote_dir}"], check=True)
+        ul = subprocess.run(["scp", str(upload_db), f"{host}:{remote_db}"])
+        if ul.returncode != 0:
+            print(f"scp upload exited with code {ul.returncode}", file=sys.stderr)
+            return ul.returncode
+
+        tmp_after = tmp_dir / "myriad_results_after.db"
+        dl = subprocess.run(["scp", f"{host}:{remote_db}", str(tmp_after)], capture_output=True)
+        if dl.returncode != 0:
+            print(f"  Post-upload verify failed: scp download exited with code {dl.returncode}", file=sys.stderr)
+            return 1
+        n_missing = _count_local_rows_missing_on_remote(local_db, tmp_after)
+        if n_missing:
+            print(f"  Post-upload verify failed: {n_missing} local row(s) missing on remote", file=sys.stderr)
+            return 1
+        print(f"  Post-upload verify: results identical on both sides ({_db_result_count(tmp_after)} rows)")
+        return 0
+
+
+def clear_remote_queue(host: str, remote_db: str, dry_run: bool) -> int:
+    """Empty the ``job_batches``/``job_queue`` planning tables on MYRIAD.
+
+    Downloads the remote ``results.db``, clears the queue tables, and uploads
+    it back. Result rows are left untouched.
+
+    Parameters
+    ----------
+    host : str
+        SSH host alias for MYRIAD.
+    remote_db : str
+        Path to ``results.db`` on MYRIAD.
+    dry_run : bool
+        If True, report what would be cleared and make no changes.
+
+    Returns
+    -------
+    int
+        Process-style return code (0 on success).
+    """
+    print(f"\nClear remote queue: {host}:{remote_db}")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_remote = Path(tmpdir) / "myriad_results.db"
+        dl = subprocess.run(["scp", f"{host}:{remote_db}", str(tmp_remote)], capture_output=True)
+        if dl.returncode != 0:
+            print(f"  Remote DB not found at {host}:{remote_db} — nothing to clear.", file=sys.stderr)
+            return 0
+
+        queue = JobQueue(tmp_remote)
+        n_batches = len(queue.list_batches())
+        n_jobs = sum(queue.status_summary().values())
+        print(f"  Remote queue: {n_batches} batch(es), {n_jobs} job row(s)")
+
+        if dry_run:
+            print("  (dry run — not clearing)")
+            return 0
+
+        n_jobs_cleared, n_batches_cleared = queue.clear()
+        print(f"  Cleared {n_jobs_cleared} job row(s) across {n_batches_cleared} batch(es)")
+
+        remote_dir = PurePosixPath(remote_db).parent
+        subprocess.run(["ssh", host, f"mkdir -p {remote_dir}"], check=True)
+        ul = subprocess.run(["scp", str(tmp_remote), f"{host}:{remote_db}"])
+        if ul.returncode != 0:
+            print(f"scp upload exited with code {ul.returncode}", file=sys.stderr)
+        return ul.returncode
+
+
 def transfer_population_cache(host: str, remote_cache: str, dry_run: bool) -> int:
     """Rsync the local population-registry cache to MYRIAD.
 
@@ -343,23 +524,38 @@ def main():
         default=_DEFAULT_REMOTE_CACHE,
         help=f"Remote path for the manuscript cache directory (default: {_DEFAULT_REMOTE_CACHE})",
     )
+    parser.add_argument(
+        "--total-sync",
+        action="store_true",
+        help="Make results.db identical on local and MYRIAD via a union of rows (DB-only; blobs untouched)",
+    )
+    parser.add_argument(
+        "--clear-queue",
+        action="store_true",
+        help="Empty the job_batches/job_queue planning tables on MYRIAD (they grow every sge_submit run)",
+    )
     args = parser.parse_args()
 
-    if not args.sessions_file.exists():
-        print(f"Error: sessions file not found: {args.sessions_file}", file=sys.stderr)
-        sys.exit(1)
-
-    sessions = json.loads(args.sessions_file.read_text())
-    print(f"Sessions in manifest: {len(sessions)}")
-
-    unique_mice = len({s["mouse_name"] for s in sessions})
-    print(f"Unique mice: {unique_mice}")
-
     if not args.skip_transfer:
+        if not args.sessions_file.exists():
+            print(f"Error: sessions file not found: {args.sessions_file}", file=sys.stderr)
+            sys.exit(1)
         if args.local_data is None:
             print("Error: --local-data is required unless --skip-transfer is set", file=sys.stderr)
             sys.exit(1)
+        sessions = json.loads(args.sessions_file.read_text())
+        print(f"Sessions in manifest: {len(sessions)}")
+        print(f"Unique mice: {len({s['mouse_name'] for s in sessions})}")
         rc = transfer(sessions, args.local_data, args.host, args.remote_data, args.dry_run)
+        if rc != 0:
+            sys.exit(rc)
+
+    if args.total_sync:
+        rc = total_sync(args.host, args.remote_db, args.dry_run, clear_queue=args.clear_queue)
+        if rc != 0:
+            sys.exit(rc)
+    elif args.clear_queue:
+        rc = clear_remote_queue(args.host, args.remote_db, args.dry_run)
         if rc != 0:
             sys.exit(rc)
 
