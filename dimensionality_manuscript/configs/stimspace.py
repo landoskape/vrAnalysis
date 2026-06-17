@@ -61,8 +61,8 @@ class StimSpaceConfig(AnalysisConfigBase):
             self.display_name,
             f"spks={self.spks_type}",
             f"ap={self.activity_parameters_name}",
-            f"rel={self.reliability_threshold}",
-            f"frac={self.fraction_active_threshold}",
+            f"rel={self.reliability_fraction_active_thresholds[0]}",
+            f"frac={self.reliability_fraction_active_thresholds[1]}",
             f"bins={self.num_bins}",
             f"smooth={self.smooth_width}",
             self.schema_version,
@@ -78,8 +78,8 @@ class StimSpaceConfig(AnalysisConfigBase):
         model = StimSpaceSubspace(
             registry,
             activity_parameters=ap,
-            reliability_threshold=self.reliability_threshold,
-            fraction_active_threshold=self.fraction_active_threshold,
+            reliability_threshold=self.reliability_fraction_active_thresholds[0],
+            fraction_active_threshold=self.reliability_fraction_active_thresholds[1],
         )
         metrics = model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)
         cv_variance_scale = model.compute_cv_variance_scale(session, spks_type=self.spks_type, hyperparameters=hyps)
