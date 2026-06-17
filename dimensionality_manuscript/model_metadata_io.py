@@ -33,9 +33,7 @@ class ModelMetadata:
             raise ValueError("One-D position and high-D position cannot be true at the same time.")
 
 
-_METADATA_BOOL_FIELDS: tuple[str, ...] = tuple(
-    field.name for field in fields(ModelMetadata) if field.name != "reference"
-)
+_METADATA_BOOL_FIELDS: tuple[str, ...] = tuple(field.name for field in fields(ModelMetadata) if field.name != "reference")
 
 
 def _parse_metadata_bool(value: str) -> bool:
