@@ -1,3 +1,24 @@
+"""Schematics for the shared-variance-ratio exposition (see ``dimensionality_manuscript/docs/shared_variance.md``).
+
+Parked illustration ideas, not yet built here (revisit if the kappa-overlap panel needs a sequel):
+
+1. Nested-ellipse Loewner proof. Draw the stim ellipse literally inside the full ellipse
+   (Sigma_stim preceq Sigma_full) as a visual proof that SVR in [0, 1] when A is a variance
+   subset of B.
+2. Train/test reliability cartoon. Three small ellipses of the same shape (dotted = latent
+   truth, solid = noisy train/test draws) motivating why kappa(train, test) != kappa(true, true)
+   before the reader hits the cross-validation algebra.
+3. Amplitude vs. energy bar comparison. Same pair of matrices, bar charts of sqrt(eigenvalues)
+   (kappa/SVR scale) vs. raw eigenvalues (omega/cvSER/CKA scale), showing how the energy scale
+   exaggerates the dominant mode relative to the amplitude scale.
+4. Rotating alignment strip. 4-5 static frames sweeping the relative orientation of two
+   ellipses from aligned to orthogonal, to build intuition that kappa tracks orientation
+   agreement, not just size.
+5. CKA vs. SVR denominator diagram. Small schematic fractions (icons, not formulas) contrasting
+   SVR's reliability-based denominator (train-vs-test self overlap) against CKA's total-energy
+   denominator (self-vs-self, same sample).
+"""
+
 from typing import Literal, Tuple
 from dataclasses import dataclass, field
 import numpy as np
@@ -776,3 +797,154 @@ def plot_stim_nuisance_combined_2D(
         ax_heatmap.set_xlabel("Nuisance amplitude")
         ax_heatmap.set_ylabel("Relative nuisance angle (°)")
         plt.colorbar(im, ax=ax_heatmap, label="SVR")
+
+
+def _kappa_optimal_point(
+    cov_a: npt.NDArray[np.floating],
+    cov_b: npt.NDArray[np.floating],
+) -> Tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    """Top mode of kappa(A, B): the point on ellipse A maximizing <A^{1/2}u, B^{1/2}v> over unit u, v.
+
+    Returns
+    -------
+    Tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]
+        (point_a, sqrt_a) where point_a = A^{1/2} u* is the optimal point on ellipse A
+        (radius 1, i.e. n_std=1 scale) and sqrt_a = A^{1/2}.
+    """
+    sqrt_a = _mat_sqrt(cov_a)
+    eigvals, eigvecs = np.linalg.eigh(sqrt_a @ cov_b @ sqrt_a)
+    u_star = eigvecs[:, np.argmax(eigvals)]
+    point_a = sqrt_a @ u_star
+    return point_a, sqrt_a
+
+
+@dataclass
+class KappaOverlap2D:
+    """Config for the kappa(A, B) geometric-overlap schematic.
+
+    Shows the optimal point u* on ellipse A (black arrow), a sweep of points v(theta) around
+    ellipse B (rainbow), and the dot product <u*, v(theta)> as a function of theta, with the
+    maximizing theta marked. See ``docs/shared_variance.md``, "Shared variance overlap" section.
+    """
+
+    cov_a: npt.NDArray[np.floating]
+    cov_b: npt.NDArray[np.floating]
+    n_sweep: int = 64
+    n_samples: int = 500
+    n_std: float = 2.0
+
+
+def plot_kappa_overlap_2D(
+    cfg: KappaOverlap2D,
+    ax: tuple[plt.Axes, plt.Axes, plt.Axes],
+    color_a: str = "black",
+    cmap_name: str = "hsv",
+    point_alpha: float = 0.4,
+    point_size: float = 8.0,
+    linewidth: float = 1.0,
+    arrow_width: float = 0.15,
+    sweep_point_size: float = 10.0,
+) -> None:
+    """Plot the kappa(A, B) optimal-overlap schematic: ellipse A + u*, ellipse B + v(theta) sweep, dot-product stem plot.
+
+    Parameters
+    ----------
+    cfg : KappaOverlap2D
+    ax : tuple of 3 Axes
+        (ax_a, ax_b, ax_stem)
+    color_a : str
+        Color for ellipse A, its scatter, and the optimal arrow.
+    cmap_name : str
+        Colormap for the theta sweep on ellipse B and the stem plot.
+    point_alpha, point_size, linewidth : float
+    arrow_width : float
+        Arrow head width (data coords) for the two highlighted arrows.
+    sweep_point_size : float
+        Marker size for the swept points on ellipse B.
+    """
+    ax_a, ax_b, ax_stem = ax
+
+    point_a, _ = _kappa_optimal_point(cfg.cov_a, cfg.cov_b)
+    sqrt_b = _mat_sqrt(cfg.cov_b)
+
+    thetas = np.linspace(0, 2 * np.pi, cfg.n_sweep, endpoint=False)
+    v_sweep = np.stack([np.cos(thetas), np.sin(thetas)], axis=0)
+    points_b = sqrt_b @ v_sweep
+    dot_products = point_a @ points_b
+    idx_max = int(np.argmax(dot_products))
+
+    cmap: Colormap = plt.get_cmap(cmap_name)
+    colors = [cmap(i / cfg.n_sweep) for i in range(cfg.n_sweep)]
+
+    ellipse_a = _get_covariance_ellipse(cfg.cov_a, n_std=cfg.n_std)
+    ellipse_b = _get_covariance_ellipse(cfg.cov_b, n_std=cfg.n_std)
+    samples_a = np.random.multivariate_normal(np.zeros(2), cfg.cov_a, size=cfg.n_samples)
+    samples_b = np.random.multivariate_normal(np.zeros(2), cfg.cov_b, size=cfg.n_samples)
+
+    def _draw_arrow(axis: plt.Axes, xy: npt.NDArray[np.floating], color) -> None:
+        axis.arrow(
+            0,
+            0,
+            xy[0],
+            xy[1],
+            head_width=arrow_width,
+            head_length=arrow_width / 2,
+            fc=color,
+            ec=color,
+            linewidth=linewidth,
+            length_includes_head=True,
+        )
+
+    lim = np.max(np.abs(np.concatenate([samples_a, samples_b], axis=1))) * 1.01
+
+    # --- ax_a: ellipse A, scatter, optimal arrow u* ---
+    ax_a.scatter(samples_a[:, 0], samples_a[:, 1], alpha=point_alpha, s=point_size, color=color_a)
+    ax_a.plot(ellipse_a[0], ellipse_a[1], color=color_a, linewidth=linewidth)
+    _draw_arrow(ax_a, point_a * cfg.n_std, color_a)
+    ax_a.set_xlim(-lim, lim)
+    ax_a.set_ylim(-lim, lim)
+    ax_a.set_aspect("equal")
+
+    # --- ax_b: ellipse B, scatter, rainbow sweep, peak marked with star ---
+    ax_b.scatter(samples_b[:, 0], samples_b[:, 1], alpha=point_alpha, s=point_size, color="gray")
+    ax_b.plot(ellipse_b[0], ellipse_b[1], color="gray", linewidth=linewidth)
+    ax_b.plot(ellipse_a[0], ellipse_a[1], color=color_a, linewidth=linewidth)
+    ax_b.scatter(points_b[0] * cfg.n_std, points_b[1] * cfg.n_std, c=colors, s=sweep_point_size)
+    _draw_arrow(ax_b, point_a * cfg.n_std, color_a)
+    _draw_arrow(ax_b, points_b[:, idx_max] * cfg.n_std, "black")
+    ax_b.set_xlim(-lim, lim)
+    ax_b.set_ylim(-lim, lim)
+    ax_b.set_aspect("equal")
+
+    # --- ax_stem: dot product <u*, v(theta)> vs theta, peak marked ---
+    theta_deg = np.degrees(thetas)
+    ax_stem.scatter(theta_deg, dot_products, c=colors, s=sweep_point_size, zorder=2)
+    ax_stem.vlines(theta_deg, 0, dot_products, colors=colors, linewidth=linewidth, zorder=1)
+    ax_stem.scatter(
+        theta_deg[idx_max],
+        dot_products[idx_max],
+        marker="*",
+        s=sweep_point_size,
+        color=colors[idx_max],
+        edgecolors="black",
+        linewidths=linewidth * 2,
+        zorder=3,
+    )
+    ax_stem.vlines(theta_deg[idx_max], 0, dot_products[idx_max], colors="black", linewidth=linewidth * 2, zorder=1)
+    ax_stem.axhline(0, color="black", linewidth=linewidth * 0.5, zorder=0)
+    ax_stem.set_xlabel("theta (deg)")
+    ax_stem.set_ylabel("<u*, v(theta)>")
+    _max_dot = np.max(np.abs(dot_products))
+    _ylims = _max_dot * 1.1 * np.array([-1, 1])
+    _yticks = np.round(_max_dot, 1) * np.array([-1, 1])
+    ax_stem.set_ylim(_ylims)
+    format_spines(
+        ax_stem,
+        x_pos=-0.02,
+        y_pos=-0.02,
+        xticks=(0, 90, 180, 270, 360),
+        yticks=_yticks,
+        xbounds=(0, 360),
+        ybounds=_yticks[[0, -1]],
+        spines_visible=["bottom", "left"],
+    )
