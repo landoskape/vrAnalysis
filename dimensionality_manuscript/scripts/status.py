@@ -23,6 +23,9 @@ Examples
 
     # Also show unique error messages per config group
     python -m dimensionality_manuscript.scripts.status --show-errors --include-error-types
+
+    # Limit to specific analysis types (same keys as run.py --analyses)
+    python -m dimensionality_manuscript.scripts.status --analyses cvpca regression
 """
 
 import argparse
@@ -31,11 +34,30 @@ from collections import Counter, defaultdict
 import pandas as pd
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import ResultsStore
+from dimensionality_manuscript.scripts.run import build_analysis_configs
 
 REGISTRY_PATHS = RegistryPaths()
 
 
-def print_error_summary(store: ResultsStore, include_error_types: bool = False) -> None:
+def _analysis_display_names(analyses: list[str] | None) -> list[str] | None:
+    """Resolve run.py analysis keys to stored ``analysis_type`` values.
+
+    Parameters
+    ----------
+    analyses : list of str or None
+        Analysis config keys passed to ``--analyses``. None = no filter.
+    """
+    if analyses is None:
+        return None
+    configs = build_analysis_configs(include=analyses)
+    return list({cfg.display_name for cfg in configs})
+
+
+def print_error_summary(
+    store: ResultsStore,
+    include_error_types: bool = False,
+    analysis_types: list[str] | None = None,
+) -> None:
     """Print recorded errors grouped by (analysis_type, analysis_summary).
 
     Parameters
@@ -43,8 +65,13 @@ def print_error_summary(store: ResultsStore, include_error_types: bool = False) 
     store : ResultsStore
     include_error_types : bool
         If True, print unique error messages under each config group.
+    analysis_types : list of str or None
+        If given, only include errors whose ``analysis_type`` is in this list.
     """
     errors = store.get_errors()
+    if analysis_types is not None:
+        allowed = set(analysis_types)
+        errors = [e for e in errors if e.get("analysis_type") in allowed]
     if not errors:
         print("No errors recorded.")
         return
@@ -70,6 +97,7 @@ def print_error_summary(store: ResultsStore, include_error_types: bool = False) 
 def status(
     full: bool = False,
     group_by: list[str] | None = None,
+    analyses: list[str] | None = None,
     show_errors: bool = False,
     include_error_types: bool = False,
     clear_errors: bool = False,
@@ -85,6 +113,9 @@ def status(
     group_by : list of str or None
         Columns to group by for the summary. Defaults to
         ``["analysis_type", "schema_version"]``.
+    analyses : list of str or None
+        Analysis config keys to include (same as ``run.py --analyses``).
+        None = all.
     show_errors : bool
         If True, also print a summary of recorded errors.
     include_error_types : bool
@@ -98,41 +129,55 @@ def status(
     store = ResultsStore(db_path)
     df = store.summary_table(as_dataframe=True)
 
+    analysis_types = _analysis_display_names(analyses)
+    if analysis_types is not None:
+        df = df[df["analysis_type"].isin(analysis_types)]
+
     if df.empty:
-        print("Store is empty.")
-        return
-
-    print(f"Store: {db_path}")
-    print(f"Total rows: {len(df)}")
-    print(f"Snapshots: {len(store.list_snapshots())}")
-    print()
-
-    if full:
-        with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", 200):
-            print(df.to_string(index=False))
-    else:
-        if group_by is None:
-            group_by = ["analysis_type", "schema_version"]
-
-        bad_cols = [c for c in group_by if c not in df.columns]
-        if bad_cols:
-            print(f"Unknown columns: {bad_cols}")
-            print(f"Available: {list(df.columns)}")
+        if analyses:
+            print(f"No results for analyses: {', '.join(analyses)}")
+        else:
+            print("Store is empty.")
+        if not show_errors and not clear_errors:
             return
+    else:
+        print(f"Store: {db_path}")
+        if analyses:
+            print(f"Analyses filter: {', '.join(analyses)}")
+        print(f"Total rows: {len(df)}")
+        print(f"Snapshots: {len(store.list_snapshots())}")
+        print()
 
-        grouped = df.groupby(group_by).agg(
-            count=("result_uid", "size"),
-            stored=("result_stored", "sum"),
-            sessions=("session_id", "nunique"),
-            earliest=("computed_at", "min"),
-            latest=("computed_at", "max"),
-        )
-        with pd.option_context("display.max_rows", None, "display.width", 200):
-            print(grouped.to_string())
+        if full:
+            with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", 200):
+                print(df.to_string(index=False))
+        else:
+            if group_by is None:
+                group_by = ["analysis_type", "schema_version"]
+
+            bad_cols = [c for c in group_by if c not in df.columns]
+            if bad_cols:
+                print(f"Unknown columns: {bad_cols}")
+                print(f"Available: {list(df.columns)}")
+                return
+
+            grouped = df.groupby(group_by).agg(
+                count=("result_uid", "size"),
+                stored=("result_stored", "sum"),
+                sessions=("session_id", "nunique"),
+                earliest=("computed_at", "min"),
+                latest=("computed_at", "max"),
+            )
+            with pd.option_context("display.max_rows", None, "display.width", 200):
+                print(grouped.to_string())
 
     if show_errors:
         print()
-        print_error_summary(store, include_error_types=include_error_types)
+        print_error_summary(
+            store,
+            include_error_types=include_error_types,
+            analysis_types=analysis_types,
+        )
 
     if clear_errors:
         n = store.clear_errors_bulk(
@@ -151,6 +196,11 @@ def status(
 def main():
     parser = argparse.ArgumentParser(description="Show ResultsStore contents")
     parser.add_argument("--full", action="store_true", help="Print every row")
+    parser.add_argument(
+        "--analyses",
+        nargs="+",
+        help="Which analysis configs to include (same keys as run.py --analyses). Default: all.",
+    )
     parser.add_argument("--group-by", nargs="+", default=None, help="Columns to group by (default: analysis_type schema_version)")
     parser.add_argument("--show-errors", action="store_true", help="Summarise recorded errors grouped by config")
     parser.add_argument("--include-error-types", action="store_true", help="With --show-errors, print unique error messages per config group")
@@ -166,6 +216,7 @@ def main():
     status(
         full=args.full,
         group_by=args.group_by,
+        analyses=args.analyses,
         show_errors=args.show_errors,
         include_error_types=args.include_error_types,
         clear_errors=args.clear_errors,
