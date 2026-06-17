@@ -52,7 +52,7 @@ class StimSpaceConfig(AnalysisConfigBase):
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
             "activity_parameters_name": ["raw", "default"],
-            "reliability_fraction_active_thresholds": [(None, None), (0.2, 0.05)],  # Why didn't I think of this before?
+            # "reliability_fraction_active_thresholds": [(None, None), (0.2, 0.05)],  # Why didn't I think of this before?
             "smooth_width": [None, 5.0],
         }
 
