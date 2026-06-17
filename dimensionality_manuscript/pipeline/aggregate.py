@@ -21,6 +21,80 @@ class _CellRef:
     row: dict
 
 
+def average_array_by_mouse(arr: np.ndarray, mouse_names: np.ndarray | list[str]) -> np.ndarray:
+    """Average an array along axis 0 within groups that share a mouse name.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Array whose axis 0 indexes sessions (or another grouping axis).
+    mouse_names : array-like of str
+        Mouse label for each index along axis 0 of ``arr``.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(n_mice,) + arr.shape[1:]`` with nanmean within
+        each mouse group.
+    """
+    mouse_names = np.asarray(mouse_names)
+    mice = list(dict.fromkeys(mouse_names))
+    out = np.full((len(mice),) + arr.shape[1:], np.nan)
+    for i, mouse in enumerate(mice):
+        out[i] = np.nanmean(arr[mouse_names == mouse], axis=0)
+    return out
+
+
+def average_by_mouse(
+    data: np.ndarray | Mapping[str, np.ndarray],
+    mouse_names: np.ndarray | list[str],
+    *,
+    skip_object_dtype: bool = True,
+) -> np.ndarray | dict[str, np.ndarray]:
+    """Average ndarray(s) along axis 0 within groups that share a mouse name.
+
+    Parameters
+    ----------
+    data : np.ndarray or dict[str, np.ndarray]
+        One array or a mapping of result keys to arrays. Axis 0 is averaged
+        within each mouse group.
+    mouse_names : array-like of str
+        Mouse label for each index along axis 0.
+    skip_object_dtype : bool
+        If True, skip object-dtype arrays (with a warning for dict inputs).
+
+    Returns
+    -------
+    np.ndarray or dict[str, np.ndarray]
+        Averaged array(s) with shape ``(n_mice,) + arr.shape[1:]``.
+    """
+    if isinstance(data, np.ndarray):
+        if data.dtype == object and skip_object_dtype:
+            raise TypeError("average_by_mouse cannot nanmean object-dtype arrays.")
+        return average_array_by_mouse(data, mouse_names)
+
+    out: dict[str, np.ndarray] = {}
+    for key, arr in data.items():
+        if arr.dtype == object and skip_object_dtype:
+            warnings.warn(
+                f"Skipping ragged key {key!r} in average_by_mouse() — cannot nanmean object arrays.",
+                stacklevel=2,
+            )
+            continue
+        out[key] = average_array_by_mouse(arr, mouse_names)
+    return out
+
+
+def _max_array_by_mouse(arr: np.ndarray, mouse_names: np.ndarray | list[str]) -> np.ndarray:
+    """Max-reduce an array along axis 0 within groups that share a mouse name."""
+    mouse_names = np.asarray(mouse_names)
+    mice = list(dict.fromkeys(mouse_names))
+    out = np.zeros((len(mice),) + arr.shape[1:], dtype=arr.dtype)
+    for i, mouse in enumerate(mice):
+        out[i] = np.max(arr[mouse_names == mouse], axis=0)
+    return out
+
+
 def _value_to_array(key: str, value: Any, session_id: str) -> np.ndarray | None:
     """Convert a single result dict value to ndarray, or None if unsupported."""
     if isinstance(value, np.ndarray):
@@ -218,7 +292,7 @@ class ResultsAggregator:
         result_shapes: dict[str, np.ndarray] | None = None,
         objects: dict[str, np.ndarray] | None = None,
     ) -> ResultsAggregator:
-        """Construct directly from pre-loaded data (used by average_by_mouse)."""
+        """Construct directly from pre-loaded data (used by _average_by_mouse)."""
         obj = object.__new__(cls)
         obj.config_class = None
         obj.store = None
@@ -271,7 +345,7 @@ class ResultsAggregator:
     @property
     def unique_mice(self) -> list[str]:
         """Unique mouse names in first-seen order."""
-        return list(dict.fromkeys(self.mouse_names.tolist()))
+        return list(dict.fromkeys(self.mouse_names))
 
     def _build_index(self) -> None:
         session_ids = list(self._session_index.keys())
@@ -620,7 +694,7 @@ class ResultsAggregator:
         return_param_sizes: bool = False,
         keys: list[str] | None = None,
         load_ragged: bool | None = None,
-        average_by_mouse: bool = False,
+        avg_by_mouse: bool = False,
         **params,
     ) -> dict[str, np.ndarray] | tuple[dict[str, np.ndarray], dict[str, list]]:
         """Return arrays sliced to specific param values, with those dims squeezed."""
@@ -645,22 +719,9 @@ class ResultsAggregator:
                 continue
             out[k] = v[idx_tuple]
 
-        if average_by_mouse:
-            effective_mouse_names = (
-                self.mouse_names[self.mouse_names == mouse] if mouse is not None else self.mouse_names
-            )
-            unique_mice = list(dict.fromkeys(effective_mouse_names.tolist()))
-            n_mice = len(unique_mice)
-            averaged = {}
-            for k, v in out.items():
-                if v.dtype == object:
-                    continue
-                mice_out = np.full((n_mice,) + v.shape[1:], np.nan)
-                for i, m in enumerate(unique_mice):
-                    mask = effective_mouse_names == m
-                    mice_out[i] = np.nanmean(v[mask], axis=0)
-                averaged[k] = mice_out
-            out = averaged
+        if avg_by_mouse:
+            effective_mouse_names = self.mouse_names[self.mouse_names == mouse] if mouse is not None else self.mouse_names
+            out = average_by_mouse(out, effective_mouse_names)
 
         if squeeze_ones and out:
             _example = next(iter(out.values()))
@@ -694,43 +755,19 @@ class ResultsAggregator:
 
         return {k: v[idx_tuple] for k, v in self._objects_backend.items()}
 
-    def average_by_mouse(self) -> ResultsAggregator:
+    def _average_by_mouse(self) -> ResultsAggregator:
         """Average arrays across sessions with the same mouse_name."""
         if self.lazy:
             self._peek_discover_keys()
             pad_keys = list(self._known_pad_keys())
             self._materialize_keys(pad_keys, scope="full_grid", load_ragged=self.load_ragged)
 
-        unique_mice: list[str] = list(dict.fromkeys(self.mouse_names.tolist()))
-        n_mice = len(unique_mice)
-
-        new_arrays: dict[str, np.ndarray] = {}
-        for key, arr in self._arrays_backend.items():
-            if arr.dtype == object:
-                warnings.warn(
-                    f"Skipping ragged key {key!r} in average_by_mouse() — cannot nanmean object arrays.",
-                    stacklevel=2,
-                )
-                continue
-            out = np.full((n_mice,) + arr.shape[1:], np.nan)
-            for i, mouse in enumerate(unique_mice):
-                mask = self.mouse_names == mouse
-                out[i] = np.nanmean(arr[mask], axis=0)
-            new_arrays[key] = out
-
-        new_shapes: dict[str, np.ndarray] = {}
-        for key, shape_arr in self._result_shapes_backend.items():
-            out = np.zeros((n_mice,) + shape_arr.shape[1:], dtype=shape_arr.dtype)
-            for i, mouse in enumerate(unique_mice):
-                mask = self.mouse_names == mouse
-                out[i] = np.max(shape_arr[mask], axis=0)
-            new_shapes[key] = out
-
+        mice = self.unique_mice
         return ResultsAggregator._from_data(
-            arrays=new_arrays,
+            arrays=average_by_mouse(self._arrays_backend, self.mouse_names),
             param_axes=self.param_axes,
-            session_ids=unique_mice,
-            mouse_names=np.array(unique_mice),
-            result_shapes=new_shapes,
+            session_ids=mice,
+            mouse_names=np.array(mice),
+            result_shapes={key: _max_array_by_mouse(shape_arr, self.mouse_names) for key, shape_arr in self._result_shapes_backend.items()},
             objects={},
         )

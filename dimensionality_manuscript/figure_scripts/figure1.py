@@ -390,7 +390,7 @@ class R2PlacefieldFocus(Viewer):
         self.on_change("env", self.recompute_arrays)
         self.recompute_arrays(self.state)
 
-        self.output = self.results.sel()
+        self.output = self.results.sel(avg_by_mouse=True)
 
     def recompute_arrays(self, state):
         self.idx_env = state["env"]
@@ -497,7 +497,7 @@ class R2PlacefieldFocus(Viewer):
         alpha_example = 0.3
         alpha_highlight = 0.7
         idx = self.results.param_axes["spks_type"].index(self.session.params.spks_type)
-        idx_to_example = np.where(self.results.mouse_names == self.session.mouse_name)[0][0]
+        idx_to_example = self.results.unique_mice.index(self.session.mouse_name)
         kde_grid = self.output["r2_kde_grid"][0, idx]
         kde_mean = self.output["r2_kde_mean"][:, idx]
         ax[2].plot(kde_grid, kde_mean.T, color=("k", alpha_example), linewidth=linewidth_example)
@@ -812,7 +812,7 @@ def example_traversal(
 
 
 def example_r2_placefield(
-    results_average: ResultsAggregator,
+    results: ResultsAggregator,
     session: B2Session,
     roi: int = EXAMPLE_ROI,
     idx_env: int = 0,
@@ -846,7 +846,7 @@ def example_r2_placefield(
     smp = SMPs.SpkmapProcessor(session, params=SMPs.SpkmapParams())
     smp.get_env_maps().pop_nan_positions()
 
-    viewer = R2PlacefieldFocus(results_average, session, smp, idx_env)
+    viewer = R2PlacefieldFocus(results, session, smp, idx_env)
     viewer.update_integer("env", value=idx_env)
     viewer.update_selection("roi", value=roi)
     viewer.update_selection("cloud_style", value=cloud_style)
