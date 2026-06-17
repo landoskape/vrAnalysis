@@ -49,6 +49,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 import numpy.typing as npt
+from .utilities import generate_orthonormal, rotate_subspace_by_angle
 
 # ---------------------------------------------------------------------------
 # Low-level numpy place-field math (ports of placefield_generator.py)
@@ -331,7 +332,14 @@ class PlacefieldFullConfig:
     n_repeats: int = 4
     repeat_noise_alpha: float = 0.3
     repeat_noise_lengthscale: float = 5.0
-    noise_level: float = 1.0
+
+    # nuisance component (not related to position)
+    nuisance_dim: int = 1  # dimension of stimulus-independent nuisance subspace
+    alpha_nuisance: float = 1.0  # power-law exponent for nuisance spectrum
+    nuisance_scale: float = 0.0  # multiplicative scale for nuisance component
+
+    # Some extra things
+    noise_level: float = 0.3
     normalize: bool = False
     rcvpca_smooth_width: Optional[float] = 3.0
     rcvpca_center: bool = True
@@ -342,6 +350,12 @@ class PlacefieldFullConfig:
     def num_stimuli(self) -> int:
         """Stimulus count seen by the atlas pipeline (positions act as stimuli)."""
         return self.num_positions
+
+    def __post_init__(self):
+        if self.nuisance_dim == 0:
+            # Need to have at least one dimension for generating the component, even if not used
+            self.nuisance_scale = 0.0
+            self.nuisance_dim = 1
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +394,8 @@ class PlacefieldFullGenerator:
         self.source = source.astype(self.dtype, copy=False)
 
         # Cholesky factor of the per-repeat GP noise kernel, reused across generate() calls.
-        self._noise_chol = _chol(_rbf_kernel(P, config.repeat_noise_lengthscale, exponent=None, dtype=self.dtype))
+        self._noise_kernel = _rbf_kernel(P, config.repeat_noise_lengthscale, exponent=None, dtype=self.dtype)
+        self._noise_chol = _chol(self._noise_kernel)
 
         # stim_space / stim_spectrum / stim_latents from the economy SVD of the (uncentered)
         # source so that stim_space @ diag(sqrt(stim_spectrum)) @ stim_latents == source exactly.
@@ -389,6 +404,10 @@ class PlacefieldFullGenerator:
         self.stim_space = U.astype(self.dtype, copy=False)  # (N, r), orthonormal columns
         self.stim_spectrum = (S**2).astype(self.dtype, copy=False)  # (r,), sqrt -> singular values
         self.stim_latents = Vt.astype(self.dtype, copy=False)  # (r, P), orthonormal rows
+
+        # Build nuisance space
+        self.nuisance_space = generate_orthonormal(N, config.nuisance_dim, rng=rng).astype(self.dtype)
+        self.nuisance_spectrum = np.arange(1, config.nuisance_dim + 1, dtype=self.dtype) ** (-config.alpha_nuisance)
 
     def true_covariance(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         """Population (Sigma_stim, Sigma_nuisance, Sigma_eps), each (N, N).
@@ -402,9 +421,14 @@ class PlacefieldFullGenerator:
         """
         N = self.config.num_neurons
         sigma_stim = np.cov(self.source, rowvar=True).astype(self.dtype, copy=False)
-        sigma_nuisance = (self.config.repeat_noise_alpha**2) * np.eye(N, dtype=self.dtype)
+
+        # Per repeat noise covariance from GP noise
+        P = self.config.num_positions
+        H = np.eye(P) - np.ones((P, P)) / P
+        sigma_repeat_noise = self.config.repeat_noise_alpha**2 * np.trace(H @ self._noise_kernel) / (P - 1)
+        sigma_nuisance = (self.config.nuisance_scale**2) * self.nuisance_space @ np.diag(self.nuisance_spectrum) @ self.nuisance_space.T
         sigma_eps = (self.config.noise_level**2) * np.eye(N, dtype=self.dtype)
-        return sigma_stim, sigma_nuisance, sigma_eps
+        return sigma_stim, sigma_nuisance + sigma_repeat_noise, sigma_eps
 
     def _sample_repeat_noise(self, num_neurons: int, rng: np.random.Generator) -> npt.NDArray[np.floating]:
         """One per-repeat GP noise field per neuron, shape (N, P)."""
@@ -456,16 +480,31 @@ class PlacefieldFullGenerator:
         field_model = self.config.field_model
         alpha = self.config.repeat_noise_alpha
 
+        # Prepare nuisance components
+        nuisance_space = self.nuisance_space.copy()
+        if rotation_angle != 0.0:
+            nuisance_space = rotate_subspace_by_angle(nuisance_space, rotation_angle, rng)
+
+        nuisance_loadings = (
+            self.config.nuisance_scale
+            * np.diag(np.sqrt(self.nuisance_spectrum))
+            @ rng.standard_normal((self.config.nuisance_dim, num_samples)).astype(self.dtype)
+        )
+        nuisance_component = nuisance_space @ nuisance_loadings  # (N, T)
+        nuisance_repeats = np.reshape(nuisance_component, (N, n_repeats, P)).transpose(1, 0, 2)  # (R, N, P)]
+
         repeat_maps: list[npt.NDArray[np.floating]] = []
-        for _ in range(n_repeats):
+        for r in range(n_repeats):
             noisy = self.source.copy()
             if alpha > 0:
                 noisy = noisy + alpha * self._sample_repeat_noise(N, rng)
-            repeat = field_model.rectify_repeat(noisy)
             if self.config.noise_level > 0:
-                repeat = repeat + self.config.noise_level * rng.standard_normal((N, P)).astype(self.dtype, copy=False)
+                noisy = noisy + self.config.noise_level * rng.standard_normal((N, P)).astype(self.dtype, copy=False)
             if noise_variance > 0:
-                repeat = repeat + np.sqrt(noise_variance) * rng.standard_normal((N, P)).astype(self.dtype, copy=False)
+                noisy = noisy + np.sqrt(noise_variance) * rng.standard_normal((N, P)).astype(self.dtype, copy=False)
+            noisy = noisy + nuisance_repeats[r]
+
+            repeat = field_model.rectify_repeat(noisy)
             repeat_maps.append(repeat.astype(self.dtype, copy=False))
 
         data = np.concatenate(repeat_maps, axis=1)  # (N, R*P)
@@ -476,6 +515,9 @@ class PlacefieldFullGenerator:
                 "stim_indices": np.tile(np.arange(P), n_repeats),
                 "repeat_indices": np.repeat(np.arange(n_repeats), P),
                 "repeat_maps": repeat_maps,
+                "nuisance_space": nuisance_space,
+                "nuisance_spectrum": self.nuisance_spectrum.copy(),
+                "nuisance_component": nuisance_component,
             }
             return data, stim_data, extras
         return data, stim_data
