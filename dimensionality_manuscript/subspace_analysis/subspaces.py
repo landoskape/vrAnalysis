@@ -415,15 +415,15 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             pca_activity1 = PCA(center=self.centered).fit(train1_data)
         components0 = pca_activity0.get_components()
         components1 = pca_activity1.get_components()
-        eigenvalues0 = pca_activity0.get_eigenvalues()
-        eigenvalues1 = pca_activity1.get_eigenvalues()
+        eigenvalues0 = torch.clamp_min(pca_activity0.get_eigenvalues(), 0.0)
+        eigenvalues1 = torch.clamp_min(pca_activity1.get_eigenvalues(), 0.0)
         root_cov_activity0 = components0 @ torch.diag(torch.sqrt(eigenvalues0)) @ components0.T
         root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
 
         # Get the root covariance matrices for place fields in the first half split
         pca_placefields0 = PCA(num_components=num_components, center=self.centered).fit(placefield0_extended)
         pf_components0 = pca_placefields0.get_components()
-        pf_eigenvalues0 = pca_placefields0.get_eigenvalues()
+        pf_eigenvalues0 = torch.clamp_min(pca_placefields0.get_eigenvalues(), 0.0)
         root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
 
         # Measure SVD on activity vs activity or PFs vs activity
@@ -509,19 +509,19 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             pca_activity1 = PCA(center=self.centered).fit(test1_data)
         components0 = pca_activity0.get_components()
         components1 = pca_activity1.get_components()
-        eigenvalues0 = pca_activity0.get_eigenvalues()
-        eigenvalues1 = pca_activity1.get_eigenvalues()
+        eigenvalues0 = torch.clamp_min(pca_activity0.get_eigenvalues(), 0.0)
+        eigenvalues1 = torch.clamp_min(pca_activity1.get_eigenvalues(), 0.0)
         root_cov_activity0 = components0 @ torch.diag(torch.sqrt(eigenvalues0)) @ components0.T
         root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
 
         # Get the root covariance matrices for place fields in each split
         pca_placefields0 = PCA(num_components=num_components, center=self.centered).fit(placefield0_extended)
         pf_components0 = pca_placefields0.get_components()
-        pf_eigenvalues0 = pca_placefields0.get_eigenvalues()
+        pf_eigenvalues0 = torch.clamp_min(pca_placefields0.get_eigenvalues(), 0.0)
         root_cov_placefields0 = pf_components0 @ torch.diag(torch.sqrt(pf_eigenvalues0)) @ pf_components0.T
         pca_placefields1 = PCA(num_components=num_components, center=self.centered).fit(placefield1_extended)
         pf_components1 = pca_placefields1.get_components()
-        pf_eigenvalues1 = pca_placefields1.get_eigenvalues()
+        pf_eigenvalues1 = torch.clamp_min(pca_placefields1.get_eigenvalues(), 0.0)
         root_cov_placefields1 = pf_components1 @ torch.diag(torch.sqrt(pf_eigenvalues1)) @ pf_components1.T
 
         # variance activity

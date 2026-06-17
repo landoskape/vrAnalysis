@@ -117,10 +117,16 @@ class StimSpaceSubspace(SubspaceModel):
         self.fraction_active_threshold = fraction_active_threshold
 
     def _fit_fold_specs(self, hyperparameters: PlaceFieldHyperparameters) -> list[StimSpaceFoldSpec]:
-        """Fold definitions used during fit (includes train and all CV folds)."""
+        """Fold definitions used during fit (includes train and all CV folds).
+        We need all cv folds - even though not used in fit - because we check which positions are valid
+        across all folds and it needs to be done "looking ahead". Probably shouldn't have done this in
+        fit, but it works this way and is easily justified.
+        """
         smooth_width = hyperparameters.smooth_width
         return [
             StimSpaceFoldSpec("train", "train0", smooth_width),
+            StimSpaceFoldSpec("cv1", "train1", None),
+            StimSpaceFoldSpec("cv2", "validation", None),
             StimSpaceFoldSpec("test", "test", smooth_width),
         ]
 
