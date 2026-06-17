@@ -101,8 +101,6 @@ class TilburyConfig:
         Amplitude of per-repeat RBF-GP noise relative to source.
     repeat_noise_lengthscale : float
         Lengthscale of per-repeat GP noise kernel.
-    repeat_noise_threshold_pct : float
-        Percentile threshold applied per-neuron to each noisy repeat (0 = no threshold).
     """
 
     n_neurons: int = 500
@@ -119,7 +117,6 @@ class TilburyConfig:
     baseline: float = 0.0
     repeat_noise_alpha: float = 0.3
     repeat_noise_lengthscale: float = 5.0
-    repeat_noise_threshold_pct: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -301,11 +298,7 @@ def _generate_tilbury(cfg: TilburyConfig, n_repeats: int, seed: int, device: str
             noisy = source + cfg.repeat_noise_alpha * noise
         else:
             noisy = source
-        if cfg.repeat_noise_threshold_pct > 0:
-            thr = torch.quantile(noisy, cfg.repeat_noise_threshold_pct / 100.0, dim=1, keepdim=True)
-            repeat = torch.relu(noisy - thr)
-        else:
-            repeat = torch.relu(noisy)
+        repeat = torch.relu(noisy)
         repeats.append(repeat)
 
     return {"source": source, "repeats": repeats, "spatial_rank": estimate_spatial_rank(source)}
@@ -377,11 +370,23 @@ def assemble(spatial: list[torch.Tensor], noise: list[torch.Tensor]) -> list[tor
     return [s + e for s, e in zip(spatial, noise)]
 
 
+def max_normalizer(repeats: list[torch.Tensor]) -> torch.Tensor:
+    """Per-neuron normalizer: max value across all repeats and positions.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape (N, 1), floored at 1e-8. Divide any (N, P) tensor by this to put it
+        in the same per-neuron normalized space as the data.
+    """
+    max_val = torch.stack(repeats, dim=0).amax(dim=(0, 2), keepdim=False)  # (N,)
+    return max_val.unsqueeze(1).clamp(min=1e-8)
+
+
 def normalize_by_max(repeats: list[torch.Tensor]) -> list[torch.Tensor]:
     """Divide each neuron by its max value across all repeats and positions."""
-    max_val = torch.stack(repeats, dim=0).amax(dim=(0, 2), keepdim=False)  # (N,)
-    max_val = max_val.unsqueeze(1).clamp(min=1e-8)
-    return [r / max_val for r in repeats]
+    normalizer = max_normalizer(repeats)
+    return [r / normalizer for r in repeats]
 
 
 def generate_repeats(cfg: SimConfig, seed: int, device: str = "cpu") -> dict:
@@ -401,9 +406,13 @@ def generate_repeats(cfg: SimConfig, seed: int, device: str = "cpu") -> dict:
     Returns
     -------
     dict with:
-        source  : (N, P) torch.Tensor — clean source fields (before IID noise)
+        source  : (N, P) torch.Tensor — clean source fields (before IID noise),
+            normalized by ``neuron_normalizer`` when ``cfg.normalize`` so it lives
+            in the same per-neuron space as ``repeats``.
         repeats : list of n_repeats (N, P) tensors — assembled and normalized
         spatial_rank : int — 90%-variance threshold on source
+        neuron_normalizer : (N, 1) torch.Tensor or None — per-neuron divisor applied
+            to repeats and source; None when ``cfg.normalize`` is False.
     """
     N, P = _n_neurons_positions(cfg)
 
@@ -414,8 +423,17 @@ def generate_repeats(cfg: SimConfig, seed: int, device: str = "cpu") -> dict:
 
     noise = generate_noise(cfg.noise_level, N, P, cfg.n_repeats, seed + 2000, device)
     repeats = assemble(pf_data["repeats"], noise)
+    source = pf_data["source"]
 
+    neuron_normalizer = None
     if cfg.normalize:
-        repeats = normalize_by_max(repeats)
+        neuron_normalizer = max_normalizer(repeats)
+        repeats = [r / neuron_normalizer for r in repeats]
+        source = source / neuron_normalizer
 
-    return {"source": pf_data["source"], "repeats": repeats, "spatial_rank": pf_data["spatial_rank"]}
+    return {
+        "source": source,
+        "repeats": repeats,
+        "spatial_rank": pf_data["spatial_rank"],
+        "neuron_normalizer": neuron_normalizer,
+    }

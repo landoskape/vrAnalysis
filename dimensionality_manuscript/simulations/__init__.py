@@ -18,6 +18,13 @@ from .generators import (
 )
 from .operators import sqrtm_spd, invsqrtm_spd, geometric_mean_spd, root_sandwich
 from .plotting import plot_ellipse
+from .placefield_full import (
+    PlacefieldFullConfig,
+    PlacefieldFullGenerator,
+    SmoothGPFieldConfig,
+    ThresholdedGPFieldConfig,
+    TilburyFieldConfig,
+)
 from .shared_variance import (
     ATLAS,
     AnalysisProvenance,
@@ -49,8 +56,15 @@ from .placefield_generator import (
     generate_noise,
     assemble,
     normalize_by_max,
+    max_normalizer,
     estimate_spatial_rank,
     peaky_transform,
+)
+from .estimation_sweep import (
+    SweepSpec,
+    SweepResults,
+    run_named_sweep,
+    run_param_sweep,
 )
 from .placefield_analysis import (
     run_neuron_position,
@@ -95,6 +109,11 @@ __all__ = [
     "ModeComparison",
     "PopulationBlock",
     "SubspaceGeometry",
+    "PlacefieldFullConfig",
+    "PlacefieldFullGenerator",
+    "SmoothGPFieldConfig",
+    "ThresholdedGPFieldConfig",
+    "TilburyFieldConfig",
     "analyze_atlas_case",
     "analyze_build",
     "build_atlas_case",
@@ -117,6 +136,7 @@ __all__ = [
     "generate_noise",
     "assemble",
     "normalize_by_max",
+    "max_normalizer",
     "estimate_spatial_rank",
     "peaky_transform",
     # placefield_analysis
@@ -135,4 +155,9 @@ __all__ = [
     "plot_component_alignment",
     "plot_study",
     "print_best_configs",
+    # estimation_sweep
+    "SweepSpec",
+    "SweepResults",
+    "run_named_sweep",
+    "run_param_sweep",
 ]

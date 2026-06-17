@@ -137,8 +137,8 @@ def _run_cvpca_fold(
         "cov_position": cvpca_p.score(c1, c2).cpu().numpy(),
         "smooth_cov_neuron": cvpca_sn.score(c1, c2).cpu().numpy(),
         "smooth_cov_position": cvpca_sp.score(c1, c2).cpu().numpy(),
-        "components_n": cvpca_n.pca.get_components().cpu().numpy(),    # (N, n_comp)
-        "components_p": cvpca_p.pca.get_components().cpu().numpy(),    # (P, n_comp)
+        "components_n": cvpca_n.pca.get_components().cpu().numpy(),  # (N, n_comp)
+        "components_p": cvpca_p.pca.get_components().cpu().numpy(),  # (P, n_comp)
         "smooth_components_n": cvpca_sn.pca.get_components().cpu().numpy(),
         "smooth_components_p": cvpca_sp.pca.get_components().cpu().numpy(),
     }
@@ -226,8 +226,8 @@ def run_neuron_position(cfg: SimConfig, n_sims: int, device: str = "cpu") -> dic
         svals_list.append(sv)
 
         u_src, _, v_src = torch.linalg.svd(source, full_matrices=False)
-        src_comps_n_list.append(u_src[:, :n_comp].cpu().numpy())   # (N, n_comp)
-        src_comps_p_list.append(v_src[:n_comp, :].T.cpu().numpy()) # (P, n_comp)
+        src_comps_n_list.append(u_src[:, :n_comp].cpu().numpy())  # (N, n_comp)
+        src_comps_p_list.append(v_src[:n_comp, :].T.cpu().numpy())  # (P, n_comp)
 
     stacked = {}
     for k in cov_keys:
@@ -235,7 +235,9 @@ def run_neuron_position(cfg: SimConfig, n_sims: int, device: str = "cpu") -> dic
         stacked[k] = arr
         stacked[f"frac_neg_{k}"] = np.mean(arr < 0, axis=0)
     for k in comp_keys:
-        stacked[k] = np.stack(all_comps[k])  # (K, n_rep, C, space_dim) — note: each fold stores (space_dim, n_comp), so shape is (K, n_rep, space_dim, n_comp)
+        stacked[k] = np.stack(
+            all_comps[k]
+        )  # (K, n_rep, C, space_dim) — note: each fold stores (space_dim, n_comp), so shape is (K, n_rep, space_dim, n_comp)
     stacked["eig_neuron"] = np.stack(eig_neuron_list)
     stacked["eig_position"] = np.stack(eig_position_list)
     stacked["svals"] = np.stack(svals_list)
@@ -334,10 +336,7 @@ def run_cvpca_stimspace_avg(cfg: SimConfig, n_sims: int, device: str = "cpu") ->
         alpha_stim  : float (mean across seeds)
         ratio       : float (median across seeds — robust to outliers)
     """
-    results = [
-        run_cvpca_stimspace(cfg, cfg.seed + i, device)
-        for i in tqdm(range(n_sims), desc="averaging sims", leave=False)
-    ]
+    results = [run_cvpca_stimspace(cfg, cfg.seed + i, device) for i in tqdm(range(n_sims), desc="averaging sims", leave=False)]
     return {
         "alpha_cvpca": float(np.mean([r["alpha_cvpca"] for r in results])),
         "alpha_stim": float(np.mean([r["alpha_stim"] for r in results])),
@@ -357,10 +356,7 @@ def run_cvpca_stimspace_stack(cfg: SimConfig, n_sims: int, device: str = "cpu") 
         alpha_cvpca, alpha_stim, ratio : (K,)
         frac_neg_reg_cov, frac_neg_cv_var_raw : (C,)
     """
-    results = [
-        run_cvpca_stimspace(cfg, cfg.seed + i, device, full=True)
-        for i in tqdm(range(n_sims), desc="full sims", leave=False)
-    ]
+    results = [run_cvpca_stimspace(cfg, cfg.seed + i, device, full=True) for i in tqdm(range(n_sims), desc="full sims", leave=False)]
     array_keys = ["reg_cov", "cv_var_raw", "stim_spec", "cvpca_components", "stim_u", "source_comps_n", "source_comps_p"]
     stacked = {k: np.stack([r[k] for r in results]) for k in array_keys}
     for k in ["alpha_cvpca", "alpha_stim", "ratio"]:
@@ -376,9 +372,13 @@ def run_cvpca_stimspace_stack(cfg: SimConfig, n_sims: int, device: str = "cpu") 
 
 
 def _suggest_rbf(trial: optuna.Trial, base: SimConfig) -> SimConfig:
-    gen_base = base.generator if isinstance(base.generator, PlacefieldConfig) else PlacefieldConfig(
-        n_neurons=base.generator.n_neurons,
-        n_positions=base.generator.n_positions,
+    gen_base = (
+        base.generator
+        if isinstance(base.generator, PlacefieldConfig)
+        else PlacefieldConfig(
+            n_neurons=base.generator.n_neurons,
+            n_positions=base.generator.n_positions,
+        )
     )
     smooth = trial.suggest_categorical("smooth", [True, False])
     smooth_width = None if not smooth else trial.suggest_float("smooth_width", 0.5, 20.0, log=True)
@@ -402,9 +402,13 @@ def _suggest_rbf(trial: optuna.Trial, base: SimConfig) -> SimConfig:
 
 
 def _suggest_tilbury(trial: optuna.Trial, base: SimConfig) -> SimConfig:
-    gen_base = base.generator if isinstance(base.generator, TilburyConfig) else TilburyConfig(
-        n_neurons=base.generator.n_neurons,
-        n_positions=base.generator.n_positions,
+    gen_base = (
+        base.generator
+        if isinstance(base.generator, TilburyConfig)
+        else TilburyConfig(
+            n_neurons=base.generator.n_neurons,
+            n_positions=base.generator.n_positions,
+        )
     )
     smooth = trial.suggest_categorical("smooth", [True, False])
     smooth_width = None if not smooth else trial.suggest_float("smooth_width", 0.5, 20.0, log=True)
@@ -423,7 +427,6 @@ def _suggest_tilbury(trial: optuna.Trial, base: SimConfig) -> SimConfig:
             exponent_spread=trial.suggest_float("tb_exponent_spread", 0.0, 1.0),
             repeat_noise_alpha=trial.suggest_float("tb_repeat_noise_alpha", 0.0, 0.9),
             repeat_noise_lengthscale=trial.suggest_float("tb_repeat_noise_lengthscale", 1.0, 15.0, log=True),
-            repeat_noise_threshold_pct=trial.suggest_float("tb_repeat_noise_threshold_pct", 0.0, 85.0),
         ),
         noise_level=trial.suggest_float("noise_level", 0.001, 5.0, log=True),
         smooth_width=smooth_width,
@@ -440,9 +443,13 @@ def suggest_config(trial: optuna.Trial, base: SimConfig) -> SimConfig:
 
 
 def _config_from_params_rbf(params: dict, base: SimConfig) -> SimConfig:
-    gen_base = base.generator if isinstance(base.generator, PlacefieldConfig) else PlacefieldConfig(
-        n_neurons=base.generator.n_neurons,
-        n_positions=base.generator.n_positions,
+    gen_base = (
+        base.generator
+        if isinstance(base.generator, PlacefieldConfig)
+        else PlacefieldConfig(
+            n_neurons=base.generator.n_neurons,
+            n_positions=base.generator.n_positions,
+        )
     )
     return replace(
         base,
@@ -464,9 +471,13 @@ def _config_from_params_rbf(params: dict, base: SimConfig) -> SimConfig:
 
 
 def _config_from_params_tilbury(params: dict, base: SimConfig) -> SimConfig:
-    gen_base = base.generator if isinstance(base.generator, TilburyConfig) else TilburyConfig(
-        n_neurons=base.generator.n_neurons,
-        n_positions=base.generator.n_positions,
+    gen_base = (
+        base.generator
+        if isinstance(base.generator, TilburyConfig)
+        else TilburyConfig(
+            n_neurons=base.generator.n_neurons,
+            n_positions=base.generator.n_positions,
+        )
     )
     return replace(
         base,
@@ -483,7 +494,6 @@ def _config_from_params_tilbury(params: dict, base: SimConfig) -> SimConfig:
             exponent_spread=params["tb_exponent_spread"],
             repeat_noise_alpha=params["tb_repeat_noise_alpha"],
             repeat_noise_lengthscale=params["tb_repeat_noise_lengthscale"],
-            repeat_noise_threshold_pct=params["tb_repeat_noise_threshold_pct"],
         ),
         noise_level=params["noise_level"],
         smooth_width=params.get("smooth_width", None),
@@ -567,8 +577,7 @@ def _hover_text(t: optuna.Trial, is_tilbury: bool) -> str:
     base = f"trial={t.number}  ratio={t.value:.4f}<br>a_cv={a_cv:.3f}  a_st={a_st:.3f}<br>"
     if is_tilbury:
         return (
-            base
-            + f"amp_m={p['tb_amplitude_mean']:.2f}  A2_beta={p['tb_amplitude_ratio_beta']:.2f}"
+            base + f"amp_m={p['tb_amplitude_mean']:.2f}  A2_beta={p['tb_amplitude_ratio_beta']:.2f}"
             f"  sep={p['tb_peak_separation_scale']:.2f}<br>"
             f"sig_m={p['tb_sigma_mean']:.2f}  sig_asym={p['tb_sigma_asym_std']:.2f}"
             f"  p_m={p['tb_exponent_mean']:.2f}<br>"
@@ -576,8 +585,7 @@ def _hover_text(t: optuna.Trial, is_tilbury: bool) -> str:
             f"  norm={p['normalize']}  center={p['center']}"
         )
     return (
-        base
-        + f"pf_amp={p['pf_amplitude']:.2f}  ls={p['pf_lengthscale']:.2f}"
+        base + f"pf_amp={p['pf_amplitude']:.2f}  ls={p['pf_lengthscale']:.2f}"
         f"  thr={p['pf_threshold_pct']:.1f}<br>"
         f"rep_a={p['pf_repeat_noise_alpha']:.2f}  peak_p={p['peak_exponent']:.2f}<br>"
         f"noise={p['noise_level']:.2f}  smooth={_format_smooth_width(t)}"
@@ -610,7 +618,9 @@ def _collect_spectra(cfg: SimConfig, n_sims: int, device: str) -> dict:
 
         stim_spec = _stimspace_spectrum(r0_smooth, r1, r2, r3, n_comp)
 
-        # True spectrum: eigenvalues of covariance of the source (post-normalize if cfg.normalize)
+        # True spectrum: eigenvalues of covariance of the source. generate_repeats
+        # already normalized source by the per-neuron normalizer when cfg.normalize,
+        # so this matches the space the data live in.
         source = pf_data["source"]
         true_spec = np.flip(np.linalg.eigh(np.cov(source.cpu().numpy()))[0])[:n_comp]
 
@@ -859,10 +869,7 @@ def plot_spectra(
         path_info = f"path=tilbury  p_m={g.exponent_mean:.2f}  A2_beta={g.amplitude_ratio_beta:.1f}"
     else:
         path_info = f"path=rbf  peak_p={g.peak_exponent}"
-    ax.set_title(
-        f"Spectra (ratio={ratio:.3f}, n_sims={n_sims})\n"
-        f"smooth={sw}  noise={cfg.noise_level:.2f}  {path_info}  norm={cfg.normalize}"
-    )
+    ax.set_title(f"Spectra (ratio={ratio:.3f}, n_sims={n_sims})\n" f"smooth={sw}  noise={cfg.noise_level:.2f}  {path_info}  norm={cfg.normalize}")
     ax.legend(fontsize=9)
     plt.tight_layout()
     return fig
@@ -992,28 +999,66 @@ def plot_study(study: optuna.Study) -> dict[str, go.Figure]:
 
     if is_tilbury:
         param_names = [
-            "tb_amplitude_mean", "tb_amplitude_spread", "tb_amplitude_ratio_beta",
-            "tb_peak_separation_scale", "tb_sigma_mean", "tb_sigma_spread",
-            "tb_sigma_asym_std", "tb_exponent_mean", "tb_exponent_spread",
-            "tb_repeat_noise_alpha", "tb_repeat_noise_lengthscale",
-            "tb_repeat_noise_threshold_pct", "noise_level", "smooth_width",
-            "normalize", "center",
+            "tb_amplitude_mean",
+            "tb_amplitude_spread",
+            "tb_amplitude_ratio_beta",
+            "tb_peak_separation_scale",
+            "tb_sigma_mean",
+            "tb_sigma_spread",
+            "tb_sigma_asym_std",
+            "tb_exponent_mean",
+            "tb_exponent_spread",
+            "tb_repeat_noise_alpha",
+            "tb_repeat_noise_lengthscale",
+            "noise_level",
+            "smooth_width",
+            "normalize",
+            "center",
         ]
         param_labels = [
-            "amp mean", "amp std", "A2/A1 beta", "peak sep",
-            "sig mean", "sig std", "sig asym", "p mean", "p std",
-            "rep alpha", "rep ls", "rep thr", "noise", "smooth", "norm", "center",
+            "amp mean",
+            "amp std",
+            "A2/A1 beta",
+            "peak sep",
+            "sig mean",
+            "sig std",
+            "sig asym",
+            "p mean",
+            "p std",
+            "rep alpha",
+            "rep ls",
+            "rep thr",
+            "noise",
+            "smooth",
+            "norm",
+            "center",
         ]
     else:
         param_names = [
-            "pf_amplitude", "pf_lengthscale", "pf_threshold_pct",
-            "pf_repeat_noise_alpha", "pf_repeat_noise_lengthscale",
-            "peak_exponent", "peak_sigma_scale", "noise_level", "smooth_width",
-            "normalize", "center",
+            "pf_amplitude",
+            "pf_lengthscale",
+            "pf_threshold_pct",
+            "pf_repeat_noise_alpha",
+            "pf_repeat_noise_lengthscale",
+            "peak_exponent",
+            "peak_sigma_scale",
+            "noise_level",
+            "smooth_width",
+            "normalize",
+            "center",
         ]
         param_labels = [
-            "pf amp", "pf ls", "thr%", "rep a", "rep ls",
-            "peak p", "s scale", "noise", "smooth", "norm", "center",
+            "pf amp",
+            "pf ls",
+            "thr%",
+            "rep a",
+            "rep ls",
+            "peak p",
+            "s scale",
+            "noise",
+            "smooth",
+            "norm",
+            "center",
         ]
 
     all_params = {name: [t.params.get(name, None) for t in trials] for name in param_names}
@@ -1051,7 +1096,6 @@ def print_best_configs(study: optuna.Study, top_n: int = 5) -> None:
                 f"    sig_m={p['tb_sigma_mean']:.2f}  sig_s={p['tb_sigma_spread']:.2f}"
                 f"  sig_asym={p['tb_sigma_asym_std']:.2f}  p_m={p['tb_exponent_mean']:.2f}\n"
                 f"    rep_a={p['tb_repeat_noise_alpha']:.2f}  rep_ls={p['tb_repeat_noise_lengthscale']:.2f}"
-                f"  rep_thr={p['tb_repeat_noise_threshold_pct']:.1f}"
                 f"  noise={p['noise_level']:.3f}"
                 f"  smooth={_format_smooth_width(t)}  norm={p['normalize']}  center={p['center']}"
             )

@@ -1,12 +1,25 @@
-"""Shared-variance analysis: direct config API and named atlas registry."""
+"""Shared-variance analysis: direct config API and named atlas registry.
+
+NOTE (deferred estimator): the place-field ``stim_full`` condition (``PlacefieldFullConfig`` /
+``PlacefieldFullGenerator``) routes through this engine and gets population/CV kappa, energy,
+cvSER, cv-stimstim, and an rCVPCA estimator (``_stim_full_rcvpca_result``). It does NOT yet
+implement the canonical cross-validated place-field-kernel estimator from
+``dimensionality_manuscript/subspace_analysis/stimspace.py`` (``StimSpaceSubspace``, config
+``configs/stimspace.py``). Porting that estimator is future work.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Mapping, Optional
+import itertools
 
 import numpy as np
 import numpy.typing as npt
+import torch
+
+from dimilibi.cvpca import CVPCA
+from dimilibi.helpers import gaussian_filter
 
 from .generators import (
     CovariancePairConfig,
@@ -17,6 +30,13 @@ from .generators import (
     StimFullGenerator,
 )
 from .operators import sqrtm_spd
+from .placefield_full import (
+    PlacefieldFullConfig,
+    PlacefieldFullGenerator,
+    SmoothGPFieldConfig,
+    ThresholdedGPFieldConfig,
+    TilburyFieldConfig,
+)
 
 AtlasKind = Literal["stim_full", "context_pair"]
 AtlasPipeline = Literal["stimulus_space", "covariance"]
@@ -24,6 +44,7 @@ AtlasBuilder = Callable[[np.random.Generator, npt.DTypeLike], tuple[Any, Any]]
 
 _CONFIG_DISPATCH: dict[type, tuple[AtlasKind, AtlasPipeline, type]] = {
     StimFullConfig: ("stim_full", "stimulus_space", StimFullGenerator),
+    PlacefieldFullConfig: ("stim_full", "stimulus_space", PlacefieldFullGenerator),
     CovariancePairConfig: ("context_pair", "covariance", CovariancePairGenerator),
     SharedSpaceConfig: ("context_pair", "covariance", SharedSpaceGenerator),
 }
@@ -112,6 +133,20 @@ class ModeComparison:
 
 
 @dataclass(frozen=True)
+class CVPCAComparison:
+    """rCVPCA computed in position space and neuron space."""
+
+    modes_position: npt.NDArray[np.floating]
+    modes_neuron: npt.NDArray[np.floating]
+    num_neurons: int
+    num_positions: int
+
+    @property
+    def p2n_ratio(self) -> float:
+        return float((self.num_neurons - 1) / (self.num_positions - 1))
+
+
+@dataclass(frozen=True)
 class SubspaceGeometry:
     """Eigenstructure and cross-subspace overlap for candidate vs reference."""
 
@@ -155,6 +190,8 @@ class EmpiricalBlock:
     cv_energy: Optional[ModeComparison] = None
     cv_kappa: Optional[ModeComparison] = None
     cv_stimstim: Optional[ModeComparison] = None
+    cv_variance_scale: Optional[ModeComparison] = None
+    cv_rcvpca: Optional[CVPCAComparison] = None
 
 
 @dataclass(frozen=True)
@@ -176,7 +213,7 @@ class AtlasAnalysisResult:
     kind: AtlasKind
     pipeline: AtlasPipeline
     description: str
-    config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig | None
+    config: StimFullConfig | PlacefieldFullConfig | CovariancePairConfig | SharedSpaceConfig | None
 
     population: PopulationBlock
     empirical: Optional[EmpiricalBlock] = None
@@ -617,6 +654,120 @@ def _stim_full_cv_stimstim_result(
     return _comparison(candidate_energy, reference_energy, metric="energy"), {}
 
 
+def _stim_full_cv_variance_scale_result(
+    gen: "StimFullGenerator",
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+) -> tuple[ModeComparison, dict[str, Any]]:
+    """CV stimulus-full modes on variance scale.
+
+    Aquires a cross-validated estimator of stim-full covariance on the variance scale.
+      directions: stim1.T @ data3
+      score:      stim2.T @ data3
+    Since stim[n] share stimuli in each column but data matrices don't have matched time samples
+    we need to keep one data3 for each reference in the train/test. This way we measure directions
+    (with SVD) comparing one stim repeat with a reference data, then test that reference data with
+    another stim repeat. We do it multiple times for each fold pairing for a better estimate.
+
+    The reference is the full/full cross-validated kappa, constructed identically to
+    ``reference_kappa`` in ``_stim_full_cv_kappa_result`` (two draws learn the subspace, two score
+    it), so the candidate/reference ratio is a variance-scale SVR rather than a CV-survival fraction.
+    """
+
+    def cvsvd_stimfull(stim1, stim2, data3):
+        stim1 = stim1 - np.mean(stim1, axis=1, keepdims=True)
+        stim2 = stim2 - np.mean(stim2, axis=1, keepdims=True)
+        data3 = data3 - np.mean(data3, axis=1, keepdims=True)
+        sf_cross_train = stim1.T @ data3
+        sf_cross_test = stim2.T @ data3
+        Usf_train, _, Vsft_train = np.linalg.svd(sf_cross_train, full_matrices=False)
+        ssf_test = np.sum(Usf_train * (sf_cross_test @ Vsft_train.T), axis=0)
+        norm = np.sqrt((stim1.shape[1] - 1) * (data3.shape[1] - 1))
+        return ssf_test / norm
+
+    data_0, _, extras_0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_1, _, extras_1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_2, _, extras_2 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_3, _, extras_3 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+
+    ns = gen.config.num_stimuli
+    s_0 = _stimulus_means(data_0, extras_0["stim_indices"], ns)
+    s_1 = _stimulus_means(data_1, extras_1["stim_indices"], ns)
+    s_2 = _stimulus_means(data_2, extras_2["stim_indices"], ns)
+    s_3 = _stimulus_means(data_3, extras_3["stim_indices"], ns)
+
+    stim_list = [s_0, s_1, s_2, s_3]
+    data_list = [data_0, data_1, data_2, data_3]
+    candidate_modes = []
+    for i, j, k in itertools.combinations(range(4), 3):
+        candidate_modes.append(cvsvd_stimfull(stim_list[i], stim_list[j], data_list[k]))
+    candidate_modes = np.stack(candidate_modes, axis=0)
+    candidate_modes = np.mean(candidate_modes, axis=0)
+
+    # Reference: full/full CV kappa, identical construction to reference_kappa in
+    # _stim_full_cv_kappa_result. Two draws learn the subspace, two score it.
+    root_full_train0 = sqrtm_spd(_cov(data_0))
+    root_full_train1 = sqrtm_spd(_cov(data_1))
+    root_full_test0 = sqrtm_spd(_cov(data_2))
+    root_full_test1 = sqrtm_spd(_cov(data_3))
+    reference_modes = _cv_kappa_fit_score(root_full_train0, root_full_train1, root_full_test0, root_full_test1)
+
+    return _comparison(candidate_modes, reference_modes, metric="kappa"), {}
+
+
+def _stim_full_rcvpca_result(
+    gen: "PlacefieldFullGenerator",
+    rng: np.random.Generator,
+    noise_variance: float,
+) -> tuple[ModeComparison, dict[str, Any]]:
+    """Regularized cvPCA estimator for the place-field stim-full pipeline.
+
+    Uses the generator's explicit repeat structure (``extras["repeat_maps"]``): the first four
+    repeats play the r0/r1/r2/r3 roles of the place-field study. The candidate spectrum is the
+    stimulus(position)-space cvPCA covariance from a smoothed training repeat r0, scored on the
+    held-out repeats r2/r3. The reference is the neuron-space cvPCA covariance fit on the same r0
+    (unsmoothed) and scored on r2/r3 — i.e. the total reproducible covariance. Their ratio is an
+    SVR analog: fraction of reproducible variance carried by the place-field (position) subspace.
+
+    These are signed cross-validated covariances (variance scale), so ``metric="kappa"`` is used
+    for scale bookkeeping; individual modes may be negative at the noise floor.
+
+    NOTE: this is rCVPCA, NOT the canonical cross-validated place-field-kernel estimator in
+    ``subspace_analysis/stimspace.py`` (``StimSpaceSubspace``), which is not yet ported into the
+    atlas.
+    """
+    cfg = gen.config
+    P = cfg.num_positions
+    n_repeats = cfg.n_repeats
+    if n_repeats < 4:
+        raise ValueError(f"rCVPCA needs n_repeats >= 4 (r0/r1/r2/r3), got {n_repeats}")
+
+    _, _, extras = gen.generate(n_repeats * P, noise_variance=noise_variance, rng=rng, return_extras=True)
+    repeat_maps = extras["repeat_maps"]
+    r0, _r1, r2, r3 = (torch.as_tensor(repeat_maps[i]) for i in range(4))
+
+    n_comp = cfg.rcvpca_num_components if cfg.rcvpca_num_components is not None else min(cfg.num_neurons - 1, P - 1)
+    n_comp = min(n_comp, cfg.num_neurons - 1, P - 1)
+
+    r0_smooth = gaussian_filter(r0, cfg.rcvpca_smooth_width, axis=1) if cfg.rcvpca_smooth_width is not None else r0
+
+    # Candidate: position-space (on_stimuli) cvPCA from the smoothed training repeat.
+    cvpca_position = CVPCA(num_components=n_comp, center=cfg.rcvpca_center, on_stimuli=True).fit(r0_smooth)
+    modes_position = cvpca_position.score(r2, r3).cpu().numpy()
+
+    # Reference: neuron-space cvPCA from the unsmoothed training repeat = total reproducible cov.
+    cvpca_neuron = CVPCA(num_components=n_comp, center=cfg.rcvpca_center, on_stimuli=False).fit(r0_smooth)
+    modes_neuron = cvpca_neuron.score(r2, r3).cpu().numpy()
+
+    return CVPCAComparison(
+        modes_position,
+        modes_neuron,
+        num_neurons=cfg.num_neurons,
+        num_positions=cfg.num_positions,
+    )
+
+
 def _context_cv_kappa_result(
     gen,
     num_samples: int,
@@ -767,7 +918,7 @@ def _run_analysis(
     test_rotation_angle: float = 0.0,
     name: str = "",
     description: str = "",
-    config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig | None = None,
+    config: StimFullConfig | PlacefieldFullConfig | CovariancePairConfig | SharedSpaceConfig | None = None,
 ) -> AtlasAnalysisResult:
     provenance = AnalysisProvenance(
         dtype=dtype,
@@ -812,13 +963,28 @@ def _run_analysis(
                 noise_variance=noise_variance,
                 test_rotation_angle=test_rotation_angle,
             )
+            cv_variance_scale, _ = _stim_full_cv_variance_scale_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+            )
+            # rCVPCA: only for generators that opt in and emit per-repeat maps (place fields).
+            # StimFullGenerator lacks the repeat structure, so cv_rcvpca stays None there.
+            cv_rcvpca: Optional[CVPCAComparison] = None
+            if getattr(gen, "supports_rcvpca", False):
+                cv_rcvpca = _stim_full_rcvpca_result(gen, rng=rng, noise_variance=noise_variance)
+
             empirical = EmpiricalBlock(
                 kappa=empirical_kappa,
                 cv_energy=cv_energy,
                 cv_kappa=cv_kappa,
                 cv_stimstim=cv_stimstim,
+                cv_variance_scale=cv_variance_scale,
+                cv_rcvpca=cv_rcvpca,
                 diagnostics=diagnostics,
             )
+
         else:
             empirical = _context_empirical_block(
                 gen,
@@ -858,7 +1024,7 @@ def _run_analysis(
 
 
 def process(
-    config: StimFullConfig | CovariancePairConfig | SharedSpaceConfig,
+    config: StimFullConfig | PlacefieldFullConfig | CovariancePairConfig | SharedSpaceConfig,
     *,
     dtype: npt.DTypeLike = np.float64,
     num_samples: Optional[int] = None,
@@ -892,9 +1058,14 @@ def process(
         Description stored in the result (optional).
     """
     config_type = type(config)
-    if config_type not in _CONFIG_DISPATCH:
-        raise TypeError(f"Unsupported config type: {config_type.__name__}. " f"Expected one of: {', '.join(t.__name__ for t in _CONFIG_DISPATCH)}")
-    kind, pipeline, gen_class = _CONFIG_DISPATCH[config_type]
+    if config_type in _CONFIG_DISPATCH:
+        kind, pipeline, gen_class = _CONFIG_DISPATCH[config_type]
+    else:
+        # Fall back to name-based lookup so autoreload doesn't break type identity.
+        _by_name = {k.__name__: v for k, v in _CONFIG_DISPATCH.items()}
+        if config_type.__name__ not in _by_name:
+            raise TypeError(f"Unsupported config type: {config_type.__name__}. Expected one of: {', '.join(t.__name__ for t in _CONFIG_DISPATCH)}")
+        kind, pipeline, gen_class = _by_name[config_type.__name__]
     _dtype = np.dtype(dtype)
     gen = gen_class(config, dtype=_dtype)
     return _run_analysis(
@@ -1049,6 +1220,20 @@ def _shared_space_config(
 
 def _shared_space_generator(config: SharedSpaceConfig, dtype: npt.DTypeLike = np.float64) -> SharedSpaceGenerator:
     return SharedSpaceGenerator(config, dtype=np.dtype(dtype))
+
+
+def _placefield_config(rng: np.random.Generator, *, field_model: Any) -> PlacefieldFullConfig:
+    return PlacefieldFullConfig(
+        field_model=field_model,
+        num_neurons=200,
+        num_positions=50,
+        n_repeats=4,
+        rng=rng,
+    )
+
+
+def _placefield_generator(config: PlacefieldFullConfig, dtype: npt.DTypeLike = np.float64) -> PlacefieldFullGenerator:
+    return PlacefieldFullGenerator(config, dtype=np.dtype(dtype))
 
 
 def _make_specs() -> tuple[AtlasSpec, ...]:
@@ -1233,6 +1418,36 @@ def _make_specs() -> tuple[AtlasSpec, ...]:
                 _shared_space_generator(cfg, dtype),
             ),
         ),
+        AtlasSpec(
+            name="placefield_full.smooth",
+            kind="stim_full",
+            pipeline="stimulus_space",
+            description="Smooth (non-thresholded) RBF Gaussian-process place fields; positions act as stimuli.",
+            builder=lambda rng, dtype: (
+                cfg := _placefield_config(rng, field_model=SmoothGPFieldConfig()),
+                _placefield_generator(cfg, dtype),
+            ),
+        ),
+        AtlasSpec(
+            name="placefield_full.thresholded",
+            kind="stim_full",
+            pipeline="stimulus_space",
+            description="Thresholded + rectified RBF-GP place fields (sparse, localized); positions act as stimuli.",
+            builder=lambda rng, dtype: (
+                cfg := _placefield_config(rng, field_model=ThresholdedGPFieldConfig()),
+                _placefield_generator(cfg, dtype),
+            ),
+        ),
+        AtlasSpec(
+            name="placefield_full.tilbury",
+            kind="stim_full",
+            pipeline="stimulus_space",
+            description="Per-neuron double generalized-Gaussian (Tilbury) place fields; positions act as stimuli.",
+            builder=lambda rng, dtype: (
+                cfg := _placefield_config(rng, field_model=TilburyFieldConfig()),
+                _placefield_generator(cfg, dtype),
+            ),
+        ),
     )
 
 
@@ -1277,8 +1492,13 @@ __all__ = [
     "EmpiricalBlock",
     "EmpiricalDiagnostics",
     "ModeComparison",
+    "PlacefieldFullConfig",
+    "PlacefieldFullGenerator",
     "PopulationBlock",
+    "SmoothGPFieldConfig",
     "SubspaceGeometry",
+    "ThresholdedGPFieldConfig",
+    "TilburyFieldConfig",
     "analyze_atlas_case",
     "analyze_build",
     "build_atlas_case",
