@@ -659,10 +659,7 @@ class ResultsStore:
         analysis_cfg: AnalysisConfigBase,
     ) -> list[str]:
         """Return session_ids in ``sessions`` with no result for this config."""
-        uids_to_sid = {
-            result_uid(ses.session_uid, analysis_cfg.key()): ses.session_uid
-            for ses in sessions
-        }
+        uids_to_sid = {result_uid(ses.session_uid, analysis_cfg.key()): ses.session_uid for ses in sessions}
         if not uids_to_sid:
             return []
         placeholders = ",".join("?" for _ in uids_to_sid)
