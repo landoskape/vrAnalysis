@@ -2,6 +2,7 @@
 
 import pathlib
 import tempfile
+import warnings
 
 from unittest.mock import patch
 
@@ -17,6 +18,8 @@ from dimensionality_manuscript import (
     ResultsAggregator,
     ResultsStore,
     SubspaceConfig,
+    average_array_by_mouse,
+    average_by_mouse,
     get_data_config,
     list_data_configs,
     result_uid,
@@ -504,6 +507,41 @@ def test_aggregator_skip_keys_deferred_until_sel_objects():
         objs = lazy.sel_objects(center=True)
         assert "trial_folds" in objs
         assert objs["trial_folds"].shape[0] == 1
+
+
+def test_average_array_by_mouse():
+    arr = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+    mouse_names = ["m1", "m1", "m2", "m2"]
+    averaged = average_array_by_mouse(arr, mouse_names)
+    np.testing.assert_allclose(averaged[0], [2.0, 3.0])
+    np.testing.assert_allclose(averaged[1], [6.0, 7.0])
+def test_average_by_mouse_dict_skips_object_dtype():
+    arrays = {
+        "values": np.array([[1.0], [3.0], [5.0], [7.0]]),
+        "ragged": np.empty((4,), dtype=object),
+    }
+    mouse_names = ["m1", "m1", "m2", "m2"]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        averaged = average_by_mouse(arrays, mouse_names)
+    assert "ragged" not in averaged
+    assert len(caught) == 1
+    np.testing.assert_allclose(averaged["values"][:, 0], [2.0, 6.0])
+
+
+def test_aggregator_average_by_mouse():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        sessions = [FakeSession(), FakeSessionB(), FakeSession(), FakeSessionB()]
+        sessions[2].session_uid = "test_session_c"
+        sessions[3].session_uid = "test_session_d"
+        _populate_cvpca_grid(store, sessions)
+
+        agg = ResultsAggregator(CVPCAConfig, store, sessions, lazy=False)
+        mouse_avg = agg._average_by_mouse()
+        assert mouse_avg.session_ids == ["mouse_a", "mouse_b"]
+        expected = average_array_by_mouse(agg.arrays["reg_covariances"], agg.mouse_names)
+        np.testing.assert_allclose(mouse_avg.arrays["reg_covariances"], expected)
 
 
 def test_aggregator_lazy_init_fast():

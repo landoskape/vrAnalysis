@@ -32,15 +32,11 @@ def test_prep_state_roundtrip_extras():
         idx_keep=np.array([True, False, True]),
         valid_environments=np.array([0]),
         valid_positions=np.array([True, True, False, True]),
-        idx_test_split0=torch.tensor([0, 2]),
-        idx_test_split1=torch.tensor([1, 3]),
     )
     restored = StimSpacePrepState.from_extras(prep.to_extras())
     assert np.array_equal(restored.idx_keep, prep.idx_keep)
     assert np.array_equal(restored.valid_environments, prep.valid_environments)
     assert np.array_equal(restored.valid_positions, prep.valid_positions)
-    assert torch.equal(restored.idx_test_split0, prep.idx_test_split0)
-    assert torch.equal(restored.idx_test_split1, prep.idx_test_split1)
 
 
 def test_get_processed_folds_fit_then_score_reuses_prep():
