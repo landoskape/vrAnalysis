@@ -10,6 +10,7 @@ score (validation / test): w[i] = (G2 @ u_i).T @ cov_PF0_train @ (G3 @ u_i)
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -24,7 +25,7 @@ from dimilibi import PCA
 
 from ..regression_models.base import ActivityParameters
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
-from .base import SubspaceModel, Subspace, _eigh_numpy, _eigvalsh_numpy
+from .base import SubspaceModel, Subspace, _eigh_numpy, _eigvalsh_numpy, _svd_numpy
 
 if TYPE_CHECKING:
     from ..registry import SplitName
@@ -52,21 +53,14 @@ class StimSpacePrepState:
     idx_keep: np.ndarray
     valid_environments: np.ndarray
     valid_positions: np.ndarray
-    idx_test_split0: Optional[torch.Tensor] = None
-    idx_test_split1: Optional[torch.Tensor] = None
 
     def to_extras(self) -> dict:
         """Return only preparation keys for ``Subspace.extras``."""
-        extras = {
+        return {
             "idx_keep": self.idx_keep,
             "valid_environments": self.valid_environments,
             "valid_positions": self.valid_positions,
         }
-        if self.idx_test_split0 is not None:
-            extras["idx_test_split0"] = self.idx_test_split0
-        if self.idx_test_split1 is not None:
-            extras["idx_test_split1"] = self.idx_test_split1
-        return extras
 
     @classmethod
     def from_extras(cls, extras: dict) -> "StimSpacePrepState":
@@ -75,8 +69,6 @@ class StimSpacePrepState:
             idx_keep=extras["idx_keep"],
             valid_environments=extras["valid_environments"],
             valid_positions=extras["valid_positions"],
-            idx_test_split0=extras.get("idx_test_split0"),
-            idx_test_split1=extras.get("idx_test_split1"),
         )
 
 
@@ -119,7 +111,6 @@ class StimSpaceSubspace(SubspaceModel):
         reliability_threshold: Optional[float] = None,
         fraction_active_threshold: Optional[float] = None,
         directions_from_placefield_only: bool = False,
-        cross_validated_placefield_kernel: bool = False,
     ) -> None:
         super().__init__(
             registry,
@@ -130,15 +121,12 @@ class StimSpaceSubspace(SubspaceModel):
         self.reliability_threshold = reliability_threshold
         self.fraction_active_threshold = fraction_active_threshold
         self.directions_from_placefield_only = directions_from_placefield_only
-        self.cross_validated_placefield_kernel = cross_validated_placefield_kernel
 
     def _fit_fold_specs(self, hyperparameters: PlaceFieldHyperparameters) -> list[StimSpaceFoldSpec]:
         """Fold definitions used during fit (includes train and all CV folds)."""
         smooth_width = hyperparameters.smooth_width
         return [
             StimSpaceFoldSpec("train", "train0", smooth_width),
-            StimSpaceFoldSpec("cv1", "train1", None),
-            StimSpaceFoldSpec("cv2", "validation", None),
             StimSpaceFoldSpec("test", "test", smooth_width),
         ]
 
@@ -296,23 +284,6 @@ class StimSpaceSubspace(SubspaceModel):
             dtype=torch.float32,
         )
 
-    def _resolve_test_half_indices(
-        self,
-        num_test_samples: int,
-        prep_state: Optional[StimSpacePrepState],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return sorted sample indices for test-fold halves."""
-        if prep_state is not None:
-            if prep_state.idx_test_split0 is None or prep_state.idx_test_split1 is None:
-                raise ValueError("cross_validated_placefield_kernel requires idx_test_split0 and " "idx_test_split1 in prep_state when scoring.")
-            return prep_state.idx_test_split0, prep_state.idx_test_split1
-
-        num_test_samples_split0 = num_test_samples // 2
-        test_perm = torch.randperm(num_test_samples)
-        idx_test_split0 = torch.sort(test_perm[:num_test_samples_split0]).values
-        idx_test_split1 = torch.sort(test_perm[num_test_samples_split0:]).values
-        return idx_test_split0, idx_test_split1
-
     def get_processed_folds(
         self,
         session: B2Session,
@@ -329,12 +300,11 @@ class StimSpaceSubspace(SubspaceModel):
         session : B2Session
         spks_type : SpksTypes
         fold_specs : sequence of StimSpaceFoldSpec
-            Logical folds to load (test0/test1 are added automatically when
-            ``cross_validated_placefield_kernel`` is enabled and ``test`` is requested).
+            Logical folds to load.
         hyperparameters : PlaceFieldHyperparameters
         prep_state : StimSpacePrepState, optional
-            When provided (score path), reuses neuron mask, position mask, and test-half
-            indices from fit. When ``None`` (fit path), computes them.
+            When provided (score path), reuses neuron mask and position mask from fit.
+            When ``None`` (fit path), computes them.
 
         Returns
         -------
@@ -350,14 +320,10 @@ class StimSpaceSubspace(SubspaceModel):
             idx_keep = self._neuron_filter(session, spks_type, num_neurons, dist_edges)
             valid_environments = None
             valid_positions = None
-            idx_test_split0 = None
-            idx_test_split1 = None
         else:
             idx_keep = prep_state.idx_keep
             valid_environments = prep_state.valid_environments
             valid_positions = prep_state.valid_positions
-            idx_test_split0 = prep_state.idx_test_split0
-            idx_test_split1 = prep_state.idx_test_split1
 
         activity: dict[str, torch.Tensor] = {}
         frame_behaviors: dict[str, FrameBehavior] = {}
@@ -370,25 +336,6 @@ class StimSpaceSubspace(SubspaceModel):
             smooth_widths[spec.name] = spec.smooth_width
 
         pf_fold_names = [spec.name for spec in fold_specs]
-        if self.cross_validated_placefield_kernel and "test" in activity:
-            idx_test_split0, idx_test_split1 = self._resolve_test_half_indices(activity["test"].shape[1], prep_state)
-            fb_test = frame_behaviors["test"]
-            test_smooth = smooth_widths["test"]
-            activity["test0"] = activity["test"][:, idx_test_split0]
-            activity["test1"] = activity["test"][:, idx_test_split1]
-            frame_behaviors["test0"] = fb_test.filter(idx_test_split0)
-            frame_behaviors["test1"] = fb_test.filter(idx_test_split1)
-            smooth_widths["test0"] = test_smooth
-            smooth_widths["test1"] = test_smooth
-            pf_fold_names.extend(["test0", "test1"])
-
-        elif prep_state is None and "test" in activity:
-            num_test_samples = activity["test"].shape[1]
-            num_test_samples_split0 = num_test_samples // 2
-            test_perm = torch.randperm(num_test_samples)
-            idx_test_split0 = torch.sort(test_perm[:num_test_samples_split0]).values
-            idx_test_split1 = torch.sort(test_perm[num_test_samples_split0:]).values
-
         pf_input_specs = {name: (activity[name], frame_behaviors[name], smooth_widths[name]) for name in pf_fold_names}
         placefields = self._compute_placefield_folds(pf_input_specs, dist_edges, session)
 
@@ -401,8 +348,6 @@ class StimSpaceSubspace(SubspaceModel):
             idx_keep=idx_keep,
             valid_environments=valid_environments,
             valid_positions=valid_positions,
-            idx_test_split0=idx_test_split0,
-            idx_test_split1=idx_test_split1,
         )
         return StimSpaceFolds(activity=activity, placefields=placefields, pf_matrices=pf_matrices), out_prep
 
@@ -434,9 +379,9 @@ class StimSpaceSubspace(SubspaceModel):
             hyperparameters,
         )
 
-        data_train = folds.activity["train"]
         pf_mat_train = folds.pf_matrices["train"]
         pf_mat_test = folds.pf_matrices["test"]
+        data_train = folds.activity["train"]
         data_test = folds.activity["test"]
 
         S = pf_mat_test.shape[1]
@@ -506,14 +451,7 @@ class StimSpaceSubspace(SubspaceModel):
         test_placefield_cov = torch.cov(test_placefield_extended)
 
         K_pf1_full3_pf2 = precov_cv1_pf.T @ test_data_cov @ precov_cv2_pf
-
-        if self.cross_validated_placefield_kernel:
-            precov_test0_pf = _make_G(folds.pf_matrices["test0"])
-            precov_test1_pf = _make_G(folds.pf_matrices["test1"])
-            center_kernel = precov_test0_pf @ precov_test1_pf.T
-            K_pf1_pf3_pf2 = precov_cv1_pf.T @ center_kernel @ precov_cv2_pf
-        else:
-            K_pf1_pf3_pf2 = precov_cv1_pf.T @ test_placefield_cov @ precov_cv2_pf
+        K_pf1_pf3_pf2 = precov_cv1_pf.T @ test_placefield_cov @ precov_cv2_pf
 
         u_pf_full: torch.Tensor = subspace.extras["u_pf_full"]
         u_pf_pf: torch.Tensor = subspace.extras["u_pf_pf"]
@@ -545,6 +483,59 @@ class StimSpaceSubspace(SubspaceModel):
             cv_variance_squared_placefield_placefield=cv_variance_placefield_placefield,
         )
 
+    def compute_cv_variance_scale(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes = "oasis",
+        hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
+    ) -> dict:
+        """Cross-validated variance-scale shared-variance estimator.
+
+        Self-contained companion to ``fit``/``score``: uses the 4 real time
+        splits (``train0``, ``train1``, ``validation``, ``test``) as 4
+        interchangeable draws, all with the same placefield smoothing
+        (``hyperparameters.smooth_width``), and mirrors
+        ``_stim_full_cv_variance_scale_result``/``cvsvd_stimfull`` from
+        ``simulations/shared_variance.py``. Computes its own neuron and
+        position filtering independent of any ``Subspace`` from ``fit()``.
+
+        Has no reference of its own; pair the returned candidate modes with
+        ``variance_activity`` from ``score()``.
+
+        Returns
+        -------
+        dict
+            ``{"cv_variance_scale_placefields": torch.Tensor}`` averaged over
+            all 3-of-4 draw combinations.
+        """
+        draw_splits: tuple["SplitName", ...] = ("train0", "train1", "validation", "test")
+        draw_specs = [StimSpaceFoldSpec(f"draw{i}", split, hyperparameters.smooth_width) for i, split in enumerate(draw_splits)]
+        folds, _ = self.get_processed_folds(session, spks_type, draw_specs, hyperparameters)
+
+        stim_list = [folds.pf_matrices[f"draw{i}"] for i in range(4)]
+        data_list = [folds.activity[f"draw{i}"] for i in range(4)]
+
+        # And center them so each neurons mean is 0
+        stim_list = [stim_list[i] - stim_list[i].mean(dim=1, keepdim=True) for i in range(4)]
+        data_list = [data_list[i] - data_list[i].mean(dim=1, keepdim=True) for i in range(4)]
+
+        combo_scores = []
+        for i, j, k in itertools.combinations(range(4), 3):
+            sf_cross_train = stim_list[i].T @ data_list[k]
+            sf_cross_test = stim_list[j].T @ data_list[k]
+            U_train, _, Vt_train = _svd_numpy(sf_cross_train)
+            score = torch.sum(U_train * (sf_cross_test @ Vt_train.T), dim=0)
+
+            # We normalize the SVD because I want it to be similar to PCA eigenvalues that we'd get from
+            # data @ data.T for example - where we'd divide by the number of timepoints - 1 to get a neuron x neuron covariance
+            # Here, we have stim.T @ data --- where we multiply through the neural dimension - but it's a way to recover a neuron
+            # x neuron covariance so that's how we normalize it! (It's compared to other neuron x neuron variances from other metrics).
+            norm = ((stim_list[i].shape[1] - 1) * (data_list[k].shape[1] - 1)) ** 0.5
+            combo_scores.append(score / norm)
+
+        cv_variance_scale_placefields = torch.mean(torch.stack(combo_scores, dim=0), dim=0)
+        return {"cv_variance_scale_placefields": cv_variance_scale_placefields}
+
     def _get_model_name(self) -> str:
         base = "stimspace_subspace"
         if self.use_fast_sampling:
@@ -555,6 +546,4 @@ class StimSpaceSubspace(SubspaceModel):
             base += f"_frac{self.fraction_active_threshold}"
         if self.directions_from_placefield_only:
             base += "_dirFromPF"
-        if self.cross_validated_placefield_kernel:
-            base += "_cvPFKernel"
         return base

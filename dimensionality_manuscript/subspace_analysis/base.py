@@ -25,6 +25,12 @@ def _eigvalsh_numpy(A: torch.Tensor) -> torch.Tensor:
     return torch.from_numpy(np.linalg.eigvalsh(A.numpy()).copy())
 
 
+def _svd_numpy(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Full SVD via numpy to avoid PyTorch LAPACK bugs (e.g. illegal SVD argument)."""
+    U, S, Vt = np.linalg.svd(A.numpy(), full_matrices=False)
+    return torch.from_numpy(U.copy()), torch.from_numpy(S.copy()), torch.from_numpy(Vt.copy())
+
+
 class Subspace(NamedTuple):
     subspace_activity: Union["PCA", "SVCA", "torch.Tensor"]
     subspace_placefields: Union["PCA", "SVCA", "torch.Tensor"]

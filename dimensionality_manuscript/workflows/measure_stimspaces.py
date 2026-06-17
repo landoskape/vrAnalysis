@@ -53,7 +53,6 @@ def _build_model(cfg: StimSpaceConfig, registry: PopulationRegistry) -> StimSpac
         reliability_threshold=cfg.reliability_threshold,
         fraction_active_threshold=cfg.fraction_active_threshold,
         directions_from_placefield_only=cfg.directions_from_placefield_only,
-        cross_validated_placefield_kernel=cfg.cross_validated_placefield_kernel,
     )
 
 
