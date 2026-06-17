@@ -92,8 +92,6 @@ class StimSpaceSubspace(SubspaceModel):
     normalize : bool
         Normalize placefield matrices by per-neuron peak response across
         both folds before computing G matrices.
-    use_fast_sampling : bool
-        Passed to ``get_placefield``.
     reliability_threshold : float or None
         Exclude neurons with leave-one-out reliability below this value.
         Computed from the full data split.
@@ -107,7 +105,6 @@ class StimSpaceSubspace(SubspaceModel):
         registry,
         autosave: bool = True,
         activity_parameters: ActivityParameters = ActivityParameters(center=False, scale=False, scale_type="none"),
-        use_fast_sampling: bool = True,
         reliability_threshold: Optional[float] = None,
         fraction_active_threshold: Optional[float] = None,
     ) -> None:
@@ -116,7 +113,6 @@ class StimSpaceSubspace(SubspaceModel):
             autosave=autosave,
             activity_parameters=activity_parameters,
         )
-        self.use_fast_sampling = use_fast_sampling
         self.reliability_threshold = reliability_threshold
         self.fraction_active_threshold = fraction_active_threshold
 
@@ -155,7 +151,7 @@ class StimSpaceSubspace(SubspaceModel):
             full_fb,
             dist_edges=dist_edges,
             average=False,
-            use_fast_sampling=self.use_fast_sampling,
+            use_fast_sampling=True,
             session=session,
         )
         _all_by_env = [_all_trials.filter_by_environment(env) for env in session.environments]
@@ -222,7 +218,7 @@ class StimSpaceSubspace(SubspaceModel):
                 average=True,
                 smooth_width=smooth_width,
                 zero_to_nan=True,
-                use_fast_sampling=self.use_fast_sampling,
+                use_fast_sampling=True,
                 session=session,
             )
         return placefields
@@ -549,8 +545,6 @@ class StimSpaceSubspace(SubspaceModel):
 
     def _get_model_name(self) -> str:
         base = "stimspace_subspace"
-        if self.use_fast_sampling:
-            base += "_fast"
         if self.reliability_threshold is not None:
             base += f"_rel{self.reliability_threshold}"
         if self.fraction_active_threshold is not None:

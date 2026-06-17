@@ -46,16 +46,14 @@ class SubspaceConfig(AnalysisConfigBase):
         Gaussian smoothing width for place fields. None means no smoothing.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     data_config_name: str = "even"
 
     subspace_name: SubspaceName = "covcov_subspace"
     spks_type: SpksTypes = "sigrebase"
     num_bins: int = 100
     smooth_width: float | None = None
-    centered: bool = False
     activity_parameters_name: str = "raw"
-
     display_name: ClassVar[str] = "subspace"
 
     # Cross is (dims x dims), ordered by variance explained, but different sessions have different dims
@@ -68,7 +66,6 @@ class SubspaceConfig(AnalysisConfigBase):
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
             "smooth_width": [5.0, None],
-            "centered": [True, False],
             "activity_parameters_name": ["raw", "default"],
             "subspace_name": list(VALID_SUBSPACE_NAMES),
         }
@@ -86,8 +83,6 @@ class SubspaceConfig(AnalysisConfigBase):
             f"smooth={self.smooth_width}",
             self.schema_version,
         ]
-        if self.centered:
-            parts.append("centered")
         if self.activity_parameters_name != "raw":
             parts.append(f"ap={self.activity_parameters_name}")
         return "_".join(parts)
@@ -95,7 +90,7 @@ class SubspaceConfig(AnalysisConfigBase):
     def process(self, session: B2Session, registry: PopulationRegistry) -> None:
         """Measure subspace on this session."""
         ap = get_activity_parameters(self.activity_parameters_name)
-        model = get_subspace(self.subspace_name, registry, centered=self.centered, activity_parameters=ap)
+        model = get_subspace(self.subspace_name, registry, centered=True, activity_parameters=ap)
         hyps = PlaceFieldHyperparameters(num_bins=self.num_bins, smooth_width=self.smooth_width)
         subspace = model.fit(session, spks_type=self.spks_type, hyperparameters=hyps)
         score = model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)

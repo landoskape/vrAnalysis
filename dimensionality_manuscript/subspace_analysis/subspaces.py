@@ -37,6 +37,8 @@ class PCASubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T.contiguous()
 
@@ -74,6 +76,8 @@ class PCASubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_extended = torch.tensor(placefield.placefield).reshape(-1, num_neurons).T.contiguous()
 
@@ -126,6 +130,8 @@ class SVCASubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_target = get_placefield(
             train_target.T.numpy(),
@@ -133,6 +139,8 @@ class SVCASubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T.contiguous()
         placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T.contiguous()
@@ -197,6 +205,8 @@ class SVCASubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_target = get_placefield(
             test_target.T.numpy(),
@@ -204,6 +214,8 @@ class SVCASubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T.contiguous()
         placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T.contiguous()
@@ -260,6 +272,8 @@ class CovCovSubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_extended = torch.tensor(placefield.flattened()).T.contiguous()
 
@@ -300,6 +314,8 @@ class CovCovSubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield_extended = torch.tensor(placefield.flattened()).T.contiguous()
 
@@ -380,6 +396,8 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T.contiguous()
 
@@ -459,6 +477,8 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield0_extended = torch.tensor(placefield0.placefield).reshape(-1, num_neurons).T.contiguous()
         placefield1 = get_placefield(
@@ -467,6 +487,8 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             dist_edges=dist_edges,
             average=True,
             smooth_width=hyperparameters.smooth_width,
+            use_fast_sampling=True,
+            session=session,
         )
         placefield1_extended = torch.tensor(placefield1.placefield).reshape(-1, num_neurons).T.contiguous()
 

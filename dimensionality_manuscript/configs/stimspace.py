@@ -41,9 +41,7 @@ class StimSpaceConfig(AnalysisConfigBase):
     data_config_name: str = "even"
 
     activity_parameters_name: str = "raw"
-    use_fast_sampling: bool = True
-    reliability_threshold: Optional[float] = None
-    fraction_active_threshold: Optional[float] = None
+    reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
     num_bins: int = 100
     smooth_width: Optional[float] = None
     spks_type: SpksTypes = "sigrebase"
@@ -54,8 +52,7 @@ class StimSpaceConfig(AnalysisConfigBase):
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
             "activity_parameters_name": ["raw", "default"],
-            "reliability_threshold": [None, 0.2],
-            "fraction_active_threshold": [None, 0.05],
+            "reliability_fraction_active_thresholds": [(None, None), (0.2, 0.05)],  # Why didn't I think of this before?
             "smooth_width": [None, 5.0],
         }
 
@@ -64,7 +61,6 @@ class StimSpaceConfig(AnalysisConfigBase):
             self.display_name,
             f"spks={self.spks_type}",
             f"ap={self.activity_parameters_name}",
-            f"fast={self.use_fast_sampling}",
             f"rel={self.reliability_threshold}",
             f"frac={self.fraction_active_threshold}",
             f"bins={self.num_bins}",
@@ -82,7 +78,6 @@ class StimSpaceConfig(AnalysisConfigBase):
         model = StimSpaceSubspace(
             registry,
             activity_parameters=ap,
-            use_fast_sampling=self.use_fast_sampling,
             reliability_threshold=self.reliability_threshold,
             fraction_active_threshold=self.fraction_active_threshold,
         )
