@@ -47,11 +47,6 @@ class StimSpaceConfig(AnalysisConfigBase):
     num_bins: int = 100
     smooth_width: Optional[float] = None
     spks_type: SpksTypes = "sigrebase"
-
-    # from running the spks_type / directions combinations, this makes very small differences across the board.
-    # I'm using directions=True because that seems least noisy
-    directions_from_placefield_only: bool = True
-
     display_name: ClassVar[str] = "stimspace"
 
     @staticmethod
@@ -74,7 +69,6 @@ class StimSpaceConfig(AnalysisConfigBase):
             f"frac={self.fraction_active_threshold}",
             f"bins={self.num_bins}",
             f"smooth={self.smooth_width}",
-            f"dir_from_pf={self.directions_from_placefield_only}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -91,7 +85,6 @@ class StimSpaceConfig(AnalysisConfigBase):
             use_fast_sampling=self.use_fast_sampling,
             reliability_threshold=self.reliability_threshold,
             fraction_active_threshold=self.fraction_active_threshold,
-            directions_from_placefield_only=self.directions_from_placefield_only,
         )
         metrics = model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)
         cv_variance_scale = model.compute_cv_variance_scale(session, spks_type=self.spks_type, hyperparameters=hyps)

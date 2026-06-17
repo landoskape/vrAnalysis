@@ -27,7 +27,7 @@ use_full_param_grid = True
 STIMSPACE_CONFIGS: list[StimSpaceConfig] = [
     # Example overrides when use_full_param_grid is False:
     # StimSpaceConfig(smooth_width=5.0),
-    # StimSpaceConfig(smooth_width=None, directions_from_placefield_only=True),
+    # StimSpaceConfig(smooth_width=None),
 ]
 
 force_remake = False  # Recompute scores even when cache exists
@@ -52,7 +52,6 @@ def _build_model(cfg: StimSpaceConfig, registry: PopulationRegistry) -> StimSpac
         use_fast_sampling=cfg.use_fast_sampling,
         reliability_threshold=cfg.reliability_threshold,
         fraction_active_threshold=cfg.fraction_active_threshold,
-        directions_from_placefield_only=cfg.directions_from_placefield_only,
     )
 
 

@@ -110,7 +110,6 @@ class StimSpaceSubspace(SubspaceModel):
         use_fast_sampling: bool = True,
         reliability_threshold: Optional[float] = None,
         fraction_active_threshold: Optional[float] = None,
-        directions_from_placefield_only: bool = False,
     ) -> None:
         super().__init__(
             registry,
@@ -120,7 +119,6 @@ class StimSpaceSubspace(SubspaceModel):
         self.use_fast_sampling = use_fast_sampling
         self.reliability_threshold = reliability_threshold
         self.fraction_active_threshold = fraction_active_threshold
-        self.directions_from_placefield_only = directions_from_placefield_only
 
     def _fit_fold_specs(self, hyperparameters: PlaceFieldHyperparameters) -> list[StimSpaceFoldSpec]:
         """Fold definitions used during fit (includes train and all CV folds)."""
@@ -399,13 +397,7 @@ class StimSpaceSubspace(SubspaceModel):
         pf_pf_kernel = G_train.T @ cov_pf_test @ G_train  # (S, S)
         pf_full_kernel = G_train.T @ cov_data_test @ G_train  # (S, S)
         u_pf_full = torch.fliplr(_eigh_numpy(pf_full_kernel)[1])
-
-        if self.directions_from_placefield_only:
-            # Just learn directions via a single fold placefield covariance (SxS!)
-            u_pf_pf = torch.fliplr(_eigh_numpy(G_train.T @ G_train)[1])
-        else:
-            # Use symmetric placefield kernel of train / test / train
-            u_pf_pf = torch.fliplr(_eigh_numpy(pf_pf_kernel)[1])
+        u_pf_pf = torch.fliplr(_eigh_numpy(G_train.T @ G_train)[1])
 
         return Subspace(
             subspace_activity=pca_activity,
@@ -508,6 +500,26 @@ class StimSpaceSubspace(SubspaceModel):
             ``{"cv_variance_scale_placefields": torch.Tensor}`` averaged over
             all 3-of-4 draw combinations.
         """
+
+        def _compute_scores(stim_list_train, stim_list_test, data_list_reference):
+            num_draws = len(stim_list_train)
+            if num_draws != len(stim_list_test) or num_draws != len(data_list_reference):
+                raise ValueError("All lists must have the same number of draws.")
+            combo_scores = []
+            for i, j, k in itertools.combinations(range(num_draws), 3):
+                sf_cross_train = stim_list[i].T @ data_list[k]
+                sf_cross_test = stim_list[j].T @ data_list[k]
+                U_train, _, Vt_train = _svd_numpy(sf_cross_train)
+                score = torch.sum(U_train * (sf_cross_test @ Vt_train.T), dim=0)
+
+                # We normalize the SVD because I want it to be similar to PCA eigenvalues that we'd get from
+                # data @ data.T for example - where we'd divide by the number of timepoints - 1 to get a neuron x neuron covariance
+                # Here, we have stim.T @ data --- where we multiply through the neural dimension - but it's a way to recover a neuron
+                # x neuron covariance so that's how we normalize it! (It's compared to other neuron x neuron variances from other metrics).
+                norm = ((stim_list[i].shape[1] - 1) * (data_list[k].shape[1] - 1)) ** 0.5
+                combo_scores.append(score / norm)
+            return torch.mean(torch.stack(combo_scores, dim=0), dim=0)
+
         draw_splits: tuple["SplitName", ...] = ("train0", "train1", "validation", "test")
         draw_specs = [StimSpaceFoldSpec(f"draw{i}", split, hyperparameters.smooth_width) for i, split in enumerate(draw_splits)]
         folds, _ = self.get_processed_folds(session, spks_type, draw_specs, hyperparameters)
@@ -519,22 +531,21 @@ class StimSpaceSubspace(SubspaceModel):
         stim_list = [stim_list[i] - stim_list[i].mean(dim=1, keepdim=True) for i in range(4)]
         data_list = [data_list[i] - data_list[i].mean(dim=1, keepdim=True) for i in range(4)]
 
-        combo_scores = []
-        for i, j, k in itertools.combinations(range(4), 3):
-            sf_cross_train = stim_list[i].T @ data_list[k]
-            sf_cross_test = stim_list[j].T @ data_list[k]
-            U_train, _, Vt_train = _svd_numpy(sf_cross_train)
-            score = torch.sum(U_train * (sf_cross_test @ Vt_train.T), dim=0)
+        output = {
+            "cv_variance_scale_placefields": _compute_scores(stim_list, stim_list, data_list),
+        }
 
-            # We normalize the SVD because I want it to be similar to PCA eigenvalues that we'd get from
-            # data @ data.T for example - where we'd divide by the number of timepoints - 1 to get a neuron x neuron covariance
-            # Here, we have stim.T @ data --- where we multiply through the neural dimension - but it's a way to recover a neuron
-            # x neuron covariance so that's how we normalize it! (It's compared to other neuron x neuron variances from other metrics).
-            norm = ((stim_list[i].shape[1] - 1) * (data_list[k].shape[1] - 1)) ** 0.5
-            combo_scores.append(score / norm)
+        if hyperparameters.smooth_width is None:
+            return output
 
-        cv_variance_scale_placefields = torch.mean(torch.stack(combo_scores, dim=0), dim=0)
-        return {"cv_variance_scale_placefields": cv_variance_scale_placefields}
+        # if smooth width is not None, do the same thing but with no smoothing on the test fold
+        draw_specs_test = [StimSpaceFoldSpec(f"draw{i}", split, None) for i, split in enumerate(draw_splits)]
+        folds_test, _ = self.get_processed_folds(session, spks_type, draw_specs_test, hyperparameters)
+        stim_list_test = [folds_test.pf_matrices[f"draw{i}"] for i in range(4)]
+        stim_list_test = [stim_list_test[i] - stim_list_test[i].mean(dim=1, keepdim=True) for i in range(4)]
+
+        output["cv_variance_scale_placefields_raw_test"] = _compute_scores(stim_list, stim_list_test, data_list)
+        return output
 
     def _get_model_name(self) -> str:
         base = "stimspace_subspace"
@@ -544,6 +555,4 @@ class StimSpaceSubspace(SubspaceModel):
             base += f"_rel{self.reliability_threshold}"
         if self.fraction_active_threshold is not None:
             base += f"_frac{self.fraction_active_threshold}"
-        if self.directions_from_placefield_only:
-            base += "_dirFromPF"
         return base
