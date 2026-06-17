@@ -14,10 +14,22 @@ from .configs import (
     get_data_config,
     list_data_configs,
 )
-from .pipeline import ResultsAggregator, AnalysisConfigBase, AnalysisPlan, Job, JobQueue, ResultsStore, result_uid
+from .pipeline import (
+    ResultsAggregator,
+    AnalysisConfigBase,
+    AnalysisPlan,
+    Job,
+    JobQueue,
+    ResultsStore,
+    average_array_by_mouse,
+    average_by_mouse,
+    result_uid,
+)
 
 __all__ = [
     "ResultsAggregator",
+    "average_array_by_mouse",
+    "average_by_mouse",
     "AnalysisConfigBase",
     "CVPCAConfig",
     "DataConfig",
