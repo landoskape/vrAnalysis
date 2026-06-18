@@ -7,33 +7,43 @@ unless ``--save`` is passed.
 
 Usage
 -----
-    python -m dimensionality_manuscript.scripts.debug_errors \\
-        [--analyses subspace ...] [--param-filters key=value ...] \\
-        [--sessions UID1 UID2 ...] [--schema-version v5] \\
-        [--max-attempts N] [--by-config | --by-session] \\
+    python -m dimensionality_manuscript.scripts.debug_errors
+        [--analyses subspace ...] [--param-filters key=value ...]
+        [--sessions UID1 UID2 ...] [--sessions-file path.json] [--schema-version v5]
+        [--max-attempts N] [--by-config | --by-session]
         [--save] [--full-traceback]
 
 Examples
 --------
     # Try one error from covcov_crossvalidated_subspace with raw activity params
-    python -m dimensionality_manuscript.scripts.debug_errors \\
-        --analyses subspace \\
-        --param-filters subspace_name=covcov_crossvalidated_subspace activity_parameters_name=raw \\
-        --max-attempts 1
+    python -m dimensionality_manuscript.scripts.debug_errors --analyses subspace --param-filters subspace_name=covcov_crossvalidated_subspace activity_parameters_name=raw --max-attempts 1
 
     # Same, but iterate session-by-session and save successes back to the store
-    python -m dimensionality_manuscript.scripts.debug_errors \\
-        --analyses subspace --by-session --save
+    python -m dimensionality_manuscript.scripts.debug_errors --analyses subspace --by-session --save
+
+    # On Myriad (no pyodbc/Access available), use the exported session list instead
+    # of the vrSessions database — same file used by sge_submit.py / sge_worker.py,
+    # see MYRIAD_SETUP.md (default location ~/vrAnalysis/sessions.json):
+    python -m dimensionality_manuscript.scripts.debug_errors --sessions-file ~/vrAnalysis/sessions.json --analyses subspace
+
+    # --sessions-file falls back to $DIM_MANUSCRIPT_SESSIONS_FILE if not passed explicitly
 """
 
 import argparse
+import os
 import traceback as _traceback
 from collections import defaultdict
+from pathlib import Path
 
 from dimensionality_manuscript.registry import PopulationRegistry, RegistryPaths
 from dimensionality_manuscript import ResultsStore
 from dimensionality_manuscript.pipeline.store import _analysis_config_classes
-from dimensionality_manuscript.scripts.run import build_analysis_configs, collect_sessions, _parse_param_filters
+from dimensionality_manuscript.scripts.run import (
+    build_analysis_configs,
+    collect_sessions,
+    collect_sessions_from_file,
+    _parse_param_filters,
+)
 
 REGISTRY_PATHS = RegistryPaths()
 
@@ -63,6 +73,7 @@ def _reconstruct_jobs(
     param_filters: dict | None,
     sessions: list[str] | None,
     schema_version: str | None,
+    sessions_file: Path | None,
 ) -> list[tuple]:
     """Return list of (session, cfg, error_row) reconstructed from the error table."""
     analysis_types = _analysis_display_names(analyses)
@@ -74,7 +85,7 @@ def _reconstruct_jobs(
         return []
 
     config_classes = _analysis_config_classes()
-    all_sessions = collect_sessions()
+    all_sessions = collect_sessions_from_file(sessions_file) if sessions_file is not None else collect_sessions()
     uid_to_session = {s.session_uid: s for s in all_sessions}
 
     jobs = []
@@ -131,6 +142,7 @@ def debug_errors(
     by_session: bool = False,
     save: bool = False,
     full_traceback: bool = False,
+    sessions_file: Path | None = None,
 ):
     """Re-run recorded errors and report pass/fail with tracebacks.
 
@@ -152,11 +164,14 @@ def debug_errors(
         If True, write successful results back to the store and clear the error row.
     full_traceback : bool
         If True, print the full traceback immediately on each failure (in addition to the summary table).
+    sessions_file : Path or None
+        JSON file produced by ``export_sessions.py`` to use instead of the vrSessions Access
+        database (e.g. on systems like Myriad where ``pyodbc``/Access is unavailable).
     """
     db_path = REGISTRY_PATHS.pipeline_v2_db_path
     store = ResultsStore(db_path)
 
-    jobs = _reconstruct_jobs(store, analyses, param_filters, sessions, schema_version)
+    jobs = _reconstruct_jobs(store, analyses, param_filters, sessions, schema_version, sessions_file)
     if not jobs:
         print("No matching errors found.")
         return
@@ -222,6 +237,12 @@ def main():
         help="Filter reconstructed configs by fixed param values, e.g. --param-filters subspace_name=covcov_subspace",
     )
     parser.add_argument("--sessions", nargs="+", default=None, help="Session uids to restrict to. Default: all sessions with matching errors")
+    parser.add_argument(
+        "--sessions-file",
+        type=Path,
+        default=None,
+        help="JSON file from export_sessions.py to use instead of the vrSessions Access database (e.g. on Myriad)",
+    )
     parser.add_argument("--schema-version", default=None, help="Filter errors by schema_version")
     parser.add_argument("--max-attempts", type=int, default=None, help="Stop after attempting this many (session, config) pairs")
     order_group = parser.add_mutually_exclusive_group()
@@ -230,6 +251,12 @@ def main():
     parser.add_argument("--save", action="store_true", help="Write successful results back to the store and clear the error row")
     parser.add_argument("--full-traceback", action="store_true", help="Print full traceback immediately on each failure")
     args = parser.parse_args()
+
+    sessions_file = args.sessions_file
+    if sessions_file is None:
+        env_val = os.environ.get("DIM_MANUSCRIPT_SESSIONS_FILE")
+        if env_val:
+            sessions_file = Path(env_val)
 
     debug_errors(
         analyses=args.analyses,
@@ -240,6 +267,7 @@ def main():
         by_session=args.by_session,
         save=args.save,
         full_traceback=args.full_traceback,
+        sessions_file=sessions_file,
     )
 
 
