@@ -37,7 +37,7 @@ class StimSpaceConfig(AnalysisConfigBase):
         Spike type to use.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     data_config_name: str = "even"
 
     activity_parameters_name: str = "raw"

@@ -46,7 +46,7 @@ class SubspaceConfig(AnalysisConfigBase):
         Gaussian smoothing width for place fields. None means no smoothing.
     """
 
-    schema_version: str = "v5"
+    schema_version: str = "v6"
     data_config_name: str = "even"
 
     subspace_name: SubspaceName = "covcov_subspace"
@@ -89,12 +89,17 @@ class SubspaceConfig(AnalysisConfigBase):
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> None:
         """Measure subspace on this session."""
+        keep_components = 1000
         ap = get_activity_parameters(self.activity_parameters_name)
         model = get_subspace(self.subspace_name, registry, centered=True, activity_parameters=ap)
         hyps = PlaceFieldHyperparameters(num_bins=self.num_bins, smooth_width=self.smooth_width)
         subspace = model.fit(session, spks_type=self.spks_type, hyperparameters=hyps)
         score = model.get_score(session, spks_type=self.spks_type, hyperparameters=hyps)
-        cross = subspace.subspace_activity.get_components().T @ subspace.subspace_placefields.get_components()
+        full_components = subspace.subspace_activity.get_components()
+        full_components = full_components[:, :keep_components]
+        full_placefields = subspace.subspace_placefields.get_components()
+        full_placefields = full_placefields[:, :keep_components]
+        cross = full_components.T @ full_placefields
         # Add this to the score dict so the store aggregate pipeline can pull it out and save all elements
         score["cross"] = cross
         return score

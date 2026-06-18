@@ -510,7 +510,7 @@ class StimSpaceSubspace(SubspaceModel):
             combo_scores = []
             for i, j, k in itertools.combinations(range(num_draws), 3):
                 sf_cross_train = stim_list[i].T @ data_list[k]
-                sf_cross_test = stim_list[j].T @ data_list[k]
+                sf_cross_test = stim_list_test[j].T @ data_list[k]
                 U_train, _, Vt_train = _svd_numpy(sf_cross_train)
                 score = torch.sum(U_train * (sf_cross_test @ Vt_train.T), dim=0)
 
