@@ -397,7 +397,7 @@ class ResultsStore:
         analysis_type: str | None = None,
         param_filters: dict[str, Any] | None = None,
     ) -> int:
-        """Delete results matching the given filters (combined with AND).
+        """Delete results and matching errors for the given filters (combined with AND).
 
         Parameters
         ----------
@@ -501,6 +501,15 @@ class ResultsStore:
             rows = conn.execute(sql, plan.params).fetchall()
         return [dict(zip(_COLUMN_NAMES, row)) for row in rows]
 
+    def errors_matching_invalidate_plan(self, plan: InvalidatePlan) -> list[dict]:
+        """Return error rows that :meth:`invalidate` would remove."""
+        if plan.where == "0":
+            return []
+        sql = f"SELECT * FROM errors WHERE {plan.where}"
+        with self._connect() as conn:
+            rows = conn.execute(sql, plan.params).fetchall()
+        return [dict(zip(_ERROR_COLUMN_NAMES, row)) for row in rows]
+
     def blob_paths_for_invalidate_plan(self, plan: InvalidatePlan) -> list[tuple[str, Path, bool, int | None]]:
         """Return ``(result_uid, path, exists, size_bytes)`` for each row in the plan."""
         out: list[tuple[str, Path, bool, int | None]] = []
@@ -568,21 +577,23 @@ class ResultsStore:
         )
 
     def _execute_invalidate_plan(self, plan: InvalidatePlan) -> int:
-        """Delete rows and blobs described by ``plan``."""
+        """Delete result rows, matching error rows, and blobs described by ``plan``."""
         if plan.where == "0":
             return 0
         uids = [row["result_uid"] for row in self.rows_matching_invalidate_plan(plan)]
         with self._connect() as conn:
             conn.execute(f"DELETE FROM results WHERE {plan.where}", plan.params)
+            conn.execute(f"DELETE FROM errors WHERE {plan.where}", plan.params)
         for uid in uids:
             self._blob_path(uid).unlink(missing_ok=True)
             self._blob_cache.pop(uid, None)
         return len(uids)
 
     def invalidate_all(self):
-        """Delete all results and their blob files."""
+        """Delete all results, errors, and result blob files."""
         with self._connect() as conn:
             conn.execute("DELETE FROM results")
+            conn.execute("DELETE FROM errors")
         for p in self._blob_dir.glob("*.pkl"):
             p.unlink(missing_ok=True)
         self._blob_cache.clear()

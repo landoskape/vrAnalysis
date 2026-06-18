@@ -115,9 +115,11 @@ def print_dry_run(
             print(f"    sample: {sorted(keys_without_rows)[:5]}")
 
     rows = store.rows_matching_invalidate_plan(plan)
+    error_rows = store.errors_matching_invalidate_plan(plan)
     blobs = store.blob_paths_for_invalidate_plan(plan)
     print()
     print(f"Rows to DELETE from results table: {len(rows)}")
+    print(f"Rows to DELETE from errors table: {len(error_rows)}")
     blob_exists = sum(1 for _, _, exists, _ in blobs if exists)
     blob_missing = len(blobs) - blob_exists
     stored_flag = sum(1 for r in rows if r.get("result_stored"))
@@ -128,8 +130,14 @@ def print_dry_run(
     if total_bytes:
         print(f"  blob bytes on disk: {total_bytes:,} ({total_bytes / 1e6:.2f} MB)")
 
-    if not rows:
+    if not rows and not error_rows:
         print("\nNo matching rows.")
+        return
+
+    if not rows:
+        print("\nNo matching result rows.")
+        if error_rows:
+            print(f"({len(error_rows)} matching error row(s) would still be deleted.)")
         return
 
     df = pd.DataFrame(rows)

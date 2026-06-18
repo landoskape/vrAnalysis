@@ -40,12 +40,14 @@ def _filter_args_present(args: argparse.Namespace) -> bool:
 def _print_invalidate_all_preview(store: ResultsStore) -> None:
     """Print what :meth:`ResultsStore.invalidate_all` would remove."""
     rows = store.summary_table()
+    errors = store.get_errors()
     blob_dir = store._blob_dir
     blobs = list(blob_dir.glob("*.pkl")) if blob_dir.exists() else []
     total_bytes = sum(p.stat().st_size for p in blobs)
     print("=== Invalidate ALL preview (no changes made) ===")
     print(f"Database: {store.db_path}")
     print(f"Rows to DELETE from results table: {len(rows)}")
+    print(f"Rows to DELETE from errors table: {len(errors)}")
     print(f"Blob .pkl files on disk: {len(blobs)}")
     if total_bytes:
         print(f"Blob bytes on disk: {total_bytes:,} ({total_bytes / 1e6:.2f} MB)")
@@ -130,11 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.execute:
             print("\nDry run — pass --execute to delete everything.")
             return 0
-        if not _confirm("Delete ALL results and blob files?", assume_yes=args.yes):
+        if not _confirm("Delete ALL results, errors, and blob files?", assume_yes=args.yes):
             print("Aborted.")
             return 1
         store.invalidate_all()
-        print("Deleted all results and blobs.")
+        print("Deleted all results, errors, and blobs.")
         return 0
 
     param_filters = parse_param_filters(args.param_filters) if args.param_filters else None
@@ -154,16 +156,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     n_rows = len(store.rows_matching_invalidate_plan(plan))
-    if n_rows == 0:
+    n_errors = len(store.errors_matching_invalidate_plan(plan))
+    if n_rows == 0 and n_errors == 0:
         print("\nNothing to delete.")
         return 0
 
-    if not _confirm(f"Delete {n_rows} result row(s) and associated blobs?", assume_yes=args.yes):
+    parts = []
+    if n_rows:
+        parts.append(f"{n_rows} result row(s)")
+    if n_errors:
+        parts.append(f"{n_errors} error row(s)")
+    if n_rows:
+        parts.append("associated blobs")
+    if not _confirm(f"Delete {', '.join(parts)}?", assume_yes=args.yes):
         print("Aborted.")
         return 1
 
     n = _execute_plan(store, plan)
-    print(f"\nDeleted {n} result row(s).")
+    deleted = [f"{n} result row(s)"]
+    if n_errors:
+        deleted.append(f"{n_errors} error row(s)")
+    print(f"\nDeleted {', '.join(deleted)}.")
     return 0
 
 

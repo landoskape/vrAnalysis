@@ -276,9 +276,37 @@ def test_store_invalidate_all():
         store = ResultsStore(pathlib.Path(td) / "test.db")
         store.put("s1", CVPCAConfig(), {"a": 1})
         store.put("s2", CVPCAConfig(), {"b": 2})
+        store.put_error("s1", CVPCAConfig(), "failed")
         store.invalidate_all()
         assert len(store.summary_table()) == 0
+        assert len(store.get_errors()) == 0
         assert list(store._blob_dir.glob("*.pkl")) == []
+
+
+def test_store_invalidate_clears_matching_errors():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        cvpca = CVPCAConfig()
+        regression = RegressionConfig()
+        sid = "test_session"
+        store.put_error(sid, cvpca, "cvpca failed")
+        store.put(sid, regression, {"score": 1})
+
+        store.invalidate(analysis_type="cvpca")
+        assert not store.has_error(sid, cvpca)
+        assert store.has(sid, regression)
+
+
+def test_store_invalidate_clears_errors_without_results():
+    with tempfile.TemporaryDirectory() as td:
+        store = ResultsStore(pathlib.Path(td) / "test.db")
+        cvpca = CVPCAConfig()
+        sid = "test_session"
+        store.put_error(sid, cvpca, "cvpca failed only")
+
+        n = store.invalidate(analysis_type="cvpca")
+        assert n == 0
+        assert not store.has_error(sid, cvpca)
 
 
 def test_plan_invalidate_param_filters_matches_delete():
