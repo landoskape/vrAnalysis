@@ -301,7 +301,7 @@ class SubspaceModel(ABC):
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
-        test_split: Optional["SplitName"] = "test",
+        test_split: Optional["SplitName"] = "not_train",
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
         force_remake: bool = False,
     ) -> dict[str, float]:
@@ -316,7 +316,7 @@ class SubspaceModel(ABC):
         train_split : Optional["SplitName"]
             The split to use for training. Default is "train".
         test_split : Optional["SplitName"]
-            The split to use for testing. Default is "test".
+            The split to use for testing. Default is "not_train".
         hyperparameters : PlaceFieldHyperparameters
             The hyperparameters to use for fitting and scoring.
         force_remake : bool
@@ -337,7 +337,7 @@ class SubspaceModel(ABC):
         session: B2Session,
         spks_type: Optional[SpksTypes] = None,
         train_split: Optional["SplitName"] = "train",
-        test_split: Optional["SplitName"] = "test",
+        test_split: Optional["SplitName"] = "not_train",
         hyperparameters: PlaceFieldHyperparameters = PlaceFieldHyperparameters(),
     ) -> bool:
         """Check if the score for the model exists in the score cache.
@@ -351,7 +351,7 @@ class SubspaceModel(ABC):
         train_split : Optional["SplitName"]
             The split to use for training. Default is "train".
         test_split : Optional["SplitName"]
-            The split to use for testing. Default is "test".
+            The split to use for testing. Default is "not_train".
         hyperparameters : PlaceFieldHyperparameters
             The hyperparameters to check for.
 
