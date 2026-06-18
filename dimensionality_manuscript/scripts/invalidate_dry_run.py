@@ -9,9 +9,6 @@ Usage
     python -m dimensionality_manuscript.scripts.invalidate_dry_run --schema-version v2 --analysis-type stimspace
 
     python -m dimensionality_manuscript.scripts.invalidate_dry_run --param-filters '{"activity_parameters_name": "raw"}' --analysis-type regression --schema-version v2
-
-    # Print every matching row (default is summary + sample)
-    python -m dimensionality_manuscript.scripts.invalidate_dry_run ... --full
 """
 
 from __future__ import annotations
@@ -19,10 +16,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
-
-import pandas as pd
 
 from dimensionality_manuscript.pipeline.store import InvalidatePlan, ResultsStore
 from dimensionality_manuscript.registry import RegistryPaths
@@ -86,9 +82,6 @@ def _coerce_filter_value(value: str) -> Any:
 def print_dry_run(
     store: ResultsStore,
     plan: InvalidatePlan,
-    *,
-    full: bool = False,
-    sample_rows: int = 20,
 ) -> None:
     """Print what :meth:`ResultsStore.invalidate` would remove."""
     print("=== Invalidate dry run (no changes made) ===")
@@ -100,19 +93,14 @@ def print_dry_run(
         print(f"schema_version: {plan.schema_version!r}")
     if plan.param_filters:
         print(f"param_filters: {plan.param_filters}")
-    print(f"SQL WHERE: {plan.where}")
-    print(f"SQL params ({len(plan.params)}): {list(plan.params)[:8]}{'...' if len(plan.params) > 8 else ''}")
 
     if plan.mode == "param_filters":
         print(f"Config variations from current class: {plan.config_variation_count}")
         print(f"Distinct analysis_key values in plan: {len(plan.analysis_keys)}")
-        if plan.analysis_keys:
-            print(f"  sample keys: {list(plan.analysis_keys[:5])}")
         keys_with_rows = {row["analysis_key"] for row in store.rows_matching_invalidate_plan(plan)}
         keys_without_rows = set(plan.analysis_keys) - keys_with_rows
         if keys_without_rows:
-            print(f"  analysis_keys in plan with NO rows in store: {len(keys_without_rows)}")
-            print(f"    sample: {sorted(keys_without_rows)[:5]}")
+            print(f"Analysis keys in plan with no stored results: {len(keys_without_rows)}")
 
     rows = store.rows_matching_invalidate_plan(plan)
     error_rows = store.errors_matching_invalidate_plan(plan)
@@ -134,48 +122,18 @@ def print_dry_run(
         print("\nNo matching rows.")
         return
 
-    if not rows:
-        print("\nNo matching result rows.")
-        if error_rows:
-            print(f"({len(error_rows)} matching error row(s) would still be deleted.)")
-        return
-
-    df = pd.DataFrame(rows)
-    print()
-    if full:
-        with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", 200):
-            print("--- Matching rows ---")
-            print(df.to_string(index=False))
-    else:
-        print("--- Summary by analysis_key ---")
-        by_key = df.groupby("analysis_key", dropna=False).agg(
-            n_rows=("result_uid", "size"),
-            sessions=("session_id", "nunique"),
-            analysis_summary=("analysis_summary", "first"),
-        )
-        with pd.option_context("display.max_rows", 50, "display.width", 200):
-            print(by_key.to_string())
-        if len(df) > sample_rows:
-            print(f"\n--- First {sample_rows} rows (use --full for all) ---")
-        else:
-            print("\n--- Matching rows ---")
-        cols = ["result_uid", "session_id", "analysis_key", "analysis_summary", "result_stored", "computed_at"]
-        with pd.option_context("display.max_rows", sample_rows, "display.width", 200):
-            print(df[cols].head(sample_rows).to_string(index=False))
-
-    print()
-    print("--- Blobs that would be unlinked ---")
-    blob_lines = []
-    for uid, path, exists, size in blobs[:sample_rows] if not full else blobs:
-        if exists and size is not None:
-            blob_lines.append(f"  {uid}  {path}  ({size:,} bytes)")
-        elif exists:
-            blob_lines.append(f"  {uid}  {path}  (exists)")
-        else:
-            blob_lines.append(f"  {uid}  {path}  (missing)")
-    print("\n".join(blob_lines))
-    if not full and len(blobs) > sample_rows:
-        print(f"  ... and {len(blobs) - sample_rows} more (use --full)")
+    if rows:
+        print()
+        print("--- By config ---")
+        by_summary = Counter(r.get("analysis_summary") or "" for r in rows)
+        for summary, n in by_summary.most_common():
+            print(f"  {n:>5}  {summary}")
+    elif error_rows:
+        print()
+        print("--- By config (errors only) ---")
+        by_summary = Counter(r.get("analysis_summary") or "" for r in error_rows)
+        for summary, n in by_summary.most_common():
+            print(f"  {n:>5}  {summary}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,13 +159,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Single 16-char analysis_key (instead of constructing analysis_cfg)",
     )
-    parser.add_argument("--full", action="store_true", help="Print every matching row and blob path")
-    parser.add_argument(
-        "--sample-rows",
-        type=int,
-        default=20,
-        help="Max rows to print when not using --full (default: 20)",
-    )
     return parser
 
 
@@ -232,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         param_filters=param_filters,
         analysis_key=args.analysis_key,
     )
-    print_dry_run(store, plan, full=args.full, sample_rows=args.sample_rows)
+    print_dry_run(store, plan)
     return 0
 
 

@@ -87,13 +87,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Single 16-char analysis_key (instead of constructing analysis_cfg)",
     )
-    parser.add_argument("--full", action="store_true", help="Print every matching row and blob path")
-    parser.add_argument(
-        "--sample-rows",
-        type=int,
-        default=20,
-        help="Max rows to print when not using --full (default: 20)",
-    )
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -149,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         param_filters=param_filters,
         analysis_key=args.analysis_key,
     )
-    print_dry_run(store, plan, full=args.full, sample_rows=args.sample_rows)
+    print_dry_run(store, plan)
 
     if not args.execute:
         print("\nDry run — pass --execute to delete.")

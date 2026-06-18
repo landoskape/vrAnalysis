@@ -26,6 +26,10 @@ Examples
 
     # Limit to specific analysis types (same keys as run.py --analyses)
     python -m dimensionality_manuscript.scripts.status --analyses cvpca regression
+
+    # List each config (like --show-errors) instead of grouping by analysis_type
+    python -m dimensionality_manuscript.scripts.status --by-config
+    python -m dimensionality_manuscript.scripts.status --analyses subspace --by-config
 """
 
 import argparse
@@ -94,10 +98,39 @@ def print_error_summary(
                 print(f"           {n}x  {msg}")
 
 
+def print_result_config_summary(df: pd.DataFrame) -> None:
+    """Print stored results grouped by (analysis_type, analysis_summary).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Filtered results metadata from :meth:`ResultsStore.summary_table`.
+    """
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in df.to_dict("records"):
+        key = (row.get("analysis_type") or "", row.get("analysis_summary") or "")
+        groups[key].append(row)
+
+    n_sessions_total = df["session_id"].nunique()
+    print(
+        f"Results: {len(df)} total | {len(groups)} unique configs | "
+        f"{n_sessions_total} sessions\n"
+    )
+
+    for i, ((atype, summary), rows) in enumerate(
+        sorted(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1]))),
+        1,
+    ):
+        n_sessions = len({r["session_id"] for r in rows})
+        schema = rows[0].get("schema_version") or ""
+        print(f"  [{i:>3}] {atype} {schema} | {summary} | {len(rows)} rows | {n_sessions} sessions")
+
+
 def status(
     full: bool = False,
     group_by: list[str] | None = None,
     analyses: list[str] | None = None,
+    by_config: bool = False,
     show_errors: bool = False,
     include_error_types: bool = False,
     clear_errors: bool = False,
@@ -116,6 +149,9 @@ def status(
     analyses : list of str or None
         Analysis config keys to include (same as ``run.py --analyses``).
         None = all.
+    by_config : bool
+        If True, list each config (``analysis_summary``) instead of grouping
+        by ``analysis_type`` and ``schema_version``.
     show_errors : bool
         If True, also print a summary of recorded errors.
     include_error_types : bool
@@ -151,6 +187,8 @@ def status(
         if full:
             with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", 200):
                 print(df.to_string(index=False))
+        elif by_config:
+            print_result_config_summary(df)
         else:
             if group_by is None:
                 group_by = ["analysis_type", "schema_version"]
@@ -202,6 +240,11 @@ def main():
         help="Which analysis configs to include (same keys as run.py --analyses). Default: all.",
     )
     parser.add_argument("--group-by", nargs="+", default=None, help="Columns to group by (default: analysis_type schema_version)")
+    parser.add_argument(
+        "--by-config",
+        action="store_true",
+        help="List each config (analysis_summary) instead of grouping by analysis_type",
+    )
     parser.add_argument("--show-errors", action="store_true", help="Summarise recorded errors grouped by config")
     parser.add_argument("--include-error-types", action="store_true", help="With --show-errors, print unique error messages per config group")
     parser.add_argument(
@@ -217,6 +260,7 @@ def main():
         full=args.full,
         group_by=args.group_by,
         analyses=args.analyses,
+        by_config=args.by_config,
         show_errors=args.show_errors,
         include_error_types=args.include_error_types,
         clear_errors=args.clear_errors,
