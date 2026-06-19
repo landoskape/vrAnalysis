@@ -1,4 +1,5 @@
 from typing import Optional
+import numpy as np
 import torch
 from sklearn.decomposition import randomized_svd
 
@@ -78,8 +79,11 @@ class SVCA:
             self.U, self.S, self.V = self._truncated_svd(gram_matrix)
         else:
             try:
-                self.U, self.S, self.V = torch.svd(gram_matrix.clone(), some=True, compute_uv=True)
-            except RuntimeError:
+                U, S, Vt = np.linalg.svd(gram_matrix.numpy(), full_matrices=False)
+                self.U = torch.tensor(U, dtype=gram_matrix.dtype)
+                self.S = torch.tensor(S, dtype=gram_matrix.dtype)
+                self.V = torch.tensor(Vt.T, dtype=gram_matrix.dtype)
+            except np.linalg.LinAlgError:
                 print("SVD did not converge. Trying randomized SVD instead.")
                 self.U, self.S, self.V = self._truncated_svd(gram_matrix)
 
