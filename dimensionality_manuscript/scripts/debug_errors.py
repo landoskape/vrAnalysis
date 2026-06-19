@@ -203,7 +203,9 @@ def debug_errors(
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
             trace = _traceback.format_exc()
-            print(f"  FAILED: {msg}")
+            last_frame = _traceback.extract_tb(e.__traceback__)[-1]
+            location = f"{Path(last_frame.filename).name}:{last_frame.lineno} in {last_frame.name}"
+            print(f"  FAILED: {msg}\n    at {location}")
             if full_traceback:
                 print(trace)
             failures.append(
@@ -212,6 +214,7 @@ def debug_errors(
                     summary=cfg.summary(),
                     key=cfg.key(),
                     message=msg,
+                    location=location,
                     traceback=trace,
                 )
             )
@@ -222,7 +225,7 @@ def debug_errors(
     if failures:
         print("Failure summary:")
         for f in failures:
-            print(f"  {f['session_uid']} | {f['summary']} | key={f['key']} | {f['message']}")
+            print(f"  {f['session_uid']} | {f['summary']} | key={f['key']} | {f['message']} | at {f['location']}")
             if full_traceback:
                 print(f["traceback"])
 

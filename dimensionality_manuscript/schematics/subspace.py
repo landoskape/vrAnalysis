@@ -449,8 +449,6 @@ class StimNuisanceCombined2D:
     stim_amplitude: float = 1.0
     stim_orth_amplitude: float = 0.0
     noise_amplitude: float = 0.1
-    example_nuisance_angle: float = 0.0
-    example_nuisance_amplitude: float = 1.0
     nuisance_orth_amplitude: float = 0.0
     n_angle: int = 8
     n_amplitude: int = 8
@@ -467,11 +465,12 @@ class StimNuisanceCombined2D:
 def plot_stim_nuisance_combined_2D(
     cfg: StimNuisanceCombined2D,
     ax: tuple[plt.Axes, ...],
-    stim_color: str = "black",
+    stim_color: str = "orange",
+    nuisance_color: str = "black",
     angle_cmap_name: str = "hsv",
     amplitude_cmap_name: str = "gist_heat",
-    example_angle_idx: int | None = None,
-    example_amplitude_idx: int | None = None,
+    example_angle_idx: int = 0,
+    example_amplitude_idx: int = 0,
     arrow_width: float = 0.15,
     schematic_linewidth: float = 1.0,
     schematic_min_amplitude: float = 0.0,
@@ -497,13 +496,14 @@ def plot_stim_nuisance_combined_2D(
         ax_angle     — SVR vs relative nuisance angle (clockwise from stim, 0–180°)
         ax_heatmap   — SVR grid (relative angle × amplitude); only when include_grid=True
     stim_color : str
+    nuisance_color : str
     angle_cmap_name : str
         Colormap for angle-sweep arcs and SVR curve.
     amplitude_cmap_name : str
         Colormap for amplitude-sweep arrows and SVR curve.
-    example_angle_idx : int or None
-        Index into angle sweep to highlight; auto-computed if None.
-    example_amplitude_idx : int or None
+    example_angle_idx : int
+        Index into angle sweep to highlight.
+    example_amplitude_idx : int
         Index into amplitude sweep to highlight; auto-computed if None.
     arrow_width, schematic_linewidth : float
     schematic_min_amplitude : float
@@ -530,20 +530,10 @@ def plot_stim_nuisance_combined_2D(
     cov_noise = cfg.noise_amplitude * np.eye(2)
 
     # --- Build sweep arrays ---
-    angle_vals = np.linspace(0, np.pi, cfg.n_angle, endpoint=False)
-    amplitude_vals = np.linspace(cfg.min_amplitude, cfg.max_amplitude, cfg.n_amplitude)
-
-    # Clockwise distance from stim to each nuisance direction (in (0, π]); used by schematic + plots
     stim_angle_rad = float(np.arctan2(v_s[1], v_s[0]))
-    cw_dists = np.array([(stim_angle_rad - a) % np.pi for a in angle_vals])
-    # In covariance space 0° and 180° are identical; represent the 0-distance as π
-    cw_dists = np.where(cw_dists < 1e-9, np.pi, cw_dists)
-
-    # Auto-select example indices (nearest to cfg.example_nuisance_angle / amplitude)
-    if example_angle_idx is None:
-        example_angle_idx = int(np.argmin(np.abs(angle_vals - cfg.example_nuisance_angle)))
-    if example_amplitude_idx is None:
-        example_amplitude_idx = int(np.argmin(np.abs(amplitude_vals - cfg.example_nuisance_amplitude)))
+    angle_vals = stim_angle_rad + np.linspace(0, np.pi, cfg.n_angle, endpoint=False)
+    amplitude_vals = np.linspace(cfg.min_amplitude, cfg.max_amplitude, cfg.n_amplitude)
+    angle_vals_degrees = np.degrees(angle_vals)
 
     def _cov_nuisance(angle: float, amplitude: float) -> npt.NDArray[np.floating]:
         v_n = np.array([np.cos(angle), np.sin(angle)])
@@ -553,14 +543,14 @@ def plot_stim_nuisance_combined_2D(
     # SVR along angle sweep (amplitude fixed at cfg.example_nuisance_amplitude)
     svr_angle = []
     for a in angle_vals:
-        cov_n = _cov_nuisance(a, cfg.example_nuisance_amplitude)
+        cov_n = _cov_nuisance(a, amplitude_vals[example_amplitude_idx])
         svr_angle.append(_svr_2d(cov_stim, cov_stim + cov_n + cov_noise, mode=cfg.svr_mode))
     svr_angle = np.array(svr_angle)
 
     # SVR along amplitude sweep (angle fixed at cfg.example_nuisance_angle)
     svr_amplitude = []
     for amp in amplitude_vals:
-        cov_n = _cov_nuisance(cfg.example_nuisance_angle, amp)
+        cov_n = _cov_nuisance(angle_vals[example_angle_idx], amp)
         svr_amplitude.append(_svr_2d(cov_stim, cov_stim + cov_n + cov_noise, mode=cfg.svr_mode))
 
     # --- Colormaps ---
@@ -573,15 +563,10 @@ def plot_stim_nuisance_combined_2D(
     angle_colors = [angle_cmap((i / n_a + angle_offset) % 1.0) for i in range(cfg.n_angle)]
     amp_colors = [amp_cmap(v) for v in np.linspace(0, 0.9, cfg.n_amplitude)]
 
-    # Sort angle sweep by cw_dist (0 → π); needed by schematic insets and angle panel
-    rel_sort = np.argsort(cw_dists)
-    cw_deg_sorted = np.degrees(cw_dists[rel_sort])
-    svr_angle_sorted = svr_angle[rel_sort]
-
     example_nuisance_color = angle_colors[example_angle_idx]
 
     # --- Example nuisance covariance ---
-    cov_n_ex = _cov_nuisance(cfg.example_nuisance_angle, cfg.example_nuisance_amplitude)
+    cov_n_ex = _cov_nuisance(angle_vals[example_angle_idx], amplitude_vals[example_amplitude_idx])
 
     # --- Distribution panels setup ---
     samples_stim = np.random.multivariate_normal(np.zeros(2), cov_stim + cov_noise, size=cfg.n_samples)
@@ -598,9 +583,9 @@ def plot_stim_nuisance_combined_2D(
 
     # --- ax_combined: stim + example nuisance scatter, both ellipses ---
     ax_combined.scatter(samples_stim[:, 0], samples_stim[:, 1], alpha=point_alpha, s=point_size, color=stim_color)
-    ax_combined.scatter(samples_n[:, 0], samples_n[:, 1], alpha=point_alpha, s=point_size, color=example_nuisance_color)
+    ax_combined.scatter(samples_n[:, 0], samples_n[:, 1], alpha=point_alpha, s=point_size, color=nuisance_color)
     ax_combined.plot(stim_ellipse[0], stim_ellipse[1], color=stim_color, linewidth=linewidth, label="stim")
-    ax_combined.plot(n_ellipse[0], n_ellipse[1], color=example_nuisance_color, linewidth=linewidth, label="nuisance")
+    ax_combined.plot(n_ellipse[0], n_ellipse[1], color=nuisance_color, linewidth=linewidth, label="nuisance")
     ax_combined.legend(frameon=True, loc="lower left", fontsize=fontsize)
     _set_dist_panel(ax_combined)
 
@@ -609,7 +594,7 @@ def plot_stim_nuisance_combined_2D(
     samples_full = np.random.multivariate_normal(np.zeros(2), cov_full_ex, size=cfg.n_samples)
     ax_full.scatter(samples_full[:, 0], samples_full[:, 1], alpha=point_alpha, s=point_size, color=stim_color, label="full data")
     ax_full.plot(stim_ellipse[0], stim_ellipse[1], color=stim_color, linewidth=linewidth, label="stim")
-    ax_full.plot(n_ellipse[0], n_ellipse[1], color=example_nuisance_color, linewidth=linewidth, label="nuisance")
+    ax_full.plot(n_ellipse[0], n_ellipse[1], color=nuisance_color, linewidth=linewidth, label="nuisance")
     ax_full.legend(frameon=True, loc="lower left", fontsize=fontsize)
     _set_dist_panel(ax_full)
 
@@ -649,7 +634,7 @@ def plot_stim_nuisance_combined_2D(
 
     arc_radius = cfg.stim_amplitude
 
-    v_n_amp = np.array([np.cos(cfg.example_nuisance_angle), np.sin(cfg.example_nuisance_angle)])
+    v_n_amp = np.array([np.cos(angle_vals[example_angle_idx]), np.sin(angle_vals[example_angle_idx])])
     for i in range(cfg.n_amplitude - 1, -1, -1):
         if amplitude_vals[i] < schematic_min_amplitude:
             continue
@@ -669,9 +654,9 @@ def plot_stim_nuisance_combined_2D(
             arrowprops=dict(arrowstyle="-|>", color=color, lw=schematic_linewidth, mutation_scale=arrow_width * 80),
         )
 
-    angle_draw_order = sorted(range(cfg.n_angle), key=lambda i: -cw_dists[i])
-    for i in angle_draw_order:
-        _draw_arc_arrow(ax_schematic, stim_angle_rad, stim_angle_rad - cw_dists[i], angle_colors[i])
+    angle_draw_order = [0] + list(range(cfg.n_angle - 1, 0, -1))
+    for idx, angle_idx in enumerate(angle_draw_order):
+        _draw_arc_arrow(ax_schematic, stim_angle_rad, angle_vals[angle_idx], angle_colors[idx])
 
     _draw_bidirectional_arrow(ax_schematic, v_s[0] * arc_radius, v_s[1] * arc_radius, stim_color)
     ax_schematic.set_xlim(-schematic_max_lim, schematic_max_lim)
@@ -688,7 +673,7 @@ def plot_stim_nuisance_combined_2D(
     ax_amp_ins.tick_params(axis="x", labelsize=_ifs)
 
     ax_ang_ins = ax_schematic.inset_axes([0.56, 0.00, 0.42, 0.04])
-    ax_ang_ins.imshow(np.array([angle_colors[i] for i in rel_sort]).reshape(1, -1, 4), aspect="auto")
+    ax_ang_ins.imshow(np.array(angle_colors).reshape(1, -1, 4), aspect="auto")
     ax_ang_ins.set_xticks([])
     ax_ang_ins.set_yticks([])
     ax_ang_ins.set_title("Angle", fontsize=_ifs)
@@ -707,15 +692,15 @@ def plot_stim_nuisance_combined_2D(
     ax_amplitude.plot(amplitude_vals, svr_amplitude, color="gray", linewidth=linewidth, zorder=1)
     for i in range(cfg.n_amplitude):
         ax_amplitude.scatter(amplitude_vals[i], svr_amplitude[i], color=amp_colors[i], s=point_size * 4, zorder=2)
-    ax_amplitude.scatter(
-        amplitude_vals[example_amplitude_idx],
-        svr_amplitude[example_amplitude_idx],
-        color=example_nuisance_color,
-        s=point_size * 8,
-        zorder=3,
-        edgecolors=stim_color,
-        linewidths=linewidth,
-    )
+    # ax_amplitude.scatter(
+    #     amplitude_vals[example_amplitude_idx],
+    #     svr_amplitude[example_amplitude_idx],
+    #     color=example_nuisance_color,
+    #     s=point_size * 8,
+    #     zorder=3,
+    #     edgecolors=stim_color,
+    #     linewidths=linewidth,
+    # )
     ax_amplitude.set_xlabel("Nuisance amplitude")
     ax_amplitude.set_ylabel("SVR")
     xlims = (0, cfg.max_amplitude * 1.1)
@@ -736,21 +721,20 @@ def plot_stim_nuisance_combined_2D(
 
     # --- ax_angle: SVR vs relative (clockwise) angle from stim ---
     # Parallel-to-stim point sits at 180°; % 180 wraps it to 0°
-    cw_deg_plot = cw_deg_sorted % 180
-    _plot_order = np.argsort(cw_deg_plot)
-    ax_angle.plot(cw_deg_plot[_plot_order], svr_angle_sorted[_plot_order], color="gray", linewidth=linewidth, zorder=1)
-    for k, i in enumerate(rel_sort):
-        ax_angle.scatter(cw_deg_plot[k], svr_angle_sorted[k], color=angle_colors[i], s=point_size * 4, zorder=2)
-    ax_angle.scatter(
-        cw_deg_plot[example_angle_idx],
-        svr_angle_sorted[example_angle_idx],
-        color=example_nuisance_color,
-        s=point_size * 8,
-        zorder=3,
-        edgecolors=stim_color,
-        linewidths=linewidth,
-    )
-    ex_cw_deg = float(np.degrees(cw_dists[example_angle_idx]))
+    relative_angles_degrees = angle_vals_degrees - stim_angle_rad * 180 / np.pi
+    ax_angle.plot(relative_angles_degrees, svr_angle, color="gray", linewidth=linewidth, zorder=1)
+    for idx, angle_idx in enumerate(angle_draw_order):
+        ax_angle.scatter(relative_angles_degrees[angle_idx], svr_angle[angle_idx], color=angle_colors[idx], s=point_size * 4, zorder=2)
+    # ax_angle.scatter(
+    #     relative_angles_degrees[example_angle_idx],
+    #     svr_angle[example_angle_idx],
+    #     color=example_nuisance_color,
+    #     s=point_size * 8,
+    #     zorder=3,
+    #     edgecolors=stim_color,
+    #     linewidths=linewidth,
+    # )
+    ex_angle_deg = float(relative_angles_degrees[example_angle_idx])
     ax_angle.set_xlabel("Relative nuisance angle (°)")
     ax_angle.set_xlim(0 - 180 * x_padding, 180 + 180 * x_padding)
     ax_angle.set_ylim(0, 1)
@@ -773,21 +757,19 @@ def plot_stim_nuisance_combined_2D(
                 cov_n = _cov_nuisance(a, amp)
                 svr_grid[ai, ampi] = _svr_2d(cov_stim, cov_stim + cov_n + cov_noise, mode=cfg.svr_mode)
 
-        # Reorder rows so y-axis = relative angle increasing from 0
-        svr_grid_sorted = svr_grid[rel_sort, :]
-        max_cw_deg = float(cw_deg_sorted[-1])
+        max_angle_deg = float(angle_vals_degrees[-1])
         im = ax_heatmap.imshow(
-            svr_grid_sorted,
+            svr_grid,
             origin="lower",
             aspect="auto",
-            extent=[amplitude_vals[0], amplitude_vals[-1], 0, max_cw_deg],
+            extent=[amplitude_vals[0], amplitude_vals[-1], 0, max_angle_deg],
             vmin=0,
             vmax=1,
             cmap="viridis",
         )
         ax_heatmap.scatter(
-            cfg.example_nuisance_amplitude,
-            ex_cw_deg,
+            amplitude_vals[example_amplitude_idx],
+            ex_angle_deg,
             marker="x",
             color="white",
             s=point_size * 8,

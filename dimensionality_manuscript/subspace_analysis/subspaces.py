@@ -9,6 +9,17 @@ def _cov_or_gram(X: torch.Tensor, centered: bool) -> torch.Tensor:
     return X @ X.T / (X.shape[1] - 1)
 
 
+def _assert_finite(tensor: torch.Tensor, name: str, session: "B2Session") -> None:
+    """Raise with session/tensor context the moment a NaN or Inf first appears."""
+    if not torch.isfinite(tensor).all():
+        n_nan = torch.isnan(tensor).sum().item()
+        n_inf = torch.isinf(tensor).sum().item()
+        raise ValueError(
+            f"{name} contains non-finite values for session {session.session_uid} "
+            f"(nan={n_nan}, inf={n_inf}, shape={tuple(tensor.shape)})"
+        )
+
+
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield
 from dimilibi import PCA, SVCA
@@ -375,6 +386,8 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             split1 = "train1"
             train0_data, frame_behavior_train0, num_neurons = self.get_session_data(session, spks_type, split0, use_cell_split=False)
             train1_data, _, _ = self.get_session_data(session, spks_type, split1, use_cell_split=False)
+            _assert_finite(train0_data, "train0_data (raw sigrebase)", session)
+            _assert_finite(train1_data, "train1_data (raw sigrebase)", session)
 
         else:
             # If any other split name or not split_train, we just divide the samples in half randomly
@@ -417,8 +430,12 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
         components1 = pca_activity1.get_components()
         eigenvalues0 = torch.clamp_min(pca_activity0.get_eigenvalues(), 0.0)
         eigenvalues1 = torch.clamp_min(pca_activity1.get_eigenvalues(), 0.0)
+        _assert_finite(eigenvalues0, "eigenvalues0 (PCA on activity split 0)", session)
+        _assert_finite(eigenvalues1, "eigenvalues1 (PCA on activity split 1)", session)
         root_cov_activity0 = components0 @ torch.diag(torch.sqrt(eigenvalues0)) @ components0.T
         root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
+        _assert_finite(root_cov_activity0, "root_cov_activity0", session)
+        _assert_finite(root_cov_activity1, "root_cov_activity1", session)
 
         # Get the root covariance matrices for place fields in the first half split
         pca_placefields0 = PCA(num_components=num_components, center=self.centered).fit(placefield0_extended)
@@ -455,6 +472,8 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
             split1 = "test"
             test0_data, frame_behavior_test0, num_neurons = self.get_session_data(session, spks_type, split0, use_cell_split=False)
             test1_data, frame_behavior_test1, _ = self.get_session_data(session, spks_type, split1, use_cell_split=False)
+            _assert_finite(test0_data, "test0_data (raw sigrebase)", session)
+            _assert_finite(test1_data, "test1_data (raw sigrebase)", session)
 
         else:
             # If any other split name or not split_train, we just divide the samples in half randomly
@@ -511,8 +530,12 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
         components1 = pca_activity1.get_components()
         eigenvalues0 = torch.clamp_min(pca_activity0.get_eigenvalues(), 0.0)
         eigenvalues1 = torch.clamp_min(pca_activity1.get_eigenvalues(), 0.0)
+        _assert_finite(eigenvalues0, "eigenvalues0 (PCA on activity split 0)", session)
+        _assert_finite(eigenvalues1, "eigenvalues1 (PCA on activity split 1)", session)
         root_cov_activity0 = components0 @ torch.diag(torch.sqrt(eigenvalues0)) @ components0.T
         root_cov_activity1 = components1 @ torch.diag(torch.sqrt(eigenvalues1)) @ components1.T
+        _assert_finite(root_cov_activity0, "root_cov_activity0", session)
+        _assert_finite(root_cov_activity1, "root_cov_activity1", session)
 
         # Get the root covariance matrices for place fields in each split
         pca_placefields0 = PCA(num_components=num_components, center=self.centered).fit(placefield0_extended)

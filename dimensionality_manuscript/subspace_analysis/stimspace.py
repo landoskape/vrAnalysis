@@ -523,13 +523,23 @@ class StimSpaceSubspace(SubspaceModel):
             return torch.mean(torch.stack(combo_scores, dim=0), dim=0)
 
         draw_splits: tuple["SplitName", ...] = ("train0", "train1", "validation", "test")
-        draw_specs = [StimSpaceFoldSpec(f"draw{i}", split, hyperparameters.smooth_width) for i, split in enumerate(draw_splits)]
-        folds, _ = self.get_processed_folds(session, spks_type, draw_specs, hyperparameters)
+        smoothed_specs = [StimSpaceFoldSpec(f"draw{i}", split, hyperparameters.smooth_width) for i, split in enumerate(draw_splits)]
+
+        if hyperparameters.smooth_width is None:
+            folds, _ = self.get_processed_folds(session, spks_type, smoothed_specs, hyperparameters)
+            stim_list = [folds.pf_matrices[f"draw{i}"] for i in range(4)]
+            data_list = [folds.activity[f"draw{i}"] for i in range(4)]
+            stim_list = [stim_list[i] - stim_list[i].mean(dim=1, keepdim=True) for i in range(4)]
+            data_list = [data_list[i] - data_list[i].mean(dim=1, keepdim=True) for i in range(4)]
+            return {"cv_variance_scale_placefields": _compute_scores(stim_list, stim_list, data_list)}
+
+        # Fetch smoothed and raw (unsmoothed) draws in one call so the NaN-based
+        # position filter intersects validity across both, keeping bin counts aligned.
+        raw_specs = [StimSpaceFoldSpec(f"draw{i}_raw", split, None) for i, split in enumerate(draw_splits)]
+        folds, _ = self.get_processed_folds(session, spks_type, smoothed_specs + raw_specs, hyperparameters)
 
         stim_list = [folds.pf_matrices[f"draw{i}"] for i in range(4)]
         data_list = [folds.activity[f"draw{i}"] for i in range(4)]
-
-        # And center them so each neurons mean is 0
         stim_list = [stim_list[i] - stim_list[i].mean(dim=1, keepdim=True) for i in range(4)]
         data_list = [data_list[i] - data_list[i].mean(dim=1, keepdim=True) for i in range(4)]
 
@@ -537,13 +547,7 @@ class StimSpaceSubspace(SubspaceModel):
             "cv_variance_scale_placefields": _compute_scores(stim_list, stim_list, data_list),
         }
 
-        if hyperparameters.smooth_width is None:
-            return output
-
-        # if smooth width is not None, do the same thing but with no smoothing on the test fold
-        draw_specs_test = [StimSpaceFoldSpec(f"draw{i}", split, None) for i, split in enumerate(draw_splits)]
-        folds_test, _ = self.get_processed_folds(session, spks_type, draw_specs_test, hyperparameters)
-        stim_list_test = [folds_test.pf_matrices[f"draw{i}"] for i in range(4)]
+        stim_list_test = [folds.pf_matrices[f"draw{i}_raw"] for i in range(4)]
         stim_list_test = [stim_list_test[i] - stim_list_test[i].mean(dim=1, keepdim=True) for i in range(4)]
 
         output["cv_variance_scale_placefields_raw_test"] = _compute_scores(stim_list, stim_list_test, data_list)
