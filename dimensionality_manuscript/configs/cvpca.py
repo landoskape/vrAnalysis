@@ -10,19 +10,13 @@ import torch
 from dimilibi import gaussian_filter
 from dimilibi.cvpca import CVPCA, RegularizedCVPCA
 from dimilibi.pca import PCA
-from ..registry import PopulationRegistry
+from ..registry import PopulationRegistry, get_activity_parameters
 from vrAnalysis.helpers import cross_validate_trials, reliability_loo, edge2center
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_placefield
 from vrAnalysis.sessions import B2Session
 
 from ..pipeline.base import AnalysisConfigBase
-
-
-def nanmax(tensor: torch.Tensor, dim: Optional[int] = None, keepdim: bool = False) -> torch.Tensor:
-    """Max ignoring NaNs by replacing them with dtype minimum."""
-    min_value = torch.finfo(tensor.dtype).min
-    return tensor.nan_to_num(min_value).max(dim=dim, keepdim=keepdim).values
 
 
 @dataclass(frozen=True)
@@ -33,28 +27,26 @@ class CVPCAConfig(AnalysisConfigBase):
     ----------
     center : bool
         Whether to center data before PCA.
-    normalize : bool
-        Whether to normalize placefields by max firing rate.
     use_fast_sampling : bool
         Whether to use fast sampling for placefield computation.
-    reliability_threshold : float or None
-        Minimum reliability for neuron inclusion.
-    fraction_active_threshold : float or None
-        Minimum fraction active for neuron inclusion.
+    activity_parameters_name : str
+        Name of the ``ActivityParameters`` preset used to prepare raw activity
+        (centering/scaling) before placefield computation.
+    reliability_fraction_active_thresholds : tuple of (float or None, float or None)
+        Minimum reliability and minimum fraction active for neuron inclusion.
     fixed_smooth_width : float
         Width for fixed Gaussian smoothing (cm).
     num_bins : int
         Number of spatial bins.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "default"
 
     center: bool = True
-    normalize: bool = True
     use_fast_sampling: bool = True
-    reliability_threshold: Optional[float] = None
-    fraction_active_threshold: Optional[float] = None
+    activity_parameters_name: str = "raw"
+    reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
     fixed_smooth_width: float = 5.0
     num_bins: int = 100
     use_spatial_eigenvectors: bool = False  # Whether to use spatial eigenvectors instead of neural eigenvectors
@@ -67,9 +59,8 @@ class CVPCAConfig(AnalysisConfigBase):
         return {
             "center": [True, False],
             "use_fast_sampling": [True, False],
-            "normalize": [True, False],
-            "reliability_threshold": [None, 0.2],
-            "fraction_active_threshold": [None, 0.05],
+            "activity_parameters_name": ["raw", "default"],
+            # "reliability_fraction_active_thresholds": [(None, None), (0.2, 0.05)],
             "use_spatial_eigenvectors": [False, True],
         }
 
@@ -77,10 +68,10 @@ class CVPCAConfig(AnalysisConfigBase):
         parts = [
             self.display_name,
             f"center={self.center}",
-            f"norm={self.normalize}",
+            f"ap={self.activity_parameters_name}",
             f"fast={self.use_fast_sampling}",
-            f"rel={self.reliability_threshold}",
-            f"frac={self.fraction_active_threshold}",
+            f"rel={self.reliability_fraction_active_thresholds[0]}",
+            f"frac={self.reliability_fraction_active_thresholds[1]}",
             f"smooth={self.fixed_smooth_width}",
             f"spatial_eig={self.use_spatial_eigenvectors}",
             f"bins={self.num_bins}",
@@ -104,21 +95,37 @@ class CVPCAConfig(AnalysisConfigBase):
         population, frame_behavior = registry.get_population(session)
 
         trial_folds = cross_validate_trials(session.trial_environment, [1, 1, 1])
-        data = np.array(population.data[population.idx_neurons][:, population.idx_samples]).T
+        ap = get_activity_parameters(self.activity_parameters_name)
+        scaled_data = population.apply_split(
+            population.data[population.idx_neurons][:, population.idx_samples],
+            time_idx=None,
+            prefiltered=True,
+            scale=ap.scale,
+            scale_type=ap.scale_type,
+            pre_split=ap.presplit,
+        )
+        data = np.array(scaled_data).T
+
+        reliability_threshold, fraction_active_threshold = self.reliability_fraction_active_thresholds
 
         # Filter neurons by reliability / fraction active
-        if self.reliability_threshold is not None or self.fraction_active_threshold is not None:
+        if reliability_threshold is not None or fraction_active_threshold is not None:
             _all_trials = get_placefield(
-                data, frame_behavior, dist_edges, average=False, use_fast_sampling=True, session=session
+                data,
+                frame_behavior,
+                dist_edges,
+                average=False,
+                use_fast_sampling=True,
+                session=session,
             ).filter_by_environment(best_env)
             _pf_data = np.transpose(_all_trials.placefield, (2, 0, 1))
 
             idx_keep = np.ones(_pf_data.shape[0], dtype=bool)
-            if self.reliability_threshold is not None:
+            if reliability_threshold is not None:
                 _reliable = reliability_loo(_pf_data)
-                idx_keep = idx_keep & (_reliable > self.reliability_threshold)
+                idx_keep = idx_keep & (_reliable > reliability_threshold)
 
-            if self.fraction_active_threshold is not None:
+            if fraction_active_threshold is not None:
                 _fraction_active = FractionActive.compute(
                     _pf_data,
                     activity_axis=2,
@@ -126,7 +133,7 @@ class CVPCAConfig(AnalysisConfigBase):
                     activity_method="rms",
                     fraction_method="participation",
                 )
-                idx_keep = idx_keep & (_fraction_active > self.fraction_active_threshold)
+                idx_keep = idx_keep & (_fraction_active > fraction_active_threshold)
 
             data = data[:, idx_keep]
 
@@ -154,12 +161,6 @@ class CVPCAConfig(AnalysisConfigBase):
                 raise ValueError(f"Non-sequential missing counts at locations: {bad_locations}")
             torch_pfs = [pf[:, good_idx] for pf in torch_pfs]
             dist_centers = dist_centers[good_idx]
-
-        # Normalize by max
-        if self.normalize:
-            _max_neuron = nanmax(torch.concatenate(torch_pfs, dim=1), dim=1, keepdim=True)
-            _max_neuron[_max_neuron == 0] = 1
-            torch_pfs = [pf / _max_neuron for pf in torch_pfs]
 
         if any(torch.any(torch.isnan(pf)) for pf in torch_pfs):
             raise ValueError("Some placefields have NaNs!")
