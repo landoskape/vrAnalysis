@@ -78,7 +78,7 @@ class SVCA:
             self.U, self.S, self.V = self._truncated_svd(gram_matrix)
         else:
             try:
-                self.U, self.S, self.V = torch.svd(gram_matrix, some=True, compute_uv=True)
+                self.U, self.S, self.V = torch.svd(gram_matrix.clone(), some=True, compute_uv=True)
             except RuntimeError:
                 print("SVD did not converge. Trying randomized SVD instead.")
                 self.U, self.S, self.V = self._truncated_svd(gram_matrix)
