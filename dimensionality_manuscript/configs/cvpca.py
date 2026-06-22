@@ -41,7 +41,7 @@ class CVPCAConfig(AnalysisConfigBase):
         Number of spatial bins.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
