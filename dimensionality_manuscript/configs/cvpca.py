@@ -14,9 +14,10 @@ from ..registry import PopulationRegistry, get_activity_parameters
 from vrAnalysis.helpers import cross_validate_trials, reliability_loo, edge2center
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_placefield
-from vrAnalysis.sessions import B2Session
+from vrAnalysis.sessions import B2Session, SpksTypes
 
 from ..pipeline.base import AnalysisConfigBase
+from .regression import VALID_SPKS_TYPES
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class CVPCAConfig(AnalysisConfigBase):
     schema_version: str = "v4"
     data_config_name: str = "default"
 
+    spks_type: SpksTypes = "sigrebase"
     center: bool = True
     use_fast_sampling: bool = True
     activity_parameters_name: str = "raw"
@@ -51,12 +53,14 @@ class CVPCAConfig(AnalysisConfigBase):
     num_bins: int = 100
     use_spatial_eigenvectors: bool = False  # Whether to use spatial eigenvectors instead of neural eigenvectors
 
+    max_missing_position_percentage: ClassVar[float] = 5.0  # since we have skip aware smoothing now, we can tolerate missing "middle" positions
     display_name: ClassVar[str] = "cvpca"
     _result_handling: ClassVar[dict[str, str]] = {"trial_folds": "skip", "smoothing_widths": "ragged", "saved_leg_covariances": "skip"}
 
     @staticmethod
     def _param_grid() -> dict:
         return {
+            "spks_type": list(VALID_SPKS_TYPES),
             "center": [True, False],
             "use_fast_sampling": [True, False],
             "activity_parameters_name": ["raw", "default"],
@@ -157,8 +161,9 @@ class CVPCAConfig(AnalysisConfigBase):
             bad_locations = [np.where(pf.count[best_env_idx] == 0)[0] for pf in placefields]
             bad_locations = np.unique(np.concatenate(bad_locations))
             good_idx = np.setdiff1d(np.arange(self.num_bins), bad_locations)
-            if not np.all(np.diff(good_idx) == 1):
-                raise ValueError(f"Non-sequential missing counts at locations: {bad_locations}")
+            max_missing_positions = int(self.num_bins * self.max_missing_position_percentage / 100)
+            if len(bad_locations) > max_missing_positions:
+                raise ValueError(f"Too many missing positions: {len(bad_locations)} > {max_missing_positions}")
             torch_pfs = [pf[:, good_idx] for pf in torch_pfs]
             dist_centers = dist_centers[good_idx]
 
