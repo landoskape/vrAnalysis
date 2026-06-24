@@ -25,6 +25,7 @@ from dimensionality_manuscript import (
     LocPredConfig,
     PFPredQualityConfig,
     RRRToExternalLatentsConfig,
+    TilburyFitConfig,
     ResultsStore,
 )
 
@@ -57,6 +58,7 @@ def build_analysis_configs(
         "locpred": LocPredConfig,
         "pfpred_quality": PFPredQualityConfig,
         "rrr_to_external_latents": RRRToExternalLatentsConfig,
+        "tilbury_fit": TilburyFitConfig,
     }
     if include is None:
         include = list(_mapping.keys())
