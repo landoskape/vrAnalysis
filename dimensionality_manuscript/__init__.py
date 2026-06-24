@@ -11,6 +11,7 @@ from .configs import (
     LocPredCrossVal,
     PFPredQualityConfig,
     RRRToExternalLatentsConfig,
+    TilburyFitConfig,
     get_data_config,
     list_data_configs,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "LocPredCrossVal",
     "PFPredQualityConfig",
     "RRRToExternalLatentsConfig",
+    "TilburyFitConfig",
     "get_data_config",
     "list_data_configs",
     "AnalysisPlan",

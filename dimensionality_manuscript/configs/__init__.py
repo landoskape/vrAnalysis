@@ -13,6 +13,7 @@ from .placefield_structure import (
     PlacefieldStructureFit,
     PlacefieldDataGenerator,
 )
+from .tilbury_fit import TilburyFitConfig
 
 __all__ = [
     "CVPCAConfig",
@@ -30,6 +31,7 @@ __all__ = [
     "PlacefieldStructureConfig",
     "PlacefieldStructureFit",
     "PlacefieldDataGenerator",
+    "TilburyFitConfig",
     "get_data_config",
     "list_data_configs",
 ]
