@@ -100,6 +100,7 @@ def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
         RegressionConfig,
         StimSpaceConfig,
         SubspaceConfig,
+        TilburyFitConfig,
     )
 
     classes = (
@@ -113,6 +114,7 @@ def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
         RegressionConfig,
         StimSpaceConfig,
         SubspaceConfig,
+        TilburyFitConfig,
     )
     return {cls.display_name: cls for cls in classes}
 
