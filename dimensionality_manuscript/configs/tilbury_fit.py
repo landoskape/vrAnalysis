@@ -447,6 +447,14 @@ class TilburyFitConfig(AnalysisConfigBase):
             "method": ["least_squares", "descent"],
         }
 
+    @property
+    def param_names_1peak(self) -> list[str]:
+        return _param_names(1)
+
+    @property
+    def param_names_2peak(self) -> list[str]:
+        return _param_names(2)
+
     def validate(self) -> None:
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
             raise ValueError(f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {list(ACTIVITY_PARAMETERS_NAMES)}")
@@ -463,6 +471,7 @@ class TilburyFitConfig(AnalysisConfigBase):
             f"bins={self.num_bins}",
             f"rel={rel}",
             f"frac={frac}",
+            f"method={self.method}",
             self.schema_version,
         ]
         return "_".join(parts)
