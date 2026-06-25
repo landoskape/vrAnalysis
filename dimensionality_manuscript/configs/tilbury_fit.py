@@ -428,7 +428,7 @@ class TilburyFitConfig(AnalysisConfigBase):
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
     num_bins: int = 100
-    reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (0.1, 0.05)
+    reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (0.3, 0.1)
     method: str = "descent"
 
     sigma_min: ClassVar[float] = 1.0
@@ -537,7 +537,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         verbose: bool = False,
         n_jobs: Optional[int] = None,
         method: Optional[str] = None,
-        device: str = "cuda",
+        device: Optional[str] = None,
         gd_num_steps: int = 4000,
         gd_learning_rate: float = 0.005,
     ) -> dict:
@@ -565,9 +565,11 @@ class TilburyFitConfig(AnalysisConfigBase):
             gradient descent fit over all neurons jointly. ``None`` (the default,
             used by the queue) resolves to ``"descent"`` when ``device="cuda"``
             and ``"least_squares"`` otherwise.
-        device : str
+        device : str or None
             Torch device for ``method="descent"`` (e.g. ``"cpu"``, ``"cuda"``).
-            Ignored when ``method="least_squares"``.
+            ``None`` (the default) auto-detects: ``"cuda"`` if
+            ``torch.cuda.is_available()`` else ``"cpu"``. Ignored when
+            ``method="least_squares"``.
         gd_num_steps : int
             Adam iterations for ``method="descent"``. Ignored otherwise.
         gd_learning_rate : float
@@ -576,6 +578,8 @@ class TilburyFitConfig(AnalysisConfigBase):
         method = method or self.method
         if method not in ("least_squares", "descent"):
             raise ValueError(f"Unknown method {method!r}. Expected 'least_squares' or 'descent'.")
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         if n_jobs is None:
             n_jobs = int(os.environ.get("NSLOTS", "0")) or 1
 
