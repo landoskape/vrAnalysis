@@ -503,14 +503,18 @@ class StimSpaceSubspace(SubspaceModel):
             all 3-of-4 draw combinations.
         """
 
-        def _compute_scores(stim_list_train, stim_list_test, data_list_reference):
+        def _compute_scores(stim_list_train, stim_list_test, data_list_reference, double_cross_val: bool = True):
             num_draws = len(stim_list_train)
             if num_draws != len(stim_list_test) or num_draws != len(data_list_reference):
                 raise ValueError("All lists must have the same number of draws.")
             combo_scores = []
             for i, j, k in itertools.combinations(range(num_draws), 3):
                 sf_cross_train = stim_list[i].T @ data_list[k]
-                sf_cross_test = stim_list_test[j].T @ data_list[k]
+                if double_cross_val:
+                    sf_cross_test = stim_list_test[j].T @ data_list[k]
+                else:
+                    sf_cross_test = stim_list[i].T @ data_list[k]
+
                 U_train, _, Vt_train = _svd_numpy(sf_cross_train)
                 score = torch.sum(U_train * (sf_cross_test @ Vt_train.T), dim=0)
 
@@ -531,7 +535,8 @@ class StimSpaceSubspace(SubspaceModel):
             data_list = [folds.activity[f"draw{i}"] for i in range(4)]
             stim_list = [stim_list[i] - stim_list[i].mean(dim=1, keepdim=True) for i in range(4)]
             data_list = [data_list[i] - data_list[i].mean(dim=1, keepdim=True) for i in range(4)]
-            return {"cv_variance_scale_placefields": _compute_scores(stim_list, stim_list, data_list)}
+            output = {"cv_variance_scale_placefields": _compute_scores(stim_list, stim_list, data_list)}
+            output["variance_scale_placefields"] = _compute_scores(stim_list, stim_list, data_list, double_cross_val=False)
 
         # Fetch smoothed and raw (unsmoothed) draws in one call so the NaN-based
         # position filter intersects validity across both, keeping bin counts aligned.
@@ -551,6 +556,7 @@ class StimSpaceSubspace(SubspaceModel):
         stim_list_test = [stim_list_test[i] - stim_list_test[i].mean(dim=1, keepdim=True) for i in range(4)]
 
         output["cv_variance_scale_placefields_raw_test"] = _compute_scores(stim_list, stim_list_test, data_list)
+        output["variance_scale_placefields_raw_test"] = _compute_scores(stim_list, stim_list_test, data_list, double_cross_val=False)
         return output
 
     def _get_model_name(self) -> str:
