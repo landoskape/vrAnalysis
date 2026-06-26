@@ -45,13 +45,11 @@ def backfill_summary(analyses: list[str] | None = None, dry_run: bool = False) -
 
         with store._connect() as conn:
             stale_results = conn.execute(
-                "SELECT result_uid, analysis_summary FROM results "
-                "WHERE analysis_key=? AND schema_version=? AND analysis_summary != ?",
+                "SELECT result_uid, analysis_summary FROM results " "WHERE analysis_key=? AND schema_version=? AND analysis_summary != ?",
                 (key, schema, new_summary),
             ).fetchall()
             stale_errors = conn.execute(
-                "SELECT result_uid, analysis_summary FROM errors "
-                "WHERE analysis_key=? AND schema_version=? AND analysis_summary != ?",
+                "SELECT result_uid, analysis_summary FROM errors " "WHERE analysis_key=? AND schema_version=? AND analysis_summary != ?",
                 (key, schema, new_summary),
             ).fetchall()
 
