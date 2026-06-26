@@ -20,8 +20,7 @@ def _assert_finite(tensor: torch.Tensor, name: str, session: "B2Session") -> Non
         n_nan = torch.isnan(tensor).sum().item()
         n_inf = torch.isinf(tensor).sum().item()
         raise ValueError(
-            f"{name} contains non-finite values for session {session.session_uid} "
-            f"(nan={n_nan}, inf={n_inf}, shape={tuple(tensor.shape)})"
+            f"{name} contains non-finite values for session {session.session_uid} " f"(nan={n_nan}, inf={n_inf}, shape={tuple(tensor.shape)})"
         )
 
 
@@ -456,11 +455,11 @@ class CovCovCrossvalidatedSubspace(SubspaceModel):
 
         # Measure SVD on activity vs activity or PFs vs activity
         if self.match_dimensions:
-            SVCA_activity = SVCA(centered=self.centered, num_components=num_components).fit(root_cov_activity0, root_cov_activity1)
-            SVCA_placefields = SVCA(centered=self.centered, num_components=num_components).fit(root_cov_placefields0, root_cov_activity1)
+            SVCA_activity = SVCA(centered=False, num_components=num_components).fit(root_cov_activity0, root_cov_activity1)
+            SVCA_placefields = SVCA(centered=False, num_components=num_components).fit(root_cov_placefields0, root_cov_activity1)
         else:
-            SVCA_activity = SVCA(centered=self.centered).fit(root_cov_activity0, root_cov_activity1)
-            SVCA_placefields = SVCA(centered=self.centered).fit(root_cov_placefields0, root_cov_activity1)
+            SVCA_activity = SVCA(centered=False).fit(root_cov_activity0, root_cov_activity1)
+            SVCA_placefields = SVCA(centered=False).fit(root_cov_placefields0, root_cov_activity1)
 
         return Subspace(
             subspace_activity=SVCA_activity,
