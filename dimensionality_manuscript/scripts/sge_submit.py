@@ -50,7 +50,7 @@ Submit on A100 (40G) GPU nodes, 1 GPU per worker:
         --gpu-type a100-40 --n-workers 4
 
 Interactive sessions (qrsh) — for manual testing outside the queue, e.g.
-trying ``TilburyFitConfig(...).process(..., method="descent", device="cuda")``
+trying ``TilburyFitConfig(...).process(..., device="cuda")``
 by hand before submitting a batch:
 
     # CPU, 1 core
