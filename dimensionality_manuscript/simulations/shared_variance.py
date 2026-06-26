@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Mapping, Optional
 import itertools
 
+import cvxpy as cp
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -96,31 +97,49 @@ class AtlasBuild:
     dtype: np.dtype
 
 
-MetricKind = Literal["kappa", "energy"]
+MetricKind = Literal["kappa", "energy", "energy_signed"]
 
 
 @dataclass(frozen=True)
 class ModeComparison:
     """Candidate vs reference mode vectors and scalar summaries."""
 
-    candidate_modes: npt.NDArray[np.floating]
-    reference_modes: npt.NDArray[np.floating]
+    candidate_modes: npt.NDArray[np.number]
+    reference_modes: npt.NDArray[np.number]
     ratio: float
-    cumulative_ratio: npt.NDArray[np.floating]
+    cumulative_ratio: npt.NDArray[np.number]
     metric: MetricKind
 
     @property
-    def candidate_variance_scale_modes(self) -> npt.NDArray[np.floating]:
-        """Variance-scale modes (sqrt energy); identity for kappa comparisons."""
+    def candidate_variance_scale_modes(self) -> npt.NDArray[np.number]:
+        """Variance-scale modes (sqrt energy); identity for kappa comparisons.
+
+        ``energy_signed`` modes may be negative (unbiased CV estimate dipping below
+        the noise floor) or complex (the asymmetric round-the-house kernel is not
+        guaranteed to have real eigenvalues); ``np.sign``/``np.abs`` both handle
+        complex input natively, so the sign/magnitude split stays meaningful without
+        any extra branching here.
+        """
         if self.metric == "energy":
             return np.sqrt(np.maximum(self.candidate_modes, 0.0))
+        if self.metric == "energy_signed":
+            return np.sign(self.candidate_modes) * np.sqrt(np.abs(self.candidate_modes))
         return self.candidate_modes
 
     @property
-    def reference_variance_scale_modes(self) -> npt.NDArray[np.floating]:
-        """Variance-scale modes (sqrt energy); identity for kappa comparisons."""
+    def reference_variance_scale_modes(self) -> npt.NDArray[np.number]:
+        """Variance-scale modes (sqrt energy); identity for kappa comparisons.
+
+        ``energy_signed`` modes may be negative (unbiased CV estimate dipping below
+        the noise floor) or complex (the asymmetric round-the-house kernel is not
+        guaranteed to have real eigenvalues); ``np.sign``/``np.abs`` both handle
+        complex input natively, so the sign/magnitude split stays meaningful without
+        any extra branching here.
+        """
         if self.metric == "energy":
             return np.sqrt(np.maximum(self.reference_modes, 0.0))
+        if self.metric == "energy_signed":
+            return np.sign(self.reference_modes) * np.sqrt(np.abs(self.reference_modes))
         return self.reference_modes
 
     def as_variance_scale(self) -> "ModeComparison":
@@ -161,6 +180,15 @@ class SubspaceGeometry:
     trace_reference: float
     trace_nuisance: Optional[float] = None
     trace_eps: Optional[float] = None
+    reference_no_private_noise_spectrum: Optional[npt.NDArray[np.floating]] = None
+
+
+@dataclass(frozen=True)
+class NeuronSplit:
+    """Source/target neuron index groups for round-the-house estimation."""
+
+    source_idx: npt.NDArray[np.integer]
+    target_idx: npt.NDArray[np.integer]
 
 
 @dataclass(frozen=True)
@@ -192,6 +220,9 @@ class EmpiricalBlock:
     cv_stimstim: Optional[ModeComparison] = None
     cv_variance_scale: Optional[ModeComparison] = None
     cv_rcvpca: Optional[CVPCAComparison] = None
+    roundhouse: Optional[ModeComparison] = None
+    roundhouse_sym: Optional[ModeComparison] = None
+    mtfa: Optional[ModeComparison] = None
 
 
 @dataclass(frozen=True)
@@ -248,6 +279,16 @@ def _cov(data: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
 
 def _symmetrize(A: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     return 0.5 * (A + A.T)
+
+
+def _mtfa_shrink(sigma: npt.NDArray[np.floating]) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    """Minimum-trace factor analysis: maximal private-variance diagonal s.t. Sigma - diag(d) is PSD."""
+    p = sigma.shape[0]
+    d = cp.Variable(p, nonneg=True)
+    prob = cp.Problem(cp.Maximize(cp.sum(d)), [sigma - cp.diag(d) >> 0])
+    prob.solve(solver=cp.SCS)
+    shared = sigma - np.diag(d.value)
+    return shared.astype(sigma.dtype, copy=False), d.value
 
 
 def _sorted_eigenvalues(A: npt.NDArray[np.floating], *, symmetrize: bool = True) -> npt.NDArray[np.floating]:
@@ -375,34 +416,41 @@ def _cv_kappa_fit_score(
     return np.diag(U.T @ root_A_test @ root_B_test @ Vt.T)
 
 
-def _ratio(candidate_modes: npt.NDArray[np.floating], reference_modes: npt.NDArray[np.floating]) -> float:
-    denom = float(np.sum(reference_modes))
+def _ratio(candidate_modes: npt.NDArray[np.number], reference_modes: npt.NDArray[np.number]) -> float:
+    """Sum-of-modes ratio. Eigenvalue sums of a real matrix are exactly real (trace), so the
+    full sum's imaginary part is float noise even when individual modes are complex; only the
+    aggregate, not the individual eigenvalues, is forced real here."""
+    denom = float(np.sum(reference_modes).real)
     if denom <= 0.0:
         return np.nan
-    return float(np.sum(candidate_modes) / denom)
+    return float(np.sum(candidate_modes).real / denom)
 
 
 def _cumulative_ratio(
-    candidate_modes: npt.NDArray[np.floating],
-    reference_modes: npt.NDArray[np.floating],
-) -> npt.NDArray[np.floating]:
+    candidate_modes: npt.NDArray[np.number],
+    reference_modes: npt.NDArray[np.number],
+) -> npt.NDArray[np.number]:
+    """Cumulative sum-of-modes ratio. Partial sums over a subset of eigenvalues (e.g. half of a
+    complex-conjugate pair) can be genuinely complex, so the result dtype follows the inputs;
+    only the where-mask (deciding where division is attempted) needs a real comparison."""
     n_modes = max(len(candidate_modes), len(reference_modes))
-    candidate = np.zeros(n_modes, dtype=float)
-    reference = np.zeros(n_modes, dtype=float)
+    dtype = complex if (np.iscomplexobj(candidate_modes) or np.iscomplexobj(reference_modes)) else float
+    candidate = np.zeros(n_modes, dtype=dtype)
+    reference = np.zeros(n_modes, dtype=dtype)
     candidate[: len(candidate_modes)] = candidate_modes
     reference[: len(reference_modes)] = reference_modes
     reference_cumulative = np.cumsum(reference)
     return np.divide(
         np.cumsum(candidate),
         reference_cumulative,
-        out=np.full(n_modes, np.nan, dtype=float),
-        where=reference_cumulative > 0.0,
+        out=np.full(n_modes, np.nan, dtype=dtype),
+        where=reference_cumulative.real > 0.0,
     )
 
 
 def _comparison(
-    candidate_modes: npt.NDArray[np.floating],
-    reference_modes: npt.NDArray[np.floating],
+    candidate_modes: npt.NDArray[np.number],
+    reference_modes: npt.NDArray[np.number],
     *,
     metric: MetricKind,
 ) -> ModeComparison:
@@ -422,12 +470,16 @@ def _build_geometry(
     *,
     trace_nuisance: Optional[float] = None,
     trace_eps: Optional[float] = None,
+    reference_no_private_noise_covariance: Optional[npt.NDArray[np.floating]] = None,
 ) -> SubspaceGeometry:
     """Eigenstructure and overlap diagnostics for a candidate/reference pair."""
     w_candidate, v_candidate = _sorted_eigenvalues_and_eigenvectors(candidate_covariance)
     w_reference, v_reference = _sorted_eigenvalues_and_eigenvectors(reference_covariance)
     reference_on_candidate = ((v_candidate.T @ v_reference) ** 2) @ w_reference
     candidate_on_reference = ((v_reference.T @ v_candidate) ** 2) @ w_candidate
+    reference_no_private_noise_spectrum = (
+        _sorted_eigenvalues(reference_no_private_noise_covariance) if reference_no_private_noise_covariance is not None else None
+    )
     return SubspaceGeometry(
         candidate_spectrum=w_candidate,
         reference_spectrum=w_reference,
@@ -440,6 +492,8 @@ def _build_geometry(
         trace_reference=float(np.trace(reference_covariance)),
         trace_nuisance=trace_nuisance,
         trace_eps=trace_eps,
+        
+        reference_no_private_noise_spectrum=reference_no_private_noise_spectrum,
     )
 
 
@@ -477,6 +531,93 @@ def _stimulus_balanced_folds(
             folds[ifold].extend(int(index) for index in split)
 
     return [np.array(sorted(fold), dtype=int) for fold in folds]
+
+
+def _neuron_split(num_neurons: int) -> NeuronSplit:
+    """Deterministic midpoint neuron split for round-the-house estimation."""
+    if num_neurons < 2:
+        raise ValueError(f"Need at least 2 neurons for round-the-house split, got {num_neurons}")
+    midpoint = num_neurons // 2
+    if midpoint == 0:
+        raise ValueError(f"Midpoint split leaves empty source group for num_neurons={num_neurons}")
+    return NeuronSplit(
+        source_idx=np.arange(midpoint, dtype=np.intp),
+        target_idx=np.arange(midpoint, num_neurons, dtype=np.intp),
+    )
+
+
+def _center_rows(matrix: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Per-neuron centering: each row has zero mean across columns (time/stimuli)."""
+    matrix = np.asarray(matrix)
+    return matrix - np.mean(matrix, axis=1, keepdims=True, dtype=matrix.dtype)
+
+
+def _roundhouse_kernel(
+    m00: npt.NDArray[np.floating],
+    m10: npt.NDArray[np.floating],
+    m11: npt.NDArray[np.floating],
+    m01: npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
+    """
+    Build the round-the-house kernel from four neuron/time blocks.
+
+    Parameters
+    ----------
+    m00, m10
+        Draw 0 blocks with shapes ``(N0, T0)`` and ``(N1, T0)``.
+    m11, m01
+        Draw 1 blocks with shapes ``(N1, T1)`` and ``(N0, T1)``.
+
+    Notes
+    -----
+    Each pair sharing a sample axis (m00/m10 over T0, m11/m01 over T1) is scaled
+    via ``_precov`` (center, divide by ``sqrt(n_samples - 1)``) so the resulting
+    cross-products are in covariance units, matching ``kappa_modes``/``energy_modes``
+    elsewhere in this module.
+    """
+    g00, g10 = _precov(m00), _precov(m10)
+    g11, g01 = _precov(m11), _precov(m01)
+    return g00 @ g10.T @ g11 @ g01.T
+
+
+def _roundhouse_modes(kernel: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Energy-scale modes from a round-the-house kernel (symmetrized, clipped nonnegative)."""
+    return np.maximum(_sorted_eigenvalues(kernel, symmetrize=True), 0.0)
+
+
+def _roundhouse_modes_asymmetric(kernel: npt.NDArray[np.floating]) -> npt.NDArray[np.number]:
+    """Signed, possibly-complex energy-scale modes from the literal (non-symmetrized)
+    round-the-house kernel.
+
+    The kernel is a product of two distinct cross-covariance blocks, so it isn't
+    symmetric by construction, and its eigenvalues are not guaranteed real. Both
+    negative and complex eigenvalues are kept as-is: they're expected outputs of
+    this asymmetric estimator (negative values reflect legitimate cross-validation
+    unbiasedness; complex-conjugate pairs reflect genuine 2D oscillatory structure
+    in the kernel), not numerical noise to be clipped, dropped, or guarded against.
+    """
+    return np.sort(np.linalg.eigvals(kernel))[::-1]
+
+
+def _roundhouse_modes_from_matrices(
+    split: NeuronSplit,
+    matrix00: npt.NDArray[np.floating],
+    matrix10: npt.NDArray[np.floating],
+    matrix11: npt.NDArray[np.floating],
+    matrix01: npt.NDArray[np.floating],
+    *,
+    symmetric: bool = True,
+) -> npt.NDArray[np.floating]:
+    """Slice full-neuron matrices into source/target groups and return roundhouse modes."""
+    source_idx = split.source_idx
+    target_idx = split.target_idx
+    kernel = _roundhouse_kernel(
+        matrix00[source_idx],
+        matrix10[target_idx],
+        matrix11[target_idx],
+        matrix01[source_idx],
+    )
+    return _roundhouse_modes(kernel) if symmetric else _roundhouse_modes_asymmetric(kernel)
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +674,7 @@ def _stim_full_population_block(gen: StimFullGenerator) -> tuple[PopulationBlock
         sigma_full,
         trace_nuisance=float(np.trace(sigma_nuisance)),
         trace_eps=float(np.trace(sigma_eps)),
+        reference_no_private_noise_covariance=sigma_stim + sigma_nuisance,
     )
     extras = {
         "stimulus_space_modes_match_covariance_modes": bool(
@@ -803,6 +945,149 @@ def _context_cv_kappa_result(
     return _comparison(candidate_kappa, reference_kappa, metric="kappa"), {}
 
 
+def _mtfa_kappa_comparison(
+    candidate_cov: npt.NDArray[np.floating],
+    reference_cov1: npt.NDArray[np.floating],
+    reference_cov2: npt.NDArray[np.floating],
+) -> ModeComparison:
+    """Kappa comparison between MTFA-shrunk (shared-only) covariances.
+
+    Candidate: shared(candidate) vs shared(reference draw 2).
+    Reference: shared(reference draw 1) vs shared(reference draw 2).
+    """
+    shared_candidate, _ = _mtfa_shrink(candidate_cov)
+    shared_reference1, _ = _mtfa_shrink(reference_cov1)
+    shared_reference2, _ = _mtfa_shrink(reference_cov2)
+
+    candidate_modes = kappa_modes(shared_candidate, shared_reference2)
+    reference_modes = kappa_modes(shared_reference1, shared_reference2)
+    return _comparison(candidate_modes, reference_modes, metric="kappa")
+
+
+def _stim_full_mtfa_result(
+    gen: "StimFullGenerator",
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+) -> tuple[ModeComparison, dict[str, Any]]:
+    """MTFA shared-only kappa for the stim-full pipeline: stim_means vs two independent full draws."""
+    data_stim, _, extras_stim = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_1, _, _ = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+    data_2, _, _ = gen.generate(num_samples, noise_variance=noise_variance, rng=rng, return_extras=True)
+
+    stim_means = _stimulus_means(data_stim, extras_stim["stim_indices"], gen.config.num_stimuli)
+
+    comparison = _mtfa_kappa_comparison(_cov(stim_means), _cov(data_1), _cov(data_2))
+    return comparison, {}
+
+
+def _context_mtfa_result(
+    gen,
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+) -> tuple[ModeComparison, dict[str, Any]]:
+    """MTFA shared-only kappa for the context-pair pipeline: candidate vs two independent reference draws."""
+    if isinstance(gen, CovariancePairGenerator):
+        candidate = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
+        reference_1 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        reference_2 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+    elif isinstance(gen, SharedSpaceGenerator):
+        candidate, reference_1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, reference_2 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+    else:
+        raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
+
+    comparison = _mtfa_kappa_comparison(_cov(candidate), _cov(reference_1), _cov(reference_2))
+    return comparison, {}
+
+
+def _stim_full_roundhouse_result(
+    gen,
+    split: NeuronSplit,
+    *,
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+    test_rotation_angle: float,
+) -> tuple[ModeComparison, ModeComparison]:
+    """
+    Empirical round-the-house energy comparison for the stim-full pipeline.
+
+    Reference uses raw data from two full draws; candidate replaces the first
+    cross-leg with per-stimulus means from draw 0 and keeps draw 1 full data
+    for the trail leg.
+
+    Returns the symmetrized comparison (clipped nonnegative, ``metric="energy"``)
+    and the asymmetric/signed comparison (unclipped, ``metric="energy_signed"``),
+    both built from the same draws so they're directly comparable.
+    """
+    data_ref0, _, extras0 = gen.generate(
+        num_samples,
+        noise_variance=noise_variance,
+        rng=rng,
+        return_extras=True,
+    )
+    data_ref1, _, _ = gen.generate(
+        num_samples,
+        noise_variance=noise_variance,
+        rotation_angle=test_rotation_angle,
+        rng=rng,
+        return_extras=True,
+    )
+    stim_means = _stimulus_means(data_ref0, extras0["stim_indices"], gen.config.num_stimuli)
+
+    reference_sym = _roundhouse_modes_from_matrices(split, data_ref0, data_ref0, data_ref1, data_ref1, symmetric=True)
+    candidate_sym = _roundhouse_modes_from_matrices(split, stim_means, stim_means, data_ref1, data_ref1, symmetric=True)
+    reference_asym = _roundhouse_modes_from_matrices(split, data_ref0, data_ref0, data_ref1, data_ref1, symmetric=False)
+    candidate_asym = _roundhouse_modes_from_matrices(split, stim_means, stim_means, data_ref1, data_ref1, symmetric=False)
+
+    return (
+        _comparison(candidate_sym, reference_sym, metric="energy"),
+        _comparison(candidate_asym, reference_asym, metric="energy_signed"),
+    )
+
+
+def _context_roundhouse_result(
+    gen,
+    split: NeuronSplit,
+    *,
+    num_samples: int,
+    rng: np.random.Generator,
+    noise_variance: float,
+) -> tuple[ModeComparison, ModeComparison]:
+    """
+    Empirical round-the-house energy comparison for the context-pair pipeline.
+
+    Reference uses two reference draws; candidate uses candidate draw 0 for
+    the lead leg and reference draw 1 for the trail leg.
+
+    Returns the symmetrized comparison (clipped nonnegative, ``metric="energy"``)
+    and the asymmetric/signed comparison (unclipped, ``metric="energy_signed"``),
+    both built from the same draws so they're directly comparable.
+    """
+    if isinstance(gen, CovariancePairGenerator):
+        ref0 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        ref1 = gen.generate(num_samples, which="reference", noise_variance=noise_variance, rng=rng)
+        cand0 = gen.generate(num_samples, which="candidate", noise_variance=noise_variance, rng=rng)
+    elif isinstance(gen, SharedSpaceGenerator):
+        _, ref0 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        _, ref1 = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+        cand0, _ = gen.generate(num_samples, noise_variance=noise_variance, rng=rng)
+    else:
+        raise TypeError(f"Unsupported context-pair generator type: {type(gen).__name__}")
+
+    reference_sym = _roundhouse_modes_from_matrices(split, ref0, ref0, ref1, ref1, symmetric=True)
+    candidate_sym = _roundhouse_modes_from_matrices(split, cand0, cand0, ref1, ref1, symmetric=True)
+    reference_asym = _roundhouse_modes_from_matrices(split, ref0, ref0, ref1, ref1, symmetric=False)
+    candidate_asym = _roundhouse_modes_from_matrices(split, cand0, cand0, ref1, ref1, symmetric=False)
+
+    return (
+        _comparison(candidate_sym, reference_sym, metric="energy"),
+        _comparison(candidate_asym, reference_asym, metric="energy_signed"),
+    )
+
+
 def _stim_full_empirical_result(
     gen: StimFullGenerator,
     num_samples: int,
@@ -941,6 +1226,8 @@ def _run_analysis(
     empirical: Optional[EmpiricalBlock] = None
     if num_samples is not None:
         rng = np.random.default_rng(sample_seed)
+        split = _neuron_split(gen.config.num_neurons)
+        extras["neuron_split"] = split
         if kind == "stim_full":
             empirical_kappa, cv_energy, diagnostics, emp_extras = _stim_full_empirical_result(
                 gen,
@@ -975,6 +1262,21 @@ def _run_analysis(
             if getattr(gen, "supports_rcvpca", False):
                 cv_rcvpca = _stim_full_rcvpca_result(gen, rng=rng, noise_variance=noise_variance)
 
+            roundhouse_sym, roundhouse = _stim_full_roundhouse_result(
+                gen,
+                split,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+                test_rotation_angle=test_rotation_angle,
+            )
+            mtfa, _ = _stim_full_mtfa_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+            )
+
             empirical = EmpiricalBlock(
                 kappa=empirical_kappa,
                 cv_energy=cv_energy,
@@ -982,6 +1284,9 @@ def _run_analysis(
                 cv_stimstim=cv_stimstim,
                 cv_variance_scale=cv_variance_scale,
                 cv_rcvpca=cv_rcvpca,
+                roundhouse=roundhouse,
+                roundhouse_sym=roundhouse_sym,
+                mtfa=mtfa,
                 diagnostics=diagnostics,
             )
 
@@ -998,9 +1303,25 @@ def _run_analysis(
                 rng=rng,
                 noise_variance=noise_variance,
             )
+            roundhouse_sym, roundhouse = _context_roundhouse_result(
+                gen,
+                split,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+            )
+            mtfa, _ = _context_mtfa_result(
+                gen,
+                num_samples=num_samples,
+                rng=rng,
+                noise_variance=noise_variance,
+            )
             empirical = EmpiricalBlock(
                 kappa=empirical.kappa,
                 cv_kappa=cv_kappa,
+                roundhouse=roundhouse,
+                roundhouse_sym=roundhouse_sym,
+                mtfa=mtfa,
                 diagnostics=empirical.diagnostics,
             )
         extras.update(emp_extras if kind == "stim_full" else {})
@@ -1492,6 +1813,7 @@ __all__ = [
     "EmpiricalBlock",
     "EmpiricalDiagnostics",
     "ModeComparison",
+    "NeuronSplit",
     "PlacefieldFullConfig",
     "PlacefieldFullGenerator",
     "PopulationBlock",

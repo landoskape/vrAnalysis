@@ -31,7 +31,7 @@ noise_variance=0.0 unless you are explicitly studying noise robustness.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional, Sequence
 from tqdm import tqdm
 
@@ -351,6 +351,73 @@ def run_param_sweep(
     )
 
 
+def run_manual_sweep(
+    configs: Sequence[AnyConfig],
+    *,
+    case_labels: Optional[Sequence[str]] = None,
+    n_seeds: int = 20,
+    num_samples: int,
+    noise_variance: float = 0.0,
+    test_rotation_angle: float = 0.0,
+    base_seed: int = 0,
+    dtype: npt.DTypeLike = np.float64,
+) -> SweepResults:
+    """Run a list of manually constructed configs (e.g. a parameter grid) through the sweep.
+
+    Each config's geometry-affecting fields are taken as given; only ``rng`` is replaced
+    per seed (via ``dataclasses.replace``) so geometry varies across seeds while every other
+    field stays fixed at what the caller specified.
+
+    Parameters
+    ----------
+    configs
+        Pre-built ``StimFullConfig`` / ``PlacefieldFullConfig`` instances, one per case.
+    case_labels
+        Label per config for ``SweepResults.case_labels``. Defaults to ``case_0, case_1, ...``.
+    n_seeds
+        Independent geometry realizations per config.
+    num_samples
+        Trial count passed to ``process()`` for empirical estimation.
+    noise_variance
+        Isotropic noise added to empirical draws only. See module docstring.
+    test_rotation_angle
+        Test-set rotation angle (stim-full pipeline only).
+    base_seed
+        Root for the SeedSequence that derives all geometry and sample seeds.
+    dtype
+        Floating dtype for generation.
+
+    Returns
+    -------
+    SweepResults
+        Ratio arrays of shape ``(len(configs), n_seeds)``.
+    """
+    _dtype = np.dtype(dtype)
+    if case_labels is None:
+        case_labels = [f"case_{i}" for i in range(len(configs))]
+    if len(case_labels) != len(configs):
+        raise ValueError(f"len(case_labels)={len(case_labels)} must equal len(configs)={len(configs)}")
+
+    def _make_factory(cfg: AnyConfig) -> ConfigFactory:
+        def factory(rng: np.random.Generator) -> AnyConfig:
+            return replace(cfg, rng=rng)
+
+        return factory
+
+    factories = [_make_factory(cfg) for cfg in configs]
+    return _run_factories(
+        factories=factories,
+        case_labels=list(case_labels),
+        n_seeds=n_seeds,
+        base_seed=base_seed,
+        num_samples=num_samples,
+        noise_variance=noise_variance,
+        test_rotation_angle=test_rotation_angle,
+        dtype=_dtype,
+        spec=None,
+    )
+
+
 __all__ = [
     "AnyConfig",
     "ConfigFactory",
@@ -358,4 +425,5 @@ __all__ = [
     "SweepResults",
     "run_named_sweep",
     "run_param_sweep",
+    "run_manual_sweep",
 ]

@@ -316,6 +316,9 @@ class PlacefieldFullConfig:
         downstream quantities (source, noises, covariances) live in normalized units. This is a
         deterministic normalizer (unlike the data-dependent max used in placefield_generator.py),
         chosen so the population covariances stay analytic.
+    rectify_noise: bool (default False)
+        If True, rectify per repeat noise using the field model config (clips to make it nonnegative
+        for the thresholded and Tilbury models)
     rcvpca_smooth_width : float or None
         Gaussian smoothing width (bins) for the rCVPCA fit repeat; None disables smoothing.
     rcvpca_center : bool
@@ -341,6 +344,7 @@ class PlacefieldFullConfig:
     # Some extra things
     noise_level: float = 0.3
     normalize: bool = False
+    rectify_noise: bool = False
     rcvpca_smooth_width: Optional[float] = 3.0
     rcvpca_center: bool = True
     rcvpca_num_components: Optional[int] = None
@@ -504,8 +508,10 @@ class PlacefieldFullGenerator:
                 noisy = noisy + np.sqrt(noise_variance) * rng.standard_normal((N, P)).astype(self.dtype, copy=False)
             noisy = noisy + nuisance_repeats[r]
 
-            repeat = field_model.rectify_repeat(noisy)
-            repeat_maps.append(repeat.astype(self.dtype, copy=False))
+            if self.config.rectify_noise:
+                noisy = field_model.rectify_repeat(noisy)
+
+            repeat_maps.append(noisy.astype(self.dtype, copy=False))
 
         data = np.concatenate(repeat_maps, axis=1)  # (N, R*P)
         stim_data = np.tile(self.source, (1, n_repeats))  # (N, R*P)
