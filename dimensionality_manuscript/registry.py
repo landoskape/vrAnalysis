@@ -890,7 +890,7 @@ def get_subspace(
     subspace_name: Literal["pca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    centered: bool = False,
+    centered: bool = True,
     activity_parameters: ActivityParameters | str = "raw",
 ) -> PCASubspace: ...
 
@@ -900,7 +900,7 @@ def get_subspace(
     subspace_name: Literal["covcov_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    centered: bool = False,
+    centered: bool = True,
     activity_parameters: ActivityParameters | str = "raw",
 ) -> CovCovSubspace: ...
 
@@ -910,7 +910,7 @@ def get_subspace(
     subspace_name: Literal["covcov_crossvalidated_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    centered: bool = False,
+    centered: bool = True,
     activity_parameters: ActivityParameters | str = "raw",
 ) -> CovCovCrossvalidatedSubspace: ...
 
@@ -920,7 +920,7 @@ def get_subspace(
     subspace_name: Literal["svca_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    centered: bool = False,
+    centered: bool = True,
     activity_parameters: ActivityParameters | str = "raw",
 ) -> SVCASubspace: ...
 
@@ -930,7 +930,7 @@ def get_subspace(
     subspace_name: Literal["stimspace_subspace"],
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    centered: bool = False,
+    centered: bool = True,
     activity_parameters: ActivityParameters | str = "raw",
 ) -> StimSpaceSubspace: ...
 
@@ -939,7 +939,7 @@ def get_subspace(
     subspace_name: SubspaceName,
     population_registry: PopulationRegistry,
     match_dimensions: bool = False,
-    centered: bool = False,
+    centered: bool = True,
     activity_parameters: ActivityParameters | str = "raw",
 ) -> SubspaceModel:
     """Get a subspace model object for a subspace name.
@@ -954,7 +954,7 @@ def get_subspace(
         Whether to match the dimensions of the activity and placefields. Default is False.
     centered : bool
         Whether to center data before the linear algebra step. Ignored for stimspace_subspace
-        (always centered). Default is False.
+        (always centered). Default is True.
     activity_parameters : ActivityParameters or str
         Controls data scaling. Pass an ``ActivityParameters`` instance or a registry name
         (``"raw"``, ``"default"``, ``"preserved"``). The ``center`` field is ignored;
