@@ -1,26 +1,19 @@
 """TilburyFitConfig — fit the Tilbury tuning law to each neuron's placefield.
 
 Implements the "AI-discovered tuning law" of Tilbury et al. (bioRxiv
-2025.11.12.688086): each tuning curve is modelled as a sum of up to two
-*asymmetric generalized-Gaussian* peaks.  For one neuron over positions
-``theta``::
+2025.11.12.688086): each tuning curve is modelled as a single *asymmetric
+generalized-Gaussian* peak.  For one neuron over positions ``theta``::
 
-    f(theta) = b + sum_i A_i * exp(-(|theta - phi_i| / sigma_i(theta))^p_i)
+    f(theta) = b + A * exp(-(|theta - phi| / sigma(theta))^p)
 
-where ``sigma_i(theta) = sigma_left_i`` when ``theta < phi_i`` and
-``sigma_right_i`` otherwise.  A single peak has 6 free parameters
-(``b, A, phi, sigma_left, sigma_right, p``); two peaks have 11.
-
-Unlike the orientation special case in the paper (shared width, fixed
-exponent 2, second peak pinned a half-period away), place fields on a linear
-track are not periodic, so the two peak centres are fitted independently.
+where ``sigma(theta) = sigma_left`` when ``theta < phi`` and ``sigma_right``
+otherwise, giving 6 free parameters (``b, A, phi, sigma_left, sigma_right, p``).
 
 Per session the trial-averaged placefield is built for the train, validation
 and test splits (``registry.time_split``), exactly as the rest of the
-manuscript pipeline does.  Each neuron is fitted *independently*: a 1-peak and
-a 2-peak model are least-squares-fitted on the **train** curve, the number of
-peaks is chosen by R^2 on the **validation** curve, and the reported quality is
-R^2 on the held-out **test** curve.
+manuscript pipeline does.  Each neuron is fitted *independently* on the
+**train** curve (batched Adam gradient descent); the reported quality is R^2
+on the held-out **test** curve.
 
 This mirrors the placefield extraction path of :mod:`configs.cvpca` and the
 split / activity-normalisation handling of :mod:`configs.placefield_structure`.
@@ -28,18 +21,12 @@ split / activity-normalisation handling of :mod:`configs.placefield_structure`.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import ClassVar, Optional
 
-import contextlib
-
-import joblib
 import numpy as np
 import numpy.typing as npt
 import torch
-from scipy.optimize import least_squares
-from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from vrAnalysis.helpers import edge2center, reliability_loo
@@ -59,30 +46,12 @@ from .regression import VALID_SPKS_TYPES
 _SPLITS = ("train", "validation", "test")
 
 
-@contextlib.contextmanager
-def _tqdm_joblib(tqdm_object: tqdm):
-    """Patch ``joblib`` so a tqdm bar advances as each task completes."""
-
-    class _TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
-        def __call__(self, *args, **kwargs):
-            tqdm_object.update(n=self.batch_size)
-            return super().__call__(*args, **kwargs)
-
-    old_callback = joblib.parallel.BatchCompletionCallBack
-    joblib.parallel.BatchCompletionCallBack = _TqdmBatchCompletionCallback
-    try:
-        yield tqdm_object
-    finally:
-        joblib.parallel.BatchCompletionCallBack = old_callback
-        tqdm_object.close()
-
-
 # ---------------------------------------------------------------------------
 # Tilbury generalized double-Gaussian math (one neuron at a time)
 # ---------------------------------------------------------------------------
 
 
-def _eval_tilbury(theta: npt.NDArray[np.floating], params: npt.NDArray[np.floating], n_peaks: int) -> npt.NDArray[np.floating]:
+def _eval_tilbury(theta: npt.NDArray[np.floating], params: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     """Evaluate the Tilbury tuning law on ``theta`` for a single neuron.
 
     Parameters
@@ -90,55 +59,32 @@ def _eval_tilbury(theta: npt.NDArray[np.floating], params: npt.NDArray[np.floati
     theta : np.ndarray
         Position bin centres, shape ``(P,)``.
     params : np.ndarray
-        Packed parameter vector of length ``1 + 5 * n_peaks`` laid out as
-        ``[b, A(k), phi(k), sigma_left(k), sigma_right(k), p(k)]``.
-    n_peaks : int
-        Number of peaks (1 or 2).
+        Packed parameter vector ``[b, A, phi, sigma_left, sigma_right, p]``.
 
     Returns
     -------
     np.ndarray
         Fitted curve, shape ``(P,)``.
     """
-    b, A, phi, sl, sr, p = _unpack(params, n_peaks)
-    diff = theta[None, :] - phi[:, None]  # (k, P)
-    sigma = np.where(diff < 0, sl[:, None], sr[:, None])  # (k, P)
-    bumps = A[:, None] * np.exp(-((np.abs(diff) / np.clip(sigma, 1e-6, None)) ** p[:, None]))
-    return b + bumps.sum(axis=0)
+    b, A, phi, sl, sr, p = _unpack(params)
+    diff = theta - phi
+    sigma = np.where(diff < 0, sl, sr)
+    ratio = np.abs(diff) / np.clip(sigma, 1e-6, None)
+    # ratio**p in log space, clamped before exponentiating back out: with p
+    # unbounded above (softplus, no ceiling) and ratio > 1 away from the peak,
+    # ratio**p can overflow past float range, and exp(-inf) * inf is nan.
+    log_pow = np.clip(p * np.log(np.clip(ratio, 1e-12, None)), None, 30.0)
+    return b + A * np.exp(-np.exp(log_pow))
 
 
-def _unpack(params: npt.NDArray[np.floating], n_peaks: int) -> tuple:
+def _unpack(params: npt.NDArray[np.floating]) -> tuple:
     """Split a packed parameter vector into ``(b, A, phi, sigma_left, sigma_right, p)``."""
-    k = n_peaks
-    b = params[0]
-    A = params[1 : 1 + k]
-    phi = params[1 + k : 1 + 2 * k]
-    sl = params[1 + 2 * k : 1 + 3 * k]
-    sr = params[1 + 3 * k : 1 + 4 * k]
-    p = params[1 + 4 * k : 1 + 5 * k]
-    return b, A, phi, sl, sr, p
+    return tuple(params)
 
 
-def _param_names(n_peaks: int) -> list[str]:
+def _param_names() -> list[str]:
     """Parameter names in the same order as ``_unpack`` packs them."""
-    k = n_peaks
-    return (
-        ["b"]
-        + [f"A{i + 1}" for i in range(k)]
-        + [f"phi{i + 1}" for i in range(k)]
-        + [f"sigma_left{i + 1}" for i in range(k)]
-        + [f"sigma_right{i + 1}" for i in range(k)]
-        + [f"p{i + 1}" for i in range(k)]
-    )
-
-
-def _sort_peaks_by_amplitude(params: npt.NDArray[np.floating], n_peaks: int) -> npt.NDArray[np.floating]:
-    """Reorder peaks so peak 1 always has the larger amplitude ``A``."""
-    if n_peaks < 2 or np.any(np.isnan(params)):
-        return params
-    b, A, phi, sl, sr, p = _unpack(params, n_peaks)
-    order = np.argsort(-A)
-    return np.concatenate([[b], A[order], phi[order], sl[order], sr[order], p[order]])
+    return ["b", "A", "phi", "sigma_left", "sigma_right", "p"]
 
 
 def _r2(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> float:
@@ -165,8 +111,6 @@ def _contour_sigma_p(
     sigma_fallback: float,
     sigma_min: float,
     sigma_max: float,
-    p_min: float,
-    p_max: float,
 ) -> tuple[float, Optional[float]]:
     """Estimate one side's width from contour radii at 50%/25% peak height.
 
@@ -199,25 +143,21 @@ def _contour_sigma_p(
     p_cand = np.log(2.0) / np.log(d_qtr / d_half)
     if not np.isfinite(p_cand) or p_cand <= 0:
         return sigma_fallback, None
-    p_cand = float(np.clip(p_cand, p_min, p_max))
     sigma = float(np.clip(d_half / (2.0 * np.log(2.0)) ** (1.0 / p_cand), sigma_min, sigma_max))
     return sigma, p_cand
 
 
-def _initial_guess_and_bounds(
+def _initial_raw_tilbury(
     theta: npt.NDArray[np.floating],
     curve: npt.NDArray[np.floating],
-    n_peaks: int,
     sigma_min: float,
-    p_min: float,
-    p_max: float,
-) -> tuple[npt.NDArray[np.floating], tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]]:
-    """Build an initial parameter vector and (lower, upper) bounds for one neuron.
+) -> npt.NDArray[np.floating]:
+    """Initial raw (unconstrained) parameter vector for the Tilbury model.
 
-    Peaks are seeded greedily from the largest residual; the second peak is
-    seeded after masking out a window around the first peak.
+    The peak is seeded at the largest residual above a low-percentile baseline.
+    Returns ``raw`` in softplus-space: ``[b0, inv_sp(A0), phi0, inv_sp(sl0-sigma_min),
+    inv_sp(sr0-sigma_min), inv_sp(p0)]``.
     """
-    k = n_peaks
     theta_lo, theta_hi = float(theta.min()), float(theta.max())
     span = max(theta_hi - theta_lo, 1e-6)
     sigma_max = span
@@ -226,86 +166,153 @@ def _initial_guess_and_bounds(
     b0 = float(np.percentile(curve, 10.0))
     resid = curve - b0
 
-    phi0, A0 = [], []
-    work = resid.copy()
-    for _ in range(k):
-        i = int(np.argmax(work))
-        phi0.append(float(theta[i]))
-        A0.append(max(float(work[i]), 1e-3))
-        # mask a window around this peak so the next peak is found elsewhere
-        work = np.where(np.abs(theta - theta[i]) < sigma0, -np.inf, work)
+    i = int(np.argmax(resid))
+    phi0 = float(theta[i])
+    A0 = max(float(resid[i]), 1e-3)
 
-    # Per-peak, per-side contour-radius estimate of (sigma_left, sigma_right, p);
-    # combine the two sides' p estimates, falling back to the flat seed above
-    # when a side's contour isn't trustworthy (mirrors Tilbury's analytic init).
-    sl0, sr0, p0 = [], [], []
-    for phi_i, A_i in zip(phi0, A0):
-        sigma_l, p_l = _contour_sigma_p(theta, curve, phi_i, A_i, b0, "left", sigma0, sigma_min, sigma_max, p_min, p_max)
-        sigma_r, p_r = _contour_sigma_p(theta, curve, phi_i, A_i, b0, "right", sigma0, sigma_min, sigma_max, p_min, p_max)
-        sl0.append(sigma_l)
-        sr0.append(sigma_r)
-        p_candidates = [p for p in (p_l, p_r) if p is not None]
-        p0.append(float(np.mean(p_candidates)) if p_candidates else 2.0)
+    sl0, p_l = _contour_sigma_p(theta, curve, phi0, A0, b0, "left", sigma0, sigma_min, sigma_max)
+    sr0, p_r = _contour_sigma_p(theta, curve, phi0, A0, b0, "right", sigma0, sigma_min, sigma_max)
+    p_candidates = [p for p in (p_l, p_r) if p is not None]
+    p0 = float(np.mean(p_candidates)) if p_candidates else 2.0
 
-    x0 = np.concatenate([[b0], A0, phi0, sl0, sr0, p0]).astype(float)
-
-    lower = np.concatenate([[-np.inf], [0.0] * k, [theta_lo] * k, [sigma_min] * k, [sigma_min] * k, [p_min] * k])
-    upper = np.concatenate([[np.inf], [np.inf] * k, [theta_hi] * k, [sigma_max] * k, [sigma_max] * k, [p_max] * k])
-
-    # Keep the initial guess strictly inside the box.
-    x0 = np.clip(x0, lower + 1e-9, upper - 1e-9)
-    return x0, (lower, upper)
+    return np.array(
+        [
+            b0,
+            float(_inv_softplus(A0)),
+            phi0,
+            float(_inv_softplus(sl0 - sigma_min)),
+            float(_inv_softplus(sr0 - sigma_min)),
+            float(_inv_softplus(p0)),
+        ],
+        dtype=float,
+    )
 
 
-def _fit_neuron(
+# ---------------------------------------------------------------------------
+# Control model: plain (single) Gaussian peaks, fixed exponent p=2, symmetric
+# width. Fitted alongside Tilbury so the two can be compared on r2_test.
+# ---------------------------------------------------------------------------
+
+
+def _eval_gaussian(theta: npt.NDArray[np.floating], params: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Evaluate the control Gaussian model on ``theta`` for a single neuron.
+
+    Packed parameter vector ``[b, A, phi, sigma]``.
+    """
+    b, A, phi, sigma = _unpack_gaussian(params)
+    diff = theta - phi
+    return b + A * np.exp(-0.5 * (diff / np.clip(sigma, 1e-6, None)) ** 2)
+
+
+def _unpack_gaussian(params: npt.NDArray[np.floating]) -> tuple:
+    """Split a packed Gaussian parameter vector into ``(b, A, phi, sigma)``."""
+    return tuple(params)
+
+
+def _param_names_gaussian() -> list[str]:
+    """Parameter names in the same order as ``_unpack_gaussian`` packs them."""
+    return ["b", "A", "phi", "sigma"]
+
+
+def _fwhm_sigma(
     theta: npt.NDArray[np.floating],
     curve: npt.NDArray[np.floating],
-    n_peaks: int,
+    phi: float,
+    amplitude: float,
+    baseline: float,
+    sigma_fallback: float,
     sigma_min: float,
-    p_min: float,
-    p_max: float,
-    max_nfev: int = 2000,
+    sigma_max: float,
+) -> float:
+    """Estimate a symmetric Gaussian width from the full-width-half-max crossing."""
+    dist = np.abs(theta - phi)
+    above_half = dist[curve >= baseline + 0.5 * amplitude]
+    if above_half.size == 0:
+        return sigma_fallback
+    d_half = float(above_half.max())
+    if d_half <= 0:
+        return sigma_fallback
+    sigma = d_half / np.sqrt(2.0 * np.log(2.0))
+    return float(np.clip(sigma, sigma_min, sigma_max))
+
+
+def _initial_raw_gaussian(
+    theta: npt.NDArray[np.floating],
+    curve: npt.NDArray[np.floating],
+    sigma_min: float,
 ) -> npt.NDArray[np.floating]:
-    """Least-squares fit of an ``n_peaks`` Tilbury model to one curve.
+    """Initial raw (unconstrained) parameter vector for the control Gaussian model.
 
-    Returns the packed parameter vector (length ``1 + 5 * n_peaks``), or all-NaN
-    if the optimiser fails.
+    Peak seeding mirrors :func:`_initial_raw_tilbury`; width from FWHM.
+    Returns ``[b0, inv_sp(A0), phi0, inv_sp(sigma0-sigma_min)]``.
     """
-    x0, bounds = _initial_guess_and_bounds(theta, curve, n_peaks, sigma_min, p_min, p_max)
+    theta_lo, theta_hi = float(theta.min()), float(theta.max())
+    span = max(theta_hi - theta_lo, 1e-6)
+    sigma_max = span
+    sigma0 = max(span / 10.0, 2.0 * sigma_min)
 
-    def residual(x: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
-        return _eval_tilbury(theta, x, n_peaks) - curve
+    b0 = float(np.percentile(curve, 10.0))
+    resid = curve - b0
 
-    try:
-        result = least_squares(residual, x0, bounds=bounds, method="trf", max_nfev=max_nfev)
-        return result.x
-    except (ValueError, np.linalg.LinAlgError):
-        return np.full(1 + 5 * n_peaks, np.nan)
+    i = int(np.argmax(resid))
+    phi0 = float(theta[i])
+    A0 = max(float(resid[i]), 1e-3)
 
+    sigma0_est = _fwhm_sigma(theta, curve, phi0, A0, b0, sigma0, sigma_min, sigma_max)
 
-def _fit_one_neuron(
-    theta: npt.NDArray[np.floating],
-    curve: npt.NDArray[np.floating],
-    sigma_min: float,
-    p_min: float,
-    p_max: float,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-    """Fit both the 1-peak and 2-peak Tilbury models to one (train) curve.
-
-    Module-level so it can be dispatched by ``joblib.Parallel``.
-    """
-    x1 = _fit_neuron(theta, curve, 1, sigma_min, p_min, p_max)
-    x2 = _fit_neuron(theta, curve, 2, sigma_min, p_min, p_max)
-    x2 = _sort_peaks_by_amplitude(x2, 2)
-    return x1, x2
+    return np.array(
+        [
+            b0,
+            float(_inv_softplus(A0)),
+            phi0,
+            float(_inv_softplus(sigma0_est - sigma_min)),
+        ],
+        dtype=float,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Batched torch / gradient-descent fitting (alternative to scipy least_squares)
+# Batched torch / gradient-descent fitting
 # ---------------------------------------------------------------------------
 
 
-def _eval_tilbury_torch(theta: torch.Tensor, params: torch.Tensor, n_peaks: int) -> torch.Tensor:
+def _inv_softplus(x: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Inverse softplus log(exp(x) - 1), numerically stable for large x."""
+    x = np.asarray(x, dtype=float)
+    return np.where(x > 20.0, x, np.log(np.expm1(np.clip(x, 1e-6, 20.0))))
+
+
+def _apply_constraints_tilbury(raw: torch.Tensor, sigma_min: float) -> torch.Tensor:
+    """Map unconstrained ``raw`` (n_cells, 6) to bounded Tilbury parameters.
+
+    Layout: ``[b, A, phi, sigma_left, sigma_right, p]``.
+    ``b`` and ``phi`` are free; the rest use softplus to stay positive.
+    """
+    F = torch.nn.functional
+    b = raw[:, 0:1]
+    A = F.softplus(raw[:, 1:2])
+    phi = raw[:, 2:3]
+    sl = sigma_min + F.softplus(raw[:, 3:4])
+    sr = sigma_min + F.softplus(raw[:, 4:5])
+    p = F.softplus(raw[:, 5:6])
+    return torch.cat([b, A, phi, sl, sr, p], dim=1)
+
+
+def _apply_constraints_gaussian(raw: torch.Tensor, sigma_min: float) -> torch.Tensor:
+    """Map unconstrained ``raw`` (n_cells, 4) to bounded Gaussian parameters.
+
+    Layout: ``[b, A, phi, sigma]``.
+    ``b`` and ``phi`` are free; sigma uses softplus.
+    """
+    F = torch.nn.functional
+    b = raw[:, 0:1]
+    A = F.softplus(raw[:, 1:2])
+    phi = raw[:, 2:3]
+    sigma = sigma_min + F.softplus(raw[:, 3:4])
+    return torch.cat([b, A, phi, sigma], dim=1)
+
+
+def _eval_tilbury_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
     """Batched, differentiable equivalent of :func:`_eval_tilbury`.
 
     Parameters
@@ -313,74 +320,60 @@ def _eval_tilbury_torch(theta: torch.Tensor, params: torch.Tensor, n_peaks: int)
     theta : torch.Tensor
         Position bin centres, shape ``(P,)``.
     params : torch.Tensor
-        Packed parameters, shape ``(n_cells, 1 + 5 * n_peaks)``, same layout as
-        :func:`_unpack`.
-    n_peaks : int
+        Packed parameters, shape ``(n_cells, 6)``, same layout as :func:`_unpack`.
 
     Returns
     -------
     torch.Tensor
         Fitted curves, shape ``(n_cells, P)``.
     """
-    k = n_peaks
     b = params[:, 0:1]  # (n_cells, 1)
-    A = params[:, 1 : 1 + k]  # (n_cells, k)
-    phi = params[:, 1 + k : 1 + 2 * k]
-    sl = params[:, 1 + 2 * k : 1 + 3 * k]
-    sr = params[:, 1 + 3 * k : 1 + 4 * k]
-    p = params[:, 1 + 4 * k : 1 + 5 * k]
+    A = params[:, 1:2]
+    phi = params[:, 2:3]
+    sl = params[:, 3:4]
+    sr = params[:, 4:5]
+    p = params[:, 5:6]
 
-    diff = theta[None, None, :] - phi[:, :, None]  # (n_cells, k, P)
-    sigma = torch.where(diff < 0, sl[:, :, None], sr[:, :, None])
-    bumps = A[:, :, None] * torch.exp(-((diff.abs() / sigma.clamp(min=1e-6)) ** p[:, :, None]))
-    return b + bumps.sum(dim=1)
+    diff = theta[None, :] - phi  # (n_cells, P)
+    sigma = torch.where(diff < 0, sl, sr)
+    ratio = diff.abs() / sigma.clamp(min=1e-6)
+    # ratio**p in log space, clamped before exponentiating back out: with p
+    # unbounded above (softplus, no ceiling) and ratio > 1 away from the peak,
+    # ratio**p can overflow to inf, and the inf * exp(-inf)=0 in its gradient is nan.
+    log_pow = (p * torch.log(ratio.clamp(min=1e-12))).clamp(max=30.0)
+    bumps = A * torch.exp(-torch.exp(log_pow))
+    return b + bumps
 
 
 def _fit_all_neurons_torch(
     theta: npt.NDArray[np.floating],
     curves: npt.NDArray[np.floating],
-    n_peaks: int,
     sigma_min: float,
-    p_min: float,
-    p_max: float,
     device: str,
     num_steps: int,
     learning_rate: float,
     verbose: bool = False,
 ) -> npt.NDArray[np.floating]:
-    """Batched Adam fit of an ``n_peaks`` Tilbury model to every neuron jointly.
-
-    All neurons share one optimizer step (Tilbury-style batched gradient
-    descent) instead of scipy's per-neuron ``least_squares``. Bounds are the
-    same ``(lower, upper)`` box used by the scipy path, enforced via
-    ``torch.clamp`` inside the forward pass.
+    """Batched Adam fit of the Tilbury model to every neuron jointly.
 
     Returns
     -------
     np.ndarray
-        Packed parameters, shape ``(n_cells, 1 + 5 * n_peaks)``.
+        Packed parameters, shape ``(n_cells, 6)``.
     """
     n_cells = curves.shape[0]
-    n_params = 1 + 5 * n_peaks
-
-    x0 = np.empty((n_cells, n_params), dtype=np.float64)
-    lower = np.empty((n_cells, n_params), dtype=np.float64)
-    upper = np.empty((n_cells, n_params), dtype=np.float64)
-    for n in range(n_cells):
-        x0[n], (lower[n], upper[n]) = _initial_guess_and_bounds(theta, curves[n], n_peaks, sigma_min, p_min, p_max)
+    raw_init = np.stack([_initial_raw_tilbury(theta, curves[n], sigma_min) for n in range(n_cells)])
 
     theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
     curves_t = torch.as_tensor(curves, dtype=torch.float32, device=device)
-    lower_t = torch.as_tensor(lower, dtype=torch.float32, device=device)
-    upper_t = torch.as_tensor(upper, dtype=torch.float32, device=device)
-    raw = torch.nn.Parameter(torch.as_tensor(x0, dtype=torch.float32, device=device))
+    raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
 
     optimizer = torch.optim.Adam([raw], lr=learning_rate)
-    steps = tqdm(range(num_steps), desc=f"descent fit ({n_peaks}-peak)") if verbose else range(num_steps)
+    steps = tqdm(range(num_steps), desc="descent fit") if verbose else range(num_steps)
     for step in steps:
         optimizer.zero_grad()
-        params = raw.clamp(min=lower_t, max=upper_t)
-        pred = _eval_tilbury_torch(theta_t, params, n_peaks)
+        params = _apply_constraints_tilbury(raw, sigma_min)
+        pred = _eval_tilbury_torch(theta_t, params)
         loss = torch.mean((pred - curves_t) ** 2)
         loss.backward()
         optimizer.step()
@@ -388,7 +381,61 @@ def _fit_all_neurons_torch(
             steps.set_postfix(loss=f"{loss.item():.4g}")
 
     with torch.no_grad():
-        final = raw.clamp(min=lower_t, max=upper_t)
+        final = _apply_constraints_tilbury(raw, sigma_min)
+    return final.cpu().numpy().astype(np.float64)
+
+
+def _eval_gaussian_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
+    """Batched, differentiable equivalent of :func:`_eval_gaussian`.
+
+    ``params`` has shape ``(n_cells, 4)``, same layout as :func:`_unpack_gaussian`.
+    """
+    b = params[:, 0:1]
+    A = params[:, 1:2]
+    phi = params[:, 2:3]
+    sigma = params[:, 3:4]
+
+    diff = theta[None, :] - phi  # (n_cells, P)
+    return b + A * torch.exp(-0.5 * (diff / sigma.clamp(min=1e-6)) ** 2)
+
+
+def _fit_all_neurons_torch_gaussian(
+    theta: npt.NDArray[np.floating],
+    curves: npt.NDArray[np.floating],
+    sigma_min: float,
+    device: str,
+    num_steps: int,
+    learning_rate: float,
+    verbose: bool = False,
+) -> npt.NDArray[np.floating]:
+    """Batched Adam fit of the control Gaussian model to every neuron jointly.
+
+    Returns
+    -------
+    np.ndarray
+        Packed parameters, shape ``(n_cells, 4)``.
+    """
+    n_cells = curves.shape[0]
+    raw_init = np.stack([_initial_raw_gaussian(theta, curves[n], sigma_min) for n in range(n_cells)])
+
+    theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
+    curves_t = torch.as_tensor(curves, dtype=torch.float32, device=device)
+    raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
+
+    optimizer = torch.optim.Adam([raw], lr=learning_rate)
+    steps = tqdm(range(num_steps), desc="descent fit control") if verbose else range(num_steps)
+    for step in steps:
+        optimizer.zero_grad()
+        params = _apply_constraints_gaussian(raw, sigma_min)
+        pred = _eval_gaussian_torch(theta_t, params)
+        loss = torch.mean((pred - curves_t) ** 2)
+        loss.backward()
+        optimizer.step()
+        if verbose and step % 100 == 0:
+            steps.set_postfix(loss=f"{loss.item():.4g}")
+
+    with torch.no_grad():
+        final = _apply_constraints_gaussian(raw, sigma_min)
     return final.cpu().numpy().astype(np.float64)
 
 
@@ -399,7 +446,7 @@ def _fit_all_neurons_torch(
 
 @dataclass(frozen=True)
 class TilburyFitConfig(AnalysisConfigBase):
-    """Fit the Tilbury double generalized-Gaussian tuning law per neuron.
+    """Fit the Tilbury generalized-Gaussian tuning law per neuron.
 
     Parameters
     ----------
@@ -418,49 +465,41 @@ class TilburyFitConfig(AnalysisConfigBase):
         (computed on the train split). ``(None, None)`` keeps all neurons.
     sigma_min : ClassVar[float]
         Lower bound on peak widths (cm).
-    peakiness_bounds : ClassVar[tuple[float, float]]
-        Lower / upper bounds on the per-peak peakiness exponent ``p``.
     """
 
-    schema_version: str = "v1"
-    data_config_name: str = "default"
-
+    schema_version: str = "v2"
+    data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
     num_bins: int = 100
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (0.3, 0.1)
-    method: str = "descent"
 
     sigma_min: ClassVar[float] = 1.0
-    peakiness_bounds: ClassVar[tuple[float, float]] = (0.5, 8.0)
     max_missing_position_percentage: ClassVar[float] = 5.0
     display_name: ClassVar[str] = "tilbury_fit"
     _result_handling: ClassVar[dict[str, str]] = {
         "idx_keep": "skip",
         "dist_centers": "skip",
         "best_env": "skip",
+        "param_names": "skip",
+        "param_names_control": "skip",
     }
 
     @staticmethod
     def _param_grid() -> dict:
-        return {
-            "method": ["least_squares", "descent"],
-        }
+        return {}
 
     @property
-    def param_names_1peak(self) -> list[str]:
-        return _param_names(1)
+    def param_names(self) -> list[str]:
+        return _param_names()
 
     @property
-    def param_names_2peak(self) -> list[str]:
-        return _param_names(2)
+    def param_names_control(self) -> list[str]:
+        return _param_names_gaussian()
 
     def validate(self) -> None:
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
             raise ValueError(f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {list(ACTIVITY_PARAMETERS_NAMES)}")
-        lo, hi = self.peakiness_bounds
-        if not (lo > 0 and hi > lo):
-            raise ValueError(f"peakiness_bounds must satisfy 0 < lo < hi, got {self.peakiness_bounds}")
 
     def summary(self) -> str:
         rel, frac = self.reliability_fraction_active_thresholds
@@ -471,7 +510,6 @@ class TilburyFitConfig(AnalysisConfigBase):
             f"bins={self.num_bins}",
             f"rel={rel}",
             f"frac={frac}",
-            f"method={self.method}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -544,8 +582,6 @@ class TilburyFitConfig(AnalysisConfigBase):
         session: B2Session,
         registry: PopulationRegistry,
         verbose: bool = False,
-        n_jobs: Optional[int] = None,
-        method: Optional[str] = None,
         device: Optional[str] = None,
         gd_num_steps: int = 4000,
         gd_learning_rate: float = 0.005,
@@ -557,40 +593,18 @@ class TilburyFitConfig(AnalysisConfigBase):
         session : B2Session
         registry : PopulationRegistry
         verbose : bool
-            If True, show a tqdm progress bar — per-neuron completion for
-            ``method="least_squares"``, optimizer step + loss for ``method="descent"``.
-        n_jobs : int or None
-            Worker count for the per-neuron fits (joblib). ``None`` (the default,
-            used by the queue) resolves to SGE's ``NSLOTS`` when set — so on
-            MYRIAD it uses exactly the cores requested via ``-pe smp`` and never
-            oversubscribes the shared node — falling back to serial (``1``)
-            off-cluster. Pass an explicit int to override (``-1`` = all local
-            cores). Parallelism pays off for many / slow fits; for a handful of
-            neurons the worker-startup overhead can make ``n_jobs=1`` faster.
-            Ignored when ``method="descent"``.
-        method : {"least_squares", "descent"} or None
-            Per-neuron ``scipy.optimize.least_squares`` (default, CPU-only,
-            matches existing cluster behaviour) or a batched ``torch``/Adam
-            gradient descent fit over all neurons jointly. ``None`` (the default,
-            used by the queue) resolves to ``"descent"`` when ``device="cuda"``
-            and ``"least_squares"`` otherwise.
+            If True, show a tqdm progress bar with optimizer step + loss.
         device : str or None
-            Torch device for ``method="descent"`` (e.g. ``"cpu"``, ``"cuda"``).
+            Torch device for the batched Adam fit (e.g. ``"cpu"``, ``"cuda"``).
             ``None`` (the default) auto-detects: ``"cuda"`` if
-            ``torch.cuda.is_available()`` else ``"cpu"``. Ignored when
-            ``method="least_squares"``.
+            ``torch.cuda.is_available()`` else ``"cpu"``.
         gd_num_steps : int
-            Adam iterations for ``method="descent"``. Ignored otherwise.
+            Adam iterations.
         gd_learning_rate : float
-            Adam learning rate for ``method="descent"``. Ignored otherwise.
+            Adam learning rate.
         """
-        method = method or self.method
-        if method not in ("least_squares", "descent"):
-            raise ValueError(f"Unknown method {method!r}. Expected 'least_squares' or 'descent'.")
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        if n_jobs is None:
-            n_jobs = int(os.environ.get("NSLOTS", "0")) or 1
 
         num_per_env = {i: int(np.sum(session.trial_environment == i)) for i in session.environments}
         best_env = max(num_per_env, key=num_per_env.get)
@@ -626,63 +640,36 @@ class TilburyFitConfig(AnalysisConfigBase):
             if np.any(np.isnan(curves[s])):
                 raise ValueError(f"NaNs in {s} placefield after dropping empty bins!")
 
-        # Per-neuron fits.
+        # Per-neuron fits: Tilbury model and the plain-Gaussian control, side by side.
         n_neurons = curves["train"].shape[0]
-        p_min, p_max = self.peakiness_bounds
-        params_1 = np.full((n_neurons, 6), np.nan)
-        params_2 = np.full((n_neurons, 11), np.nan)
-        r2 = {f"{split}_{k}": np.full(n_neurons, np.nan) for split in _SPLITS for k in (1, 2)}
+        r2 = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
+        r2c = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
 
-        if method == "least_squares":
-            # Fit every neuron in parallel (each task fits both the 1- and 2-peak model).
-            task = (delayed(_fit_one_neuron)(theta, curves["train"][n], self.sigma_min, p_min, p_max) for n in range(n_neurons))
-            if verbose:
-                with _tqdm_joblib(tqdm(total=n_neurons, desc="least_squares fit")):
-                    fits = Parallel(n_jobs=n_jobs)(task)
-            else:
-                fits = Parallel(n_jobs=n_jobs)(task)
-            for n, (x1, x2) in enumerate(fits):
-                params_1[n] = x1
-                params_2[n] = x2
-        else:  # method == "descent"
-            params_1 = _fit_all_neurons_torch(
-                theta, curves["train"], 1, self.sigma_min, p_min, p_max, device, gd_num_steps, gd_learning_rate, verbose
-            )
-            params_2 = _fit_all_neurons_torch(
-                theta, curves["train"], 2, self.sigma_min, p_min, p_max, device, gd_num_steps, gd_learning_rate, verbose
-            )
-            params_2 = np.stack([_sort_peaks_by_amplitude(params_2[n], 2) for n in range(n_neurons)])
+        params = _fit_all_neurons_torch(theta, curves["train"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose)
+        params_c = _fit_all_neurons_torch_gaussian(theta, curves["train"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose)
 
         # Score each fit on every split (cheap, done serially).
         for n in range(n_neurons):
-            x1, x2 = params_1[n], params_2[n]
+            x, xc = params[n], params_c[n]
             for split in _SPLITS:
                 c = curves[split][n]
-                if not np.any(np.isnan(x1)):
-                    r2[f"{split}_1"][n] = _r2(_eval_tilbury(theta, x1, 1), c)
-                if not np.any(np.isnan(x2)):
-                    r2[f"{split}_2"][n] = _r2(_eval_tilbury(theta, x2, 2), c)
-
-        # Model selection on validation: prefer 2 peaks only if it does better.
-        v1, v2 = r2["validation_1"], r2["validation_2"]
-        choose_2 = np.nan_to_num(v2, nan=-np.inf) > np.nan_to_num(v1, nan=-np.inf)
-        n_peaks = np.where(choose_2, 2, 1).astype(int)
-        r2_test = np.where(choose_2, r2["test_2"], r2["test_1"])
+                if not np.any(np.isnan(x)):
+                    r2[split][n] = _r2(_eval_tilbury(theta, x), c)
+                if not np.any(np.isnan(xc)):
+                    r2c[split][n] = _r2(_eval_gaussian(theta, xc), c)
 
         return {
-            "params_1peak": params_1,
-            "params_2peak": params_2,
-            "r2_train_1": r2["train_1"],
-            "r2_train_2": r2["train_2"],
-            "r2_val_1": r2["validation_1"],
-            "r2_val_2": r2["validation_2"],
-            "r2_test_1": r2["test_1"],
-            "r2_test_2": r2["test_2"],
-            "n_peaks": n_peaks,
-            "r2_test": r2_test,
+            "params": params,
+            "r2_train": r2["train"],
+            "r2_val": r2["validation"],
+            "r2_test": r2["test"],
+            "params_control": params_c,
+            "r2_train_control": r2c["train"],
+            "r2_val_control": r2c["validation"],
+            "r2_test_control": r2c["test"],
             "idx_keep": idx_keep,
             "dist_centers": theta,
             "best_env": best_env,
-            "params_1peak_names": _param_names(1),
-            "params_2peak_names": _param_names(2),
+            "param_names": _param_names(),
+            "param_names_control": _param_names_gaussian(),
         }
