@@ -25,12 +25,12 @@ deps_core = [
     "joblib",
     "syd",
     "freezedry",
+    "cvxpy",
 ]
 
 # Extra code for performing registration (these things are extras specifically for oasis)
 deps_registration = [
     "oasis-deconv",
-    "cvxpy",
 ]
 
 # Extra packages for managing the redCellQC GUI

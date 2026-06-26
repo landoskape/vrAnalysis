@@ -41,7 +41,7 @@ if __name__ == "__main__":
     registry = PopulationRegistry()
 
     for subspace_name in tqdm(SUBSPACE_NAMES, desc="Testing different subspace types"):
-        subspace_model = get_subspace(subspace_name, registry)
+        subspace_model = get_subspace(subspace_name, registry, centered)
 
         for spks_type in SPKS_TYPES:
             for isession, session in enumerate(tqdm(sessiondb.iter_sessions(imaging=True, session_params=dict(spks_type=spks_type)))):
