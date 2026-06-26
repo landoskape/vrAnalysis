@@ -1406,16 +1406,22 @@ class LocPredCrossVal(AnalysisConfigBase):
 
         # Internal: decode position from source, predict target
         lik_methods = _get_likelihood_methods(self.likelihood_methods, fit.diag_gaussian_variance)
+        internal_ll: dict[str, float] = {}
         internal_r2: dict[str, float] = {}
+        internal_r2_sample: dict[str, float] = {}
         for lik_name, lik_fn in lik_methods.items():
             ll = lik_fn(spks_source_te, fit.pf_source)  # (frames, total_bins)
             pred_bins = np.argmax(ll, axis=1)  # (frames,)
             target_internal = pf_target_flat[pred_bins]  # (frames, n_target_kept)
             internal_r2[lik_name] = measure_r2(target_internal.T, spks_target_te.T, reduce="mean", dim=None)
+            internal_ll[lik_name] = np.max(ll, axis=1)
+            internal_r2_sample[lik_name] = measure_r2(target_internal.T, spks_target_te.T, reduce=None, dim=0)
 
         return dict(
             oracle_r2=oracle_r2,
             internal_r2=internal_r2,
+            internal_ll=internal_ll,
+            internal_r2_sample=internal_r2_sample,
             true_bins_te=true_bins_te,
             idx_keep_source=fit.idx_keep_source,
             idx_keep_target=fit.idx_keep_target,
