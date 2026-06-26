@@ -583,8 +583,8 @@ class TilburyFitConfig(AnalysisConfigBase):
         registry: PopulationRegistry,
         verbose: bool = False,
         device: Optional[str] = None,
-        gd_num_steps: int = 4000,
-        gd_learning_rate: float = 0.005,
+        gd_num_steps: int = 8000,
+        gd_learning_rate: float = 0.1,
     ) -> dict:
         """Fit the Tilbury law per neuron with train/val/test cross-validation.
 
