@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Mapping, Optional
 import itertools
 
-import cvxpy as cp
+try:
+    import cvxpy as cp
+except ImportError:
+    cp = None
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -302,6 +305,8 @@ def _symmetrize(A: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
 
 def _mtfa_shrink(sigma: npt.NDArray[np.floating]) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Minimum-trace factor analysis: maximal private-variance diagonal s.t. Sigma - diag(d) is PSD."""
+    if cp is None:
+        raise ImportError("cvxpy is required for MTFA but is not installed.")
     p = sigma.shape[0]
     d = cp.Variable(p, nonneg=True)
     prob = cp.Problem(cp.Maximize(cp.sum(d)), [sigma - cp.diag(d) >> 0])
