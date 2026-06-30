@@ -5,7 +5,7 @@ from .population import PopulationConfig
 from .regression import RegressionConfig, VectorGainRankConfig
 from .rrr_to_external_latents import RRRToExternalLatentsConfig
 from .subspace import SubspaceConfig
-from .stimspace import StimSpaceConfig
+from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig
 from .expmax import ExpMaxConfig
 from .locprediction import LocPredConfig, LocPredCrossVal
 from .placefield_structure import (
@@ -14,6 +14,14 @@ from .placefield_structure import (
     PlacefieldDataGenerator,
 )
 from .tilbury_fit import TilburyFitConfig
+from .simulation_sweep import (
+    SimulationSession,
+    SIMULATION_SESSION,
+    StimFullSweepConfig,
+    ThresholdedGPSweepConfig,
+    SmoothGPSweepConfig,
+    TilburySweepConfig,
+)
 
 __all__ = [
     "CVPCAConfig",
@@ -25,6 +33,7 @@ __all__ = [
     "VectorGainRankConfig",
     "SubspaceConfig",
     "StimSpaceConfig",
+    "StimSpaceSpectraConfig",
     "ExpMaxConfig",
     "LocPredConfig",
     "LocPredCrossVal",
@@ -32,6 +41,12 @@ __all__ = [
     "PlacefieldStructureFit",
     "PlacefieldDataGenerator",
     "TilburyFitConfig",
+    "SimulationSession",
+    "SIMULATION_SESSION",
+    "StimFullSweepConfig",
+    "ThresholdedGPSweepConfig",
+    "SmoothGPSweepConfig",
+    "TilburySweepConfig",
     "get_data_config",
     "list_data_configs",
 ]
