@@ -24,7 +24,6 @@ from dataclasses import replace
 import matplotlib.pyplot as plt
 import numpy as np
 import optuna
-import plotly.graph_objects as go
 import torch
 from tqdm import tqdm
 
@@ -969,6 +968,8 @@ def plot_component_alignment(
 
 def plot_study(study: optuna.Study) -> dict[str, go.Figure]:
     """Plotly figures for Optuna study: optimization history and parallel coordinates."""
+    from plotly import graph_objects as go
+
     trials, values = _completed_trials(study)
     trial_nums = np.array([t.number for t in trials])
     running_best = np.maximum.accumulate(values)
