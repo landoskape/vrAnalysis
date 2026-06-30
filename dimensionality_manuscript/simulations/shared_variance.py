@@ -237,6 +237,25 @@ class AnalysisProvenance:
 
 
 @dataclass(frozen=True)
+class ComputeFlags:
+    """Toggle individual empirical computations in analyze_build / process.
+
+    All flags default True (full computation). Set a flag to False to skip
+    that metric and leave the corresponding EmpiricalBlock field as None.
+    Flags that are irrelevant for a given pipeline (e.g. cv_stimstim on a
+    context-pair) are silently ignored.
+    """
+
+    cv_energy: bool = True
+    cv_kappa: bool = True
+    cv_stimstim: bool = True
+    cv_variance_scale: bool = True
+    cv_rcvpca: bool = True
+    roundhouse: bool = True
+    mtfa: bool = True
+
+
+@dataclass(frozen=True)
 class AtlasAnalysisResult:
     """Structured output for stimulus-full and context-pair analyses."""
 
@@ -1204,6 +1223,7 @@ def _run_analysis(
     name: str = "",
     description: str = "",
     config: StimFullConfig | PlacefieldFullConfig | CovariancePairConfig | SharedSpaceConfig | None = None,
+    compute: ComputeFlags = ComputeFlags(),
 ) -> AtlasAnalysisResult:
     provenance = AnalysisProvenance(
         dtype=dtype,
@@ -1236,50 +1256,70 @@ def _run_analysis(
                 noise_variance=noise_variance,
                 test_rotation_angle=test_rotation_angle,
             )
-            cv_kappa, _ = _stim_full_cv_kappa_result(
-                gen,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
-                test_rotation_angle=test_rotation_angle,
+            cv_kappa, _ = (
+                _stim_full_cv_kappa_result(
+                    gen,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                    test_rotation_angle=test_rotation_angle,
+                )
+                if compute.cv_kappa
+                else (None, {})
             )
-            cv_stimstim, _ = _stim_full_cv_stimstim_result(
-                gen,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
-                test_rotation_angle=test_rotation_angle,
+            cv_stimstim, _ = (
+                _stim_full_cv_stimstim_result(
+                    gen,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                    test_rotation_angle=test_rotation_angle,
+                )
+                if compute.cv_stimstim
+                else (None, {})
             )
-            cv_variance_scale, _ = _stim_full_cv_variance_scale_result(
-                gen,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
+            cv_variance_scale, _ = (
+                _stim_full_cv_variance_scale_result(
+                    gen,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                )
+                if compute.cv_variance_scale
+                else (None, {})
             )
             # rCVPCA: only for generators that opt in and emit per-repeat maps (place fields).
             # StimFullGenerator lacks the repeat structure, so cv_rcvpca stays None there.
             cv_rcvpca: Optional[CVPCAComparison] = None
-            if getattr(gen, "supports_rcvpca", False):
+            if compute.cv_rcvpca and getattr(gen, "supports_rcvpca", False):
                 cv_rcvpca = _stim_full_rcvpca_result(gen, rng=rng, noise_variance=noise_variance)
 
-            roundhouse_sym, roundhouse = _stim_full_roundhouse_result(
-                gen,
-                split,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
-                test_rotation_angle=test_rotation_angle,
+            roundhouse_sym, roundhouse = (
+                _stim_full_roundhouse_result(
+                    gen,
+                    split,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                    test_rotation_angle=test_rotation_angle,
+                )
+                if compute.roundhouse
+                else (None, None)
             )
-            mtfa, _ = _stim_full_mtfa_result(
-                gen,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
+            mtfa, _ = (
+                _stim_full_mtfa_result(
+                    gen,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                )
+                if compute.mtfa
+                else (None, {})
             )
 
             empirical = EmpiricalBlock(
                 kappa=empirical_kappa,
-                cv_energy=cv_energy,
+                cv_energy=cv_energy if compute.cv_energy else None,
                 cv_kappa=cv_kappa,
                 cv_stimstim=cv_stimstim,
                 cv_variance_scale=cv_variance_scale,
@@ -1297,24 +1337,36 @@ def _run_analysis(
                 rng=rng,
                 noise_variance=noise_variance,
             )
-            cv_kappa, _ = _context_cv_kappa_result(
-                gen,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
+            cv_kappa, _ = (
+                _context_cv_kappa_result(
+                    gen,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                )
+                if compute.cv_kappa
+                else (None, {})
             )
-            roundhouse_sym, roundhouse = _context_roundhouse_result(
-                gen,
-                split,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
+            roundhouse_sym, roundhouse = (
+                _context_roundhouse_result(
+                    gen,
+                    split,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                )
+                if compute.roundhouse
+                else (None, None)
             )
-            mtfa, _ = _context_mtfa_result(
-                gen,
-                num_samples=num_samples,
-                rng=rng,
-                noise_variance=noise_variance,
+            mtfa, _ = (
+                _context_mtfa_result(
+                    gen,
+                    num_samples=num_samples,
+                    rng=rng,
+                    noise_variance=noise_variance,
+                )
+                if compute.mtfa
+                else (None, {})
             )
             empirical = EmpiricalBlock(
                 kappa=empirical.kappa,
@@ -1354,6 +1406,7 @@ def process(
     test_rotation_angle: float = 0.0,
     name: str = "",
     description: str = "",
+    compute: ComputeFlags = ComputeFlags(),
 ) -> AtlasAnalysisResult:
     """
     Analyze a simulation config directly.
@@ -1401,6 +1454,7 @@ def process(
         name=name,
         description=description,
         config=config,
+        compute=compute,
     )
 
 
@@ -1411,6 +1465,7 @@ def analyze_build(
     sample_seed: Optional[int] = None,
     noise_variance: float = 0.0,
     test_rotation_angle: float = 0.0,
+    compute: ComputeFlags = ComputeFlags(),
 ) -> AtlasAnalysisResult:
     """
     Analyze an instantiated atlas condition.
@@ -1432,6 +1487,7 @@ def analyze_build(
         name=build.name,
         description=build.description,
         config=build.config,
+        compute=compute,
     )
 
 
@@ -1444,6 +1500,7 @@ def analyze_atlas_case(
     sample_seed: Optional[int] = None,
     noise_variance: float = 0.0,
     test_rotation_angle: float = 0.0,
+    compute: ComputeFlags = ComputeFlags(),
 ) -> AtlasAnalysisResult:
     """Build and analyze one named atlas case."""
     build = build_atlas_case(name, seed=seed, dtype=dtype)
@@ -1453,6 +1510,7 @@ def analyze_atlas_case(
         sample_seed=sample_seed,
         noise_variance=noise_variance,
         test_rotation_angle=test_rotation_angle,
+        compute=compute,
     )
 
 
@@ -1806,6 +1864,7 @@ __all__ = [
     "ATLAS",
     "AnalysisProvenance",
     "AtlasAnalysisResult",
+    "ComputeFlags",
     "AtlasBuild",
     "AtlasKind",
     "AtlasPipeline",

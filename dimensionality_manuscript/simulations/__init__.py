@@ -64,6 +64,7 @@ from .placefield_generator import (
 from .estimation_sweep import (
     SweepSpec,
     SweepResults,
+    run_manual_sweep,
     run_named_sweep,
     run_param_sweep,
 )
@@ -160,6 +161,7 @@ __all__ = [
     # estimation_sweep
     "SweepSpec",
     "SweepResults",
+    "run_manual_sweep",
     "run_named_sweep",
     "run_param_sweep",
 ]

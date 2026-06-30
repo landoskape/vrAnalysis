@@ -42,6 +42,7 @@ from .generators import StimFullConfig
 from .placefield_full import PlacefieldFullConfig
 from .shared_variance import (
     AtlasAnalysisResult,
+    ComputeFlags,
     CVPCAComparison,
     get_atlas_spec,
     process,
@@ -117,6 +118,10 @@ class SweepResults:
     empirical_cv_variance_scale: npt.NDArray[np.floating]
     empirical_cv_rcvpca: npt.NDArray[np.floating]
 
+    # Full EmpiricalBlock objects, shape (n_cases, n_seeds), dtype=object.
+    # Use these to compute any alternative ratio post-hoc from the raw ModeComparison fields.
+    empirical_blocks: npt.NDArray
+
     @property
     def n_cases(self) -> int:
         return len(self.case_labels)
@@ -186,10 +191,12 @@ def _run_factories(
     test_rotation_angle: float,
     dtype: np.dtype,
     spec: Optional[SweepSpec],
+    compute: ComputeFlags = ComputeFlags(),
 ) -> SweepResults:
     n_cases = len(factories)
     all_keys = list(_ORACLE_ATTR.values()) + list(_EMPIRICAL_ATTR.values())
     arrays: dict[str, npt.NDArray[np.floating]] = {k: np.full((n_cases, n_seeds), np.nan) for k in all_keys}
+    empirical_blocks = np.empty((n_cases, n_seeds), dtype=object)
 
     # SeedSequence derives two independent child seeds per (case, seed):
     #   children[2*i]   → geometry rng for the config factory
@@ -211,12 +218,14 @@ def _run_factories(
                 sample_seed=sample_seed,
                 noise_variance=noise_variance,
                 test_rotation_angle=test_rotation_angle,
+                compute=compute,
             )
             ratios = _extract_ratios(result)
             for k in all_keys:
                 arrays[k][i_case, i_seed] = ratios[k]
+            empirical_blocks[i_case, i_seed] = result.empirical
 
-    return SweepResults(case_labels=case_labels, n_seeds=n_seeds, spec=spec, **arrays)
+    return SweepResults(case_labels=case_labels, n_seeds=n_seeds, spec=spec, empirical_blocks=empirical_blocks, **arrays)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +242,7 @@ def run_named_sweep(
     test_rotation_angle: float = 0.0,
     base_seed: int = 0,
     dtype: npt.DTypeLike = np.float64,
+    compute: ComputeFlags = ComputeFlags(),
 ) -> SweepResults:
     """Run each named atlas case n_seeds times with fresh geometry per seed.
 
@@ -293,6 +303,7 @@ def run_named_sweep(
         test_rotation_angle=test_rotation_angle,
         dtype=_dtype,
         spec=None,
+        compute=compute,
     )
 
 
@@ -305,6 +316,7 @@ def run_param_sweep(
     test_rotation_angle: float = 0.0,
     base_seed: int = 0,
     dtype: npt.DTypeLike = np.float64,
+    compute: ComputeFlags = ComputeFlags(),
 ) -> SweepResults:
     """Run a parametric sweep: for each param value call its factory n_seeds times.
 
@@ -348,6 +360,7 @@ def run_param_sweep(
         test_rotation_angle=test_rotation_angle,
         dtype=_dtype,
         spec=spec,
+        compute=compute,
     )
 
 
@@ -361,6 +374,7 @@ def run_manual_sweep(
     test_rotation_angle: float = 0.0,
     base_seed: int = 0,
     dtype: npt.DTypeLike = np.float64,
+    compute: ComputeFlags = ComputeFlags(),
 ) -> SweepResults:
     """Run a list of manually constructed configs (e.g. a parameter grid) through the sweep.
 
@@ -415,6 +429,7 @@ def run_manual_sweep(
         test_rotation_angle=test_rotation_angle,
         dtype=_dtype,
         spec=None,
+        compute=compute,
     )
 
 
