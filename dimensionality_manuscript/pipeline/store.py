@@ -99,8 +99,13 @@ def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
         PopulationConfig,
         RegressionConfig,
         StimSpaceConfig,
+        StimSpaceSpectraConfig,
         SubspaceConfig,
         TilburyFitConfig,
+        StimFullSweepConfig,
+        ThresholdedGPSweepConfig,
+        SmoothGPSweepConfig,
+        TilburySweepConfig,
     )
 
     classes = (
@@ -113,8 +118,13 @@ def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
         PopulationConfig,
         RegressionConfig,
         StimSpaceConfig,
+        StimSpaceSpectraConfig,
         SubspaceConfig,
         TilburyFitConfig,
+        StimFullSweepConfig,
+        ThresholdedGPSweepConfig,
+        SmoothGPSweepConfig,
+        TilburySweepConfig,
     )
     return {cls.display_name: cls for cls in classes}
 

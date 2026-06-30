@@ -233,10 +233,11 @@ class AnalysisConfigBase:
         viewer.add_boolean("filter_by_ses_or_mouse", value=False)
         if include_get_results:
 
-            def get_result(state: dict) -> tuple[dict, list[str]]:
+            def get_result(state: dict, load_ragged: bool = False) -> tuple[dict, list[str]]:
                 param_kwargs = {k: state[k] for k in param_axes if k in filter_by}
                 view_by = state["view_by"]
                 sliced, axes_names = results.sel(
+                    load_ragged=load_ragged,
                     squeeze_ones=squeeze_ones,
                     return_param_sizes=True,
                     avg_by_mouse=(view_by == "mouse_average"),

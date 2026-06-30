@@ -478,7 +478,7 @@ class TilburyFitConfig(AnalysisConfigBase):
     max_missing_position_percentage: ClassVar[float] = 5.0
     display_name: ClassVar[str] = "tilbury_fit"
     _result_handling: ClassVar[dict[str, str]] = {
-        "idx_keep": "skip",
+        "idx_keep": "ragged",
         "dist_centers": "skip",
         "best_env": "skip",
         "param_names": "skip",
