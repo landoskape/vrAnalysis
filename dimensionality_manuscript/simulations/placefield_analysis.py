@@ -19,6 +19,7 @@ plot_spectra, plot_frac_neg, plot_component_alignment, plot_study,
 print_best_configs
 """
 
+from __future__ import annotations
 from dataclasses import replace
 
 import matplotlib.pyplot as plt
@@ -966,7 +967,7 @@ def plot_component_alignment(
     return fig
 
 
-def plot_study(study: optuna.Study) -> dict[str, go.Figure]:
+def plot_study(study: optuna.Study) -> dict[str, "go.Figure"]:
     """Plotly figures for Optuna study: optimization history and parallel coordinates."""
     from plotly import graph_objects as go
 
