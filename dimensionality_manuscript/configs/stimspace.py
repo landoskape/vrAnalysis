@@ -321,11 +321,23 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         combos3 = list(itertools.combinations(range(4), 3))  # 4 combos for CV estimators
         pairs = list(itertools.combinations(range(4), 2))  # 6 pairs for direct estimators
 
-        ss_cv = torch.mean(torch.stack([_cvsvd(sm_train[i], sm_test[j], sm_test[k]) for i, j, k in combos3]), dim=0)
-        sf_cv = torch.mean(torch.stack([_cvsvd(sm_train[i], sm_test[j], g_data[k]) for i, j, k in combos3]), dim=0)
-        ss_dir = torch.mean(torch.stack([_direct_svd(sm_test[i], sm_test[j]) for i, j in pairs]), dim=0)
-        sf_dir = torch.mean(torch.stack([_direct_svd(sm_test[i], g_data[j]) for i, j in pairs]), dim=0)
-        ff = torch.mean(torch.stack([_direct_svd(g_data[i], g_data[j], n_neurons) for i, j in pairs]), dim=0)
+        # Randomized SVD n_components is capped at min(T_i, T_j) for each pair's cross matrix.
+        # Time splits can differ by a sample or two, so cap by the smallest split up front to
+        # keep every ff entry the same length (otherwise torch.stack fails below).
+        min_samples = min(g.shape[1] for g in g_data)
+        ff_components = min(n_neurons, min_samples)
+
+        ss_cv_terms = [_cvsvd(sm_train[i], sm_test[j], sm_test[k]) for i, j, k in combos3]
+        sf_cv_terms = [_cvsvd(sm_train[i], sm_test[j], g_data[k]) for i, j, k in combos3]
+        ss_dir_terms = [_direct_svd(sm_test[i], sm_test[j]) for i, j in pairs]
+        sf_dir_terms = [_direct_svd(sm_test[i], g_data[j]) for i, j in pairs]
+        ff_terms = [_direct_svd(g_data[i], g_data[j], ff_components) for i, j in pairs]
+
+        ss_cv = torch.mean(torch.stack(ss_cv_terms), dim=0)
+        sf_cv = torch.mean(torch.stack(sf_cv_terms), dim=0)
+        ss_dir = torch.mean(torch.stack(ss_dir_terms), dim=0)
+        sf_dir = torch.mean(torch.stack(sf_dir_terms), dim=0)
+        ff = torch.mean(torch.stack(ff_terms), dim=0)
 
         return {
             "ss_cv": ss_cv.cpu().numpy(),
