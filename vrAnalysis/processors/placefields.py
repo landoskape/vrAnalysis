@@ -1059,7 +1059,7 @@ def get_placefield_prediction(placefield: Placefield, frame_behavior: FrameBehav
     return placefield_prediction, extras
 
 
-@nb.njit(parallel=True)
+@nb.njit
 def _get_placefield(
     placefield: np.ndarray,
     counts: np.ndarray,
@@ -1074,8 +1074,12 @@ def _get_placefield(
     """Get the average place field for a given neuron and environment.
 
     Uses numba speed up to get the place field for a given neuron and environment.
+
+    Serial (not ``parallel``): multiple samples accumulate into the same
+    ``placefield``/``counts`` bin, so ``prange`` would race on the ``+=`` and
+    both lose updates and be non-deterministic.
     """
-    for sample in nb.prange(len(position_bin)):
+    for sample in range(len(position_bin)):
         if fast[sample] and idx_valid_frames[sample]:
             row_idx = trial_or_environment[sample]
             if row_idx < 0 or row_idx >= placefield.shape[0]:
@@ -1102,7 +1106,7 @@ def _correct_placefield(placefield: np.ndarray, counts: np.ndarray) -> None:
                 placefield[ii, jj] /= counts[ii, jj]
 
 
-@nb.njit(parallel=True)
+@nb.njit
 def _get_placefield_fast_sampling(
     placefield: np.ndarray,
     counts: np.ndarray,
@@ -1158,8 +1162,12 @@ def _get_placefield_fast_sampling(
     weights : np.ndarray
         Per-frame weights aligned to frame_behavior. Each behavioral sample inherits the weight
         of its mapped imaging frame.
+
+    Serial (not ``parallel``): multiple samples accumulate into the same
+    ``placefield``/``counts`` bin, so ``prange`` would race on the ``+=`` and
+    both lose updates and be non-deterministic.
     """
-    for sample in nb.prange(len(behave_position_bin)):
+    for sample in range(len(behave_position_bin)):
         # Skip if sample is not valid
         if not idx_valid_samples[sample]:
             continue

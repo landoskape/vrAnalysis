@@ -9,10 +9,12 @@ from typing import ClassVar, Optional
 import numpy as np
 import torch
 
+from dimilibi import make_time_splits
+
 from vrAnalysis.processors.placefields import get_placefield, FrameBehavior, Placefield
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.metrics import FractionActive
-from vrAnalysis.helpers import reliability_loo
+from vrAnalysis.helpers import reliability_loo, stable_hash
 
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry, get_activity_parameters, Population
@@ -219,15 +221,22 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
     smooth_test : float or None
         Gaussian smooth width for all other placefield inputs (CV scoring side,
         both sides of direct estimators).
+    include_iti : bool
+        If False (default), the func side (sf / ff estimators) uses only the VR-running
+        frames (``idx_samples``), matching the placefield frames. If True, each func fold
+        additionally includes that fold's share of the ITI / non-``idx_samples`` frames,
+        stacked at the end. Placefields (and therefore all ss estimators) always use
+        VR-only frames.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     data_config_name: str = "even"
     activity_parameters_name: str = "raw"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
     num_bins: int = 100
     smooth_widths: tuple[Optional[float], Optional[float]] = (None, None)
     spks_type: SpksTypes = "sigrebase"
+    include_iti: bool = False
     display_name: ClassVar[str] = "stimspace_spectra"
 
     @staticmethod
@@ -235,6 +244,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         return {
             "activity_parameters_name": ["raw", "default"],
             "smooth_widths": [(None, None), (5.0, 5.0), (5.0, None)],
+            "include_iti": [False, True],
         }
 
     def summary(self) -> str:
@@ -247,6 +257,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             f"bins={self.num_bins}",
             f"strain={self.smooth_widths[0]}",
             f"stest={self.smooth_widths[1]}",
+            f"iti={self.include_iti}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -316,7 +327,8 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
 
         sm_train = [_to_g(_pf_to_matrix(pf, valid_envs, valid_bins)) for pf in pf_train_list]
         sm_test = [_to_g(_pf_to_matrix(pf, valid_envs, valid_bins)) for pf in pf_test_list]
-        g_data = [_to_g(da) for da in activities]
+        func_folds = self._build_func_folds(session, registry, population, neuron_data, activities, ap)
+        g_data = [_to_g(fd) for fd in func_folds]
 
         combos3 = list(itertools.combinations(range(4), 3))  # 4 combos for CV estimators
         pairs = list(itertools.combinations(range(4), 2))  # 6 pairs for direct estimators
@@ -346,3 +358,93 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "sf_direct": sf_dir.cpu().numpy(),
             "ff": ff.cpu().numpy(),
         }
+
+    def _build_func_folds(
+        self,
+        session: B2Session,
+        registry: PopulationRegistry,
+        population: Population,
+        neuron_data: np.ndarray,
+        activities: list[torch.Tensor],
+        ap,
+    ) -> list[torch.Tensor]:
+        """Build the func-side activity folds (the sf / ff inputs).
+
+        When ``include_iti`` is False, returns ``activities`` unchanged (VR-only frames).
+        When True, appends each fold's share of the ITI / non-``idx_samples`` frames to the
+        end of that fold's VR activity. ITI frames are the complement of ``population.idx_samples``,
+        split into 4 equal chunked folds via ``make_time_splits``.
+
+        Parameters
+        ----------
+        session : B2Session
+            Session being processed (used to seed the ITI split reproducibly).
+        registry : PopulationRegistry
+            Registry providing the chunking parameters for the ITI split.
+        population : Population
+            Population holding the full activity and ``idx_samples``.
+        neuron_data : np.ndarray
+            The (N, total_timepoints) selected-neuron activity (full session).
+        activities : list of torch.Tensor
+            The 4 VR-only activity folds, already scaled per ``ap``.
+        ap : ActivityParameters
+            Activity scaling parameters, applied consistently to the ITI columns.
+
+        Returns
+        -------
+        list of torch.Tensor
+            One (N, samples) tensor per fold. When ``include_iti`` is True each has its VR
+            columns first and its ITI columns stacked at the end.
+        """
+        if not self.include_iti:
+            return activities
+
+        # ITI / other frames = complement of idx_samples over the full timeline.
+        mask = torch.ones(population.total_timepoints, dtype=torch.bool)
+        mask[population.idx_samples] = False
+        iti_abs = torch.nonzero(mask, as_tuple=False).squeeze(1)  # sorted ascending
+
+        # Assign each sample to a pre-existing chunk within iti_abs
+        current_fold = 0
+        iti_fold = torch.full((len(iti_abs),), current_fold, dtype=torch.long)
+        for sample in range(1, len(iti_abs)):
+            if iti_abs[sample] - iti_abs[sample - 1] > 1:
+                current_fold += 1
+            iti_fold[sample] = current_fold
+
+        # Assign chunks to fold with minimum current size to make it even (not all chunks are same size)
+        num_chunks = current_fold + 1
+        num_folds = len(activities)
+        chunk_sizes = torch.bincount(iti_fold, minlength=num_chunks)  # size per chunk label
+
+        # Split the ITI frames into 4 equal, chunked folds. Seed deterministically per
+        # session (the VR splits are cached, but this one is regenerated each call) and
+        # restore the global torch RNG state afterward so nothing else is perturbed.
+        seed = int(stable_hash(".".join(session.session_name)), 16) % (2**31)
+        rng_state = torch.random.get_rng_state()
+        torch.manual_seed(seed)
+        chunk_order = torch.randperm(num_chunks)
+        fold_totals = torch.zeros(num_folds, dtype=torch.long)
+        fold_chunk_ids: list[list[int]] = [[] for _ in range(num_folds)]
+        for cid in chunk_order.tolist():
+            fold = int(fold_totals.argmin())
+            fold_chunk_ids[fold].append(cid)
+            fold_totals[fold] += chunk_sizes[cid]
+        iti_folds = [torch.nonzero(torch.isin(iti_fold, torch.tensor(ids, dtype=torch.long)), as_tuple=False).squeeze(1) for ids in fold_chunk_ids]
+        torch.random.set_rng_state(rng_state)
+
+        # Scale the full session once so the ITI columns share the VR columns' scaling.
+        scaled_full = population.apply_split(
+            neuron_data,
+            None,
+            scale=ap.scale,
+            scale_type=ap.scale_type,
+            pre_split=ap.presplit,
+            prefiltered=False,
+        )
+
+        func_folds = []
+        for fold, iti_fold in zip(activities, iti_folds):
+            iti_cols = iti_abs[iti_fold]
+            func_folds.append(torch.cat([fold, scaled_full[:, iti_cols]], dim=1))
+        return func_folds
