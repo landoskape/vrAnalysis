@@ -244,6 +244,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         return {
             "activity_parameters_name": ["raw", "default"],
             "smooth_widths": [(None, None), (5.0, 5.0), (5.0, None)],
+            "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
             "include_iti": [False, True],
         }
 
