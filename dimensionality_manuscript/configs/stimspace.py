@@ -328,6 +328,8 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         sm_train = [_to_g(_pf_to_matrix(pf, valid_envs, valid_bins)) for pf in pf_train_list]
         sm_test = [_to_g(_pf_to_matrix(pf, valid_envs, valid_bins)) for pf in pf_test_list]
         func_folds = self._build_func_folds(session, registry, population, neuron_data, activities, ap)
+        added_frames = [fd.shape[1] - activity.shape[1] for fd, activity in zip(func_folds, activities)]
+        original_frames = [activity.shape[1] for activity in activities]
         g_data = [_to_g(fd) for fd in func_folds]
 
         combos3 = list(itertools.combinations(range(4), 3))  # 4 combos for CV estimators
@@ -357,6 +359,8 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "ss_direct": ss_dir.cpu().numpy(),
             "sf_direct": sf_dir.cpu().numpy(),
             "ff": ff.cpu().numpy(),
+            "added_frames": added_frames,
+            "original_frames": original_frames,
         }
 
     def _build_func_folds(
