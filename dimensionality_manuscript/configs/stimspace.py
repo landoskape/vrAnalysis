@@ -239,6 +239,11 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
     include_iti: bool = False
     display_name: ClassVar[str] = "stimspace_spectra"
 
+    _result_handling = {
+        "added_frames": "skip",
+        "original_frames": "skip",
+    }
+
     @staticmethod
     def _param_grid() -> dict:
         return {

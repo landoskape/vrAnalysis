@@ -29,6 +29,7 @@ import numpy.typing as npt
 import torch
 from tqdm import tqdm
 
+from dimilibi.pca import PCA
 from vrAnalysis.helpers import edge2center, reliability_loo
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_placefield
@@ -94,6 +95,16 @@ def _r2(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> flo
     if ss_tot <= 0:
         return np.nan
     return 1.0 - ss_res / ss_tot
+
+
+def _curve_spectrum(matrix: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Descending eigenvalue spectrum of the ``(N, P)`` curve matrix's neuron covariance.
+
+    Positions are treated as samples; per-neuron centering is applied by PCA.
+    Returns eigenvalues of shape ``(min(N, P),)`` in descending order.
+    """
+    t = torch.as_tensor(matrix, dtype=torch.float32)
+    return PCA(center=True).fit(t).get_eigenvalues().cpu().numpy().astype(np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +478,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         Lower bound on peak widths (cm).
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
@@ -483,6 +494,10 @@ class TilburyFitConfig(AnalysisConfigBase):
         "best_env": "skip",
         "param_names": "skip",
         "param_names_control": "skip",
+        "eig_tilbury": "ragged",
+        "eig_control": "ragged",
+        "eig_raw_train": "ragged",
+        "eig_raw_test": "ragged",
     }
 
     @staticmethod
@@ -658,6 +673,18 @@ class TilburyFitConfig(AnalysisConfigBase):
                 if not np.any(np.isnan(xc)):
                     r2c[split][n] = _r2(_eval_gaussian(theta, xc), c)
 
+        # Population dimensionality: eigenvalue spectra of the (N, P) tuning-curve
+        # matrices. Modeled curves are reconstructed for neurons with finite fits;
+        # raw measured placefields (NaN-free by construction) use every selected neuron.
+        ok = ~np.isnan(params).any(axis=1)
+        okc = ~np.isnan(params_c).any(axis=1)
+        mat_tilbury = np.stack([_eval_tilbury(theta, params[n]) for n in np.flatnonzero(ok)])
+        mat_control = np.stack([_eval_gaussian(theta, params_c[n]) for n in np.flatnonzero(okc)])
+        eig_tilbury = _curve_spectrum(mat_tilbury)
+        eig_control = _curve_spectrum(mat_control)
+        eig_raw_train = _curve_spectrum(curves["train"])
+        eig_raw_test = _curve_spectrum(curves["test"])
+
         return {
             "params": params,
             "r2_train": r2["train"],
@@ -668,6 +695,10 @@ class TilburyFitConfig(AnalysisConfigBase):
             "r2_val_control": r2c["validation"],
             "r2_test_control": r2c["test"],
             "idx_keep": idx_keep,
+            "eig_tilbury": eig_tilbury,
+            "eig_control": eig_control,
+            "eig_raw_train": eig_raw_train,
+            "eig_raw_test": eig_raw_test,
             "dist_centers": theta,
             "best_env": best_env,
             "param_names": _param_names(),
