@@ -1,6 +1,13 @@
 from .cross import CrossCompare
 from .cvpca import RegularizedCVPCA
-from .helpers import gaussian_filter, fit_powerlaw_decay, fit_powerlaw_derivatives
+from .helpers import (
+    gaussian_filter,
+    fit_powerlaw_decay,
+    fit_powerlaw_derivatives,
+    fit_powerlaw_spectrum,
+    plot_powerlaw_fit,
+    PowerlawFit,
+)
 from .metrics import scaled_mse, measure_r2, measure_rms, mse
 from .networks import SVCANet, HurdleNet, BetaVAE
 from .pca import PCA
@@ -16,6 +23,9 @@ __all__ = [
     "gaussian_filter",
     "fit_powerlaw_decay",
     "fit_powerlaw_derivatives",
+    "fit_powerlaw_spectrum",
+    "plot_powerlaw_fit",
+    "PowerlawFit",
     "scaled_mse",
     "measure_r2",
     "measure_rms",

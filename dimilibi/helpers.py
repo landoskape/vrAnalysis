@@ -1,6 +1,8 @@
+from dataclasses import dataclass, field
 from typing import Callable, Union, Optional, Tuple
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 from torch.nn.functional import conv1d
 from scipy.optimize import curve_fit
 from tqdm import tqdm
@@ -618,3 +620,394 @@ class VectorizedGoldenSectionSearch:
     def get_active_mask(self) -> torch.Tensor:
         """Get boolean mask of optimizations that are still active (not converged)."""
         return ~self.converged
+
+
+# ---------------------------------------------------------------------------
+# Robust power-law (alpha) estimation from spectra
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PowerlawFit:
+    """Result of :func:`fit_powerlaw_spectrum`.
+
+    The reported ``alpha`` is the exponent of the *longest* sub-window whose log-log fit
+    is consistent (``R^2 >= r2_min``), so the fit covers as many ranks as the data allow
+    (including the head when it stays straight) without extending into a floor or cliff.
+    ``alpha_std`` / ``alpha_lo`` / ``alpha_hi`` summarise the spread of all consistent
+    windows.
+
+    Attributes
+    ----------
+    alpha, alpha_std, alpha_lo, alpha_hi
+        Chosen exponent, robust spread (1.4826 * MAD), and percentile band of the
+        consistent-window ensemble.
+    amplitude
+        Amplitude ``A`` of the chosen ``[head_end, tail_end]`` fit.
+    head_end, tail_end
+        Start and end (exclusive) 0-based ranks of the chosen fit window.
+    search_end
+        Region boundary the windows were drawn from: the first rank where the spectrum
+        goes non-positive, thins out, or falls off a cliff (a big drop-off, detected as a
+        local-exponent spike). Everything at/after this is treated as a bad tail.
+    best_r2
+        Log-log R^2 of the chosen window.
+    n_valid
+        Number of positive points in ``[head_end, tail_end]``.
+    ensemble_alphas, ensemble_windows, ensemble_r2
+        Per-window exponents, ``(M, 2)`` start/end index pairs, and log-log R^2 for the
+        consistent windows the estimate is drawn from.
+    local_alpha
+        Full-length per-rank local exponent (NaN-padded to align with ``spectrum``).
+    valid_mask
+        Boolean mask of finite, positive entries.
+    spectrum, smoothed
+        Raw spectrum (numpy float) and the smoothed copy used for region detection.
+    """
+
+    alpha: float
+    alpha_std: float
+    alpha_lo: float
+    alpha_hi: float
+    amplitude: float
+    head_end: int
+    tail_end: int
+    search_end: int
+    best_r2: float
+    n_valid: int
+    ensemble_alphas: np.ndarray
+    ensemble_windows: np.ndarray
+    ensemble_r2: np.ndarray
+    local_alpha: np.ndarray
+    valid_mask: np.ndarray
+    spectrum: np.ndarray
+    smoothed: np.ndarray
+
+    def plot(self, axes=None):
+        """Plot the fit (see :func:`plot_powerlaw_fit`)."""
+        return plot_powerlaw_fit(self, axes=axes)
+
+
+def _nan_powerlaw_fit(spectrum: np.ndarray, smoothed: np.ndarray, valid_mask: np.ndarray) -> PowerlawFit:
+    """All-NaN result for degenerate spectra that cannot be fit."""
+    return PowerlawFit(
+        alpha=np.nan,
+        alpha_std=np.nan,
+        alpha_lo=np.nan,
+        alpha_hi=np.nan,
+        amplitude=np.nan,
+        head_end=0,
+        tail_end=int(spectrum.shape[0]),
+        search_end=int(spectrum.shape[0]),
+        best_r2=np.nan,
+        n_valid=int(valid_mask.sum()),
+        ensemble_alphas=np.empty(0, dtype=float),
+        ensemble_windows=np.empty((0, 2), dtype=int),
+        ensemble_r2=np.empty(0, dtype=float),
+        local_alpha=np.full(spectrum.shape[0], np.nan, dtype=float),
+        valid_mask=valid_mask,
+        spectrum=spectrum,
+        smoothed=smoothed,
+    )
+
+
+def _boxcar_smooth(values: np.ndarray, width: int) -> np.ndarray:
+    """Edge-normalized moving average over ``width`` points (1-D)."""
+    w = max(1, int(round(width)))
+    if w == 1:
+        return values.astype(float, copy=True)
+    ones = np.ones(w)
+    counts = np.convolve(np.ones(values.size), ones, mode="same")
+    return np.convolve(values, ones, mode="same") / counts
+
+
+def _safe_powerlaw_decay(spectrum: np.ndarray, start: int, end: int) -> Tuple[float, float]:
+    """`fit_powerlaw_decay` that returns ``(nan, nan)`` instead of raising.
+
+    ``curve_fit`` can fail to converge (``maxfev``) on windows spanning a huge dynamic
+    range (e.g. an oracle spectrum decaying into a ~1e-21 numerical-zero floor), and the
+    underlying fit raises ``ValueError`` on empty / all-invalid windows. Both are treated
+    as a failed window here.
+    """
+    try:
+        alpha, amplitude = fit_powerlaw_decay(spectrum, start, end, ignore_nans=True, verbose=False)
+    except (RuntimeError, ValueError, TypeError):
+        return np.nan, np.nan
+    return float(alpha), float(amplitude)
+
+
+def _loglog_r2(spectrum: np.ndarray, start: int, end: int, alpha: float, amplitude: float) -> float:
+    """Coefficient of determination of a power-law fit in log-log space over [start, end)."""
+    ranks = np.arange(start, end) + 1
+    values = spectrum[start:end]
+    keep = np.isfinite(values) & (values > 0)
+    if keep.sum() < 2 or not (np.isfinite(alpha) and np.isfinite(amplitude) and amplitude > 0):
+        return np.nan
+    x = np.log(ranks[keep])
+    y = np.log(values[keep])
+    pred = np.log(amplitude) - alpha * x
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    if ss_tot <= 0.0:
+        return np.nan
+    return 1.0 - ss_res / ss_tot
+
+
+def fit_powerlaw_spectrum(
+    spectrum: Union[np.ndarray, torch.Tensor],
+    *,
+    smooth_width: Optional[int] = 5,
+    deriv_width: int = 1,
+    min_head: int = 2,
+    min_window: int = 5,
+    tail_positive_frac: float = 0.9,
+    cliff_alpha: float = 10.0,
+    r2_min: float = 0.9,
+    n_windows: int = 24,
+    percentiles: Tuple[float, float] = (16.0, 84.0),
+    eps: float = 1e-8,
+) -> PowerlawFit:
+    """Estimate the power-law exponent ``alpha`` of a spectrum, robustly.
+
+    Real spectra follow a power law only over part of their range: a curved head, then a
+    straight power-law stretch, then a bad tail (noisy / cross-validated spectra dip
+    negative; oracle spectra fall off a cliff into a numerical-zero floor). This routine
+    (1) finds the region boundary ``search_end`` from three signals -- the smoothed
+    noise-floor crossing, the trailing positive fraction, and a **cliff** (a big drop-off,
+    seen as a spike in the per-rank local exponent) -- then (2) fits
+    ``lambda_k = A * (k+1)**(-alpha)`` (:func:`fit_powerlaw_decay`) over a grid of
+    sub-windows inside ``[min_head, search_end)`` and reports the exponent of the
+    **longest window whose fit is consistent** (``R^2 >= r2_min``). Maximising the fitted
+    rank range this way naturally includes the head when it stays straight and excludes
+    it when it curves.
+
+    Parameters
+    ----------
+    spectrum : np.ndarray or torch.Tensor
+        1-D spectrum, sorted descending (rank 0 largest).
+    smooth_width : int or None, default=5
+        Number of points in the boxcar moving average used to build a de-noised copy for
+        region detection only (the raw spectrum is what gets fit). ``None`` uses the raw spectrum.
+    deriv_width : int, default=1
+        Stencil half-width for the local-exponent derivative.
+    min_head : int, default=2
+        Never begin the fit before this rank.
+    min_window : int, default=5
+        Minimum number of valid points required in each fit window.
+    tail_positive_frac : float, default=0.9
+        The region ends where the trailing positive fraction drops below this.
+    cliff_alpha : float, default=10.0
+        A rank whose local exponent exceeds this is treated as a cliff (a big drop-off /
+        numerical floor); the region ends there. Real power laws sit well below it.
+    r2_min : float, default=0.9
+        Minimum log-log R^2 for a window to count as a consistent power-law fit.
+    n_windows : int, default=24
+        Target number of grid sub-windows.
+    percentiles : tuple of float, default=(16.0, 84.0)
+        Percentiles of the consistent-window ensemble reported as ``alpha_lo`` / ``alpha_hi``.
+    eps : float, default=1e-8
+        Added inside logs to avoid ``log(0)``.
+
+    Returns
+    -------
+    PowerlawFit
+        Structured fit result. Degenerate inputs yield an all-NaN result rather
+        than raising.
+    """
+    spectrum = np.asarray(spectrum, dtype=float).reshape(-1)
+    N = spectrum.shape[0]
+    finite_mask = np.isfinite(spectrum)
+    valid_mask = finite_mask & (spectrum > 0)
+
+    # Smoothed copy for region detection (removes random tail negatives). A boxcar moving
+    # average over `smooth_width` points is applied over the finite entries only (NaNs, e.g.
+    # trailing padding from a ragged aggregate, are skipped rather than propagated); NaN
+    # positions stay NaN.
+    finite_idx = np.flatnonzero(finite_mask)
+    if smooth_width is not None and finite_idx.size >= 1:
+        smoothed = np.full(N, np.nan, dtype=float)
+        smoothed[finite_idx] = _boxcar_smooth(spectrum[finite_idx], int(round(smooth_width)))
+    else:
+        smoothed = spectrum.copy()
+
+    if N < min_window or valid_mask.sum() < min_window:
+        return _nan_powerlaw_fit(spectrum, smoothed, valid_mask)
+
+    min_head = int(np.clip(min_head, 0, N - 1))
+
+    # --- Per-rank local exponent (NaN-padded to full length). Flat = power law; a spike ---
+    # --- marks a cliff (big drop-off), the floor after it reads back near zero. ---
+    local_alpha = np.full(N, np.nan, dtype=float)
+    if N >= 4 * deriv_width + 1:
+        alpha_local, idx_slice = fit_powerlaw_derivatives(smoothed, width=deriv_width, axis=0, eps=eps)
+        local_alpha[idx_slice] = np.asarray(alpha_local, dtype=float)
+
+    # --- Region end from three signals; take the earliest. ---
+    # (a) smoothed noise-floor crossing (first smoothed value <= 0)
+    nonpositive = ~(smoothed > 0)
+    nonpositive[:min_head] = False
+    smoothed_cross = int(np.argmax(nonpositive)) if np.any(nonpositive) else N
+
+    # (b) trailing positive fraction thinning out
+    frac_window = max(min_window, int(round(2 * (smooth_width or 1))) + 1)
+    trailing_frac = np.convolve(valid_mask.astype(float), np.ones(frac_window) / frac_window, mode="same")
+    below = trailing_frac < tail_positive_frac
+    below[: max(min_head, frac_window)] = False
+    frac_cross = int(np.argmax(below)) if np.any(below) else N
+
+    # (c) cliff: first rank whose local exponent spikes above cliff_alpha
+    cliff = np.isfinite(local_alpha) & (local_alpha > cliff_alpha)
+    cliff[:min_head] = False
+    cliff_cross = int(np.argmax(cliff)) if np.any(cliff) else N
+
+    search_end = int(min(smoothed_cross, frac_cross, cliff_cross, N))
+    search_end = min(max(search_end, min_head + min_window), N)
+
+    # --- Grid of window fits inside [min_head, search_end). ---
+    n_side = max(2, int(np.ceil(np.sqrt(n_windows))))
+    starts = np.unique(np.linspace(min_head, max(min_head, search_end - min_window), n_side).astype(int))
+    ends = np.unique(np.linspace(min(min_head + min_window, search_end), search_end, n_side).astype(int))
+
+    windows: list[tuple[int, int]] = []
+    alphas: list[float] = []
+    amps: list[float] = []
+    r2s: list[float] = []
+    for s in starts:
+        for e in ends:
+            if e - s < min_window or int(valid_mask[s:e].sum()) < min_window:
+                continue
+            alpha_w, amp_w = _safe_powerlaw_decay(spectrum, int(s), int(e))
+            if not np.isfinite(alpha_w):
+                continue
+            windows.append((int(s), int(e)))
+            alphas.append(float(alpha_w))
+            amps.append(float(amp_w))
+            r2s.append(_loglog_r2(spectrum, int(s), int(e), float(alpha_w), float(amp_w)))
+
+    if len(windows) == 0:
+        result = _nan_powerlaw_fit(spectrum, smoothed, valid_mask)
+        result.search_end = search_end
+        result.local_alpha = local_alpha
+        return result
+
+    windows_arr = np.asarray(windows, dtype=int)
+    alphas_arr = np.asarray(alphas, dtype=float)
+    r2s_arr = np.asarray(r2s, dtype=float)
+
+    # --- Choose the longest consistent window: R^2 >= r2_min, then max rank span. ---
+    consistent = r2s_arr >= r2_min
+    pool = np.flatnonzero(consistent) if np.any(consistent) else np.flatnonzero(np.isfinite(r2s_arr))
+    if pool.size == 0:
+        pool = np.arange(alphas_arr.size)
+    spans = windows_arr[:, 1] - windows_arr[:, 0]
+    # sort key: longest span, then reaching the deepest rank, then starting earliest
+    best = pool[np.lexsort((windows_arr[pool, 0], -windows_arr[pool, 1], -spans[pool]))[0]]
+    best_start, best_end = int(windows_arr[best, 0]), int(windows_arr[best, 1])
+
+    ensemble_alphas = alphas_arr[pool]
+    alpha = float(alphas_arr[best])
+    mad = float(np.median(np.abs(ensemble_alphas - np.median(ensemble_alphas)))) if ensemble_alphas.size else 0.0
+    alpha_std = 1.4826 * mad
+    if ensemble_alphas.size:
+        alpha_lo, alpha_hi = (float(v) for v in np.percentile(ensemble_alphas, percentiles))
+    else:
+        alpha_lo = alpha_hi = alpha
+
+    return PowerlawFit(
+        alpha=alpha,
+        alpha_std=alpha_std,
+        alpha_lo=alpha_lo,
+        alpha_hi=alpha_hi,
+        amplitude=float(amps[best]),
+        head_end=best_start,
+        tail_end=best_end,
+        search_end=search_end,
+        best_r2=float(r2s_arr[best]),
+        n_valid=int(valid_mask[best_start:best_end].sum()),
+        ensemble_alphas=ensemble_alphas,
+        ensemble_windows=windows_arr[pool],
+        ensemble_r2=r2s_arr[pool],
+        local_alpha=local_alpha,
+        valid_mask=valid_mask,
+        spectrum=spectrum,
+        smoothed=smoothed,
+    )
+
+
+def plot_powerlaw_fit(fit: PowerlawFit, axes=None):
+    """Three-panel diagnostic for a :class:`PowerlawFit`.
+
+    Panel A: log-log spectrum (positive points filled, non-positive hollow at ``|value|``),
+    the smoothed curve, the shaded chosen ``[head_end, tail_end]`` fit window, the region
+    boundary ``search_end`` and the fitted line.
+    Panel B: the per-rank local exponent with the chosen exponent, the fit window and the
+    ``search_end`` boundary.
+    Panel C: the consistent-window exponents with the chosen value and percentile band.
+
+    Parameters
+    ----------
+    fit : PowerlawFit
+        Result of :func:`fit_powerlaw_spectrum`.
+    axes : sequence of matplotlib.axes.Axes, optional
+        Three axes to draw into. If ``None``, a ``(1, 3)`` figure is created.
+
+    Returns
+    -------
+    (fig, axes)
+        The figure (``None`` if ``axes`` was supplied) and the three axes.
+    """
+    if axes is None:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4), layout="constrained")
+    else:
+        fig = None
+    ax_spec, ax_local, ax_hist = axes
+
+    spectrum = fit.spectrum
+    N = spectrum.shape[0]
+    ranks = np.arange(N) + 1
+    pos = fit.valid_mask
+
+    # --- Panel A: spectrum + fit ---
+    ax_spec.loglog(ranks[pos], spectrum[pos], "o", ms=3, color="0.3", label="spectrum")
+    nonpos = np.isfinite(spectrum) & ~pos
+    if np.any(nonpos):
+        ax_spec.loglog(ranks[nonpos], np.abs(spectrum[nonpos]), "o", ms=3, mfc="none", mec="0.7", label="|value<=0|")
+    smooth_pos = fit.smoothed > 0
+    ax_spec.loglog(ranks[smooth_pos], fit.smoothed[smooth_pos], "-", color="tab:blue", lw=1, alpha=0.7, label="smoothed")
+    ax_spec.axvspan(fit.head_end + 1, fit.tail_end, color="tab:orange", alpha=0.15, label="fit window")
+    ax_spec.axvline(fit.search_end, color="tab:green", ls=":", lw=1, label=f"search_end={fit.search_end}")
+    if np.isfinite(fit.alpha) and np.isfinite(fit.amplitude):
+        fit_ranks = np.arange(fit.head_end, fit.tail_end) + 1
+        ax_spec.loglog(fit_ranks, fit.amplitude * fit_ranks.astype(float) ** (-fit.alpha), "r--", lw=1.5, label="fit")
+    ax_spec.set_xlabel("rank")
+    ax_spec.set_ylabel("value")
+    ax_spec.set_title(f"alpha = {fit.alpha:.2f} +/- {fit.alpha_std:.2f}  (R2={fit.best_r2:.3f})")
+    ax_spec.legend(fontsize=8)
+
+    # --- Panel B: local exponent ---
+    ax_local.plot(ranks, fit.local_alpha, "-", color="0.4", lw=1)
+    if np.isfinite(fit.alpha):
+        ax_local.axhline(fit.alpha, color="r", lw=1, label="chosen alpha")
+        ax_local.axhspan(fit.alpha_lo, fit.alpha_hi, color="r", alpha=0.12)
+    ax_local.axvspan(fit.head_end + 1, fit.tail_end, color="tab:orange", alpha=0.15, label="fit window")
+    ax_local.axvline(fit.search_end, color="tab:green", ls=":", label="search_end")
+    ax_local.set_xscale("log")
+    ax_local.set_xlabel("rank")
+    ax_local.set_ylabel("local alpha")
+    ax_local.set_title("local exponent")
+    finite_local = fit.local_alpha[np.isfinite(fit.local_alpha)]
+    if finite_local.size:
+        ax_local.set_ylim(np.nanpercentile(finite_local, 1) - 0.5, np.nanpercentile(finite_local, 99) + 0.5)
+    ax_local.legend(fontsize=8)
+
+    # --- Panel C: consistent-window distribution ---
+    if fit.ensemble_alphas.size:
+        ax_hist.hist(fit.ensemble_alphas, bins=min(20, max(5, fit.ensemble_alphas.size)), color="0.7")
+        ax_hist.axvline(fit.alpha, color="r", lw=1.5, label="chosen")
+        ax_hist.axvspan(fit.alpha_lo, fit.alpha_hi, color="r", alpha=0.12, label="16-84%")
+        ax_hist.legend(fontsize=8)
+    ax_hist.set_xlabel("windowed alpha")
+    ax_hist.set_ylabel("count")
+    ax_hist.set_title(f"consistent windows (n={fit.ensemble_alphas.size})")
+
+    return fig, axes
