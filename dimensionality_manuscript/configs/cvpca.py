@@ -41,7 +41,7 @@ class CVPCAConfig(AnalysisConfigBase):
         Number of spatial bins.
     """
 
-    schema_version: str = "v5"
+    schema_version: str = "v6"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
@@ -51,7 +51,7 @@ class CVPCAConfig(AnalysisConfigBase):
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
     fixed_smooth_width: float = 5.0
     num_bins: int = 100
-    use_spatial_eigenvectors: bool = False  # Whether to use spatial eigenvectors instead of neural eigenvectors
+    use_spatial_eigenvectors: bool = True  # Whether to use spatial eigenvectors instead of neural eigenvectors
 
     max_missing_position_percentage: ClassVar[float] = 5.0  # since we have skip aware smoothing now, we can tolerate missing "middle" positions
     display_name: ClassVar[str] = "cvpca"
@@ -60,12 +60,9 @@ class CVPCAConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "spks_type": list(VALID_SPKS_TYPES),
-            "center": [True, False],
-            "use_fast_sampling": [True, False],
             "activity_parameters_name": ["raw", "default"],
-            # "reliability_fraction_active_thresholds": [(None, None), (0.2, 0.05)],
-            "use_spatial_eigenvectors": [False, True],
+            "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
+            # "use_spatial_eigenvectors": [False, True],
         }
 
     def summary(self) -> str:
