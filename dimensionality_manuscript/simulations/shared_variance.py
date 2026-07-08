@@ -310,7 +310,7 @@ def _mtfa_shrink(sigma: npt.NDArray[np.floating]) -> tuple[npt.NDArray[np.floati
     p = sigma.shape[0]
     d = cp.Variable(p, nonneg=True)
     prob = cp.Problem(cp.Maximize(cp.sum(d)), [sigma - cp.diag(d) >> 0])
-    prob.solve(solver=cp.SCS)
+    prob.solve(solver=cp.MOSEK)
     shared = sigma - np.diag(d.value)
     return shared.astype(sigma.dtype, copy=False), d.value
 
@@ -516,7 +516,6 @@ def _build_geometry(
         trace_reference=float(np.trace(reference_covariance)),
         trace_nuisance=trace_nuisance,
         trace_eps=trace_eps,
-        
         reference_no_private_noise_spectrum=reference_no_private_noise_spectrum,
     )
 

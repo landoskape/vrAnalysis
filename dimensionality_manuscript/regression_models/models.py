@@ -17,6 +17,97 @@ if TYPE_CHECKING:
     from ..registry import PopulationRegistry, SplitName
 
 
+def get_regressor_dimensionality_from_hyperparameters(
+    hyperparameters: PlaceFieldHyperparameters | RBFPosHyperparameters | FullRegressorHyperparameters | ReducedRankRegressionHyperparameters,
+    num_environments: int = 1,
+    gain: bool = False,
+    vector_gain: bool = False,
+    gain_rank: int = 1,
+    speed_basis: bool = True,
+    no_reward: bool = False,
+    reward_inclusion: Optional[dict[str, bool]] = None,
+    expectation_symmetric: bool = True,
+) -> int:
+    """Compute effective regressor dimensionality from hyperparameters.
+
+    Parameters
+    ----------
+    hyperparameters : PlaceFieldHyperparameters | RBFPosHyperparameters | FullRegressorHyperparameters | ReducedRankRegressionHyperparameters
+        Hyperparameter object that defines basis counts and/or latent rank.
+    num_environments : int, default=1
+        Number of environments used to tile spatial basis functions.
+    gain : bool, default=False
+        If True for place-field models, include gain-related regressors.
+    vector_gain : bool, default=False
+        If True with ``gain=True`` for place-field models, include ``gain_rank`` dimensions.
+        Otherwise include one scalar gain regressor.
+    gain_rank : int, default=1
+        Number of gain dimensions used by vector-gain place-field models.
+    speed_basis : bool, default=True
+        If True for full-regressor models, use ``speed_num_basis`` dimensions for speed.
+        If False, use a single z-scored speed regressor.
+    no_reward : bool, default=False
+        If True for full-regressor models, omit all reward regressors.
+    reward_inclusion : Optional[dict[str, bool]], default=None
+        Inclusion mask for full-regressor reward components. Keys:
+        ``expectation``, ``delivered_response``, ``omission_response``.
+        If None, all three are included.
+    expectation_symmetric : bool, default=True
+        If True, expectation reward basis uses symmetric lags (``2 * lags + 1``);
+        if False, it uses predictive-only lags (``lags + 1``).
+
+    Returns
+    -------
+    int
+        Effective dimensionality of model regressors/latents implied by the
+        provided hyperparameters and model flags.
+    """
+    if num_environments < 1:
+        raise ValueError("num_environments must be >= 1")
+
+    if isinstance(hyperparameters, ReducedRankRegressionHyperparameters):
+        return hyperparameters.rank
+
+    if isinstance(hyperparameters, PlaceFieldHyperparameters):
+        base_dim = hyperparameters.num_bins * num_environments
+        if not gain:
+            return base_dim
+        if vector_gain:
+            if gain_rank < 1:
+                raise ValueError("gain_rank must be >= 1 when vector_gain=True")
+            return base_dim + gain_rank
+        return base_dim + 1
+
+    if isinstance(hyperparameters, RBFPosHyperparameters):
+        return hyperparameters.num_basis * num_environments
+
+    if isinstance(hyperparameters, FullRegressorHyperparameters):
+        dim = hyperparameters.num_basis * num_environments
+        dim += hyperparameters.speed_num_basis if speed_basis else 1
+        if no_reward:
+            return dim
+
+        if reward_inclusion is None:
+            reward_inclusion = {
+                "expectation": True,
+                "delivered_response": True,
+                "omission_response": True,
+            }
+
+        if reward_inclusion.get("expectation", False):
+            if expectation_symmetric:
+                dim += hyperparameters.reward_num_basis_lags * 2 + 1
+            else:
+                dim += hyperparameters.reward_num_basis_lags + 1
+        if reward_inclusion.get("delivered_response", False):
+            dim += hyperparameters.reward_num_basis_lags + 1
+        if reward_inclusion.get("omission_response", False):
+            dim += hyperparameters.reward_num_basis_lags + 1
+        return dim
+
+    raise TypeError(f"Unsupported hyperparameters type: {type(hyperparameters)!r}")
+
+
 class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "optuna"
 
@@ -331,6 +422,33 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             gain_suffix = ""
         model_name = f"{model_type}_placefield_1d{gain_suffix}"
         return model_name
+
+    def regressor_dimensionality(
+        self,
+        num_environments: int = 1,
+        hyperparameters: Optional[PlaceFieldHyperparameters] = None,
+    ) -> int:
+        """Return effective dimensionality implied by place-field hyperparameters.
+
+        Parameters
+        ----------
+        hyperparameters : Optional[PlaceFieldHyperparameters]
+            Hyperparameters to evaluate. If None, uses ``self.hyperparameters``.
+
+        Returns
+        -------
+        int
+            Regressor dimensionality for this model configuration.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return get_regressor_dimensionality_from_hyperparameters(
+            num_environments=num_environments,
+            hyperparameters=hyperparameters,
+            gain=self.gain,
+            vector_gain=self.vector_gain,
+            gain_rank=self.rank,
+        )
 
     def measure_internals(
         self,
@@ -797,6 +915,32 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
             model_name += "_no_intercept"
         return model_name
 
+    def regressor_dimensionality(
+        self,
+        num_environments: int = 1,
+        hyperparameters: Optional[RBFPosHyperparameters] = None,
+    ) -> int:
+        """Return effective dimensionality implied by RBF position hyperparameters.
+
+        Parameters
+        ----------
+        num_environments : int
+            Number of environments in the session.
+        hyperparameters : Optional[RBFPosHyperparameters]
+            Hyperparameters to evaluate. If None, uses ``self.hyperparameters``.
+
+        Returns
+        -------
+        int
+            Regressor dimensionality for this model configuration.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return get_regressor_dimensionality_from_hyperparameters(
+            hyperparameters=hyperparameters,
+            num_environments=num_environments,
+        )
+
 
 class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "optuna"
@@ -1127,6 +1271,36 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             model_name += "_no_intercept"
         return model_name
 
+    def regressor_dimensionality(
+        self,
+        num_environments: int = 1,
+        hyperparameters: Optional[FullRegressorHyperparameters] = None,
+    ) -> int:
+        """Return effective dimensionality implied by full-regressor hyperparameters.
+
+        Parameters
+        ----------
+        num_environments : int
+            Number of environments in the session.
+        hyperparameters : Optional[FullRegressorHyperparameters]
+            Hyperparameters to evaluate. If None, uses ``self.hyperparameters``.
+
+        Returns
+        -------
+        int
+            Regressor dimensionality for this model configuration.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return get_regressor_dimensionality_from_hyperparameters(
+            hyperparameters=hyperparameters,
+            num_environments=num_environments,
+            speed_basis=self.speed_basis,
+            no_reward=self.no_reward,
+            reward_inclusion=self.reward_inclusion,
+            expectation_symmetric=self.expectation_symmetric,
+        )
+
 
 class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "golden"
@@ -1286,6 +1460,23 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         if not self.fit_intercept:
             model_name += "_no_intercept"
         return model_name
+
+    def regressor_dimensionality(self, hyperparameters: Optional[ReducedRankRegressionHyperparameters] = None) -> int:
+        """Return latent dimensionality implied by reduced-rank hyperparameters.
+
+        Parameters
+        ----------
+        hyperparameters : Optional[ReducedRankRegressionHyperparameters]
+            Hyperparameters to evaluate. If None, uses ``self.hyperparameters``.
+
+        Returns
+        -------
+        int
+            Latent dimensionality for this model configuration.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return get_regressor_dimensionality_from_hyperparameters(hyperparameters=hyperparameters)
 
     def _optimize_golden(
         self,
