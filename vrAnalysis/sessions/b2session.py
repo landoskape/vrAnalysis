@@ -535,6 +535,45 @@ class B2Session(SessionData):
         """
         return self.get_value("numTrials")
 
+    def spontaneous_length(self) -> float:
+        """
+        Duration of imaging recorded after behavior ends.
+
+        During a session the imaging runs continuously while VR behavior stops
+        whenever the experiment is paused (a "spontaneous" window). This returns
+        how long the imaging extends past the last behavioral sample, regardless
+        of whether that window is long enough to be a deliberate spontaneous
+        period (see ``has_spontaneous``).
+
+        Returns
+        -------
+        float
+            Seconds between the last behavioral sample and the last imaging
+            frame. Small positive values (a frame or two) are normal for sessions
+            with no spontaneous window.
+        """
+        behave_end = self.loadone("positionTracking.times").max()
+        last_frame = self.loadone("mpci.times")[-1]
+        return float(last_frame - behave_end)
+
+    def has_spontaneous(self, threshold: float = 60.0) -> bool:
+        """
+        Whether the session has a genuine spontaneous (paused) window.
+
+        Parameters
+        ----------
+        threshold : float, optional
+            Minimum trailing imaging duration in seconds to count as a real
+            spontaneous window. Default is 60.0 (at least a minute).
+
+        Returns
+        -------
+        bool
+            True if the imaging extends past the end of behavior by more than
+            ``threshold`` seconds.
+        """
+        return self.spontaneous_length() > threshold
+
     @property
     def idx_rois(self) -> np.ndarray:
         """

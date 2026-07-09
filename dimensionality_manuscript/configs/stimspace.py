@@ -229,7 +229,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         VR-only frames.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "even"
     activity_parameters_name: str = "raw"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
@@ -383,7 +383,10 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         When ``include_iti`` is False, returns ``activities`` unchanged (VR-only frames).
         When True, appends each fold's share of the ITI / non-``idx_samples`` frames to the
         end of that fold's VR activity. ITI frames are the complement of ``population.idx_samples``,
-        split into 4 equal chunked folds via ``make_time_splits``.
+        grouped into contiguous chunks and greedily balanced across the folds. When the session
+        has a spontaneous window (``session.has_spontaneous()``), that trailing block is one large
+        contiguous chunk; it is first split into ``num_folds`` contiguous sub-chunks so it spreads
+        across folds instead of landing entirely in one.
 
         Parameters
         ----------
@@ -422,12 +425,29 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
                 current_fold += 1
             iti_fold[sample] = current_fold
 
+        num_folds = len(activities)
+
+        # A genuine spontaneous window is one large contiguous block of frames at the very end
+        # of the session, so it is always the final ITI chunk. Left intact it lands entirely in a
+        # single fold, which then dominates the func-side folds unevenly. Split it into num_folds
+        # contiguous sub-chunks (relabelled as new chunks); these are pre-assigned one per fold
+        # below so every func fold carries an equal share of spontaneous frames. Sessions without a
+        # spontaneous window are chunked exactly as before.
+        spont_chunk_ids: list[int] = []
+        if session.has_spontaneous():
+            spont_pos = torch.nonzero(iti_fold == current_fold, as_tuple=False).squeeze(1)  # positions of the spontaneous block in iti_abs
+            sub_parts = torch.tensor_split(spont_pos, num_folds)  # contiguous, ~equal sub-chunks
+            base_chunk = current_fold
+            for offset, part in enumerate(sub_parts[1:], start=1):
+                iti_fold[part] = base_chunk + offset  # first sub-chunk keeps base_chunk; the rest become new chunks
+            current_fold = base_chunk + len(sub_parts) - 1
+            spont_chunk_ids = [base_chunk + i for i in range(len(sub_parts))]
+
         # Assign chunks to fold with minimum current size to make it even (not all chunks are same size)
         num_chunks = current_fold + 1
-        num_folds = len(activities)
         chunk_sizes = torch.bincount(iti_fold, minlength=num_chunks)  # size per chunk label
 
-        # Split the ITI frames into 4 equal, chunked folds. Seed deterministically per
+        # Split the ITI frames into num_folds chunked folds. Seed deterministically per
         # session (the VR splits are cached, but this one is regenerated each call) and
         # restore the global torch RNG state afterward so nothing else is perturbed.
         seed = int(stable_hash(".".join(session.session_name)), 16) % (2**31)
@@ -436,7 +456,15 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         chunk_order = torch.randperm(num_chunks)
         fold_totals = torch.zeros(num_folds, dtype=torch.long)
         fold_chunk_ids: list[list[int]] = [[] for _ in range(num_folds)]
+        # Pre-assign the spontaneous sub-chunks one per fold so each func fold gets an equal share.
+        for fold, cid in enumerate(spont_chunk_ids):
+            fold_chunk_ids[fold].append(cid)
+            fold_totals[fold] += chunk_sizes[cid]
+        # Greedily balance the remaining (interior ITI) chunks by current fold size.
+        spont_set = set(spont_chunk_ids)
         for cid in chunk_order.tolist():
+            if cid in spont_set:
+                continue
             fold = int(fold_totals.argmin())
             fold_chunk_ids[fold].append(cid)
             fold_totals[fold] += chunk_sizes[cid]
