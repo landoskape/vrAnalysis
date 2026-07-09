@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from dimilibi import make_time_splits
+from dimilibi.helpers import vector_correlation
 
 from vrAnalysis.processors.placefields import get_placefield, FrameBehavior, Placefield
 from vrAnalysis.sessions import B2Session, SpksTypes
@@ -116,6 +117,27 @@ def _cvsvd(stim_train: torch.Tensor, stim_test: torch.Tensor, proj: torch.Tensor
     return torch.from_numpy(np.sum(U * (cross_test @ Vt.T), axis=0).copy())
 
 
+def _cvpca_svd(pf_train: torch.Tensor, pf_test1: torch.Tensor, pf_test2: torch.Tensor) -> torch.Tensor:
+    """cvPCA-style cross-validated spectrum matching ``CVPCA(on_stimuli=True)``.
+
+    Spatial eigenbasis from one (smoothed) train fold, covariance across neurons of two
+    disjoint (unsmoothed) test folds projected onto that basis. All inputs are raw aligned
+    (N, K) placefield matrices (i.e. NOT passed through ``_to_g``): this estimator centers
+    over neurons (per-position mean removed), which is the centering axis cvpca uses, rather
+    than the per-neuron centering of ``_to_g``.
+    """
+
+    def _center_neurons(x: torch.Tensor) -> torch.Tensor:
+        return x - x.mean(dim=0, keepdim=True)
+
+    train = _center_neurons(pf_train)  # (N, K)
+    _, _, Vt = torch.linalg.svd(train, full_matrices=False)
+    v = Vt.transpose(0, 1)  # (K, k) spatial eigenvectors
+    proj1 = _center_neurons(pf_test1) @ v  # (N, k) per-neuron scores
+    proj2 = _center_neurons(pf_test2) @ v
+    return vector_correlation(proj1, proj2, covariance=True, dim=0, center=True)
+
+
 def _direct_svd(A: torch.Tensor, B: torch.Tensor, n_components: int | None = None) -> torch.Tensor:
     """Singular values of A.T @ B. Pass n_components to use randomized SVD (large FF matrices)."""
     cross = (A.T @ B).numpy()
@@ -210,8 +232,10 @@ def _select_rois(
 class StimSpaceSpectraConfig(AnalysisConfigBase):
     """SS / SF / FF cross-covariance spectra from 4 independent session draws.
 
-    Computes five spectral estimators using the 4 equal time-splits:
+    Computes six spectral estimators using the 4 equal time-splits:
     - ss_cv, sf_cv   : cross-validated singular values (4 combinations of 3 draws)
+    - ss_cvpca       : cvPCA-style spectrum (neuron-centered, single-fold spatial basis,
+                       two disjoint test folds), matching CVPCA(on_stimuli=True)
     - ss_direct, sf_direct, ff : direct singular values (all 6 draw pairs)
 
     Parameters
@@ -331,8 +355,10 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
 
         valid_envs, valid_bins = _pf_position_filter(pf_train_list + pf_test_list)
 
-        sm_train = [_to_g(_pf_to_matrix(pf, valid_envs, valid_bins)) for pf in pf_train_list]
-        sm_test = [_to_g(_pf_to_matrix(pf, valid_envs, valid_bins)) for pf in pf_test_list]
+        raw_train = [_pf_to_matrix(pf, valid_envs, valid_bins) for pf in pf_train_list]
+        raw_test = [_pf_to_matrix(pf, valid_envs, valid_bins) for pf in pf_test_list]
+        sm_train = [_to_g(m) for m in raw_train]
+        sm_test = [_to_g(m) for m in raw_test]
         func_folds = self._build_func_folds(session, registry, population, neuron_data, activities, ap)
         added_frames = [fd.shape[1] - activity.shape[1] for fd, activity in zip(func_folds, activities)]
         original_frames = [activity.shape[1] for activity in activities]
@@ -348,12 +374,14 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         ff_components = min(n_neurons, min_samples)
 
         ss_cv_terms = [_cvsvd(sm_train[i], sm_test[j], sm_test[k]) for i, j, k in combos3]
+        ss_cvpca_terms = [_cvpca_svd(raw_train[i], raw_test[j], raw_test[k]) for i, j, k in combos3]
         sf_cv_terms = [_cvsvd(sm_train[i], sm_test[j], g_data[k]) for i, j, k in combos3]
         ss_dir_terms = [_direct_svd(sm_test[i], sm_test[j]) for i, j in pairs]
         sf_dir_terms = [_direct_svd(sm_test[i], g_data[j]) for i, j in pairs]
         ff_terms = [_direct_svd(g_data[i], g_data[j], ff_components) for i, j in pairs]
 
         ss_cv = torch.mean(torch.stack(ss_cv_terms), dim=0)
+        ss_cvpca = torch.mean(torch.stack(ss_cvpca_terms), dim=0)
         sf_cv = torch.mean(torch.stack(sf_cv_terms), dim=0)
         ss_dir = torch.mean(torch.stack(ss_dir_terms), dim=0)
         sf_dir = torch.mean(torch.stack(sf_dir_terms), dim=0)
@@ -361,6 +389,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
 
         return {
             "ss_cv": ss_cv.cpu().numpy(),
+            "ss_cvpca": ss_cvpca.cpu().numpy(),
             "sf_cv": sf_cv.cpu().numpy(),
             "ss_direct": ss_dir.cpu().numpy(),
             "sf_direct": sf_dir.cpu().numpy(),
