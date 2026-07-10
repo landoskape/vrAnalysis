@@ -47,11 +47,12 @@ class RegressionConfig(AnalysisConfigBase):
         Hyperparameter optimization method.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
+    # v3: recompute with numerically improved placefield code
 
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
-    spks_type: SpksTypes = "oasis"
+    spks_type: SpksTypes = "sigrebase"
     method: str = "preferred"
     activity_parameters_name: str = "default"
 
@@ -62,7 +63,7 @@ class RegressionConfig(AnalysisConfigBase):
         return {
             "model_name": list(MODEL_NAMES),
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
-            "spks_type": list(VALID_SPKS_TYPES),
+            # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
         }
 
     def validate(self):
@@ -121,7 +122,7 @@ class VectorGainRankConfig(AnalysisConfigBase):
     schema_version: str = "v1"
 
     data_config_name: str = "default"
-    spks_type: SpksTypes = "oasis"
+    spks_type: SpksTypes = "sigrebase"
     method: str = "preferred"
     activity_parameters_name: str = "default"
 
@@ -133,7 +134,7 @@ class VectorGainRankConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
-            "spks_type": list(VALID_SPKS_TYPES),
+            # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
         }
 
     def validate(self):
