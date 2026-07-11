@@ -153,10 +153,10 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Whether to z-score latents before regression.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
 
     data_config_name: str = "default"
-    spks_type: SpksTypes = "oasis"
+    spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "default"
     method: str = "preferred"
     external_model_name: str = "fullregressor_leak_1dspeed"
@@ -168,7 +168,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "spks_type": list(VALID_SPKS_TYPES),
+            # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
             "external_model_name": ["fullregressor_leak_1dspeed"],
             "rrr_variance": list(VALID_RRR_VARIANCE),
@@ -180,14 +180,10 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             raise ValueError(f"Unknown spks_type {self.spks_type!r}. Available: {VALID_SPKS_TYPES}")
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
             raise ValueError(
-                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. "
-                f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. " f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
             )
         if self.external_model_name not in VALID_LEAK_MODELS:
-            raise ValueError(
-                f"external_model_name {self.external_model_name!r} is not a leak model. "
-                f"Available: {VALID_LEAK_MODELS}"
-            )
+            raise ValueError(f"external_model_name {self.external_model_name!r} is not a leak model. " f"Available: {VALID_LEAK_MODELS}")
         if not (isinstance(self.rrr_variance, float) or self.rrr_variance == "match"):
             raise ValueError(f"rrr_variance must be a float or 'match', got {self.rrr_variance!r}")
 
@@ -217,10 +213,18 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             normalize=self.normalize,
         )
 
-        alpha_rrr_to_true, score_rrr_to_true = _optimize_alpha(data["train_rrr"], data["val_rrr"], data["train_external_true"], data["val_external_true"])
-        alpha_true_to_rrr, score_true_to_rrr = _optimize_alpha(data["train_external_true"], data["val_external_true"], data["train_rrr"], data["val_rrr"])
-        alpha_rrr_to_pred, score_rrr_to_pred = _optimize_alpha(data["train_rrr"], data["val_rrr"], data["train_external_pred"], data["val_external_pred"])
-        alpha_pred_to_rrr, score_pred_to_rrr = _optimize_alpha(data["train_external_pred"], data["val_external_pred"], data["train_rrr"], data["val_rrr"])
+        alpha_rrr_to_true, score_rrr_to_true = _optimize_alpha(
+            data["train_rrr"], data["val_rrr"], data["train_external_true"], data["val_external_true"]
+        )
+        alpha_true_to_rrr, score_true_to_rrr = _optimize_alpha(
+            data["train_external_true"], data["val_external_true"], data["train_rrr"], data["val_rrr"]
+        )
+        alpha_rrr_to_pred, score_rrr_to_pred = _optimize_alpha(
+            data["train_rrr"], data["val_rrr"], data["train_external_pred"], data["val_external_pred"]
+        )
+        alpha_pred_to_rrr, score_pred_to_rrr = _optimize_alpha(
+            data["train_external_pred"], data["val_external_pred"], data["train_rrr"], data["val_rrr"]
+        )
 
         rrr_to_true = RidgeRegression(alpha=alpha_rrr_to_true, fit_intercept=True).fit(data["train_rrr"], data["train_external_true"])
         true_to_rrr = RidgeRegression(alpha=alpha_true_to_rrr, fit_intercept=True).fit(data["train_external_true"], data["train_rrr"])

@@ -44,9 +44,9 @@ class PFPredQualityConfig(AnalysisConfigBase):
         Number of evaluation points for the KDE running-average curve.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     data_config_name: str = "default"
-    spks_type: SpksTypes = "oasis"
+    spks_type: SpksTypes = "sigrebase"
     reliability_threshold: float = 0.7
     accuracy_pct: float = 5.0
     n_hist_bins: int = 40
@@ -56,7 +56,7 @@ class PFPredQualityConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        return {"spks_type": list(VALID_SPKS_TYPES)}
+        return {}  # {"spks_type": list(VALID_SPKS_TYPES)} # no longer analyzing anything except sigrebase
 
     def validate(self):
         if self.spks_type not in VALID_SPKS_TYPES:
