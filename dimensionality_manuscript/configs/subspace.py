@@ -26,6 +26,7 @@ from ..pipeline.base import AnalysisConfigBase
 VALID_SUBSPACE_NAMES: list[SubspaceName] = [
     "covcov_subspace",
     "covcov_crossvalidated_subspace",
+    "svca_subspace",
 ]
 
 
