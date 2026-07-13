@@ -478,7 +478,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         Lower bound on peak widths (cm).
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
