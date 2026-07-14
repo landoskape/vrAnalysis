@@ -492,7 +492,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         Lower bound on peak widths (cm).
     """
 
-    schema_version: str = "v5"
+    schema_version: str = "v6"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
@@ -508,10 +508,10 @@ class TilburyFitConfig(AnalysisConfigBase):
         "best_env": "skip",
         "param_names": "skip",
         "param_names_control": "skip",
-        "eig_tilbury": "ragged",
-        "eig_control": "ragged",
-        "eig_raw_train": "ragged",
-        "eig_raw_test": "ragged",
+        "eig_tilbury": "pad",
+        "eig_control": "pad",
+        "eig_raw_train": "pad",
+        "eig_raw_test": "pad",
     }
 
     @staticmethod
@@ -698,10 +698,14 @@ class TilburyFitConfig(AnalysisConfigBase):
         # raw measured placefields (NaN-free by construction) use every selected neuron.
         ok = ~np.isnan(params).any(axis=1)
         okc = ~np.isnan(params_c).any(axis=1)
-        mat_tilbury = np.stack([_eval_tilbury(theta, params[n]) for n in np.flatnonzero(ok)])
-        mat_control = np.stack([_eval_gaussian(theta, params_c[n]) for n in np.flatnonzero(okc)])
+        ok_both = ok & okc
+        mat_tilbury = np.stack([_eval_tilbury(theta, params[n]) for n in np.flatnonzero(ok_both)])
+        mat_control = np.stack([_eval_gaussian(theta, params_c[n]) for n in np.flatnonzero(ok_both)])
+        better = pearson["test"][ok_both] > pearson_c["test"][ok_both]
+        mat_better = np.where(better[:, None], mat_tilbury, mat_control)
         eig_tilbury = _curve_spectrum(mat_tilbury)
         eig_control = _curve_spectrum(mat_control)
+        eig_better = _curve_spectrum(mat_better)
         eig_raw_train = _curve_spectrum(curves["train"])
         eig_raw_test = _curve_spectrum(curves["test"])
 
@@ -723,6 +727,7 @@ class TilburyFitConfig(AnalysisConfigBase):
             "idx_keep": idx_keep,
             "eig_tilbury": eig_tilbury,
             "eig_control": eig_control,
+            "eig_better": eig_better,
             "eig_raw_train": eig_raw_train,
             "eig_raw_test": eig_raw_test,
             "dist_centers": theta,
