@@ -97,6 +97,20 @@ def _r2(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> flo
     return 1.0 - ss_res / ss_tot
 
 
+def _pearson(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> float:
+    """Pearson correlation of ``pred`` against ``actual`` (one curve).
+
+    Shape-only quality: unlike :func:`_r2` it is invariant to affine rescaling
+    of ``pred``, so amplitude/offset mismatches don't penalise the score.
+    """
+    p = pred - pred.mean()
+    a = actual - actual.mean()
+    denom = float(np.sqrt(np.sum(p**2) * np.sum(a**2)))
+    if denom <= 0:
+        return np.nan
+    return float(np.sum(p * a) / denom)
+
+
 def _curve_spectrum(matrix: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     """Descending eigenvalue spectrum of the ``(N, P)`` curve matrix's neuron covariance.
 
@@ -478,7 +492,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         Lower bound on peak widths (cm).
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
@@ -659,6 +673,8 @@ class TilburyFitConfig(AnalysisConfigBase):
         n_neurons = curves["train"].shape[0]
         r2 = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
         r2c = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
+        pearson = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
+        pearson_c = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
 
         params = _fit_all_neurons_torch(theta, curves["train"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose)
         params_c = _fit_all_neurons_torch_gaussian(theta, curves["train"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose)
@@ -669,9 +685,13 @@ class TilburyFitConfig(AnalysisConfigBase):
             for split in _SPLITS:
                 c = curves[split][n]
                 if not np.any(np.isnan(x)):
-                    r2[split][n] = _r2(_eval_tilbury(theta, x), c)
+                    pred = _eval_tilbury(theta, x)
+                    r2[split][n] = _r2(pred, c)
+                    pearson[split][n] = _pearson(pred, c)
                 if not np.any(np.isnan(xc)):
-                    r2c[split][n] = _r2(_eval_gaussian(theta, xc), c)
+                    pred_c = _eval_gaussian(theta, xc)
+                    r2c[split][n] = _r2(pred_c, c)
+                    pearson_c[split][n] = _pearson(pred_c, c)
 
         # Population dimensionality: eigenvalue spectra of the (N, P) tuning-curve
         # matrices. Modeled curves are reconstructed for neurons with finite fits;
@@ -690,10 +710,16 @@ class TilburyFitConfig(AnalysisConfigBase):
             "r2_train": r2["train"],
             "r2_val": r2["validation"],
             "r2_test": r2["test"],
+            "pearson_train": pearson["train"],
+            "pearson_val": pearson["validation"],
+            "pearson_test": pearson["test"],
             "params_control": params_c,
             "r2_train_control": r2c["train"],
             "r2_val_control": r2c["validation"],
             "r2_test_control": r2c["test"],
+            "pearson_train_control": pearson_c["train"],
+            "pearson_val_control": pearson_c["validation"],
+            "pearson_test_control": pearson_c["test"],
             "idx_keep": idx_keep,
             "eig_tilbury": eig_tilbury,
             "eig_control": eig_control,
