@@ -143,6 +143,9 @@ def errorPlot(x, data, axis=-1, se=False, ax=None, handle_nans=True, **kwargs):
     errorData = std(data, axis=axis) / correction
     fillBetweenArgs = kwargs.copy()
     fillBetweenArgs.pop("label", None)
+    # The band is a filled patch, not a line: a nonzero edge draws a heavy border that reads
+    # darker than the fill. Force the edge weightless (callers' linewidth is for the mean line).
+    fillBetweenArgs["linewidth"] = 0
     ax.fill_between(x, meanData + errorData, meanData - errorData, **fillBetweenArgs)
     kwargs.pop("alpha", None)
     ax.plot(x, meanData, **kwargs)
