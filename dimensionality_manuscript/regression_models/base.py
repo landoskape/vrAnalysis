@@ -31,6 +31,40 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 MINIMUM_NON_NAN_FRACTION: float = 0.9
 
 
+def participation_ratio(activity: np.ndarray, center: bool = True) -> float:
+    """Participation ratio of the covariance eigenspectrum of an activity matrix.
+
+    Measures the effective dimensionality of ``activity`` as
+    ``PR = (Σ λⱼ)² / Σ λⱼ²``, where ``λⱼ`` are the eigenvalues of the (optionally
+    centered) covariance across the sample axis. PR is scale-invariant, so the overall
+    scaling of the activity does not matter. Correlated features (e.g. overlapping basis
+    functions in a model prediction) concentrate the spectrum and lower the PR below the
+    number of features.
+
+    Parameters
+    ----------
+    activity : np.ndarray
+        Activity matrix of shape (num_features, num_samples), e.g. a model prediction with
+        neurons on the feature axis and timepoints on the sample axis.
+    center : bool, default=True
+        If True, subtract each feature's mean across samples before computing the covariance,
+        so the PR reflects the dimensionality of the fluctuations rather than the mean pattern.
+
+    Returns
+    -------
+    float
+        The participation ratio (effective dimensionality) of the activity.
+    """
+    x = np.asarray(activity, dtype=np.float64)
+    if center:
+        x = x - x.mean(axis=1, keepdims=True)
+    # Gram over the smaller axis; its nonzero eigenvalues match the covariance eigenvalues,
+    # and PR is invariant to the omitted 1/(num_samples - 1) scaling.
+    gram = x @ x.T if x.shape[0] <= x.shape[1] else x.T @ x
+    trace = np.trace(gram)
+    return float(trace * trace / np.sum(gram * gram))
+
+
 @dataclass(frozen=True)
 class ActivityParameters:
     """Parameters for the activity data.
@@ -424,6 +458,54 @@ class RegressionModel(ABC, Generic[H]):
         )
 
         return report
+
+    def effective_dimensionality(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        test_split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[H] = None,
+        center: bool = True,
+    ) -> float:
+        """Effective dimensionality of the model's prediction, via participation ratio.
+
+        Trains the model and predicts target activity, then returns the participation ratio of
+        the prediction's covariance spectrum: the literal dimensionality of the predicted
+        activity ``Xβ``. This automatically reflects everything the model does to form its
+        prediction — basis-function width and correlations, the encoder→decoder path when
+        ``predict_latents``/``internal`` is set, gain, and the reduced rank — because it operates
+        on the actual prediction rather than the nominal regressor count.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to evaluate the effective dimensionality for.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        train_split : Optional["SplitName"]
+            The split to train on. Default is "train".
+        test_split : Optional["SplitName"]
+            The split whose prediction is measured. Default is "test".
+        hyperparameters : Optional[H]
+            The hyperparameters to use. If None, uses the model's default hyperparameters.
+            For a faithful measurement, pass the session's best hyperparameters.
+        center : bool, default=True
+            Whether to center the prediction over time before computing the covariance.
+
+        Returns
+        -------
+        float
+            The participation ratio (effective dimensionality) of the model's prediction.
+        """
+        report = self.process(
+            session,
+            spks_type,
+            train_split=train_split,
+            test_split=test_split,
+            hyperparameters=hyperparameters,
+        )
+        return participation_ratio(report.predicted_data, center=center)
 
     def optimize(
         self,

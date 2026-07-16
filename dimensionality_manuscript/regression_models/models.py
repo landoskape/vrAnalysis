@@ -941,7 +941,6 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
             num_environments=num_environments,
         )
 
-
 class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "optuna"
 
@@ -1300,7 +1299,6 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             reward_inclusion=self.reward_inclusion,
             expectation_symmetric=self.expectation_symmetric,
         )
-
 
 class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "golden"
