@@ -22,7 +22,7 @@ from pathlib import Path
 from vrAnalysis.helpers.typing import PrettyDatetime
 from vrAnalysis.sessions import B2Session
 
-MAX_ENV_SLOTS = 4
+MAX_ENV_SLOTS = 3
 
 
 def _session_sort_key(session: B2Session) -> tuple:
