@@ -10,7 +10,12 @@ list — ``session.environments`` reads oneData, which is present on both.
 
 Usage
 -----
-    python -m dimensionality_manuscript.scripts.export_env_order [--output PATH] [--sessions sessions.json]
+    python -m dimensionality_manuscript.scripts.export_env_order [--output PATH] [--sessions PATH]
+
+On MYRIAD the session list lives at ``~/vrAnalysis/sessions.json`` (see MYRIAD_SETUP.md;
+also the ``DIM_MANUSCRIPT_SESSIONS_FILE`` env var), so run:
+
+    python -m dimensionality_manuscript.scripts.export_env_order --sessions ~/vrAnalysis/sessions.json
 """
 
 import argparse
