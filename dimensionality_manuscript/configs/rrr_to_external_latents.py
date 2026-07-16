@@ -19,10 +19,9 @@ from vrAnalysis.sessions import B2Session, SpksTypes
 from ..registry import ACTIVITY_PARAMETERS_NAMES, PopulationRegistry, get_model
 from ..pipeline.base import AnalysisConfigBase
 
-
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
-VALID_RRR_VARIANCE: list[Union[float, str]] = [0.95, "match"]
+VALID_RRR_VARIANCE: list[Union[float, str]] = [None, 0.95, "match"]
 VALID_LEAK_MODELS: list[str] = [
     "rbfpos_leak",
     "rbfpos_leak_no_intercept",
