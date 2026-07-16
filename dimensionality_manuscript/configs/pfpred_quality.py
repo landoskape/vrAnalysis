@@ -20,7 +20,6 @@ from vrAnalysis.sessions import B2Session, SpksTypes
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry
 
-
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 
 
@@ -56,7 +55,7 @@ class PFPredQualityConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        return {}  # {"spks_type": list(VALID_SPKS_TYPES)} # no longer analyzing anything except sigrebase
+        return {}
 
     def validate(self):
         if self.spks_type not in VALID_SPKS_TYPES:
