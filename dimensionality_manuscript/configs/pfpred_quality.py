@@ -14,6 +14,7 @@ import numpy as np
 from scipy.stats import spearmanr, skew, kurtosis
 
 from vrAnalysis.helpers import vectorRSquared
+from vrAnalysis.helpers.signals import vectorCorrelation
 from vrAnalysis.processors.spkmaps import SpkmapProcessor, SpkmapParams
 from vrAnalysis.processors.support import median_zscore
 from vrAnalysis.sessions import B2Session, SpksTypes
@@ -43,7 +44,7 @@ class PFPredQualityConfig(AnalysisConfigBase):
         Number of evaluation points for the KDE running-average curve.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     reliability_threshold: float = 0.7
@@ -93,10 +94,11 @@ class PFPredQualityConfig(AnalysisConfigBase):
 
             r2 = vectorRSquared(pfpred_valid, spks_valid, axis=0)
             r2[r2 < -1] = np.nan
+            cc = vectorCorrelation(pfpred_valid, spks_valid, axis=0)
 
             relia = reliability.values[best_env]  # best env, shape (n_rois,)
 
-            result = {"r2": r2, "reliability": relia}
+            result = {"r2": r2, "cc": cc, "reliability": relia}
             result.update(_per_roi_stats(spks_valid, pfpred_valid, r2, relia, self.accuracy_pct))
 
             bin_edges = self.bin_edges
