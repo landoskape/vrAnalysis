@@ -135,8 +135,7 @@ def _print_db_delta(local_db: Path, remote_db: Path) -> None:
         (n_new,) = conn.execute("SELECT COUNT(*) FROM remote.results WHERE result_uid NOT IN (SELECT result_uid FROM results)").fetchone()
         print(f"  Results:  local={n_local}  remote={n_remote}  new={n_new}")
         if n_new > 0:
-            rows = conn.execute(
-                """
+            rows = conn.execute("""
                 SELECT analysis_type, schema_version,
                        COUNT(*) AS n, SUM(result_stored) AS stored,
                        COUNT(DISTINCT session_id) AS sessions
@@ -144,8 +143,7 @@ def _print_db_delta(local_db: Path, remote_db: Path) -> None:
                 WHERE result_uid NOT IN (SELECT result_uid FROM results)
                 GROUP BY analysis_type, schema_version
                 ORDER BY analysis_type, schema_version
-                """
-            ).fetchall()
+                """).fetchall()
             print()
             print(f"  {'analysis_type':<25} {'ver':<6} {'rows':>6} {'blobs':>6} {'sessions':>9}")
             print("  " + "-" * 58)
@@ -253,16 +251,14 @@ def _check_db_collisions(local_db: Path, remote_db: Path) -> None:
             print("  union == local+remote — no overlaps, all remote rows are new")
         else:
             print(f"  union < local+remote — {n_shared} remote row(s) share a result_uid " f"with local (INSERT OR IGNORE skips them)")
-            diffs = conn.execute(
-                """
+            diffs = conn.execute("""
                 SELECT r.result_uid, r.analysis_type, r.result_stored, rr.result_stored
                 FROM results r
                 JOIN remote.results rr ON r.result_uid = rr.result_uid
                 WHERE r.result_stored != rr.result_stored
                    OR coalesce(r.analysis_summary, '') != coalesce(rr.analysis_summary, '')
                 LIMIT 20
-                """
-            ).fetchall()
+                """).fetchall()
             if diffs:
                 print(f"  WARNING: {len(diffs)} shared row(s) have differing content (local wins)")
                 for uid, atype, ls, rs in diffs[:5]:

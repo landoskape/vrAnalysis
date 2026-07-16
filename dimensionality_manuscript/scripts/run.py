@@ -15,6 +15,7 @@ from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import (
     AnalysisPlan,
     AnalysisConfigBase,
+    BehaviorSpeedEnvConfig,
     CVPCAConfig,
     RegressionConfig,
     VectorGainRankConfig,
@@ -61,6 +62,7 @@ def build_analysis_configs(
         "pfpred_quality": PFPredQualityConfig,
         "rrr_to_external_latents": RRRToExternalLatentsConfig,
         "tilbury_fit": TilburyFitConfig,
+        "behavior_speed_env": BehaviorSpeedEnvConfig,
     }
     if include is None:
         include = list(_mapping.keys())

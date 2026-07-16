@@ -90,6 +90,7 @@ BASE_STORE_PATH = RegistryPaths.pipeline_v2_db_path
 def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
     """Map ``analysis_type`` (config ``display_name``) to config class."""
     from ..configs import (
+        BehaviorSpeedEnvConfig,
         CVPCAConfig,
         ExpMaxConfig,
         LocPredConfig,
@@ -109,6 +110,7 @@ def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
     )
 
     classes = (
+        BehaviorSpeedEnvConfig,
         CVPCAConfig,
         ExpMaxConfig,
         LocPredConfig,

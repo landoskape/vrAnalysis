@@ -77,11 +77,13 @@ class AnalysisConfigBase:
         """Return ``{field: [options]}`` for Cartesian product generation."""
 
     @classmethod
-    def generate_variations(cls) -> list[AnalysisConfigBase]:
+    def generate_variations(cls, schema_version: str | None = None) -> list[AnalysisConfigBase]:
         """Cartesian product of ``_param_grid()``. Override to filter."""
         grid = cls._param_grid()
         fields = list(grid.keys())
         values = list(grid.values())
+        if schema_version is not None:
+            return [cls(**dict(zip(fields, combo)), schema_version=schema_version) for combo in product(*values)]
         return [cls(**dict(zip(fields, combo))) for combo in product(*values)]
 
     @classmethod

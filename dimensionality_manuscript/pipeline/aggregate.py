@@ -50,7 +50,8 @@ def average_by_mouse(
     mouse_names: np.ndarray | list[str],
     *,
     skip_object_dtype: bool = True,
-) -> np.ndarray | dict[str, np.ndarray]:
+    include_mouse_names: bool = False,
+) -> np.ndarray | dict[str, np.ndarray] | tuple[np.ndarray | dict[str, np.ndarray], list[str]]:
     """Average ndarray(s) along axis 0 within groups that share a mouse name.
 
     Parameters
@@ -67,10 +68,17 @@ def average_by_mouse(
     -------
     np.ndarray or dict[str, np.ndarray]
         Averaged array(s) with shape ``(n_mice,) + arr.shape[1:]``.
+    optional: list[str]
+        If ``include_mouse_names`` is True, also return the list of unique mouse names.
     """
+    if include_mouse_names:
+        _mouse_names = list(dict.fromkeys(mouse_names))
+
     if isinstance(data, np.ndarray):
         if data.dtype == object and skip_object_dtype:
             raise TypeError("average_by_mouse cannot nanmean object-dtype arrays.")
+        if include_mouse_names:
+            return average_array_by_mouse(data, mouse_names), _mouse_names
         return average_array_by_mouse(data, mouse_names)
 
     out: dict[str, np.ndarray] = {}
@@ -82,6 +90,9 @@ def average_by_mouse(
             )
             continue
         out[key] = average_array_by_mouse(arr, mouse_names)
+
+    if include_mouse_names:
+        return out, _mouse_names
     return out
 
 
@@ -243,6 +254,7 @@ class ResultsAggregator:
         lazy: bool = True,
         keys: list[str] | None = None,
         load_ragged: bool = False,
+        schema_version: str | None = None,
     ):
         self.config_class = config_class
         self.store = store
@@ -250,6 +262,9 @@ class ResultsAggregator:
         self.lazy = lazy
         self._default_keys = keys
         self.load_ragged = load_ragged
+        # When set, build the variation grid at this schema_version instead of the class default,
+        # so an aggregator can read results stored under an older (or otherwise pinned) schema.
+        self._schema_version = schema_version
 
         self._result_handling: dict[str, str] = getattr(config_class, "_result_handling", {})
         self._ragged_keys = {k for k, h in self._result_handling.items() if h == "ragged"}
@@ -329,7 +344,7 @@ class ResultsAggregator:
         self._param_names = list(self.param_axes.keys())
         self._param_shape = tuple(len(v) for v in self.param_axes.values())
 
-        variations = config_class.generate_variations()
+        variations = config_class.generate_variations(schema_version=self._schema_version)
         self.variation_index = {}
         self._key_to_config = {}
         for var in variations:
