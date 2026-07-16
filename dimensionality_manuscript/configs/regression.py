@@ -9,7 +9,7 @@ score dict from the model's own cache.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 from collections import defaultdict
 
@@ -25,12 +25,45 @@ from ..registry import (
     ACTIVITY_PARAMETERS_NAMES,
     get_activity_parameters,
 )
-from ..regression_models.models import PlaceFieldModel
+from ..regression_models.models import (
+    PlaceFieldModel,
+    RBFPosModel,
+    FullRegressorModel,
+    ReducedRankRegressionModel,
+)
 from ..pipeline.base import AnalysisConfigBase
-
 
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
+
+# Models plotted in the main R2 figure (figure 2). The dimensionality sweep
+# below runs only over these. Placefield vector-gain models are excluded here
+# because their rank sweep is handled by VectorGainRankConfig.
+FIGURE_MODEL_NAMES: list[ModelName] = [
+    "external_placefield_1d",
+    "rbfpos_decoder_only",
+    "pos_speed_decoder_only_1dspeed",
+    "fullregressor_decoder_only_1dspeed",
+    "internal_placefield_1d",
+    "rbfpos",
+    "pos_speed_1dspeed",
+    "fullregressor_1dspeed",
+    "external_placefield_1d_gain",
+    "internal_placefield_1d_gain",
+    "rrr",
+]
+
+
+def _log_int_values(start: int, stop: int, num: int = 25) -> np.ndarray:
+    """Unique integer values spaced logarithmically over ``[start, stop]``."""
+    raw = np.logspace(np.log10(start), np.log10(stop), num=num)
+    return np.unique(np.round(raw).astype(int))
+
+
+# Dimensionality sweep grids (integer, log-spaced).
+NUM_BINS_VALUES: np.ndarray = _log_int_values(1, 200)  # placefield num_bins
+NUM_BASIS_VALUES: np.ndarray = _log_int_values(1, 200)  # rbfpos / full num_basis
+RANK_VALUES: np.ndarray = _log_int_values(1, 2000)  # rrr rank (clipped to data)
 
 
 @dataclass(frozen=True)
@@ -216,3 +249,138 @@ class VectorGainRankConfig(AnalysisConfigBase):
             scores["r2"][rank - 1] = _r2
 
         return dict(scores)
+
+
+def _pack_sweep(name: str, values: np.ndarray, dim: np.ndarray, mse_arr: np.ndarray, r2_arr: np.ndarray) -> dict:
+    """Flatten one dimensionality sweep into ``{name}_{values,dim,mse,r2}`` arrays."""
+    return {
+        f"{name}_values": np.asarray(values, dtype=float),
+        f"{name}_dim": np.asarray(dim, dtype=float),
+        f"{name}_mse": np.asarray(mse_arr, dtype=float),
+        f"{name}_r2": np.asarray(r2_arr, dtype=float),
+    }
+
+
+@dataclass(frozen=True)
+class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
+    """Sweep test performance as a function of regressor dimensionality.
+
+    For each figure-2 model, holds the best (cached) hyperparameters fixed and
+    sweeps the model's dimensionality knob on the test split:
+
+    - Placefield models: ``num_bins`` (log 1..200).
+    - RBFPos / pos_speed / full-regressor models: ``num_basis`` (log 1..200).
+    - RRR: ``rank`` (log 1..2000, clipped to the achievable rank). The model is
+      fit once and re-scored at each rank, since RRR training is rank-agnostic.
+
+    Results are flat ``{sweep}_{values,dim,mse,r2}`` arrays, where ``dim`` is the
+    nominal regressor dimensionality for the swept configuration. Always uses the
+    ``"default"`` activity parameters.
+
+    Parameters
+    ----------
+    model_name : ModelName
+        Name of the regression model (must be in ``FIGURE_MODEL_NAMES``).
+    spks_type : SpksTypes
+        Spike type to use for the population.
+    method : str
+        Hyperparameter selection method used to fix the baseline hyperparameters.
+    """
+
+    schema_version: str = "v1"
+
+    data_config_name: str = "default"
+    model_name: ModelName = "external_placefield_1d"
+    spks_type: SpksTypes = "sigrebase"
+    method: str = "best"
+
+    display_name: ClassVar[str] = "regression_dim_sweep"
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {
+            "model_name": list(FIGURE_MODEL_NAMES),
+        }
+
+    def validate(self):
+        if self.model_name not in FIGURE_MODEL_NAMES:
+            raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(FIGURE_MODEL_NAMES)}")
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"{self.model_name}",
+            f"spks={self.spks_type}",
+            f"method={self.method}",
+            self.schema_version,
+        ]
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        """Run the dimensionality sweep appropriate for this model."""
+        model = get_model(self.model_name, registry, activity_parameters="default")
+        num_env = len(session.environments)
+        base_hp = model.get_best_hyperparameters(session, spks_type=self.spks_type, method=self.method)[0]
+
+        if isinstance(model, PlaceFieldModel):
+            return _pack_sweep("num_bins", *self._sweep_param(model, session, base_hp, num_env, "num_bins", NUM_BINS_VALUES))
+
+        if isinstance(model, FullRegressorModel) or isinstance(model, RBFPosModel):
+            return _pack_sweep("num_basis", *self._sweep_param(model, session, base_hp, num_env, "num_basis", NUM_BASIS_VALUES))
+
+        if isinstance(model, ReducedRankRegressionModel):
+            return self._sweep_rrr(model, session, base_hp)
+
+        raise TypeError(f"No dimensionality sweep defined for model type {type(model).__name__}")
+
+    def _sweep_param(
+        self,
+        model,
+        session: B2Session,
+        base_hp,
+        num_env: int,
+        param_name: str,
+        values: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Refit and score ``model`` at each value of a single integer hyperparameter."""
+        n = len(values)
+        dim = np.full(n, np.nan)
+        mse_arr = np.full(n, np.nan)
+        r2_arr = np.full(n, np.nan)
+        for i, value in enumerate(values):
+            hyperparameters = replace(base_hp, **{param_name: int(value)})
+            dim[i] = model.regressor_dimensionality(num_env, hyperparameters=hyperparameters)
+            report = model.process(session, spks_type=self.spks_type, hyperparameters=hyperparameters)
+            mse_arr[i] = float(report.metrics["mse"])
+            r2_arr[i] = float(report.metrics["r2"])
+        return values, dim, mse_arr, r2_arr
+
+    def _sweep_rrr(self, model: ReducedRankRegressionModel, session: B2Session, base_hp) -> dict:
+        """Fit RRR once at the best alpha, then re-score the test split at each rank."""
+        source_data, target_data_train, _ = model.get_session_data(session, self.spks_type, "train")
+        max_rank = int(min(source_data.shape[0], target_data_train.shape[0]))
+        ranks = RANK_VALUES[RANK_VALUES <= max_rank]
+
+        trained_model = model.train(session, spks_type=self.spks_type, split="train", hyperparameters=base_hp)
+        target_test = model.get_session_data(session, self.spks_type, "test")[1]
+
+        n = len(ranks)
+        mse_arr = np.full(n, np.nan)
+        r2_arr = np.full(n, np.nan)
+        for i, rank in enumerate(ranks):
+            hyperparameters = replace(base_hp, rank=int(rank))
+            prediction, extras = model.predict(
+                session,
+                trained_model,
+                spks_type=self.spks_type,
+                split="test",
+                hyperparameters=hyperparameters,
+            )
+            target = target_test
+            if extras.get("predictions_were_filtered", False):
+                target = target_test[:, extras["idx_valid_predictions"]]
+            metrics = model.evaluate(prediction, target)
+            mse_arr[i] = float(metrics["mse"])
+            r2_arr[i] = float(metrics["r2"])
+
+        return _pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr)

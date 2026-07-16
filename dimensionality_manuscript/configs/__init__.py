@@ -3,7 +3,7 @@ from .cvpca import CVPCAConfig
 from .data_config import DataConfig, get_data_config, list_data_configs
 from .pfpred_quality import PFPredQualityConfig
 from .population import PopulationConfig
-from .regression import RegressionConfig, VectorGainRankConfig
+from .regression import RegressionConfig, VectorGainRankConfig, RegressionDimensionalitySweepConfig
 from .rrr_to_external_latents import RRRToExternalLatentsConfig
 from .subspace import SubspaceConfig
 from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig
@@ -33,6 +33,7 @@ __all__ = [
     "RegressionConfig",
     "RRRToExternalLatentsConfig",
     "VectorGainRankConfig",
+    "RegressionDimensionalitySweepConfig",
     "SubspaceConfig",
     "StimSpaceConfig",
     "StimSpaceSpectraConfig",
