@@ -1,3 +1,4 @@
+from .behavior_speed_env import BehaviorSpeedEnvConfig
 from .cvpca import CVPCAConfig
 from .data_config import DataConfig, get_data_config, list_data_configs
 from .pfpred_quality import PFPredQualityConfig
@@ -24,6 +25,7 @@ from .simulation_sweep import (
 )
 
 __all__ = [
+    "BehaviorSpeedEnvConfig",
     "CVPCAConfig",
     "DataConfig",
     "PFPredQualityConfig",

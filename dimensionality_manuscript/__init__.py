@@ -1,4 +1,5 @@
 from .configs import (
+    BehaviorSpeedEnvConfig,
     CVPCAConfig,
     DataConfig,
     PopulationConfig,
@@ -33,6 +34,7 @@ __all__ = [
     "average_array_by_mouse",
     "average_by_mouse",
     "AnalysisConfigBase",
+    "BehaviorSpeedEnvConfig",
     "CVPCAConfig",
     "DataConfig",
     "PopulationConfig",
