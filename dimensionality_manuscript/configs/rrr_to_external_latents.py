@@ -21,7 +21,7 @@ from ..pipeline.base import AnalysisConfigBase
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
-VALID_RRR_VARIANCE: list[Union[float, str]] = [None, 0.95, "match"]
+VALID_RRR_VARIANCE: list[Union[float, str]] = [1.0, 0.95, "match"]
 VALID_LEAK_MODELS: list[str] = [
     "rbfpos_leak",
     "rbfpos_leak_no_intercept",
