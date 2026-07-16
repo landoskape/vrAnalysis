@@ -152,7 +152,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Whether to z-score latents before regression.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
 
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
@@ -243,4 +243,8 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             "test_score_true_to_rrr": true_to_rrr.score(data["test_external_true"], data["test_rrr"], dim=None),
             "test_score_rrr_to_pred": rrr_to_pred.score(data["test_rrr"], data["test_external_pred"], dim=None),
             "test_score_pred_to_rrr": pred_to_rrr.score(data["test_external_pred"], data["test_rrr"], dim=None),
+            "test_score_each_rrr_to_true": rrr_to_true.score(data["test_rrr"], data["test_external_true"], dim=0),
+            "test_score_each_true_to_rrr": true_to_rrr.score(data["test_external_true"], data["test_rrr"], dim=0),
+            "test_score_each_rrr_to_pred": rrr_to_pred.score(data["test_rrr"], data["test_external_pred"], dim=0),
+            "test_score_each_pred_to_rrr": pred_to_rrr.score(data["test_external_pred"], data["test_rrr"], dim=0),
         }
