@@ -20,6 +20,7 @@ from vrAnalysis.helpers import reliability_loo, stable_hash
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry, get_activity_parameters, Population
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
+from ..env_order import load_env_order, MAX_ENV_SLOTS
 from .regression import VALID_SPKS_TYPES
 
 
@@ -181,6 +182,22 @@ def _pf_to_matrix(placefield: Placefield, valid_envs: np.ndarray, valid_bins: np
     return torch.tensor(aligned.reshape(-1, aligned.shape[2]).T, dtype=torch.float32)  # (N, envs*bins)
 
 
+def _pf_valid_bins_for_env(placefields: list[Placefield], env: int) -> np.ndarray:
+    """Bins with no NaN in any fold for a single environment.
+
+    Single-environment analog of the ``valid_bins`` produced by ``_pf_position_filter``:
+    a bin is dropped only when it is missing for *this* environment in some fold, not when
+    another environment lacks it. ``env`` must be present in every fold (guaranteed when it
+    comes from ``_pf_position_filter``'s ``valid_envs``).
+    """
+    num_bins = placefields[0].count.shape[1]
+    valid_bins = np.ones(num_bins, dtype=bool)
+    for pf in placefields:
+        filtered = pf.filter_by_environment((int(env),))
+        valid_bins &= ~np.any(np.isnan(filtered.placefield), axis=(0, 2))
+    return valid_bins
+
+
 def _select_rois(
     session: B2Session,
     registry: PopulationRegistry,
@@ -190,8 +207,15 @@ def _select_rois(
     dist_edges: np.ndarray,
     rel_thresh: float | None,
     frac_thresh: float | None,
+    filter_by_env: int | None = None,
 ) -> np.ndarray:
-    """Select reliable and active ROIs via leave-one-out reliability and fraction active."""
+    """Select reliable and active ROIs via leave-one-out reliability and fraction active.
+
+    When ``filter_by_env`` is given, reliability / fraction-active are computed for that
+    single environment only (rather than OR-ed across every environment), so the returned
+    mask keeps neurons reliable/active in that environment. With no thresholds set the mask
+    is all-True regardless of ``filter_by_env``.
+    """
     idx_keep = np.ones(neuron_data.shape[0], dtype=bool)
     if rel_thresh is None and frac_thresh is None:
         return idx_keep
@@ -207,7 +231,8 @@ def _select_rois(
         use_fast_sampling=True,
         session=session,
     )
-    _by_env = [_all_trials.filter_by_environment(env) for env in session.environments]
+    _envs = [int(filter_by_env)] if filter_by_env is not None else list(session.environments)
+    _by_env = [_all_trials.filter_by_environment(env) for env in _envs]
     _pf_data = [np.transpose(pf.placefield, (2, 0, 1)) for pf in _by_env]  # list of (N, trials, bins)
     if rel_thresh is not None:
         idx_keep &= np.logical_or.reduce([reliability_loo(d) > rel_thresh for d in _pf_data])
@@ -253,7 +278,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         VR-only frames.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "even"
     activity_parameters_name: str = "raw"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
@@ -298,7 +323,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         ap = get_activity_parameters(self.activity_parameters_name)
         smooth_train, smooth_test = self.smooth_widths
 
-        neuron_data = population.data[population.idx_neurons]  # (N_all, T_total)
+        neuron_data_full = population.data[population.idx_neurons]  # (N_all, T_total)
 
         rel_thresh, frac_thresh = self.reliability_fraction_active_thresholds
         idx_keep = _select_rois(
@@ -306,16 +331,16 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             registry,
             population,
             frame_behavior,
-            neuron_data,
+            neuron_data_full,
             dist_edges,
             rel_thresh,
             frac_thresh,
         )
 
-        neuron_data = neuron_data[idx_keep]
+        neuron_data = neuron_data_full[idx_keep]
         n_neurons = neuron_data.shape[0]
 
-        activities, pf_train_list, pf_test_list = [], [], []
+        activities, pf_train_list, pf_test_list, fb_splits = [], [], [], []
         for time_idx in range(4):
             data = population.apply_split(
                 neuron_data,
@@ -328,6 +353,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             fb_split = frame_behavior.filter(population.get_split_times(time_idx, within_idx_samples=False))
             spks_np = data.T.numpy()
             activities.append(data)
+            fb_splits.append(fb_split)
             pf_train_list.append(
                 get_placefield(
                     spks_np,
@@ -387,7 +413,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         sf_dir = torch.mean(torch.stack(sf_dir_terms), dim=0)
         ff = torch.mean(torch.stack(ff_terms), dim=0)
 
-        return {
+        result = {
             "ss_cv": ss_cv.cpu().numpy(),
             "ss_cvpca": ss_cvpca.cpu().numpy(),
             "sf_cv": sf_cv.cpu().numpy(),
@@ -397,6 +423,166 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "added_frames": added_frames,
             "original_frames": original_frames,
         }
+        result.update(
+            self._per_env_spectra(
+                session,
+                registry,
+                population,
+                frame_behavior,
+                ap,
+                dist_edges,
+                neuron_data_full,
+                idx_keep,
+                rel_thresh,
+                frac_thresh,
+                pf_train_list,
+                pf_test_list,
+                activities,
+                fb_splits,
+                g_data,
+                valid_envs,
+                combos3,
+                pairs,
+            )
+        )
+        return result
+
+    def _per_env_spectra(
+        self,
+        session: B2Session,
+        registry: PopulationRegistry,
+        population: Population,
+        frame_behavior: FrameBehavior,
+        ap,
+        dist_edges: np.ndarray,
+        neuron_data_full: np.ndarray,
+        idx_keep: np.ndarray,
+        rel_thresh: float | None,
+        frac_thresh: float | None,
+        pf_train_list: list[Placefield],
+        pf_test_list: list[Placefield],
+        activities: list[torch.Tensor],
+        fb_splits: list[FrameBehavior],
+        g_data: list[torch.Tensor],
+        valid_envs: np.ndarray,
+        combos3: list[tuple[int, int, int]],
+        pairs: list[tuple[int, int]],
+    ) -> dict:
+        """Per-environment SS / SF / FF spectra, keyed by experience-order slot.
+
+        For each shared environment the place-field (stim) side comes from that single
+        environment, and the func (full) side is built two ways: ``full1`` = frames from
+        that environment only (VR, no ITI), ``fullall`` = all-environment frames reusing
+        the yoked func folds (``g_data``, ITI per ``include_iti``). Every returned key is a
+        fixed ``(MAX_ENV_SLOTS, L)`` array with slot 0 = the first environment the mouse
+        experienced; unfilled slots and the padded tail are NaN. ``env_slot_ids`` maps each
+        slot to its real environment id for this mouse.
+        """
+        order = load_env_order()
+        mouse_order = order.get(session.mouse_name)
+
+        keys = [
+            "ss_cv_env",
+            "ss_cvpca_env",
+            "ss_direct_env",
+            "sf_cv_env_full1",
+            "sf_cv_env_fullall",
+            "sf_direct_env_full1",
+            "sf_direct_env_fullall",
+            "ff_env_full1",
+            "ff_env_full1_fullall",
+        ]
+        per_env: dict[str, dict[int, np.ndarray]] = {k: {} for k in keys}
+
+        env_slot_ids = np.full(MAX_ENV_SLOTS, np.nan)
+        if mouse_order is not None:
+            env_slot_ids[: len(mouse_order)] = mouse_order
+
+        pf_folds = pf_train_list + pf_test_list
+        n_reduced = int(idx_keep.sum())
+
+        for env in valid_envs:
+            env = int(env)
+            if env < 0 or mouse_order is None or env not in mouse_order:
+                continue
+            slot = mouse_order.index(env)
+
+            # Per-env neuron sub-mask within the reduced (idx_keep) set.
+            if rel_thresh is None and frac_thresh is None:
+                sub = np.ones(n_reduced, dtype=bool)
+            else:
+                idx_keep_e = _select_rois(
+                    session,
+                    registry,
+                    population,
+                    frame_behavior,
+                    neuron_data_full,
+                    dist_edges,
+                    rel_thresh,
+                    frac_thresh,
+                    filter_by_env=env,
+                )
+                sub = idx_keep_e[idx_keep]
+            n_e = int(sub.sum())
+            if n_e < 2:
+                continue
+
+            valid_bins_e = _pf_valid_bins_for_env(pf_folds, env)
+            bins_e = int(valid_bins_e.sum())
+            if bins_e < 2:
+                continue
+
+            env_arr = np.array([env])
+            raw_train_e = [_pf_to_matrix(pf, env_arr, valid_bins_e)[sub] for pf in pf_train_list]
+            raw_test_e = [_pf_to_matrix(pf, env_arr, valid_bins_e)[sub] for pf in pf_test_list]
+            sm_train_e = [_to_g(m) for m in raw_train_e]
+            sm_test_e = [_to_g(m) for m in raw_test_e]
+
+            # full1 func side: env-only VR frames. Skip the env if any fold has fewer frames
+            # than valid bins (keeps the cross-validated SVD spectra the same length so they
+            # stack across folds; a sub-bin-count fold is degenerate anyway).
+            f1_cols = [fb.environment == env for fb in fb_splits]
+            if min(int(c.sum()) for c in f1_cols) < bins_e:
+                continue
+            g_f1 = [_to_g(activities[i][sub][:, f1_cols[i]]) for i in range(4)]
+            # fullall func side: reuse yoked func folds, row-sliced to env neurons
+            # (row-slice commutes with the per-row centering in _to_g).
+            g_fall = [g_data[i][sub] for i in range(4)]
+
+            min_f1 = min(g.shape[1] for g in g_f1)
+            min_fall = min(g.shape[1] for g in g_fall)
+            ff_comp_1 = min(n_e, min_f1)
+            ff_comp_mix = min(n_e, min_f1, min_fall)
+
+            ss_cv_e = torch.mean(torch.stack([_cvsvd(sm_train_e[i], sm_test_e[j], sm_test_e[k]) for i, j, k in combos3]), dim=0)
+            ss_cvpca_e = torch.mean(torch.stack([_cvpca_svd(raw_train_e[i], raw_test_e[j], raw_test_e[k]) for i, j, k in combos3]), dim=0)
+            ss_dir_e = torch.mean(torch.stack([_direct_svd(sm_test_e[i], sm_test_e[j]) for i, j in pairs]), dim=0)
+            sf_cv_1_e = torch.mean(torch.stack([_cvsvd(sm_train_e[i], sm_test_e[j], g_f1[k]) for i, j, k in combos3]), dim=0)
+            sf_cv_all_e = torch.mean(torch.stack([_cvsvd(sm_train_e[i], sm_test_e[j], g_fall[k]) for i, j, k in combos3]), dim=0)
+            sf_dir_1_e = torch.mean(torch.stack([_direct_svd(sm_test_e[i], g_f1[j]) for i, j in pairs]), dim=0)
+            sf_dir_all_e = torch.mean(torch.stack([_direct_svd(sm_test_e[i], g_fall[j]) for i, j in pairs]), dim=0)
+            ff_1_e = torch.mean(torch.stack([_direct_svd(g_f1[i], g_f1[j], ff_comp_1) for i, j in pairs]), dim=0)
+            ff_1_all_e = torch.mean(torch.stack([_direct_svd(g_f1[i], g_fall[j], ff_comp_mix) for i, j in pairs]), dim=0)
+
+            per_env["ss_cv_env"][slot] = ss_cv_e.cpu().numpy()
+            per_env["ss_cvpca_env"][slot] = ss_cvpca_e.cpu().numpy()
+            per_env["ss_direct_env"][slot] = ss_dir_e.cpu().numpy()
+            per_env["sf_cv_env_full1"][slot] = sf_cv_1_e.cpu().numpy()
+            per_env["sf_cv_env_fullall"][slot] = sf_cv_all_e.cpu().numpy()
+            per_env["sf_direct_env_full1"][slot] = sf_dir_1_e.cpu().numpy()
+            per_env["sf_direct_env_fullall"][slot] = sf_dir_all_e.cpu().numpy()
+            per_env["ff_env_full1"][slot] = ff_1_e.cpu().numpy()
+            per_env["ff_env_full1_fullall"][slot] = ff_1_all_e.cpu().numpy()
+
+        out: dict = {}
+        for key, slot_map in per_env.items():
+            max_len = max((v.shape[0] for v in slot_map.values()), default=1)
+            arr = np.full((MAX_ENV_SLOTS, max_len), np.nan)
+            for slot, v in slot_map.items():
+                arr[slot, : v.shape[0]] = v
+            out[key] = arr
+        out["env_slot_ids"] = env_slot_ids
+        return out
 
     def _build_func_folds(
         self,

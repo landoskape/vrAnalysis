@@ -116,6 +116,7 @@ class RegistryPaths:
     em_path: Path = cache_path / "em"
     pipeline_v2_path: Path = cache_path / "pipeline_v2"
     pipeline_v2_db_path: Path = pipeline_v2_path / "results.db"
+    env_order_path: Path = manuscript_path / "env_order.json"
 
     def __post_init__(self):
         self.manuscript_path.mkdir(parents=True, exist_ok=True)
