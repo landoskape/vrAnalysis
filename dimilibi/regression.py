@@ -3,7 +3,7 @@ from copy import copy
 from tqdm import tqdm
 import numpy as np
 import torch
-from .metrics import measure_r2
+from .metrics import measure_r2, mse, DimType
 
 
 class RidgeRegression:
@@ -471,9 +471,9 @@ class ReducedRankRegression(RidgeRegression):
         y: torch.Tensor,
         ranks: Optional[list[int]] = None,
         nonnegative: Optional[bool] = False,
-        reduce: str = "mean",
+        dim: DimType = None,
         verbose: bool = True,
-    ) -> tuple[list[int], list]:
+    ) -> tuple[list[int], dict[str, list]]:
         """Score the model across a range of ranks in a single pass.
 
         Exploits the nested low-rank structure of reduced rank regression. The rank-r
@@ -492,6 +492,12 @@ class ReducedRankRegression(RidgeRegression):
         the running prediction is kept in its raw (possibly negative) form and a rectified copy
         is made only for scoring at each requested rank.
 
+        Both MSE and R^2 are reported at each rank. With the default ``dim=None`` both are
+        pooled over all samples and targets, matching the metrics computed elsewhere in the
+        pipeline (e.g. ``measure_r2``/``mse`` with ``dim=None``). Note that a per-target R^2
+        (``dim=0``) is much more pessimistic than the pooled value, since low-variance targets
+        contribute large negative R^2.
+
         Parameters
         ----------
         X : torch.Tensor
@@ -503,9 +509,10 @@ class ReducedRankRegression(RidgeRegression):
             ``self.max_rank``. Values must be in ``[1, self.max_rank]``.
         nonnegative : Optional[bool]
             If True, applies a ReLU to the prediction before scoring (default is False).
-        reduce : str
-            Reduction passed to ``measure_r2``: "mean" returns a float per rank, "none" returns
-            a per-target tensor per rank. Default is "mean".
+        dim : DimType
+            Dimension(s) over which the metrics are computed. Default is None (pooled over all
+            samples and targets, matching the rest of the pipeline). Use 0 for per-sample-axis
+            reduction giving a per-target metric.
         verbose : bool
             If True, displays a progress bar for scoring each rank (default is True).
 
@@ -513,8 +520,8 @@ class ReducedRankRegression(RidgeRegression):
         -------
         ranks : list[int]
             The (sorted, de-duplicated) ranks that were scored.
-        scores : list
-            The R^2 score at each rank, aligned with ``ranks``.
+        scores : dict[str, list]
+            Dictionary with keys "mse" and "r2", each a list of scores aligned with ``ranks``.
         """
         if self.fit_intercept:
             X = self._add_intercept(X)
@@ -531,13 +538,14 @@ class ReducedRankRegression(RidgeRegression):
 
         running = torch.zeros(X.size(0), y.size(1), dtype=latents.dtype, device=latents.device)
         prev_rank = 0
-        scores = []
+        scores: dict[str, list] = {"mse": [], "r2": []}
         for rank in tqdm(ranks, desc="Scoring ranks", leave=False, disable=not verbose):
             # Add the outer-product contributions for components [prev_rank, rank)
             running = running + latents[:, prev_rank:rank] @ V[:, prev_rank:rank].T
             prev_rank = rank
             prediction = torch.relu(running) if nonnegative else running
-            scores.append(measure_r2(prediction, y, reduce=reduce, dim=0))
+            scores["mse"].append(mse(prediction, y, reduce="mean", dim=dim))
+            scores["r2"].append(measure_r2(prediction, y, reduce="mean", dim=dim))
 
         return ranks, scores
 
