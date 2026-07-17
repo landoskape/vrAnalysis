@@ -941,6 +941,7 @@ class RBFPosModel(RegressionModel[RBFPosHyperparameters]):
             num_environments=num_environments,
         )
 
+
 class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "optuna"
 
@@ -1300,6 +1301,7 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             expectation_symmetric=self.expectation_symmetric,
         )
 
+
 class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparameters]):
     preferred_optimization_method: OptimizationMethod = "golden"
 
@@ -1443,15 +1445,15 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         split: Optional["SplitName"] = "test",
         ranks: Optional[list[int]] = None,
         nan_safe: bool = False,
-    ) -> tuple[list[int], dict[str, list]]:
+        reduce: str = "mean",
+        verbose: bool = False,
+    ) -> tuple[list[int], list]:
         """Score a trained RRR model across a range of ranks in a single pass.
 
         Thin wrapper around ``ReducedRankRegression.score_curve``. The trained model already
         holds the OLS coefficients and the rank-constraint basis, so scoring every rank reuses
-        one set of latent projections rather than recomputing coefficients per rank. Both MSE
-        and R^2 are reported at each rank, pooled over all samples and targets to match the
-        metrics from ``score``/``evaluate`` (so the MSE curve is directly comparable to the MSE
-        returned by ``score`` at the trained rank).
+        one set of latent projections rather than recomputing coefficients per rank. Returns
+        R^2 (via ``measure_r2``), not MSE like ``score``.
 
         Parameters
         ----------
@@ -1469,13 +1471,18 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         nan_safe : bool
             If True, raises if any source/target sample contains NaN. If False, drops those
             samples before scoring.
+        reduce : str
+            Reduction passed through to ``measure_r2``: "mean" returns a float per rank, "none"
+            returns a per-target tensor per rank. Default is "mean".
+        verbose : bool
+            If True, prints progress to stdout. Default is False.
 
         Returns
         -------
         ranks : list[int]
             The (sorted, de-duplicated) ranks that were scored.
-        scores : dict[str, list]
-            Dictionary with keys "mse" and "r2", each a list of scores aligned with ``ranks``.
+        scores : list
+            The R^2 score at each rank, aligned with ``ranks``.
         """
         source_data, target_data, _ = self.get_session_data(session, spks_type, split)
         X = source_data.T
@@ -1488,7 +1495,7 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
             X = X[~idx_nan]
             y = y[~idx_nan]
 
-        return rrr_model.score_curve(X, y, ranks=ranks, nonnegative=self.nonnegative)
+        return rrr_model.score_curve(X, y, ranks=ranks, nonnegative=self.nonnegative, reduce=reduce, verbose=verbose)
 
     @property
     def _model_hyperparameters(self) -> Type[ReducedRankRegressionHyperparameters]:
