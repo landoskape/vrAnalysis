@@ -152,7 +152,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Whether to z-score latents before regression.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
 
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
