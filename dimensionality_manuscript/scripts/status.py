@@ -38,7 +38,9 @@ from collections import Counter, defaultdict
 import pandas as pd
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import ResultsStore
+from dimensionality_manuscript.pipeline.base import AnalysisConfigBase
 from dimensionality_manuscript.scripts.run import build_analysis_configs
+from dimensionality_manuscript.scripts.run_simulations import _MAPPING as _SWEEP_MAPPING
 
 REGISTRY_PATHS = RegistryPaths()
 
@@ -55,6 +57,58 @@ def _analysis_display_names(analyses: list[str] | None) -> list[str] | None:
         return None
     configs = build_analysis_configs(include=analyses)
     return list({cfg.display_name for cfg in configs})
+
+
+def _current_configs() -> list[AnalysisConfigBase]:
+    """All current configs across both pipelines.
+
+    Unions the main analysis registry (``run.build_analysis_configs``) with the
+    simulation-sweep registry (``run_simulations._MAPPING``); the sweep configs
+    are a separate pipeline and would otherwise look unregistered.
+    """
+    configs = list(build_analysis_configs())
+    for cls in _SWEEP_MAPPING.values():
+        configs.extend(cls.generate_variations())
+    return configs
+
+
+def _current_schema_grid() -> tuple[dict[str, int], dict[str, str]]:
+    """Introspect the config registries for the current param_grid.
+
+    Returns
+    -------
+    grid_sizes : dict
+        ``analysis_type`` → number of distinct configs in the current param
+        grid (the Cartesian product of that config's ``_param_grid``).
+    current_schema : dict
+        ``analysis_type`` → the ``schema_version`` those current configs carry.
+    """
+    current_schema: dict[str, str] = {}
+    summaries: dict[str, set[str]] = defaultdict(set)
+    for cfg in _current_configs():
+        summaries[cfg.display_name].add(cfg.summary())
+        current_schema[cfg.display_name] = cfg.schema_version
+    grid_sizes = {name: len(s) for name, s in summaries.items()}
+    return grid_sizes, current_schema
+
+
+def _param_grid_labels(atypes, svers) -> list[str]:
+    """Per-group label describing coverage against the current param grid.
+
+    For a current-schema group the label is the grid size (expected config
+    count). A superseded schema reads ``old``; an analysis_type in neither
+    registry reads ``retired``.
+    """
+    grid_sizes, current_schema = _current_schema_grid()
+    labels = []
+    for atype, sver in zip(atypes, svers):
+        if atype in current_schema and sver == current_schema[atype]:
+            labels.append(str(grid_sizes[atype]))
+        elif atype in current_schema:
+            labels.append("old")
+        else:
+            labels.append("retired")
+    return labels
 
 
 def print_error_summary(
@@ -202,12 +256,31 @@ def status(
             grouped = df.groupby(group_by).agg(
                 count=("result_uid", "size"),
                 stored=("result_stored", "sum"),
+                configs=("analysis_summary", "nunique"),
                 sessions=("session_id", "nunique"),
                 earliest=("computed_at", "min"),
                 latest=("computed_at", "max"),
             )
+
+            # When grouped by (analysis_type, schema_version), annotate each row
+            # with the current param_grid size so present configs can be read
+            # against expected. Old-schema rows get a terse superseded note.
+            show_grid = {"analysis_type", "schema_version"}.issubset(group_by)
+            if show_grid:
+                atypes = grouped.index.get_level_values("analysis_type")
+                svers = grouped.index.get_level_values("schema_version")
+                grouped["param_grid"] = _param_grid_labels(atypes, svers)
+                col_order = ["count", "stored", "configs", "param_grid", "sessions", "earliest", "latest"]
+                grouped = grouped[[c for c in col_order if c in grouped.columns]]
+
             with pd.option_context("display.max_rows", None, "display.width", 200):
                 print(grouped.to_string())
+            if show_grid:
+                print(
+                    "\nconfigs = distinct configs present in store; "
+                    "param_grid = configs in the current-schema grid "
+                    "('old' = superseded schema; 'retired' = analysis_type no longer registered)"
+                )
 
     if show_errors:
         print()

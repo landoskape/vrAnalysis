@@ -31,6 +31,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dimensionality_manuscript.registry import RegistryPaths
@@ -354,9 +355,9 @@ def sync(host: str, remote_db: str, remote_blobs: str) -> None:
 
     # ── Step 1: sync blobs ────────────────────────────────────────────────────
     remote_blobs_src = remote_blobs.rstrip("/") + "/"
-    rsync_shell_cmd = f"rsync -avP --ignore-existing " f"{host}:{remote_blobs_src} {_posix(local_blobs)}/"
+    rsync_shell_cmd = f"rsync -a --info=progress2 --partial --ignore-existing " f"{host}:{remote_blobs_src} {_posix(local_blobs)}/"
     bash = _find_bash()
-    print(f"Syncing blobs: {rsync_shell_cmd}")
+    print("Syncing blobs (overall progress; per-file hex names suppressed)...")
     result = subprocess.run([bash or "bash", "-c", rsync_shell_cmd])
     if result.returncode != 0:
         print("rsync failed.", file=sys.stderr)
@@ -374,44 +375,104 @@ def sync(host: str, remote_db: str, remote_blobs: str) -> None:
             raise SystemExit(1)
 
         print(f"\nMerging results from {tmp_db} → {local_db}")
-        n_before, n_added, n_err_before, n_err_added = _merge_results(local_db, tmp_db)
-        print(f"Results — before: {n_before}  new: {n_added}  total: {n_before + n_added}")
-        if n_err_before or n_err_added:
-            print(f"Errors   — before: {n_err_before}  new: {n_err_added}  total: {n_err_before + n_err_added}")
+        report = _merge_results(local_db, tmp_db)
+        _print_merge_report(report)
 
 
-def _merge_results(local_db: Path, remote_db: Path) -> tuple[int, int, int, int]:
+@dataclass
+class MergeReport:
+    """Summary of a results/errors merge.
+
+    ``new_by_config`` / ``err_by_config`` hold per-config breakdowns of the rows
+    that were actually added, each a tuple of
+    ``(analysis_type, schema_version, analysis_summary, n_rows, n_blobs, n_sessions)``.
+    """
+
+    results_before: int = 0
+    results_added: int = 0
+    errors_before: int = 0
+    errors_added: int = 0
+    new_by_config: list[tuple] = field(default_factory=list)
+    err_by_config: list[tuple] = field(default_factory=list)
+
+
+# Group newly-added rows by config for a status.py --by-config style report.
+# {blobs} is SUM(result_stored) for the results table (which has blobs) or a
+# literal 0 for the errors table (which does not).
+_NEW_BY_CONFIG_SQL = """
+    SELECT analysis_type, schema_version, analysis_summary,
+           COUNT(*) AS n, {blobs} AS blobs, COUNT(DISTINCT session_id) AS sessions
+    FROM remote.{table}
+    WHERE result_uid NOT IN (SELECT result_uid FROM main.{table})
+    GROUP BY analysis_type, schema_version, analysis_summary
+    ORDER BY analysis_type, n DESC
+"""
+
+
+def _merge_results(local_db: Path, remote_db: Path) -> MergeReport:
     """Merge results and errors tables from remote_db into local_db.
 
-    Returns
-    -------
-    tuple
-        (results_before, results_added, errors_before, errors_added)
+    Rows are added with ``INSERT OR IGNORE`` (existing local rows win). The
+    returned :class:`MergeReport` records how many rows were added and a
+    per-config breakdown of just the new rows.
     """
+    report = MergeReport()
     conn = sqlite3.connect(local_db, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     try:
         conn.execute("ATTACH DATABASE ? AS remote", (str(remote_db),))
-        (n_before,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
+        (report.results_before,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
+        # Capture the by-config breakdown BEFORE inserting (afterwards the rows
+        # are no longer "new" relative to local).
+        report.new_by_config = conn.execute(_NEW_BY_CONFIG_SQL.format(table="results", blobs="SUM(result_stored)")).fetchall()
         conn.execute("INSERT OR IGNORE INTO results SELECT * FROM remote.results")
         conn.commit()
         (n_after,) = conn.execute("SELECT COUNT(*) FROM results").fetchone()
+        report.results_added = n_after - report.results_before
 
-        n_err_before = 0
-        n_err_after = 0
         if _has_errors_table(conn, "remote"):
-            if _has_errors_table(conn, "main"):
-                (n_err_before,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+            has_local_errors = _has_errors_table(conn, "main")
+            if has_local_errors:
+                (report.errors_before,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+                report.err_by_config = conn.execute(_NEW_BY_CONFIG_SQL.format(table="errors", blobs="0")).fetchall()
             conn.execute("INSERT OR IGNORE INTO errors SELECT * FROM remote.errors")
             conn.commit()
-            if _has_errors_table(conn, "main"):
+            if has_local_errors:
                 (n_err_after,) = conn.execute("SELECT COUNT(*) FROM errors").fetchone()
+                report.errors_added = n_err_after - report.errors_before
 
         conn.execute("DETACH DATABASE remote")
         conn.commit()
     finally:
         conn.close()
-    return n_before, n_after - n_before, n_err_before, n_err_after - n_err_before
+    return report
+
+
+def _print_by_config_rows(rows: list[tuple], *, with_blobs: bool) -> None:
+    """Print a status.py --by-config style table for merge breakdown rows."""
+    for i, (atype, schema, summary, n, blobs, sessions) in enumerate(rows, 1):
+        parts = [f"  [{i:>3}] {atype or '?'} {schema or '?'} | {summary or '?'} | {n} rows"]
+        if with_blobs:
+            parts.append(f"{blobs or 0} blobs")
+        parts.append(f"{sessions} sessions")
+        print(" | ".join(parts))
+
+
+def _print_merge_report(report: MergeReport) -> None:
+    """Print merge totals plus a per-config breakdown of newly-added rows."""
+    total = report.results_before + report.results_added
+    print(f"Results — before: {report.results_before}  new: {report.results_added}  total: {total}")
+    if report.new_by_config:
+        n_configs = len(report.new_by_config)
+        print(f"\n  New results by config: {report.results_added} rows | {n_configs} configs")
+        _print_by_config_rows(report.new_by_config, with_blobs=True)
+
+    if report.errors_before or report.errors_added:
+        err_total = report.errors_before + report.errors_added
+        print(f"\nErrors  — before: {report.errors_before}  new: {report.errors_added}  total: {err_total}")
+        if report.err_by_config:
+            print()
+            _print_by_config_rows(report.err_by_config, with_blobs=False)
 
 
 def sync_model_caches(host: str, remote_cache: str) -> None:
@@ -427,8 +488,8 @@ def sync_model_caches(host: str, remote_cache: str) -> None:
         local_path: Path = getattr(registry_paths, attr)
         local_path.mkdir(parents=True, exist_ok=True)
         remote_src = f"{host}:{remote_base}/{name}/"
-        rsync_shell_cmd = f"rsync -avP --ignore-existing {remote_src} {_posix(local_path)}/"
-        print(f"Syncing {name}/: {rsync_shell_cmd}")
+        rsync_shell_cmd = f"rsync -a --info=progress2 --partial --ignore-existing {remote_src} {_posix(local_path)}/"
+        print(f"Syncing {name}/ (overall progress)...")
         result = subprocess.run([bash or "bash", "-c", rsync_shell_cmd])
         if result.returncode != 0:
             print(f"rsync failed for {name}/.", file=sys.stderr)
