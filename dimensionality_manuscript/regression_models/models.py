@@ -1435,6 +1435,63 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
 
         return prediction, extras
 
+    def score_curve(
+        self,
+        session: B2Session,
+        rrr_model: ReducedRankRegression,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "test",
+        ranks: Optional[list[int]] = None,
+        nan_safe: bool = False,
+        reduce: str = "mean",
+    ) -> tuple[list[int], list]:
+        """Score a trained RRR model across a range of ranks in a single pass.
+
+        Thin wrapper around ``ReducedRankRegression.score_curve``. The trained model already
+        holds the OLS coefficients and the rank-constraint basis, so scoring every rank reuses
+        one set of latent projections rather than recomputing coefficients per rank. Returns
+        R^2 (via ``measure_r2``), not MSE like ``score``.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to score the model on.
+        rrr_model : ReducedRankRegression
+            The trained ReducedRankRegression model (output of ``self.train``).
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use for the population. If None, uses the spks_type from the session provided as input.
+        split : Optional["SplitName"]
+            The split to use for the scoring. If None, uses the split from the session provided as input. Default is "test".
+        ranks : Optional[list[int]]
+            The ranks at which to score the model. If None, scores every rank from 1 to the
+            model's ``max_rank``. Values must be in ``[1, max_rank]``.
+        nan_safe : bool
+            If True, raises if any source/target sample contains NaN. If False, drops those
+            samples before scoring.
+        reduce : str
+            Reduction passed through to ``measure_r2``: "mean" returns a float per rank, "none"
+            returns a per-target tensor per rank. Default is "mean".
+
+        Returns
+        -------
+        ranks : list[int]
+            The (sorted, de-duplicated) ranks that were scored.
+        scores : list
+            The R^2 score at each rank, aligned with ``ranks``.
+        """
+        source_data, target_data, _ = self.get_session_data(session, spks_type, split)
+        X = source_data.T
+        y = target_data.T
+
+        idx_nan = torch.any(torch.isnan(X), dim=1) | torch.any(torch.isnan(y), dim=1)
+        if torch.any(idx_nan):
+            if nan_safe:
+                raise ValueError(f"{torch.sum(idx_nan)} / {len(idx_nan)} samples have NaN values in {session.session_print()}!!!")
+            X = X[~idx_nan]
+            y = y[~idx_nan]
+
+        return rrr_model.score_curve(X, y, ranks=ranks, nonnegative=self.nonnegative, reduce=reduce)
+
     @property
     def _model_hyperparameters(self) -> Type[ReducedRankRegressionHyperparameters]:
         """Return the hyperparameter class constructor for ReducedRankRegressionModel.

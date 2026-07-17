@@ -1,5 +1,6 @@
-from typing import Optional
+from typing import Optional, Literal
 from copy import copy
+from tqdm import tqdm
 import numpy as np
 import torch
 from .metrics import measure_r2
@@ -77,7 +78,14 @@ class RidgeRegression:
 
         return prediction
 
-    def score(self, X: torch.Tensor, y: torch.Tensor, nonnegative: Optional[bool] = False, dim: Optional[int] = 0) -> torch.Tensor:
+    def score(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        nonnegative: Optional[bool] = False,
+        dim: Optional[int] = 0,
+        reduce: Literal["mean", "none"] = "mean",
+    ) -> torch.Tensor:
         """
         Score the RidgeRegression model on the provided data.
 
@@ -91,6 +99,8 @@ class RidgeRegression:
             If True, will apply a ReLU to the prediction (default is False).
         dim : Optional[int]
             The dimension to score the model on (default is 0, which will score the model by features/targets).
+        reduce : Literal["mean", "none"]
+            Reduction to apply to the R^2 scores. "mean" returns a single float, "none" returns a tensor of R^2 scores for each feature/target (default is "mean").
 
         Returns
         -------
@@ -98,7 +108,7 @@ class RidgeRegression:
             The coefficient of determination (R^2) for the model.
         """
         y_pred = self.predict(X, nonnegative=nonnegative)
-        return measure_r2(y_pred, y, dim=dim)
+        return measure_r2(y_pred, y, dim=dim, reduce=reduce)
 
     def to(self, device):
         """
@@ -420,7 +430,15 @@ class ReducedRankRegression(RidgeRegression):
 
         return prediction
 
-    def score(self, X: torch.Tensor, y: torch.Tensor, rank: Optional[int] = None, nonnegative: Optional[bool] = False) -> float:
+    def score(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        rank: Optional[int] = None,
+        nonnegative: Optional[bool] = False,
+        dim: Optional[int] = 0,
+        reduce: Literal["mean", "none"] = "mean",
+    ) -> float:
         """
         Score the ReducedRankRegression model on the provided data.
 
@@ -434,6 +452,10 @@ class ReducedRankRegression(RidgeRegression):
             The rank of the model (default is None, which will use the originally registered rank).
         nonnegative : Optional[bool]
             If True, will apply a ReLU to the prediction (default is False).
+        dim : Optional[int]
+            The dimension to score the model on (default is 0, which will score the model by features/targets).
+        reduce : Literal["mean", "none"]
+            Reduction to apply to the R^2 scores. "mean" returns a single float, "none" returns a tensor of R^2 scores for each feature/target (default is "mean").
 
         Returns
         -------
@@ -441,7 +463,83 @@ class ReducedRankRegression(RidgeRegression):
             The coefficient of determination (R^2) for the model.
         """
         y_pred = self.predict(X, rank=rank, nonnegative=nonnegative)
-        return measure_r2(y_pred, y, dim=0)
+        return measure_r2(y_pred, y, dim=dim, reduce=reduce)
+
+    def score_curve(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        ranks: Optional[list[int]] = None,
+        nonnegative: Optional[bool] = False,
+        reduce: str = "mean",
+        verbose: bool = True,
+    ) -> tuple[list[int], list]:
+        """Score the model across a range of ranks in a single pass.
+
+        Exploits the nested low-rank structure of reduced rank regression. The rank-r
+        prediction is a cumulative sum of rank-1 outer products:
+
+            pred(r) = X @ beta_ols @ V[:, :r] @ V[:, :r].T
+                    = L[:, :r] @ V[:, :r].T
+                    = pred(r-1) + L[:, r-1] outer V[:, r-1],
+
+        where ``L = X @ beta_ols @ V`` are the (full) latent projections. The latents are
+        computed once, then a running prediction is accumulated so that each additional rank
+        only adds one chunk of outer products rather than recomputing the prediction from
+        scratch (as repeated calls to ``predict``/``score`` would).
+
+        When ``nonnegative=True`` the ReLU is nonlinear and cannot be accumulated through, so
+        the running prediction is kept in its raw (possibly negative) form and a rectified copy
+        is made only for scoring at each requested rank.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            The input data (num_samples, num_features).
+        y : torch.Tensor
+            The target data (num_samples, num_targets).
+        ranks : Optional[list[int]]
+            The ranks at which to score the model. If None, scores every rank from 1 to
+            ``self.max_rank``. Values must be in ``[1, self.max_rank]``.
+        nonnegative : Optional[bool]
+            If True, applies a ReLU to the prediction before scoring (default is False).
+        reduce : str
+            Reduction passed to ``measure_r2``: "mean" returns a float per rank, "none" returns
+            a per-target tensor per rank. Default is "mean".
+        verbose : bool
+            If True, displays a progress bar for scoring each rank (default is True).
+
+        Returns
+        -------
+        ranks : list[int]
+            The (sorted, de-duplicated) ranks that were scored.
+        scores : list
+            The R^2 score at each rank, aligned with ``ranks``.
+        """
+        if self.fit_intercept:
+            X = self._add_intercept(X)
+
+        if ranks is None:
+            ranks = list(range(1, self.max_rank + 1))
+        else:
+            ranks = sorted(set(int(r) for r in ranks))
+            if ranks[0] < 1 or ranks[-1] > self.max_rank:
+                raise ValueError(f"ranks must be in [1, {self.max_rank}], got [{ranks[0]}, {ranks[-1]}].")
+
+        V = self._Xbeta_V
+        latents = X @ (self._beta_ols @ V)  # (num_samples, num_targets), all ranks
+
+        running = torch.zeros(X.size(0), y.size(1), dtype=latents.dtype, device=latents.device)
+        prev_rank = 0
+        scores = []
+        for rank in tqdm(ranks, desc="Scoring ranks", leave=False, disable=not verbose):
+            # Add the outer-product contributions for components [prev_rank, rank)
+            running = running + latents[:, prev_rank:rank] @ V[:, prev_rank:rank].T
+            prev_rank = rank
+            prediction = torch.relu(running) if nonnegative else running
+            scores.append(measure_r2(prediction, y, reduce=reduce, dim=0))
+
+        return ranks, scores
 
     def predict_latent(self, X: torch.Tensor, rank: Optional[int] = None) -> torch.Tensor:
         """
