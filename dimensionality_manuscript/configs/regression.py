@@ -273,6 +273,16 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     - RRR: ``rank`` (log 1..2000, clipped to the achievable rank). The model is
       fit once and re-scored at each rank, since RRR training is rank-agnostic.
 
+    For the ``num_bins``/``num_basis`` sweeps, the Gaussian smoothing width
+    (``smooth_width`` / ``basis_width``) is re-derived at every value as
+    ``SMOOTH_SCALE * env_length / value`` instead of held fixed at the best-hyperparameter
+    value. Fixed smoothing means resolution plateaus once bin spacing drops well below the
+    smoothing width — the extra bins carry no new information because the smoothing kernel
+    already blends neighbors together. Scaling smoothing to bin spacing keeps the kernel
+    covering roughly one neighboring bin (adjacent-bin correlation ~= exp(-1) at
+    SMOOTH_SCALE=0.5) regardless of ``num_bins``/``num_basis``, so the sweep reflects
+    resolution rather than a fixed low-pass filter.
+
     Results are flat ``{sweep}_{values,dim,mse,r2}`` arrays, where ``dim`` is the
     nominal regressor dimensionality for the swept configuration. Always uses the
     ``"default"`` activity parameters.
@@ -287,13 +297,16 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         Hyperparameter selection method used to fix the baseline hyperparameters.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
+    # v2: scale smooth_width/basis_width to bin spacing during the num_bins/num_basis
+    # sweep instead of holding it fixed, so resolution doesn't plateau from oversmoothing.
 
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "best"
 
+    SMOOTH_SCALE: ClassVar[float] = 0.5
     display_name: ClassVar[str] = "regression_dim_sweep"
 
     @staticmethod
@@ -323,10 +336,20 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         base_hp = model.get_best_hyperparameters(session, spks_type=self.spks_type, method=self.method)[0]
 
         if isinstance(model, PlaceFieldModel):
-            return _pack_sweep("num_bins", *self._sweep_param(model, session, base_hp, num_env, "num_bins", NUM_BINS_VALUES))
+            if np.unique(session.env_length).size != 1:
+                raise ValueError("All trials must have the same environment length!")
+            env_length = float(session.env_length[0])
+            return _pack_sweep(
+                "num_bins", *self._sweep_param(model, session, base_hp, num_env, "num_bins", NUM_BINS_VALUES, "smooth_width", env_length)
+            )
 
         if isinstance(model, FullRegressorModel) or isinstance(model, RBFPosModel):
-            return _pack_sweep("num_basis", *self._sweep_param(model, session, base_hp, num_env, "num_basis", NUM_BASIS_VALUES))
+            if np.unique(session.env_length).size != 1:
+                raise ValueError("All trials must have the same environment length!")
+            env_length = float(session.env_length[0])
+            return _pack_sweep(
+                "num_basis", *self._sweep_param(model, session, base_hp, num_env, "num_basis", NUM_BASIS_VALUES, "basis_width", env_length)
+            )
 
         if isinstance(model, ReducedRankRegressionModel):
             return self._sweep_rrr(model, session, base_hp)
@@ -341,14 +364,23 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         num_env: int,
         param_name: str,
         values: np.ndarray,
+        smooth_param_name: str,
+        env_length: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Refit and score ``model`` at each value of a single integer hyperparameter."""
+        """Refit and score ``model`` at each value of a single integer hyperparameter.
+
+        At each ``value``, ``smooth_param_name`` (``smooth_width``/``basis_width``) is
+        overridden to ``SMOOTH_SCALE * env_length / value`` so the smoothing kernel tracks
+        bin spacing instead of staying fixed at the best-hyperparameter width.
+        """
         n = len(values)
         dim = np.full(n, np.nan)
         mse_arr = np.full(n, np.nan)
         r2_arr = np.full(n, np.nan)
         for i, value in enumerate(values):
-            hyperparameters = replace(base_hp, **{param_name: int(value)})
+            bin_spacing = env_length / float(value)
+            smooth_width = self.SMOOTH_SCALE * bin_spacing
+            hyperparameters = replace(base_hp, **{param_name: int(value), smooth_param_name: smooth_width})
             dim[i] = model.regressor_dimensionality(num_env, hyperparameters=hyperparameters)
             report = model.process(session, spks_type=self.spks_type, hyperparameters=hyperparameters)
             mse_arr[i] = float(report.metrics["mse"])
