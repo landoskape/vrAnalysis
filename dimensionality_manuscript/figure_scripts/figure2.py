@@ -1049,12 +1049,10 @@ class RRRExternalLatentsViewer(Viewer):
         self,
         results: ResultsAggregator,
         figsize: tuple[float, float] = (7.0, 4.0),
-        external_model_name: str = "fullregressor_leak_1dspeed",
         fontsize: float = 10,
     ):
         self.results = results
         self.figsize = figsize
-        self.external_model_name = external_model_name
         self.fontsize = fontsize
         self._data: dict[str, np.ndarray] = {}
 
@@ -1076,18 +1074,24 @@ class RRRExternalLatentsViewer(Viewer):
         """Re-select data for the current (spks_type, activity_parameters_name, rrr_variance, normalize)."""
         self._data = self.results.sel(
             keys=_LATENTS_SCALAR_KEYS + _LATENTS_EACH_KEYS,
-            avg_by_mouse=True,
+            avg_by_mouse=False,
             squeeze_ones=False,
             spks_type=state["spks_type"],
             activity_parameters_name=state["activity_parameters_name"],
             rrr_variance=state["rrr_variance"],
             normalize=state["normalize"],
-            external_model_name=self.external_model_name,
         )
         n_ranks_available = min(
             self._data["test_score_each_true_to_rrr"].shape[1],
             self._data["test_score_each_pred_to_rrr"].shape[1],
         )
+        # Mice differ in how many RRR ranks they have, so high-rank columns can be all-NaN
+        # padding. Trim to the last column where at least one mouse has data in BOTH arrays --
+        # an all-NaN column feeds NaN into errorPlot's fill polygon and crashes legend(loc="best").
+        has_true = np.any(~np.isnan(self._data["test_score_each_true_to_rrr"][:, :n_ranks_available]), axis=0)
+        has_pred = np.any(~np.isnan(self._data["test_score_each_pred_to_rrr"][:, :n_ranks_available]), axis=0)
+        valid_cols = np.where(has_true & has_pred)[0]
+        n_ranks_available = int(valid_cols[-1]) + 1 if valid_cols.size else 0
         self.update_integer("rank_start", max=max(n_ranks_available - 1, 0))
         self.update_integer("rank_stop", max=max(n_ranks_available, 1), value=n_ranks_available)
 
@@ -1105,8 +1109,12 @@ class RRRExternalLatentsViewer(Viewer):
 
         true_per_dim = np.nanmean(out["test_score_each_rrr_to_true"], axis=0)
         pred_per_dim = np.nanmean(out["test_score_each_rrr_to_pred"], axis=0)
-        true_per_dim = true_per_dim[np.isfinite(true_per_dim)]
-        pred_per_dim = pred_per_dim[np.isfinite(pred_per_dim)]
+        # R^2 on a near-zero-variance target dim can blow up to a finite-but-astronomical
+        # value (passes isfinite, e.g. -3e29) instead of -inf. Such a point still gets
+        # transformed by the layout engine even though it's off the fixed (-0.1, 1.1) ylim,
+        # which corrupts the figure's bbox/renderer sizing. Drop it like the inf/nan case.
+        true_per_dim = true_per_dim[np.isfinite(true_per_dim) & (np.abs(true_per_dim) < 1e3)]
+        pred_per_dim = pred_per_dim[np.isfinite(pred_per_dim) & (np.abs(pred_per_dim) < 1e3)]
 
         curve_first = state["curve_first"]
         gap = state["rank_gap"]
@@ -1164,7 +1172,7 @@ class RRRExternalLatentsViewer(Viewer):
         ax[1].set_ylim(-0.1, 1.1)
         ax[1].set_yticks([0, 1])
         ax[1].set_ylabel(r"$R^2$", labelpad=-10)
-        ax[1].legend(loc="best", fontsize=8, frameon=False)
+        ax[1].legend(loc="upper right", fontsize=8, frameon=False)
 
         return fig
 
@@ -1175,7 +1183,6 @@ def rrr_external_latents_score(
     activity_parameters_name: str = "default",
     rrr_variance: float | str = 0.95,
     normalize: bool = False,
-    external_model_name: str = "fullregressor_leak_1dspeed",
     rank_start: int = 0,
     rank_stop: int | None = None,
     curve_first: bool = True,
@@ -1201,8 +1208,6 @@ def rrr_external_latents_score(
         Aggregated ``RRRToExternalLatentsConfig`` results.
     spks_type, activity_parameters_name, rrr_variance, normalize
         Selects which stored variation to read (see ``RRRToExternalLatentsConfig``).
-    external_model_name : str
-        Leak model whose latents are compared against RRR.
     rank_start, rank_stop : int
         RRR-rank range (in dimensions) to show on the rank-ordered curve. ``rank_stop=None``
         uses every rank available (the across-mouse-nanmean minimum shared by both directions).
@@ -1220,7 +1225,7 @@ def rrr_external_latents_score(
     return_syd_viewer : bool
         If True, return the Syd viewer with state seeded from the other arguments.
     """
-    viewer = RRRExternalLatentsViewer(results, figsize=figsize, external_model_name=external_model_name, fontsize=fontsize)
+    viewer = RRRExternalLatentsViewer(results, figsize=figsize, fontsize=fontsize)
     viewer.update_selection("spks_type", value=spks_type)
     viewer.update_selection("activity_parameters_name", value=activity_parameters_name)
     viewer.update_selection("rrr_variance", value=rrr_variance)

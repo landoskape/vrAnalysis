@@ -17,33 +17,22 @@ from dimilibi import RidgeRegression
 from vrAnalysis.sessions import B2Session, SpksTypes
 
 from ..registry import ACTIVITY_PARAMETERS_NAMES, PopulationRegistry, get_model
+from ..regression_models.hyperparameters import FullRegressorHyperparameters
 from ..pipeline.base import AnalysisConfigBase
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
 VALID_RRR_VARIANCE: list[Union[float, str]] = [1.0, 0.95, "match"]
-VALID_LEAK_MODELS: list[str] = [
-    "rbfpos_leak",
-    "rbfpos_leak_no_intercept",
-    "pos_speed_leak",
-    "pos_speed_leak_1dspeed",
-    "pos_speed_leak_no_intercept",
-    "fullregressor_leak",
-    "fullregressor_leak_1dspeed",
-    "fullregressor_leak_no_intercept",
-]
+
+# The external (leak) model is hard-coded: RRR-to-external comparisons only make sense
+# against one fixed regressor structure, since the pos/speed/reward dimensionality
+# breakdown below is derived from FullRegressorModel with speed_basis=False, no_reward=False.
+EXTERNAL_MODEL_NAME: str = "fullregressor_leak_1dspeed"
 
 
 def _zscore(x: torch.Tensor, dim: int = 0, eps: float = 1e-8) -> torch.Tensor:
     std = x.std(dim=dim, keepdims=True).clamp(min=eps)
     return (x - x.mean(dim=dim, keepdims=True)) / std
-
-
-def _get_external_keys(model_name: str) -> tuple[str, str]:
-    """Return (true_key, pred_key) for the extras dict of the given model."""
-    if model_name.startswith("rbfpos"):
-        return "position_basis", "position_basis_predicted"
-    return "basis_functions", "basis_functions_predicted"
 
 
 def _gather_latents(
@@ -52,14 +41,13 @@ def _gather_latents(
     spks_type: SpksTypes,
     activity_parameters_name: str,
     method: str,
-    external_model_name: str,
     rrr_variance: Optional[Union[float, str]],
     normalize: bool,
 ) -> dict[str, torch.Tensor]:
     normalize_func = _zscore if normalize else lambda x, dim=None: x
-    true_key, pred_key = _get_external_keys(external_model_name)
+    true_key, pred_key = "basis_functions", "basis_functions_predicted"
 
-    ext_model = get_model(external_model_name, registry, activity_parameters=activity_parameters_name)
+    ext_model = get_model(EXTERNAL_MODEL_NAME, registry, activity_parameters=activity_parameters_name)
     rrr_model = get_model("rrr", registry, activity_parameters=activity_parameters_name)
 
     hyperparameters_ext = ext_model.get_best_hyperparameters(session, spks_type=spks_type, method=method)[0]
@@ -111,6 +99,8 @@ def _gather_latents(
         "test_external_true": test_external_true,
         "test_external_pred": test_external_pred,
         "test_rrr": test_rrr,
+        "hyperparameters_ext": hyperparameters_ext,
+        "num_environments": len(session.environments),
     }
 
 
@@ -130,6 +120,20 @@ def _optimize_alpha(
     return study.best_params["alpha"], study.best_value
 
 
+def _pos_speed_reward_dims(hyperparameters: FullRegressorHyperparameters, num_environments: int) -> tuple[int, int, int]:
+    """Split the external model's basis dimensionality into (position, speed, reward) components.
+
+    Matches the fixed structure of ``EXTERNAL_MODEL_NAME`` ("fullregressor_leak_1dspeed"):
+    ``speed_basis=False`` (single z-scored speed regressor) and ``no_reward=False`` with all
+    three reward components (expectation, delivered response, omission response) included and
+    ``expectation_symmetric=True`` (see ``FullRegressorModel.build_regressors``).
+    """
+    num_pos = hyperparameters.num_basis * num_environments
+    num_speed = 1
+    num_reward = 4 * hyperparameters.reward_num_basis_lags + 3
+    return num_pos, num_speed, num_reward
+
+
 @dataclass(frozen=True)
 class RRRToExternalLatentsConfig(AnalysisConfigBase):
     """Measure latent-to-latent predictability between RRR and a leak regression model.
@@ -142,9 +146,6 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Activity scaling method.
     method : str
         Hyperparameter optimization method.
-    external_model_name : str
-        Name of the external (leak) model whose latents are regressed against RRR.
-        Must be one of VALID_LEAK_MODELS.
     rrr_variance : float or str
         Fraction of RRR variance to retain (float), or ``"match"`` to use
         the same number of latents as the external model's true basis dimension.
@@ -152,13 +153,14 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Whether to z-score latents before regression.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
+    # v5: hard-code external_model_name to EXTERNAL_MODEL_NAME and add
+    # num_pos_params/num_speed_params/num_reward_params to the output.
 
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "default"
     method: str = "preferred"
-    external_model_name: str = "fullregressor_leak_1dspeed"
     rrr_variance: Union[float, str] = 0.95
     normalize: bool = False
 
@@ -169,7 +171,6 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
-            "external_model_name": ["fullregressor_leak_1dspeed"],
             "rrr_variance": list(VALID_RRR_VARIANCE),
             "normalize": [True, False],
         }
@@ -181,8 +182,6 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             raise ValueError(
                 f"Unknown activity_parameters_name {self.activity_parameters_name!r}. " f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
             )
-        if self.external_model_name not in VALID_LEAK_MODELS:
-            raise ValueError(f"external_model_name {self.external_model_name!r} is not a leak model. " f"Available: {VALID_LEAK_MODELS}")
         if not (isinstance(self.rrr_variance, float) or self.rrr_variance == "match"):
             raise ValueError(f"rrr_variance must be a float or 'match', got {self.rrr_variance!r}")
 
@@ -191,7 +190,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             self.display_name,
             f"spks={self.spks_type}",
             f"method={self.method}",
-            f"ext={self.external_model_name}",
+            f"ext={EXTERNAL_MODEL_NAME}",
             f"rrr_var={self.rrr_variance}",
             f"norm={self.normalize}",
         ]
@@ -207,9 +206,12 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             spks_type=self.spks_type,
             activity_parameters_name=self.activity_parameters_name,
             method=self.method,
-            external_model_name=self.external_model_name,
             rrr_variance=self.rrr_variance,
             normalize=self.normalize,
+        )
+
+        num_pos_params, num_speed_params, num_reward_params = _pos_speed_reward_dims(
+            data["hyperparameters_ext"], data["num_environments"]
         )
 
         alpha_rrr_to_true, score_rrr_to_true = _optimize_alpha(
@@ -247,4 +249,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             "test_score_each_true_to_rrr": true_to_rrr.score(data["test_external_true"], data["test_rrr"], dim=0, reduce="none"),
             "test_score_each_rrr_to_pred": rrr_to_pred.score(data["test_rrr"], data["test_external_pred"], dim=0, reduce="none"),
             "test_score_each_pred_to_rrr": pred_to_rrr.score(data["test_external_pred"], data["test_rrr"], dim=0, reduce="none"),
+            "num_pos_params": num_pos_params,
+            "num_speed_params": num_speed_params,
+            "num_reward_params": num_reward_params,
         }
