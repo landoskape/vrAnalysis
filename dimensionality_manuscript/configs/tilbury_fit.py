@@ -568,7 +568,7 @@ class TilburyFitConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        return {"activity_parameters_name": VALID_ACTIVITY_PARAMETERS}
+        return {"activity_parameters_name": ["default", "raw"]}
 
     @property
     def param_names(self) -> list[str]:
