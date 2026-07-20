@@ -41,7 +41,7 @@ from ..registry import (
     PopulationRegistry,
     get_activity_parameters,
 )
-from .regression import VALID_SPKS_TYPES
+from .regression import VALID_ACTIVITY_PARAMETERS
 
 # Splits used for fit / model-selection / reporting.
 _SPLITS = ("train", "validation", "test")
@@ -568,7 +568,7 @@ class TilburyFitConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        return {}
+        return {"activity_parameters_name": VALID_ACTIVITY_PARAMETERS}
 
     @property
     def param_names(self) -> list[str]:
