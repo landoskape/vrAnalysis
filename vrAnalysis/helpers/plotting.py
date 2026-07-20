@@ -143,6 +143,11 @@ def errorPlot(x, data, axis=-1, se=False, ax=None, handle_nans=True, **kwargs):
     errorData = std(data, axis=axis) / correction
     fillBetweenArgs = kwargs.copy()
     fillBetweenArgs.pop("label", None)
+    # The mean curve may be dashed, but the uncertainty band has no visible edge (below).
+    # Passing a dash pattern together with linewidth=0 causes vector backends such as SVG to
+    # normalize the pattern to all zeros and raise "At least one value ... must be positive".
+    fillBetweenArgs.pop("linestyle", None)
+    fillBetweenArgs.pop("dashes", None)
     # The band is a filled patch, not a line: a nonzero edge draws a heavy border that reads
     # darker than the fill. Force the edge weightless (callers' linewidth is for the mean line).
     fillBetweenArgs["linewidth"] = 0

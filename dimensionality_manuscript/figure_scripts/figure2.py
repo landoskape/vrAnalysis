@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 from syd import Viewer
 from rastermap import Rastermap
@@ -850,47 +851,34 @@ _SWEEP_KEY_BY_MODEL: dict[ModelName, str] = {
 
 _DIM_SWEEP_METRIC_LABELS = {"r2": r"$R^2$", "mse": "MSE"}
 
-# Five architecture "families" each pair an external (decoder-only) and internal
-# (self-predicting) variant; RRR is the sole neural model and sits outside the family system.
-# Family base colors are ColorBrewer Dark2 (distinct, colorblind-friendly); the external member
-# of each pair is a lightened tint of its internal partner's hue, so families read at a glance
-# and the external/internal split within a family reads as a lightness contrast.
-_DIM_SWEEP_FAMILIES: dict[str, tuple[ModelName, ModelName]] = {
-    "placefield": ("external_placefield_1d", "internal_placefield_1d"),
-    "placefield_gain": ("external_placefield_1d_gain", "internal_placefield_1d_gain"),
-    "highd_pos": ("rbfpos_decoder_only", "rbfpos"),
-    "highd_pos_speed": ("pos_speed_decoder_only_1dspeed", "pos_speed_1dspeed"),
-    "highd_pos_speed_reward": ("fullregressor_decoder_only_1dspeed", "fullregressor_1dspeed"),
+# Match the model-zoo schematic: color encodes where the model lives, while line style
+# encodes architecture. Matching external/internal models share a dash pattern and differ
+# only in black/red; RRR retains the schematic's blue.
+_DIM_SWEEP_ROLE_COLOR = {
+    "external": "#000000",
+    "internal": "#c00000",
+    "neural": "#0000cd",
 }
-_DIM_SWEEP_FAMILY_COLOR: dict[str, str] = {
-    "placefield": "#1b9e77",
-    "placefield_gain": "#d95f02",
-    "highd_pos": "#7570b3",
-    "highd_pos_speed": "#e7298a",
-    "highd_pos_speed_reward": "#66a61e",
+_DIM_SWEEP_ARCH_LINESTYLE = {
+    "placefield": "-",
+    "highd_pos": (0, (6, 2)),
+    "highd_pos_speed": (0, (1, 1.7)),
+    "highd_pos_speed_reward": "-.",
+    "placefield_gain": (0, (3, 1, 1, 1, 1, 1)),
 }
-_DIM_SWEEP_NEURAL_MODEL: ModelName = "rrr"
-_DIM_SWEEP_NEURAL_COLOR = "#0000cd"  # matches neural_arrow_color in the model-zoo schematic above
-_DIM_SWEEP_EXTERNAL_TINT = 0.55  # fraction mixed with white for the external (lighter) variant
-
-
-def _tint(hex_color: str, amount: float) -> tuple[float, float, float]:
-    """Lighten a hex color by mixing it with white."""
-    r, g, b = to_rgb(hex_color)
-    return (1 - amount) * r + amount, (1 - amount) * g + amount, (1 - amount) * b + amount
-
-
-def _build_dim_sweep_colors() -> dict[ModelName, tuple[float, float, float]]:
-    colors: dict[ModelName, tuple[float, float, float]] = {}
-    for family, (external, internal) in _DIM_SWEEP_FAMILIES.items():
-        base = _DIM_SWEEP_FAMILY_COLOR[family]
-        colors[internal] = to_rgb(base)
-        colors[external] = _tint(base, _DIM_SWEEP_EXTERNAL_TINT)
-    colors[_DIM_SWEEP_NEURAL_MODEL] = to_rgb(_DIM_SWEEP_NEURAL_COLOR)
-    return colors
-
-
-DIM_SWEEP_MODEL_COLORS: dict[ModelName, tuple[float, float, float]] = _build_dim_sweep_colors()
+_DIM_SWEEP_MODEL_STYLE: dict[ModelName, dict] = {
+    "external_placefield_1d": dict(role="external", arch="placefield"),
+    "rbfpos_decoder_only": dict(role="external", arch="highd_pos"),
+    "pos_speed_decoder_only_1dspeed": dict(role="external", arch="highd_pos_speed"),
+    "fullregressor_decoder_only_1dspeed": dict(role="external", arch="highd_pos_speed_reward"),
+    "internal_placefield_1d": dict(role="internal", arch="placefield"),
+    "rbfpos": dict(role="internal", arch="highd_pos"),
+    "pos_speed_1dspeed": dict(role="internal", arch="highd_pos_speed"),
+    "fullregressor_1dspeed": dict(role="internal", arch="highd_pos_speed_reward"),
+    "external_placefield_1d_gain": dict(role="external", arch="placefield_gain"),
+    "internal_placefield_1d_gain": dict(role="internal", arch="placefield_gain"),
+    "rrr": dict(role="neural", arch="placefield"),
+}
 
 
 class RegressionDimSweepViewer(Viewer):
@@ -912,7 +900,8 @@ class RegressionDimSweepViewer(Viewer):
         self.add_boolean("se", value=True)
         self.add_boolean("xlog", value=True)
         self.add_float("linewidth", value=2.0, min=0.5, max=6.0)
-        self.add_float("fill_alpha", value=0.2, min=0.0, max=1.0)
+        self.add_float("fill_alpha", value=0.12, min=0.0, max=1.0)
+        self.add_float("fontsize", value=9.0, min=4.0, max=24.0)
 
     def _model_curve(self, model_name: ModelName, metric: str) -> tuple[np.ndarray, np.ndarray]:
         """Across-session x (mean dim, sorted) and y (metric) arrays: shapes (n_pts,), (n_sess, n_pts)."""
@@ -929,23 +918,60 @@ class RegressionDimSweepViewer(Viewer):
         metric = state["metric"]
         for model_name in state["model_names"]:
             x, y = self._model_curve(model_name, metric)
+            style = _DIM_SWEEP_MODEL_STYLE[model_name]
+            color = _DIM_SWEEP_ROLE_COLOR[style["role"]]
+            linestyle = _DIM_SWEEP_ARCH_LINESTYLE[style["arch"]]
+            curve_width = state["linewidth"] * (1.35 if style["role"] == "neural" else 1.0)
             errorPlot(
                 x,
                 y,
                 axis=0,
                 se=state["se"],
                 ax=ax,
-                color=DIM_SWEEP_MODEL_COLORS[model_name],
-                linewidth=state["linewidth"],
+                color=color,
+                linestyle=linestyle,
+                linewidth=curve_width,
                 alpha=state["fill_alpha"],
-                label=short_model_name(model_name),
             )
+
         if state["xlog"]:
             ax.set_xscale("log")
-        ax.set_xlabel("Regressor Dimensionality")
-        ax.set_ylabel(_DIM_SWEEP_METRIC_LABELS[metric])
-        ax.legend(loc="best", fontsize=9, frameon=False)
-        format_spines(ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"])
+        xlim = ax.get_xlim()
+        xticks = [1, 10, 100, 1000, 10000]
+        xticks = [t for t in xticks if t <= xlim[1]]
+        ax.set_xlabel("Regressor Dimensionality", fontsize=state["fontsize"])
+        ax.set_ylabel(_DIM_SWEEP_METRIC_LABELS[metric], fontsize=state["fontsize"])
+        architecture_handles = [
+            Line2D([], [], color="0.25", linestyle=_DIM_SWEEP_ARCH_LINESTYLE[arch], linewidth=2.0, label=label)
+            for arch, label in (
+                ("placefield", "placefield"),
+                ("highd_pos", "rbf-pos"),
+                ("highd_pos_speed", "+speed"),
+                ("highd_pos_speed_reward", "+reward"),
+                ("placefield_gain", "+gain"),
+            )
+        ]
+        ax.legend(
+            handles=architecture_handles,
+            loc="upper left",
+            fontsize=state["fontsize"],
+            frameon=False,
+            markerfirst=True,
+            handlelength=3.0,
+            handletextpad=0.8,
+        )
+        format_spines(
+            ax,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            xbounds=xlim,
+            xticks=xticks,
+            tick_fontsize=state["fontsize"],
+            spines_visible=["left", "bottom"],
+        )
+        # Apply this after format_spines, which calls tick_params itself. Include minor ticks
+        # so logarithmic-axis labels follow the viewer fontsize as well.
+        ax.tick_params(axis="both", which="both", labelsize=state["fontsize"])
         return fig
 
 
@@ -956,7 +982,8 @@ def regression_dim_sweep(
     se: bool = True,
     xlog: bool = True,
     linewidth: float = 2.0,
-    fill_alpha: float = 0.2,
+    fill_alpha: float = 0.12,
+    fontsize: float = 9.0,
     figsize: tuple[float, float] = (6.0, 4.5),
     return_syd_viewer: bool = False,
 ):
@@ -966,9 +993,9 @@ def regression_dim_sweep(
     For each selected figure-2 model, reads aggregated ``RegressionDimensionalitySweepConfig``
     results and draws the across-session mean +/- SE curve (via
     :func:`vrAnalysis.helpers.plotting.errorPlot`) of a fit metric against regressor
-    dimensionality. Colors group models by architecture family: an external (decoder-only) and
-    internal (self-predicting) variant of the same architecture share a hue, with the external
-    member tinted lighter; the neural (RRR) model gets its own color.
+    dimensionality. Color follows the model-zoo schematic (black external, red internal, blue
+    neural), while five line styles identify placefield, high-D position, +speed, +reward, and
+    gain architectures. Matching external/internal architectures therefore share a line style.
 
     Parameters
     ----------
@@ -987,6 +1014,8 @@ def regression_dim_sweep(
         Mean-curve line width.
     fill_alpha : float
         Opacity of the +/- SE/SD fill band.
+    fontsize : float
+        Font size for axis labels, tick labels, and both legends.
     figsize : tuple[float, float]
         Figure size in inches.
     return_syd_viewer : bool
@@ -1002,6 +1031,7 @@ def regression_dim_sweep(
     viewer.update_boolean("xlog", value=xlog)
     viewer.update_float("linewidth", value=linewidth)
     viewer.update_float("fill_alpha", value=fill_alpha)
+    viewer.update_float("fontsize", value=fontsize)
 
     if return_syd_viewer:
         return viewer
@@ -1019,30 +1049,101 @@ def regression_dim_sweep(
 _LATENTS_EXTERNAL_COLOR = "#000000"
 _LATENTS_INTERNAL_COLOR = "#c00000"
 
-_LATENTS_SCALAR_KEYS = [
-    "test_score_rrr_to_true",
-    "test_score_true_to_rrr",
-    "test_score_rrr_to_pred",
-    "test_score_pred_to_rrr",
-]
 _LATENTS_EACH_KEYS = [
     "test_score_each_rrr_to_true",
     "test_score_each_true_to_rrr",
     "test_score_each_rrr_to_pred",
     "test_score_each_pred_to_rrr",
 ]
+_LATENTS_DIM_KEYS = ["num_pos_params", "num_speed_params", "num_reward_params"]
+
+# The three regressor groups that make up the external model's basis (see
+# RRRToExternalLatentsConfig / _pos_speed_reward_dims), in column order.
+_LATENTS_GROUP_NAMES = ["Position", "Speed", "Reward"]
+
+
+def _trimmed_rank_length(true_arr: np.ndarray, pred_arr: np.ndarray) -> int:
+    """Last column index (+1) where at least one mouse has non-NaN data in BOTH arrays.
+
+    Mice differ in how many RRR ranks they have, so high-rank columns can be all-NaN
+    padding; an all-NaN column feeds NaN into errorPlot's fill polygon and crashes
+    legend(loc="best").
+    """
+    n = min(true_arr.shape[1], pred_arr.shape[1])
+    has_true = np.any(~np.isnan(true_arr[:, :n]), axis=0)
+    has_pred = np.any(~np.isnan(pred_arr[:, :n]), axis=0)
+    valid_cols = np.where(has_true & has_pred)[0]
+    return int(valid_cols[-1]) + 1 if valid_cols.size else 0
+
+
+def _valid_agg(values: np.ndarray, agg) -> float:
+    """Aggregate one mouse's per-dimension scores within a group, dropping blown-up R^2 outliers.
+
+    R^2 on a near-zero-variance target dim can blow up to a finite-but-astronomical value
+    (passes isfinite, e.g. -3e29) instead of -inf, which would corrupt a fixed-ylim figure.
+    """
+    finite = values[np.isfinite(values) & (np.abs(values) < 1e3)]
+    return float(agg(finite)) if finite.size else np.nan
+
+
+def _group_agg_scores(
+    each_scores: np.ndarray,
+    num_pos: np.ndarray,
+    num_speed: np.ndarray,
+    num_reward: np.ndarray,
+    agg,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-mouse (position, speed, reward) aggregate of a per-dimension score array.
+
+    Each mouse's own ``(num_pos, num_speed, num_reward)`` boundaries slice its row of
+    ``each_scores`` before aggregating, since a mouse's basis dimensionality (num_basis,
+    num_environments, reward_num_basis_lags) differs from every other mouse's, so raw
+    column index has no shared meaning across mice.
+    """
+    n_mice = each_scores.shape[0]
+    pos_out = np.full(n_mice, np.nan)
+    speed_out = np.full(n_mice, np.nan)
+    reward_out = np.full(n_mice, np.nan)
+    for i in range(n_mice):
+        npos, nspeed, nreward = int(num_pos[i]), int(num_speed[i]), int(num_reward[i])
+        row = each_scores[i]
+        pos_out[i] = _valid_agg(row[:npos], agg)
+        speed_out[i] = _valid_agg(row[npos : npos + nspeed], agg)
+        reward_out[i] = _valid_agg(row[npos + nspeed : npos + nspeed + nreward], agg)
+    return pos_out, speed_out, reward_out
+
+
+def _center_spread_plot(ax, x, data, axis, agg_method: str, **kwargs):
+    """Draw a mean+/-SE (errorPlot) or median+/-IQR curve, sharing errorPlot's kwarg contract."""
+    if agg_method == "median":
+        center = np.nanmedian(data, axis=axis)
+        lo = np.nanpercentile(data, 25, axis=axis)
+        hi = np.nanpercentile(data, 75, axis=axis)
+        fill_kwargs = kwargs.copy()
+        fill_kwargs.pop("label", None)
+        fill_kwargs["linewidth"] = 0
+        ax.fill_between(x, hi, lo, **fill_kwargs)
+        kwargs.pop("alpha", None)
+        ax.plot(x, center, **kwargs)
+    else:
+        errorPlot(x, data, axis=axis, se=True, ax=ax, **kwargs)
 
 
 class RRRExternalLatentsViewer(Viewer):
-    """RRR <-> external-latents predictability, per-mouse summary plus per-dimension breakdown.
+    """RRR <-> external-latents predictability, per-dimension breakdown as two linked x-axes.
 
-    ax[0] reproduces the scalar (whole-population) R^2 for each direction, one thin line per
-    mouse, as in the original ad-hoc plot. ax[1] breaks each direction down by latent dimension:
-    ``*_to_rrr`` (external -> RRR) is scored per RRR-latent (dim=0 of the ridge fit), and RRR
-    latents are rank-ordered, so those scores are drawn as a mean +/- SE curve over rank. ``rrr_to_*``
-    (RRR -> external) is scored per external-basis dimension, which has no natural order (the
-    external model's basis functions aren't rank-sorted), so those are drawn as a beeswarm at a
-    single x position per direction.
+    ax[0] and ax[1] share one y-axis (R^2) but have independent, differently-scaled x-axes:
+    - ax[0] (Position/Speed/Reward): ``rrr_to_*`` (RRR -> external/internal) is scored per
+      external-basis dimension. Those dimensions aren't a single homogeneous group -- they're
+      the concatenation of position, speed, and reward regressors (see
+      ``RRRToExternalLatentsConfig`` / ``_pos_speed_reward_dims``), and mice differ in how many
+      columns each sub-group has. Each mouse's per-dimension scores are therefore split into
+      (position, speed, reward) using that mouse's own boundaries, aggregated (mean or median,
+      per ``agg_method``) within each group, and drawn as three beeswarms, each dodged into
+      External (black) / Internal (red) halves.
+    - ax[1] (Rank, log-scale): ``*_to_rrr`` (external/internal -> RRR) is scored per RRR-latent
+      (dim=0 of the ridge fit); RRR latents are rank-ordered (1-indexed for the log axis), so
+      those scores are drawn as a mean+/-SE (or median+/-IQR) curve over every available rank.
     """
 
     def __init__(
@@ -1060,11 +1161,11 @@ class RRRExternalLatentsViewer(Viewer):
         self.add_selection("activity_parameters_name", value="default", options=list(ACTIVITY_PARAMETERS_NAMES))
         self.add_selection("rrr_variance", value=0.95, options=list(VALID_RRR_VARIANCE))
         self.add_boolean("normalize", value=False)
-        self.add_integer("rank_start", value=0, min=0, max=1)
-        self.add_integer("rank_stop", value=1, min=1, max=1)
-        self.add_boolean("curve_first", value=True)
+        self.add_selection("agg_method", value="mean", options=["mean", "median"])
         self.add_float("beewidth", value=0.3, min=0.0, max=1.0)
-        self.add_float("rank_gap", value=1.0, min=0.0, max=5.0)
+        self.add_float("dodge_offset", value=0.3, min=0.0, max=1.0)
+        self.add_float("alpha", value=0.5, min=0.0, max=1.0)
+        self.add_float("width_rank_axis", value=0.6, min=0.25, max=2.0)
 
         for name in ("spks_type", "activity_parameters_name", "rrr_variance", "normalize"):
             self.on_change(name, self.refresh_data)
@@ -1073,7 +1174,7 @@ class RRRExternalLatentsViewer(Viewer):
     def refresh_data(self, state):
         """Re-select data for the current (spks_type, activity_parameters_name, rrr_variance, normalize)."""
         self._data = self.results.sel(
-            keys=_LATENTS_SCALAR_KEYS + _LATENTS_EACH_KEYS,
+            keys=_LATENTS_EACH_KEYS + _LATENTS_DIM_KEYS,
             avg_by_mouse=False,
             squeeze_ones=False,
             spks_type=state["spks_type"],
@@ -1081,98 +1182,95 @@ class RRRExternalLatentsViewer(Viewer):
             rrr_variance=state["rrr_variance"],
             normalize=state["normalize"],
         )
-        n_ranks_available = min(
-            self._data["test_score_each_true_to_rrr"].shape[1],
-            self._data["test_score_each_pred_to_rrr"].shape[1],
-        )
-        # Mice differ in how many RRR ranks they have, so high-rank columns can be all-NaN
-        # padding. Trim to the last column where at least one mouse has data in BOTH arrays --
-        # an all-NaN column feeds NaN into errorPlot's fill polygon and crashes legend(loc="best").
-        has_true = np.any(~np.isnan(self._data["test_score_each_true_to_rrr"][:, :n_ranks_available]), axis=0)
-        has_pred = np.any(~np.isnan(self._data["test_score_each_pred_to_rrr"][:, :n_ranks_available]), axis=0)
-        valid_cols = np.where(has_true & has_pred)[0]
-        n_ranks_available = int(valid_cols[-1]) + 1 if valid_cols.size else 0
-        self.update_integer("rank_start", max=max(n_ranks_available - 1, 0))
-        self.update_integer("rank_stop", max=max(n_ranks_available, 1), value=n_ranks_available)
 
     def plot(self, state):
         out = self._data
-        n_ranks_available = min(out["test_score_each_true_to_rrr"].shape[1], out["test_score_each_pred_to_rrr"].shape[1])
-        rank_start = min(state["rank_start"], n_ranks_available - 1)
-        rank_stop = min(state["rank_stop"], n_ranks_available)
-        rank_stop = max(rank_stop, rank_start + 1)
-
-        curve_true = out["test_score_each_true_to_rrr"][:, rank_start:rank_stop]
-        curve_pred = out["test_score_each_pred_to_rrr"][:, rank_start:rank_stop]
-        n_ranks = rank_stop - rank_start
-        curve_positions = np.arange(n_ranks, dtype=float)
-
-        true_per_dim = np.nanmean(out["test_score_each_rrr_to_true"], axis=0)
-        pred_per_dim = np.nanmean(out["test_score_each_rrr_to_pred"], axis=0)
-        # R^2 on a near-zero-variance target dim can blow up to a finite-but-astronomical
-        # value (passes isfinite, e.g. -3e29) instead of -inf. Such a point still gets
-        # transformed by the layout engine even though it's off the fixed (-0.1, 1.1) ylim,
-        # which corrupts the figure's bbox/renderer sizing. Drop it like the inf/nan case.
-        true_per_dim = true_per_dim[np.isfinite(true_per_dim) & (np.abs(true_per_dim) < 1e3)]
-        pred_per_dim = pred_per_dim[np.isfinite(pred_per_dim) & (np.abs(pred_per_dim) < 1e3)]
-
-        curve_first = state["curve_first"]
-        gap = state["rank_gap"]
+        agg_method = state["agg_method"]
+        agg = np.nanmean if agg_method == "mean" else np.nanmedian
         beewidth = state["beewidth"]
+        dodge = state["dodge_offset"]
+        alpha = state["alpha"]
 
-        if curve_first:
-            true_x = n_ranks - 1 + gap + 1.0
-            pred_x = true_x + 1.0
-            tick_positions = [curve_positions[0], curve_positions[-1], true_x, pred_x]
-            tick_labels = [str(rank_start), str(rank_stop - 1), "External", "Internal"]
-        else:
-            true_x, pred_x = 0.0, 1.0
-            curve_positions = curve_positions + 2.0 + gap
-            tick_positions = [true_x, pred_x, curve_positions[0], curve_positions[-1]]
-            tick_labels = ["External", "Internal", str(rank_start), str(rank_stop - 1)]
+        n_ranks = max(_trimmed_rank_length(out["test_score_each_true_to_rrr"], out["test_score_each_pred_to_rrr"]), 1)
+        curve_true = out["test_score_each_true_to_rrr"][:, :n_ranks]
+        curve_pred = out["test_score_each_pred_to_rrr"][:, :n_ranks]
+        rank_positions = np.arange(1, n_ranks + 1)  # 1-indexed: rank 0 is undefined on a log axis
+
+        pos_true, speed_true, reward_true = _group_agg_scores(
+            out["test_score_each_rrr_to_true"], out["num_pos_params"], out["num_speed_params"], out["num_reward_params"], agg
+        )
+        pos_pred, speed_pred, reward_pred = _group_agg_scores(
+            out["test_score_each_rrr_to_pred"], out["num_pos_params"], out["num_speed_params"], out["num_reward_params"], agg
+        )
+        group_scores = [(pos_true, pos_pred), (speed_true, speed_pred), (reward_true, reward_pred)]
+        group_centers = np.arange(len(_LATENTS_GROUP_NAMES), dtype=float)
 
         plt.close("all")
-        fig, ax = plt.subplots(1, 2, figsize=self.figsize, layout="constrained")
+        fig = plt.figure(figsize=self.figsize, layout="constrained")
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.0, state["width_rank_axis"]])
+        ax_group = fig.add_subplot(gs[0])
+        ax_curve = fig.add_subplot(gs[1], sharey=ax_group)
 
-        # --- ax[0]: scalar R^2 per direction, one line per mouse ---
-        xvals_true, xvals_pred = [0, 1], [2, 3]
-        data_true = np.stack([out["test_score_rrr_to_true"], out["test_score_true_to_rrr"]])
-        data_pred = np.stack([out["test_score_rrr_to_pred"], out["test_score_pred_to_rrr"]])
-        ax[0].plot(xvals_true, data_true, color=_LATENTS_EXTERNAL_COLOR, marker="o", markersize=5, linewidth=1.0)
-        ax[0].plot(xvals_pred, data_pred, color=_LATENTS_INTERNAL_COLOR, marker="o", markersize=5, linewidth=1.0)
-        xlabels = [
-            r"Neural $\rightarrow$ External",
-            r"External $\rightarrow$ Neural",
-            r"Neural $\rightarrow$ Internal",
-            r"Internal $\rightarrow$ Neural",
-        ]
-        ax[0].set_xlim(-0.5, 3.5)
-        format_spines(ax[0], x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"], xbounds=[0, 3], ybounds=[0, 1])
-        ax[0].set_xticks([0, 1, 2, 3], labels=xlabels, rotation=45, rotation_mode="anchor", ha="right", fontsize=self.fontsize)
-        ax[0].set_yticks([0, 1])
-        ax[0].set_ylabel(r"$R^2$", labelpad=-10)
+        # --- ax[0]: three dodged pos/speed/reward beeswarms (RRR -> external/internal) ---
+        for center, (true_vals, pred_vals) in zip(group_centers, group_scores):
+            for vals, x0, color in [(true_vals, center - dodge, _LATENTS_EXTERNAL_COLOR), (pred_vals, center + dodge, _LATENTS_INTERNAL_COLOR)]:
+                finite_vals = vals[np.isfinite(vals)]
+                offsets = beeswarm(finite_vals) if finite_vals.size > 1 else np.zeros_like(finite_vals)
+                ax_group.plot(x0 + beewidth * offsets, finite_vals, linestyle="none", color=color, marker="o", markersize=4, alpha=alpha)
 
-        # --- ax[1]: rank-ordered curve (external/internal -> RRR) + beeswarm (RRR -> external/internal) ---
-        errorPlot(curve_positions, curve_true, axis=0, se=True, ax=ax[1], color=_LATENTS_EXTERNAL_COLOR, linewidth=1.5, alpha=0.2, label="External")
-        errorPlot(curve_positions, curve_pred, axis=0, se=True, ax=ax[1], color=_LATENTS_INTERNAL_COLOR, linewidth=1.5, alpha=0.2, label="Internal")
-        for vals, x0, color in [(true_per_dim, true_x, _LATENTS_EXTERNAL_COLOR), (pred_per_dim, pred_x, _LATENTS_INTERNAL_COLOR)]:
-            offsets = beeswarm(vals) if vals.size > 1 else np.zeros_like(vals)
-            ax[1].plot(x0 + beewidth * offsets, vals, linestyle="none", color=color, marker="o", markersize=4, alpha=0.7)
-
-        ax[1].set_xlim(min(tick_positions) - 0.5, max(tick_positions) + 0.5)
+        spacing_required = 1.2 * (dodge + beewidth)
+        ax_group.set_xlim(group_centers[0] - spacing_required, group_centers[-1] + spacing_required)
         format_spines(
-            ax[1],
+            ax_group,
             x_pos=-0.02,
             y_pos=-0.02,
             spines_visible=["left", "bottom"],
-            xbounds=[min(tick_positions), max(tick_positions)],
+            xbounds=[group_centers[0], group_centers[-1]],
             ybounds=[0, 1],
         )
-        ax[1].set_xticks(tick_positions, labels=tick_labels, rotation=45, rotation_mode="anchor", ha="right", fontsize=self.fontsize)
-        ax[1].set_ylim(-0.1, 1.1)
-        ax[1].set_yticks([0, 1])
-        ax[1].set_ylabel(r"$R^2$", labelpad=-10)
-        ax[1].legend(loc="upper right", fontsize=8, frameon=False)
+        ax_group.set_xticks(group_centers, labels=_LATENTS_GROUP_NAMES, rotation=45, rotation_mode="anchor", ha="right", fontsize=self.fontsize)
+        ax_group.set_ylim(-0.1, 1.1)
+        ax_group.set_yticks([0, 1])
+        ax_group.tick_params(axis="y", labelsize=self.fontsize)
+        ax_group.set_ylabel(r"$R^2$", labelpad=-10, fontsize=self.fontsize)
+        ax_group.set_xlabel("from neural", fontsize=self.fontsize)
+
+        # --- ax[1]: rank-ordered curve (external/internal -> RRR), log-scale x, shares y with ax[0] ---
+        ax_curve.set_xscale("log")
+        _center_spread_plot(
+            ax_curve,
+            rank_positions,
+            curve_true,
+            axis=0,
+            agg_method=agg_method,
+            color=_LATENTS_EXTERNAL_COLOR,
+            linewidth=1.5,
+            alpha=0.2,
+            label="External",
+        )
+        _center_spread_plot(
+            ax_curve,
+            rank_positions,
+            curve_pred,
+            axis=0,
+            agg_method=agg_method,
+            color=_LATENTS_INTERNAL_COLOR,
+            linewidth=1.5,
+            alpha=0.2,
+            label="Internal",
+        )
+        format_spines(
+            ax_curve,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["bottom"],
+            xbounds=[1, max(n_ranks, 2)],
+            ybounds=[0, 1],
+        )
+        ax_curve.tick_params(axis="y", which="both", left=False, labelleft=False)
+        ax_curve.tick_params(axis="x", labelsize=self.fontsize)
+        ax_curve.set_xlabel("to neural", fontsize=self.fontsize)
+        ax_curve.legend(loc="upper right", fontsize=self.fontsize, frameon=False)
 
         return fig
 
@@ -1183,24 +1281,24 @@ def rrr_external_latents_score(
     activity_parameters_name: str = "default",
     rrr_variance: float | str = 0.95,
     normalize: bool = False,
-    rank_start: int = 0,
-    rank_stop: int | None = None,
-    curve_first: bool = True,
+    agg_method: str = "mean",
     beewidth: float = 0.3,
-    rank_gap: float = 1.0,
-    fontsize: float = 10,
-    figsize: tuple[float, float] = (7.0, 4.0),
+    dodge_offset: float = 0.3,
+    alpha: float = 0.5,
+    width_rank_axis: float = 0.6,
+    fontsize: float = 8,
+    figsize: tuple[float, float] = (5.0, 3.0),
     return_syd_viewer: bool = False,
 ):
     """
     RRR <-> external-latents predictability from ``RRRToExternalLatentsConfig`` results.
 
-    Two panels. ax[0] is the scalar whole-population R^2 for each of the four directions
-    (Neural<->External, Neural<->Internal), one line per mouse. ax[1] breaks each direction
-    down by latent dimension: the two directions that predict RRR latents (external/internal ->
-    RRR) are rank-ordered, so they're drawn as a mean +/- SE curve over rank; the two directions
-    that predict external latents (RRR -> external/internal) have no natural per-dimension order,
-    so they're drawn as a beeswarm at a single x position each.
+    Two panels sharing one y-axis (R^2) with independent x-axes. ax[0] (Position/Speed/Reward)
+    splits ``rrr_to_*`` (RRR -> external/internal) per mouse into position/speed/reward sub-groups
+    (their sizes vary by mouse -- see ``RRRToExternalLatentsConfig``), aggregates within each
+    group, and draws three beeswarms, each dodged into External/Internal halves. ax[1] (Rank,
+    log-scale) draws ``*_to_rrr`` (external/internal -> RRR), scored per RRR-latent and rank-
+    ordered, as a mean+/-SE (or median+/-IQR) curve over every available rank.
 
     Parameters
     ----------
@@ -1208,16 +1306,17 @@ def rrr_external_latents_score(
         Aggregated ``RRRToExternalLatentsConfig`` results.
     spks_type, activity_parameters_name, rrr_variance, normalize
         Selects which stored variation to read (see ``RRRToExternalLatentsConfig``).
-    rank_start, rank_stop : int
-        RRR-rank range (in dimensions) to show on the rank-ordered curve. ``rank_stop=None``
-        uses every rank available (the across-mouse-nanmean minimum shared by both directions).
-    curve_first : bool
-        If True, the rank-ordered curve occupies the left side of the x-axis and the two
-        beeswarm categories (External, Internal) sit to its right; if False, the order is reversed.
+    agg_method : {"mean", "median"}
+        Aggregation used both for the per-mouse position/speed/reward group scores and for the
+        rank-ordered curve's center line (mean+/-SE or median+/-IQR).
     beewidth : float
-        Horizontal spread of the beeswarm points.
-    rank_gap : float
-        Extra x-axis spacing between the rank-ordered curve and the beeswarm categories.
+        Horizontal spread of points within one beeswarm (External or Internal) half.
+    dodge_offset : float
+        Horizontal separation between the External and Internal beeswarm halves within a group.
+    alpha : float
+        Marker opacity for the beeswarm points.
+    width_rank_axis : float
+        Width ratio for the rank-axis panel relative to the position/speed/reward panel.
     fontsize : float
         Tick-label fontsize for both panels.
     figsize : tuple[float, float]
@@ -1232,12 +1331,11 @@ def rrr_external_latents_score(
     viewer.update_boolean("normalize", value=normalize)
     viewer.refresh_data(viewer.state)  # pre-deploy update_* may not fire on_change
 
-    viewer.update_integer("rank_start", value=rank_start)
-    if rank_stop is not None:
-        viewer.update_integer("rank_stop", value=rank_stop)
-    viewer.update_boolean("curve_first", value=curve_first)
+    viewer.update_selection("agg_method", value=agg_method)
     viewer.update_float("beewidth", value=beewidth)
-    viewer.update_float("rank_gap", value=rank_gap)
+    viewer.update_float("dodge_offset", value=dodge_offset)
+    viewer.update_float("alpha", value=alpha)
+    viewer.update_float("width_rank_axis", value=width_rank_axis)
 
     if return_syd_viewer:
         return viewer
