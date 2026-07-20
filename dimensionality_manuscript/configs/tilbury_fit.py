@@ -97,6 +97,18 @@ def _r2(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> flo
     return 1.0 - ss_res / ss_tot
 
 
+def _r2_batched_torch(pred: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
+    """Per-row R^2 of ``pred`` against ``actual``, both shape ``(n_cells, P)``.
+
+    Batched torch equivalent of :func:`_r2`, used during training to score
+    every neuron's current-step params against a held-out curve without
+    leaving torch (no per-neuron python loop).
+    """
+    ss_res = ((actual - pred) ** 2).sum(dim=1)
+    ss_tot = ((actual - actual.mean(dim=1, keepdim=True)) ** 2).sum(dim=1)
+    return torch.where(ss_tot > 0, 1.0 - ss_res / ss_tot.clamp(min=1e-12), torch.full_like(ss_tot, float("nan")))
+
+
 def _pearson(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> float:
     """Pearson correlation of ``pred`` against ``actual`` (one curve).
 
@@ -372,26 +384,43 @@ def _eval_tilbury_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tens
 
 def _fit_all_neurons_torch(
     theta: npt.NDArray[np.floating],
-    curves: npt.NDArray[np.floating],
+    curves_train: npt.NDArray[np.floating],
+    curves_val: npt.NDArray[np.floating],
     sigma_min: float,
     device: str,
     num_steps: int,
     learning_rate: float,
     verbose: bool = False,
-) -> npt.NDArray[np.floating]:
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Batched Adam fit of the Tilbury model to every neuron jointly.
+
+    Per-neuron early stopping on the validation curve: at every step the
+    current params are scored against ``curves_val`` (same ``theta`` grid as
+    train, so the train-step prediction is reused, no extra forward pass),
+    and the best-so-far params are kept per neuron rather than just the final
+    step's params. This guards against overfitting the train curve.
 
     Returns
     -------
-    np.ndarray
-        Packed parameters, shape ``(n_cells, 6)``.
+    best_params : np.ndarray
+        Packed parameters, shape ``(n_cells, 6)``, best on validation R^2.
+    r2_init : np.ndarray
+        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
     """
-    n_cells = curves.shape[0]
-    raw_init = np.stack([_initial_raw_tilbury(theta, curves[n], sigma_min) for n in range(n_cells)])
+    n_cells = curves_train.shape[0]
+    raw_init = np.stack([_initial_raw_tilbury(theta, curves_train[n], sigma_min) for n in range(n_cells)])
 
     theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
-    curves_t = torch.as_tensor(curves, dtype=torch.float32, device=device)
+    train_t = torch.as_tensor(curves_train, dtype=torch.float32, device=device)
+    val_t = torch.as_tensor(curves_val, dtype=torch.float32, device=device)
     raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
+
+    with torch.no_grad():
+        init_params = _apply_constraints_tilbury(raw, sigma_min)
+        r2_init = _r2_batched_torch(_eval_tilbury_torch(theta_t, init_params), train_t)
+
+    best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
+    best_params = init_params.clone()
 
     optimizer = torch.optim.Adam([raw], lr=learning_rate)
     steps = tqdm(range(num_steps), desc="descent fit") if verbose else range(num_steps)
@@ -399,15 +428,20 @@ def _fit_all_neurons_torch(
         optimizer.zero_grad()
         params = _apply_constraints_tilbury(raw, sigma_min)
         pred = _eval_tilbury_torch(theta_t, params)
-        loss = torch.mean((pred - curves_t) ** 2)
+        loss = torch.mean((pred - train_t) ** 2)
         loss.backward()
         optimizer.step()
-        if verbose and step % 100 == 0:
-            steps.set_postfix(loss=f"{loss.item():.4g}")
 
-    with torch.no_grad():
-        final = _apply_constraints_tilbury(raw, sigma_min)
-    return final.cpu().numpy().astype(np.float64)
+        with torch.no_grad():
+            val_r2 = _r2_batched_torch(pred, val_t)
+            improved = val_r2 > best_val_r2
+            best_val_r2 = torch.where(improved, val_r2, best_val_r2)
+            best_params = torch.where(improved[:, None], params.detach(), best_params)
+
+        if verbose and step % 100 == 0:
+            steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
+
+    return best_params.cpu().numpy().astype(np.float64), r2_init.cpu().numpy().astype(np.float64)
 
 
 def _eval_gaussian_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
@@ -426,26 +460,39 @@ def _eval_gaussian_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Ten
 
 def _fit_all_neurons_torch_gaussian(
     theta: npt.NDArray[np.floating],
-    curves: npt.NDArray[np.floating],
+    curves_train: npt.NDArray[np.floating],
+    curves_val: npt.NDArray[np.floating],
     sigma_min: float,
     device: str,
     num_steps: int,
     learning_rate: float,
     verbose: bool = False,
-) -> npt.NDArray[np.floating]:
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Batched Adam fit of the control Gaussian model to every neuron jointly.
+
+    Per-neuron early stopping on the validation curve; see :func:`_fit_all_neurons_torch`.
 
     Returns
     -------
-    np.ndarray
-        Packed parameters, shape ``(n_cells, 4)``.
+    best_params : np.ndarray
+        Packed parameters, shape ``(n_cells, 4)``, best on validation R^2.
+    r2_init : np.ndarray
+        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
     """
-    n_cells = curves.shape[0]
-    raw_init = np.stack([_initial_raw_gaussian(theta, curves[n], sigma_min) for n in range(n_cells)])
+    n_cells = curves_train.shape[0]
+    raw_init = np.stack([_initial_raw_gaussian(theta, curves_train[n], sigma_min) for n in range(n_cells)])
 
     theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
-    curves_t = torch.as_tensor(curves, dtype=torch.float32, device=device)
+    train_t = torch.as_tensor(curves_train, dtype=torch.float32, device=device)
+    val_t = torch.as_tensor(curves_val, dtype=torch.float32, device=device)
     raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
+
+    with torch.no_grad():
+        init_params = _apply_constraints_gaussian(raw, sigma_min)
+        r2_init = _r2_batched_torch(_eval_gaussian_torch(theta_t, init_params), train_t)
+
+    best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
+    best_params = init_params.clone()
 
     optimizer = torch.optim.Adam([raw], lr=learning_rate)
     steps = tqdm(range(num_steps), desc="descent fit control") if verbose else range(num_steps)
@@ -453,15 +500,20 @@ def _fit_all_neurons_torch_gaussian(
         optimizer.zero_grad()
         params = _apply_constraints_gaussian(raw, sigma_min)
         pred = _eval_gaussian_torch(theta_t, params)
-        loss = torch.mean((pred - curves_t) ** 2)
+        loss = torch.mean((pred - train_t) ** 2)
         loss.backward()
         optimizer.step()
-        if verbose and step % 100 == 0:
-            steps.set_postfix(loss=f"{loss.item():.4g}")
 
-    with torch.no_grad():
-        final = _apply_constraints_gaussian(raw, sigma_min)
-    return final.cpu().numpy().astype(np.float64)
+        with torch.no_grad():
+            val_r2 = _r2_batched_torch(pred, val_t)
+            improved = val_r2 > best_val_r2
+            best_val_r2 = torch.where(improved, val_r2, best_val_r2)
+            best_params = torch.where(improved[:, None], params.detach(), best_params)
+
+        if verbose and step % 100 == 0:
+            steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
+
+    return best_params.cpu().numpy().astype(np.float64), r2_init.cpu().numpy().astype(np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +544,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         Lower bound on peak widths (cm).
     """
 
-    schema_version: str = "v6"
+    schema_version: str = "v7"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
@@ -612,10 +664,14 @@ class TilburyFitConfig(AnalysisConfigBase):
         registry: PopulationRegistry,
         verbose: bool = False,
         device: Optional[str] = None,
-        gd_num_steps: int = 8000,
+        gd_num_steps: int = 10000,
         gd_learning_rate: float = 0.1,
     ) -> dict:
         """Fit the Tilbury law per neuron with train/val/test cross-validation.
+
+        Params are fit by Adam on the train curve, but selected per neuron by
+        best R^2 on the validation curve across the training sweep (guards
+        against overfitting) rather than just taking the final step's params.
 
         Parameters
         ----------
@@ -628,7 +684,7 @@ class TilburyFitConfig(AnalysisConfigBase):
             ``None`` (the default) auto-detects: ``"cuda"`` if
             ``torch.cuda.is_available()`` else ``"cpu"``.
         gd_num_steps : int
-            Adam iterations.
+            Adam iterations to sweep for validation-best param selection.
         gd_learning_rate : float
             Adam learning rate.
         """
@@ -676,8 +732,12 @@ class TilburyFitConfig(AnalysisConfigBase):
         pearson = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
         pearson_c = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
 
-        params = _fit_all_neurons_torch(theta, curves["train"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose)
-        params_c = _fit_all_neurons_torch_gaussian(theta, curves["train"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose)
+        params, r2_init = _fit_all_neurons_torch(
+            theta, curves["train"], curves["validation"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose
+        )
+        params_c, r2_init_c = _fit_all_neurons_torch_gaussian(
+            theta, curves["train"], curves["validation"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose
+        )
 
         # Score each fit on every split (cheap, done serially).
         for n in range(n_neurons):
@@ -711,6 +771,7 @@ class TilburyFitConfig(AnalysisConfigBase):
 
         return {
             "params": params,
+            "r2_init": r2_init,
             "r2_train": r2["train"],
             "r2_val": r2["validation"],
             "r2_test": r2["test"],
@@ -718,6 +779,7 @@ class TilburyFitConfig(AnalysisConfigBase):
             "pearson_val": pearson["validation"],
             "pearson_test": pearson["test"],
             "params_control": params_c,
+            "r2_init_control": r2_init_c,
             "r2_train_control": r2c["train"],
             "r2_val_control": r2c["validation"],
             "r2_test_control": r2c["test"],
