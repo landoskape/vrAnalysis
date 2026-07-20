@@ -10,6 +10,7 @@ Replicates the measure_cvpca.py workflow using the new pipeline architecture.
 import argparse
 import json
 from pathlib import Path
+from dimensionality_manuscript.configs.placefield_structure import PlaceFieldStructureConfig
 from vrAnalysis.sessions import B2Session
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import (
@@ -62,6 +63,7 @@ def build_analysis_configs(
         "expmax": ExpMaxConfig,
         "locpred": LocPredConfig,
         "pfpred_quality": PFPredQualityConfig,
+        "pf_structure": PlaceFieldStructureConfig,
         "rrr_to_external_latents": RRRToExternalLatentsConfig,
         "tilbury_fit": TilburyFitConfig,
         "behavior_speed_env": BehaviorSpeedEnvConfig,
