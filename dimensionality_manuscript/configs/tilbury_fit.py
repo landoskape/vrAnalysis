@@ -9,11 +9,13 @@ generalized-Gaussian* peak.  For one neuron over positions ``theta``::
 where ``sigma(theta) = sigma_left`` when ``theta < phi`` and ``sigma_right``
 otherwise, giving 6 free parameters (``b, A, phi, sigma_left, sigma_right, p``).
 
-Alongside this single-peak Tilbury model and its plain-Gaussian control, two
-double-peak variants are fit per neuron: a *double generalized-Gaussian* and a
-*double Gaussian*, each the sum of two peaks of the same family sharing one
-baseline. These let genuinely bimodal tuning curves (two place fields per
-neuron/environment) be modelled without splitting the fit between two bumps.
+Three models are fit per neuron: this generalized-Gaussian ("tilbury"), a
+plain-Gaussian control (``p = 2``, symmetric width), and a
+*generalized-shrinkage* variant -- the same generalized-Gaussian, but with a
+log-space penalty pulling ``p`` toward 2 and ``sigma_left`` toward
+``sigma_right``, i.e. shrinking the fit toward the Gaussian control. The
+penalty strength is chosen per session by a log-spaced lambda sweep scored on
+the validation curves (see :meth:`TilburyFitConfig.process`).
 
 Per session the trial-averaged placefield is built for the train, validation
 and test splits (``registry.time_split``), exactly as the rest of the
@@ -28,7 +30,7 @@ split / activity-normalisation handling of :mod:`configs.placefield_structure`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Optional
+from typing import Callable, ClassVar, Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -54,7 +56,7 @@ _SPLITS = ("train", "validation", "test")
 
 
 # ---------------------------------------------------------------------------
-# Tilbury generalized double-Gaussian math (one neuron at a time)
+# Tilbury generalized-Gaussian math (one neuron at a time)
 # ---------------------------------------------------------------------------
 
 
@@ -315,187 +317,6 @@ def _initial_raw_gaussian(
 
 
 # ---------------------------------------------------------------------------
-# Double-peak models: two summed peaks (shared baseline) per neuron, for
-# genuinely bimodal tuning curves. One variant per family above (generalized /
-# plain Gaussian), built by reusing the single-peak eval functions per bump.
-# ---------------------------------------------------------------------------
-
-
-def _local_mask(
-    theta: npt.NDArray[np.floating],
-    phi: float,
-    other_phi: float,
-) -> npt.NDArray[np.bool_]:
-    """Boolean mask of points nearer to ``phi`` than to ``other_phi`` (Voronoi split).
-
-    Used to restrict per-peak width estimation to each peak's own
-    neighborhood when seeding a two-peak initial guess.
-    """
-    return np.abs(theta - phi) <= np.abs(theta - other_phi)
-
-
-def _seed_two_peaks(
-    theta: npt.NDArray[np.floating],
-    curve: npt.NDArray[np.floating],
-    sigma_min: float,
-) -> tuple[float, float, float, float, float]:
-    """Seed two peak centers/amplitudes from the two largest residual maxima.
-
-    Finds the largest residual peak the same way the single-peak models do,
-    masks out a window around it, then seeds the second peak at the largest
-    residual maximum outside that window.
-
-    Returns
-    -------
-    b0, phi1_0, A1_0, phi2_0, A2_0 : float
-        Shared baseline and each peak's seeded center/amplitude.
-    """
-    b0 = float(np.percentile(curve, 10.0))
-    resid = curve - b0
-
-    i1 = int(np.argmax(resid))
-    phi1_0 = float(theta[i1])
-    A1_0 = max(float(resid[i1]), 1e-3)
-
-    span = max(float(theta.max() - theta.min()), 1e-6)
-    sigma0 = max(span / 10.0, 2.0 * sigma_min)
-    resid_masked = np.where(np.abs(theta - phi1_0) < 2.0 * sigma0, -np.inf, resid)
-
-    if np.all(~np.isfinite(resid_masked)):
-        # Nothing left outside the mask (e.g. very few bins): fall back to
-        # the second-largest raw residual value overall.
-        order = np.argsort(resid)[::-1]
-        i2 = int(order[1]) if order.size > 1 else i1
-    else:
-        i2 = int(np.argmax(resid_masked))
-    phi2_0 = float(theta[i2])
-    A2_0 = max(float(resid[i2]), 1e-3)
-
-    return b0, phi1_0, A1_0, phi2_0, A2_0
-
-
-def _eval_double_generalized(theta: npt.NDArray[np.floating], params: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
-    """Evaluate the double generalized-Gaussian model on ``theta`` for a single neuron.
-
-    Packed parameter vector ``[b, A1, phi1, sl1, sr1, p1, A2, phi2, sl2, sr2, p2]``;
-    the two peaks share one baseline and are summed. Built from two calls to
-    :func:`_eval_tilbury` with each peak's own baseline zeroed.
-    """
-    b, A1, phi1, sl1, sr1, p1, A2, phi2, sl2, sr2, p2 = params
-    peak1 = _eval_tilbury(theta, np.array([0.0, A1, phi1, sl1, sr1, p1]))
-    peak2 = _eval_tilbury(theta, np.array([0.0, A2, phi2, sl2, sr2, p2]))
-    return b + peak1 + peak2
-
-
-def _param_names_double_generalized() -> list[str]:
-    """Parameter names in the same order as :func:`_eval_double_generalized` unpacks them."""
-    return ["b", "A1", "phi1", "sigma_left1", "sigma_right1", "p1", "A2", "phi2", "sigma_left2", "sigma_right2", "p2"]
-
-
-def _initial_raw_double_generalized(
-    theta: npt.NDArray[np.floating],
-    curve: npt.NDArray[np.floating],
-    sigma_min: float,
-) -> npt.NDArray[np.floating]:
-    """Initial raw (unconstrained) parameter vector for the double generalized-Gaussian model.
-
-    Seeds two peaks via :func:`_seed_two_peaks`, then estimates each peak's own
-    widths/exponent via :func:`_contour_sigma_p` restricted to the points
-    nearer to that peak than to the other (:func:`_local_mask`).
-    Returns ``raw`` in softplus-space, 11 entries matching
-    :func:`_param_names_double_generalized`.
-    """
-    span = max(float(theta.max() - theta.min()), 1e-6)
-    sigma_max = span
-    sigma0 = max(span / 10.0, 2.0 * sigma_min)
-
-    b0, phi1_0, A1_0, phi2_0, A2_0 = _seed_two_peaks(theta, curve, sigma_min)
-
-    mask1 = _local_mask(theta, phi1_0, phi2_0)
-    mask2 = ~mask1
-    sl1, pl1 = _contour_sigma_p(theta[mask1], curve[mask1], phi1_0, A1_0, b0, "left", sigma0, sigma_min, sigma_max)
-    sr1, pr1 = _contour_sigma_p(theta[mask1], curve[mask1], phi1_0, A1_0, b0, "right", sigma0, sigma_min, sigma_max)
-    sl2, pl2 = _contour_sigma_p(theta[mask2], curve[mask2], phi2_0, A2_0, b0, "left", sigma0, sigma_min, sigma_max)
-    sr2, pr2 = _contour_sigma_p(theta[mask2], curve[mask2], phi2_0, A2_0, b0, "right", sigma0, sigma_min, sigma_max)
-    p1_candidates = [p for p in (pl1, pr1) if p is not None]
-    p2_candidates = [p for p in (pl2, pr2) if p is not None]
-    p1_0 = float(np.mean(p1_candidates)) if p1_candidates else 2.0
-    p2_0 = float(np.mean(p2_candidates)) if p2_candidates else 2.0
-
-    return np.array(
-        [
-            b0,
-            float(_inv_softplus(A1_0)),
-            phi1_0,
-            float(_inv_softplus(sl1 - sigma_min)),
-            float(_inv_softplus(sr1 - sigma_min)),
-            float(_inv_softplus(p1_0)),
-            float(_inv_softplus(A2_0)),
-            phi2_0,
-            float(_inv_softplus(sl2 - sigma_min)),
-            float(_inv_softplus(sr2 - sigma_min)),
-            float(_inv_softplus(p2_0)),
-        ],
-        dtype=float,
-    )
-
-
-def _eval_double_gaussian(theta: npt.NDArray[np.floating], params: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
-    """Evaluate the double Gaussian model on ``theta`` for a single neuron.
-
-    Packed parameter vector ``[b, A1, phi1, sigma1, A2, phi2, sigma2]``; the
-    two peaks share one baseline and are summed. Built from two calls to
-    :func:`_eval_gaussian` with each peak's own baseline zeroed.
-    """
-    b, A1, phi1, s1, A2, phi2, s2 = params
-    peak1 = _eval_gaussian(theta, np.array([0.0, A1, phi1, s1]))
-    peak2 = _eval_gaussian(theta, np.array([0.0, A2, phi2, s2]))
-    return b + peak1 + peak2
-
-
-def _param_names_double_gaussian() -> list[str]:
-    """Parameter names in the same order as :func:`_eval_double_gaussian` unpacks them."""
-    return ["b", "A1", "phi1", "sigma1", "A2", "phi2", "sigma2"]
-
-
-def _initial_raw_double_gaussian(
-    theta: npt.NDArray[np.floating],
-    curve: npt.NDArray[np.floating],
-    sigma_min: float,
-) -> npt.NDArray[np.floating]:
-    """Initial raw (unconstrained) parameter vector for the double Gaussian model.
-
-    Seeds two peaks via :func:`_seed_two_peaks`, then estimates each peak's
-    width via :func:`_fwhm_sigma` restricted to the points nearer to that peak
-    than to the other (:func:`_local_mask`). Returns ``raw`` in softplus-space,
-    7 entries matching :func:`_param_names_double_gaussian`.
-    """
-    span = max(float(theta.max() - theta.min()), 1e-6)
-    sigma_max = span
-    sigma0 = max(span / 10.0, 2.0 * sigma_min)
-
-    b0, phi1_0, A1_0, phi2_0, A2_0 = _seed_two_peaks(theta, curve, sigma_min)
-
-    mask1 = _local_mask(theta, phi1_0, phi2_0)
-    mask2 = ~mask1
-    s1_0 = _fwhm_sigma(theta[mask1], curve[mask1], phi1_0, A1_0, b0, sigma0, sigma_min, sigma_max)
-    s2_0 = _fwhm_sigma(theta[mask2], curve[mask2], phi2_0, A2_0, b0, sigma0, sigma_min, sigma_max)
-
-    return np.array(
-        [
-            b0,
-            float(_inv_softplus(A1_0)),
-            phi1_0,
-            float(_inv_softplus(s1_0 - sigma_min)),
-            float(_inv_softplus(A2_0)),
-            phi2_0,
-            float(_inv_softplus(s2_0 - sigma_min)),
-        ],
-        dtype=float,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Batched torch / gradient-descent fitting
 # ---------------------------------------------------------------------------
 
@@ -536,45 +357,6 @@ def _apply_constraints_gaussian(raw: torch.Tensor, sigma_min: float) -> torch.Te
     return torch.cat([b, A, phi, sigma], dim=1)
 
 
-def _apply_constraints_double_generalized(raw: torch.Tensor, sigma_min: float) -> torch.Tensor:
-    """Map unconstrained ``raw`` (n_cells, 11) to bounded double generalized-Gaussian parameters.
-
-    Layout: ``[b, A1, phi1, sigma_left1, sigma_right1, p1, A2, phi2,
-    sigma_left2, sigma_right2, p2]``. ``b``, ``phi1``, ``phi2`` are free; the
-    rest use softplus to stay positive.
-    """
-    F = torch.nn.functional
-    b = raw[:, 0:1]
-    A1 = F.softplus(raw[:, 1:2])
-    phi1 = raw[:, 2:3]
-    sl1 = sigma_min + F.softplus(raw[:, 3:4])
-    sr1 = sigma_min + F.softplus(raw[:, 4:5])
-    p1 = F.softplus(raw[:, 5:6])
-    A2 = F.softplus(raw[:, 6:7])
-    phi2 = raw[:, 7:8]
-    sl2 = sigma_min + F.softplus(raw[:, 8:9])
-    sr2 = sigma_min + F.softplus(raw[:, 9:10])
-    p2 = F.softplus(raw[:, 10:11])
-    return torch.cat([b, A1, phi1, sl1, sr1, p1, A2, phi2, sl2, sr2, p2], dim=1)
-
-
-def _apply_constraints_double_gaussian(raw: torch.Tensor, sigma_min: float) -> torch.Tensor:
-    """Map unconstrained ``raw`` (n_cells, 7) to bounded double Gaussian parameters.
-
-    Layout: ``[b, A1, phi1, sigma1, A2, phi2, sigma2]``. ``b``, ``phi1``,
-    ``phi2`` are free; the sigmas use softplus.
-    """
-    F = torch.nn.functional
-    b = raw[:, 0:1]
-    A1 = F.softplus(raw[:, 1:2])
-    phi1 = raw[:, 2:3]
-    s1 = sigma_min + F.softplus(raw[:, 3:4])
-    A2 = F.softplus(raw[:, 4:5])
-    phi2 = raw[:, 5:6]
-    s2 = sigma_min + F.softplus(raw[:, 6:7])
-    return torch.cat([b, A1, phi1, s1, A2, phi2, s2], dim=1)
-
-
 def _eval_tilbury_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
     """Batched, differentiable equivalent of :func:`_eval_tilbury`.
 
@@ -608,98 +390,6 @@ def _eval_tilbury_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tens
     return b + bumps
 
 
-def _eval_double_generalized_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
-    """Batched, differentiable equivalent of :func:`_eval_double_generalized`.
-
-    ``params`` has shape ``(n_cells, 11)``, same layout as
-    :func:`_param_names_double_generalized`. Built from two calls to
-    :func:`_eval_tilbury_torch` (each peak's own baseline zeroed) summed with
-    the shared baseline.
-    """
-    b = params[:, 0:1]
-    zeros = torch.zeros_like(b)
-    peak1 = torch.cat([zeros, params[:, 1:6]], dim=1)
-    peak2 = torch.cat([zeros, params[:, 6:11]], dim=1)
-    return b + _eval_tilbury_torch(theta, peak1) + _eval_tilbury_torch(theta, peak2)
-
-
-def _eval_double_gaussian_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
-    """Batched, differentiable equivalent of :func:`_eval_double_gaussian`.
-
-    ``params`` has shape ``(n_cells, 7)``, same layout as
-    :func:`_param_names_double_gaussian`. Built from two calls to
-    :func:`_eval_gaussian_torch` (each peak's own baseline zeroed) summed with
-    the shared baseline.
-    """
-    b = params[:, 0:1]
-    zeros = torch.zeros_like(b)
-    peak1 = torch.cat([zeros, params[:, 1:4]], dim=1)
-    peak2 = torch.cat([zeros, params[:, 4:7]], dim=1)
-    return b + _eval_gaussian_torch(theta, peak1) + _eval_gaussian_torch(theta, peak2)
-
-
-def _fit_all_neurons_torch(
-    theta: npt.NDArray[np.floating],
-    curves_train: npt.NDArray[np.floating],
-    curves_val: npt.NDArray[np.floating],
-    sigma_min: float,
-    device: str,
-    num_steps: int,
-    learning_rate: float,
-    verbose: bool = False,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-    """Batched Adam fit of the Tilbury model to every neuron jointly.
-
-    Per-neuron early stopping on the validation curve: at every step the
-    current params are scored against ``curves_val`` (same ``theta`` grid as
-    train, so the train-step prediction is reused, no extra forward pass),
-    and the best-so-far params are kept per neuron rather than just the final
-    step's params. This guards against overfitting the train curve.
-
-    Returns
-    -------
-    best_params : np.ndarray
-        Packed parameters, shape ``(n_cells, 6)``, best on validation R^2.
-    r2_init : np.ndarray
-        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
-    """
-    n_cells = curves_train.shape[0]
-    raw_init = np.stack([_initial_raw_tilbury(theta, curves_train[n], sigma_min) for n in range(n_cells)])
-
-    theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
-    train_t = torch.as_tensor(curves_train, dtype=torch.float32, device=device)
-    val_t = torch.as_tensor(curves_val, dtype=torch.float32, device=device)
-    raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
-
-    with torch.no_grad():
-        init_params = _apply_constraints_tilbury(raw, sigma_min)
-        r2_init = _r2_batched_torch(_eval_tilbury_torch(theta_t, init_params), train_t)
-
-    best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
-    best_params = init_params.clone()
-
-    optimizer = torch.optim.Adam([raw], lr=learning_rate)
-    steps = tqdm(range(num_steps), desc="descent fit") if verbose else range(num_steps)
-    for step in steps:
-        optimizer.zero_grad()
-        params = _apply_constraints_tilbury(raw, sigma_min)
-        pred = _eval_tilbury_torch(theta_t, params)
-        loss = torch.mean((pred - train_t) ** 2)
-        loss.backward()
-        optimizer.step()
-
-        with torch.no_grad():
-            val_r2 = _r2_batched_torch(pred, val_t)
-            improved = val_r2 > best_val_r2
-            best_val_r2 = torch.where(improved, val_r2, best_val_r2)
-            best_params = torch.where(improved[:, None], params.detach(), best_params)
-
-        if verbose and step % 100 == 0:
-            steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
-
-    return best_params.cpu().numpy().astype(np.float64), r2_init.cpu().numpy().astype(np.float64)
-
-
 def _eval_gaussian_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
     """Batched, differentiable equivalent of :func:`_eval_gaussian`.
 
@@ -714,29 +404,140 @@ def _eval_gaussian_torch(theta: torch.Tensor, params: torch.Tensor) -> torch.Ten
     return b + A * torch.exp(-0.5 * (diff / sigma.clamp(min=1e-6)) ** 2)
 
 
-def _fit_all_neurons_torch_gaussian(
+def _shrinkage_penalty(params: torch.Tensor) -> torch.Tensor:
+    """Gaussian-centered shrinkage penalties for the generalized-Gaussian parameters.
+
+    Pulls the exponent ``p`` toward 2 and the two widths toward each other, both
+    in log space so the penalties are scale-free. ``params`` has shape
+    ``(n_cells, 6)``.
+
+    Returns
+    -------
+    torch.Tensor
+        The two penalty terms ``[p_penalty, asym_penalty]``, each averaged over
+        neurons, weighted separately by ``lam`` in :func:`_fit_all_neurons`.
+    """
+    p_penalty = ((torch.log(params[:, 5].clamp(min=1e-6)) - np.log(2.0)) ** 2).mean()
+    asym_penalty = ((torch.log(params[:, 3].clamp(min=1e-6)) - torch.log(params[:, 4].clamp(min=1e-6))) ** 2).mean()
+    return torch.stack([p_penalty, asym_penalty])
+
+
+@dataclass(frozen=True)
+class _ModelSpec:
+    """Everything :func:`_fit_all_neurons` needs to fit one tuning-curve model.
+
+    Attributes
+    ----------
+    name : str
+        Short label, used for the tqdm description.
+    param_names : list of str
+        Names of the packed parameters, in order.
+    eval_np : callable
+        ``(theta, params) -> curve`` for one neuron (numpy).
+    eval_torch : callable
+        ``(theta, params) -> curves`` batched over neurons (torch).
+    constrain : callable
+        ``(raw, sigma_min) -> params`` mapping unconstrained to bounded parameters.
+    init_raw : callable
+        ``(theta, curve, sigma_min) -> raw`` analytic initial guess for one neuron.
+    penalty : callable or None
+        ``(params) -> (n_penalties,)`` regularizer terms added to the fit loss,
+        each weighted by the matching entry of ``lam``. ``None`` for
+        unregularized models.
+    """
+
+    name: str
+    param_names: list[str]
+    eval_np: Callable[[npt.NDArray[np.floating], npt.NDArray[np.floating]], npt.NDArray[np.floating]]
+    eval_torch: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+    constrain: Callable[[torch.Tensor, float], torch.Tensor]
+    init_raw: Callable[[npt.NDArray[np.floating], npt.NDArray[np.floating], float], npt.NDArray[np.floating]]
+    penalty: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
+
+
+_SPEC_TILBURY = _ModelSpec(
+    name="generalized",
+    param_names=_param_names(),
+    eval_np=_eval_tilbury,
+    eval_torch=_eval_tilbury_torch,
+    constrain=_apply_constraints_tilbury,
+    init_raw=_initial_raw_tilbury,
+)
+
+_SPEC_CONTROL = _ModelSpec(
+    name="gaussian control",
+    param_names=_param_names_gaussian(),
+    eval_np=_eval_gaussian,
+    eval_torch=_eval_gaussian_torch,
+    constrain=_apply_constraints_gaussian,
+    init_raw=_initial_raw_gaussian,
+)
+
+_SPEC_SHRINKAGE = _ModelSpec(
+    name="generalized shrinkage",
+    param_names=_param_names(),
+    eval_np=_eval_tilbury,
+    eval_torch=_eval_tilbury_torch,
+    constrain=_apply_constraints_tilbury,
+    init_raw=_initial_raw_tilbury,
+    penalty=_shrinkage_penalty,
+)
+
+
+def _fit_all_neurons(
     theta: npt.NDArray[np.floating],
     curves_train: npt.NDArray[np.floating],
     curves_val: npt.NDArray[np.floating],
+    spec: _ModelSpec,
     sigma_min: float,
     device: str,
     num_steps: int,
     learning_rate: float,
+    lam: tuple[float, ...] = (),
     verbose: bool = False,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-    """Batched Adam fit of the control Gaussian model to every neuron jointly.
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    """Batched Adam fit of one model (``spec``) to every neuron jointly.
 
-    Per-neuron early stopping on the validation curve; see :func:`_fit_all_neurons_torch`.
+    Per-neuron early stopping on the validation curve: at every step the
+    current params are scored against ``curves_val`` (same ``theta`` grid as
+    train, so the train-step prediction is reused, no extra forward pass),
+    and the best-so-far params are kept per neuron rather than just the final
+    step's params. This guards against overfitting the train curve.
+
+    Parameters
+    ----------
+    theta : np.ndarray
+        Position bin centres, shape ``(P,)``.
+    curves_train, curves_val : np.ndarray
+        Trial-averaged placefields, shape ``(n_cells, P)``.
+    spec : _ModelSpec
+        Model to fit.
+    sigma_min : float
+        Lower bound on peak widths.
+    device : str
+        Torch device.
+    num_steps : int
+        Adam iterations.
+    learning_rate : float
+        Adam learning rate.
+    lam : tuple of float
+        One weight per term returned by ``spec.penalty``, relative to the
+        train-curve variance (so they are scale-free); ignored when the spec
+        has no penalty.
+    verbose : bool
+        Show a tqdm progress bar.
 
     Returns
     -------
     best_params : np.ndarray
-        Packed parameters, shape ``(n_cells, 4)``, best on validation R^2.
+        Packed parameters, shape ``(n_cells, n_params)``, best on validation R^2.
     r2_init : np.ndarray
         Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
+    best_val_r2 : np.ndarray
+        Validation-curve R^2 of ``best_params``, shape ``(n_cells,)``.
     """
     n_cells = curves_train.shape[0]
-    raw_init = np.stack([_initial_raw_gaussian(theta, curves_train[n], sigma_min) for n in range(n_cells)])
+    raw_init = np.stack([spec.init_raw(theta, curves_train[n], sigma_min) for n in range(n_cells)])
 
     theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
     train_t = torch.as_tensor(curves_train, dtype=torch.float32, device=device)
@@ -744,19 +545,28 @@ def _fit_all_neurons_torch_gaussian(
     raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
 
     with torch.no_grad():
-        init_params = _apply_constraints_gaussian(raw, sigma_min)
-        r2_init = _r2_batched_torch(_eval_gaussian_torch(theta_t, init_params), train_t)
+        init_params = spec.constrain(raw, sigma_min)
+        r2_init = _r2_batched_torch(spec.eval_torch(theta_t, init_params), train_t)
 
     best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
     best_params = init_params.clone()
 
+    # The fit loss is an MSE in activity units (whose scale depends entirely on
+    # activity_parameters_name), while the penalty is a dimensionless log-space
+    # distance. Scaling the penalty by the train-curve variance makes ``lam`` a
+    # scale-free ratio, so one lambda grid is meaningful across activity presets.
+    penalty_scale = float(train_t.var()) if spec.penalty is not None else 0.0
+    lam_t = torch.as_tensor(lam, dtype=torch.float32, device=device) * penalty_scale
+
     optimizer = torch.optim.Adam([raw], lr=learning_rate)
-    steps = tqdm(range(num_steps), desc="descent fit control") if verbose else range(num_steps)
+    steps = tqdm(range(num_steps), desc=f"descent fit {spec.name}") if verbose else range(num_steps)
     for step in steps:
         optimizer.zero_grad()
-        params = _apply_constraints_gaussian(raw, sigma_min)
-        pred = _eval_gaussian_torch(theta_t, params)
+        params = spec.constrain(raw, sigma_min)
+        pred = spec.eval_torch(theta_t, params)
         loss = torch.mean((pred - train_t) ** 2)
+        if spec.penalty is not None:
+            loss = loss + (lam_t * spec.penalty(params)).sum()
         loss.backward()
         optimizer.step()
 
@@ -769,123 +579,11 @@ def _fit_all_neurons_torch_gaussian(
         if verbose and step % 100 == 0:
             steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
 
-    return best_params.cpu().numpy().astype(np.float64), r2_init.cpu().numpy().astype(np.float64)
-
-
-def _fit_all_neurons_torch_double_generalized(
-    theta: npt.NDArray[np.floating],
-    curves_train: npt.NDArray[np.floating],
-    curves_val: npt.NDArray[np.floating],
-    sigma_min: float,
-    device: str,
-    num_steps: int,
-    learning_rate: float,
-    verbose: bool = False,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-    """Batched Adam fit of the double generalized-Gaussian model to every neuron jointly.
-
-    Per-neuron early stopping on the validation curve; see :func:`_fit_all_neurons_torch`.
-
-    Returns
-    -------
-    best_params : np.ndarray
-        Packed parameters, shape ``(n_cells, 11)``, best on validation R^2.
-    r2_init : np.ndarray
-        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
-    """
-    n_cells = curves_train.shape[0]
-    raw_init = np.stack([_initial_raw_double_generalized(theta, curves_train[n], sigma_min) for n in range(n_cells)])
-
-    theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
-    train_t = torch.as_tensor(curves_train, dtype=torch.float32, device=device)
-    val_t = torch.as_tensor(curves_val, dtype=torch.float32, device=device)
-    raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
-
-    with torch.no_grad():
-        init_params = _apply_constraints_double_generalized(raw, sigma_min)
-        r2_init = _r2_batched_torch(_eval_double_generalized_torch(theta_t, init_params), train_t)
-
-    best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
-    best_params = init_params.clone()
-
-    optimizer = torch.optim.Adam([raw], lr=learning_rate)
-    steps = tqdm(range(num_steps), desc="descent fit double generalized") if verbose else range(num_steps)
-    for step in steps:
-        optimizer.zero_grad()
-        params = _apply_constraints_double_generalized(raw, sigma_min)
-        pred = _eval_double_generalized_torch(theta_t, params)
-        loss = torch.mean((pred - train_t) ** 2)
-        loss.backward()
-        optimizer.step()
-
-        with torch.no_grad():
-            val_r2 = _r2_batched_torch(pred, val_t)
-            improved = val_r2 > best_val_r2
-            best_val_r2 = torch.where(improved, val_r2, best_val_r2)
-            best_params = torch.where(improved[:, None], params.detach(), best_params)
-
-        if verbose and step % 100 == 0:
-            steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
-
-    return best_params.cpu().numpy().astype(np.float64), r2_init.cpu().numpy().astype(np.float64)
-
-
-def _fit_all_neurons_torch_double_gaussian(
-    theta: npt.NDArray[np.floating],
-    curves_train: npt.NDArray[np.floating],
-    curves_val: npt.NDArray[np.floating],
-    sigma_min: float,
-    device: str,
-    num_steps: int,
-    learning_rate: float,
-    verbose: bool = False,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-    """Batched Adam fit of the double Gaussian model to every neuron jointly.
-
-    Per-neuron early stopping on the validation curve; see :func:`_fit_all_neurons_torch`.
-
-    Returns
-    -------
-    best_params : np.ndarray
-        Packed parameters, shape ``(n_cells, 7)``, best on validation R^2.
-    r2_init : np.ndarray
-        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
-    """
-    n_cells = curves_train.shape[0]
-    raw_init = np.stack([_initial_raw_double_gaussian(theta, curves_train[n], sigma_min) for n in range(n_cells)])
-
-    theta_t = torch.as_tensor(theta, dtype=torch.float32, device=device)
-    train_t = torch.as_tensor(curves_train, dtype=torch.float32, device=device)
-    val_t = torch.as_tensor(curves_val, dtype=torch.float32, device=device)
-    raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
-
-    with torch.no_grad():
-        init_params = _apply_constraints_double_gaussian(raw, sigma_min)
-        r2_init = _r2_batched_torch(_eval_double_gaussian_torch(theta_t, init_params), train_t)
-
-    best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
-    best_params = init_params.clone()
-
-    optimizer = torch.optim.Adam([raw], lr=learning_rate)
-    steps = tqdm(range(num_steps), desc="descent fit double gaussian") if verbose else range(num_steps)
-    for step in steps:
-        optimizer.zero_grad()
-        params = _apply_constraints_double_gaussian(raw, sigma_min)
-        pred = _eval_double_gaussian_torch(theta_t, params)
-        loss = torch.mean((pred - train_t) ** 2)
-        loss.backward()
-        optimizer.step()
-
-        with torch.no_grad():
-            val_r2 = _r2_batched_torch(pred, val_t)
-            improved = val_r2 > best_val_r2
-            best_val_r2 = torch.where(improved, val_r2, best_val_r2)
-            best_params = torch.where(improved[:, None], params.detach(), best_params)
-
-        if verbose and step % 100 == 0:
-            steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
-
-    return best_params.cpu().numpy().astype(np.float64), r2_init.cpu().numpy().astype(np.float64)
+    return (
+        best_params.cpu().numpy().astype(np.float64),
+        r2_init.cpu().numpy().astype(np.float64),
+        best_val_r2.cpu().numpy().astype(np.float64),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -912,19 +610,49 @@ class TilburyFitConfig(AnalysisConfigBase):
     reliability_fraction_active_thresholds : tuple of (float or None, float or None)
         Minimum reliability and minimum fraction active for neuron inclusion
         (computed on the train split). ``(None, None)`` keeps all neurons.
+    shared_penalty : bool
+        Whether the generalized-shrinkage model uses one shrinkage strength for
+        both penalty terms. ``True`` sweeps :attr:`lambda_grid_shared`
+        (``lam_p == lam_asym``, 5 fits); ``False`` sweeps :attr:`lambda_grid_p`
+        and :attr:`lambda_grid_asym` independently over their outer product
+        (25 fits), which is slower but reveals whether the exponent and
+        asymmetry penalties want different strengths.
     sigma_min : ClassVar[float]
         Lower bound on peak widths (cm).
+    lambda_grid_shared : ClassVar[tuple of float]
+        Strengths swept when ``shared_penalty=True``, spanning both penalties'
+        useful range since one value has to serve both.
+    lambda_grid_p : ClassVar[tuple of float]
+        Strengths swept for the exponent penalty when ``shared_penalty=False``.
+    lambda_grid_asym : ClassVar[tuple of float]
+        Strengths swept for the asymmetry penalty when ``shared_penalty=False``.
+        Centred an order of magnitude higher than :attr:`lambda_grid_p`: the two
+        penalties empirically want very different strengths, so a single shared
+        range would spend most of its combinations where neither wants to be.
+
+    Notes
+    -----
+    All shrinkage strengths are fractions of the train-curve variance (see
+    :func:`_fit_all_neurons`), so the same grids are meaningful for every
+    ``activity_parameters_name``. Every grid starts at exactly ``0.0``, which
+    turns the penalty off entirely and so reproduces the unregularized
+    generalized fit (``params``) -- a free consistency check, and an explicit
+    "no shrinkage wanted" outcome for the sweep to select.
     """
 
-    schema_version: str = "v8"
+    schema_version: str = "v9"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
     num_bins: int = 100
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (0.3, 0.1)
+    shared_penalty: bool = True
 
     sigma_min: ClassVar[float] = 1.0
     max_missing_position_percentage: ClassVar[float] = 5.0
+    lambda_grid_shared: ClassVar[tuple[float, ...]] = (0.0, 1e-2, 1e-1, 1.0, 10.0)
+    lambda_grid_p: ClassVar[tuple[float, ...]] = (0.0, 1e-3, 1e-2, 1e-1, 1.0)
+    lambda_grid_asym: ClassVar[tuple[float, ...]] = (0.0, 1e-1, 1.0, 10.0, 100.0)
     display_name: ClassVar[str] = "tilbury_fit"
     _result_handling: ClassVar[dict[str, str]] = {
         "idx_keep": "ragged",
@@ -932,19 +660,19 @@ class TilburyFitConfig(AnalysisConfigBase):
         "best_env": "skip",
         "param_names": "skip",
         "param_names_control": "skip",
-        "param_names_double_tilbury": "skip",
-        "param_names_double_control": "skip",
+        "param_names_shrinkage": "skip",
+        "lambda_combos": "pad",
+        "lambda_scores": "pad",
         "eig_tilbury": "pad",
         "eig_control": "pad",
-        "eig_double_tilbury": "pad",
-        "eig_double_control": "pad",
+        "eig_shrinkage": "pad",
         "eig_raw_train": "pad",
         "eig_raw_test": "pad",
     }
 
     @staticmethod
     def _param_grid() -> dict:
-        return {"activity_parameters_name": ["default", "raw"]}
+        return {"activity_parameters_name": ["default", "raw"], "shared_penalty": [True, False]}
 
     @property
     def param_names(self) -> list[str]:
@@ -955,12 +683,23 @@ class TilburyFitConfig(AnalysisConfigBase):
         return _param_names_gaussian()
 
     @property
-    def param_names_double_tilbury(self) -> list[str]:
-        return _param_names_double_generalized()
+    def param_names_shrinkage(self) -> list[str]:
+        return _param_names()
 
-    @property
-    def param_names_double_control(self) -> list[str]:
-        return _param_names_double_gaussian()
+    def lambda_combos(self) -> npt.NDArray[np.floating]:
+        """The ``(lam_p, lam_asym)`` pairs the shrinkage sweep will evaluate.
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``(n_combos, 2)``. With :attr:`shared_penalty` this is
+            :attr:`lambda_grid_shared` repeated across both columns (one value
+            serves both penalties); otherwise it is the outer product of
+            :attr:`lambda_grid_p` and :attr:`lambda_grid_asym`.
+        """
+        if self.shared_penalty:
+            return np.array([(lam, lam) for lam in self.lambda_grid_shared], dtype=float)
+        return np.array([(lp, la) for lp in self.lambda_grid_p for la in self.lambda_grid_asym], dtype=float)
 
     def validate(self) -> None:
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
@@ -975,6 +714,7 @@ class TilburyFitConfig(AnalysisConfigBase):
             f"bins={self.num_bins}",
             f"rel={rel}",
             f"frac={frac}",
+            f"shared={self.shared_penalty}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -1051,11 +791,21 @@ class TilburyFitConfig(AnalysisConfigBase):
         gd_num_steps: int = 10000,
         gd_learning_rate: float = 0.1,
     ) -> dict:
-        """Fit the Tilbury law per neuron with train/val/test cross-validation.
+        """Fit the three tuning-curve models per neuron with train/val/test cross-validation.
 
         Params are fit by Adam on the train curve, but selected per neuron by
         best R^2 on the validation curve across the training sweep (guards
         against overfitting) rather than just taking the final step's params.
+
+        The generalized-shrinkage model additionally sweeps the shrinkage
+        strengths returned by :meth:`lambda_combos` (one shared strength when
+        :attr:`shared_penalty` is True, the per-penalty outer product when it is
+        False), scoring each combination by the mean over neurons of the
+        normalised validation error ``MSE_n / var(val_n)`` (equivalently
+        ``1 - R^2_val``), so every neuron weighs equally. Note
+        the validation split does double duty here (per-neuron early stopping
+        *and* lambda selection); the test split stays untouched, which is what
+        the reported ``*_test`` metrics and ``eig_better`` depend on.
 
         Parameters
         ----------
@@ -1109,35 +859,41 @@ class TilburyFitConfig(AnalysisConfigBase):
             if np.any(np.isnan(curves[s])):
                 raise ValueError(f"NaNs in {s} placefield after dropping empty bins!")
 
-        # Per-neuron fits: Tilbury model, plain-Gaussian control, and their
-        # double-peak (two summed bumps) counterparts, all side by side.
+        # Per-neuron fits: generalized (Tilbury), plain-Gaussian control, and
+        # generalized-shrinkage (lambda swept on the validation curves).
         n_neurons = curves["train"].shape[0]
         r2 = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
         r2c = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
-        r2dg = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
-        r2dc = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
+        r2s = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
         pearson = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
         pearson_c = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
-        pearson_dg = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
-        pearson_dc = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
+        pearson_s = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
 
-        params, r2_init = _fit_all_neurons_torch(
-            theta, curves["train"], curves["validation"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose
-        )
-        params_c, r2_init_c = _fit_all_neurons_torch_gaussian(
-            theta, curves["train"], curves["validation"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose
-        )
-        params_dg, r2_init_dg = _fit_all_neurons_torch_double_generalized(
-            theta, curves["train"], curves["validation"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose
-        )
-        params_dc, r2_init_dc = _fit_all_neurons_torch_double_gaussian(
-            theta, curves["train"], curves["validation"], self.sigma_min, device, gd_num_steps, gd_learning_rate, verbose
-        )
+        fit_kwargs = dict(sigma_min=self.sigma_min, device=device, num_steps=gd_num_steps, learning_rate=gd_learning_rate, verbose=verbose)
+        params, r2_init, _ = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_TILBURY, **fit_kwargs)
+        params_c, r2_init_c, _ = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_CONTROL, **fit_kwargs)
+
+        # Shrinkage sweep: score each (lam_p, lam_asym) by the mean normalised
+        # validation error across neurons (1 - R^2_val), keeping the best fit only.
+        # ``lambda_combos`` carries the pairs actually evaluated, so the flat
+        # ``lambda_scores`` stays interpretable whichever grid was swept.
+        lambda_combos = self.lambda_combos()
+        lambda_scores = np.full(len(lambda_combos), np.nan)
+        params_s, r2_init_s, best_score, idx_best = None, None, np.inf, 0
+        for i, (lam_p, lam_asym) in enumerate(lambda_combos):
+            lam = (float(lam_p), float(lam_asym))
+            p_s, r2i_s, val_r2_s = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_SHRINKAGE, lam=lam, **fit_kwargs)
+            # Neurons whose validation curve is flat never get a finite R^2 (and never beat the
+            # -inf initialisation of the early-stopping tracker); drop them from the score.
+            val_err = 1.0 - val_r2_s
+            lambda_scores[i] = float(np.mean(val_err[np.isfinite(val_err)]))
+            if lambda_scores[i] < best_score:
+                params_s, r2_init_s, best_score, idx_best = p_s, r2i_s, lambda_scores[i], i
+        lambda_best_p, lambda_best_asym = (float(v) for v in lambda_combos[idx_best])
 
         # Score each fit on every split (cheap, done serially).
         for n in range(n_neurons):
-            x, xc = params[n], params_c[n]
-            xdg, xdc = params_dg[n], params_dc[n]
+            x, xc, xs = params[n], params_c[n], params_s[n]
             for split in _SPLITS:
                 c = curves[split][n]
                 if not np.any(np.isnan(x)):
@@ -1148,14 +904,10 @@ class TilburyFitConfig(AnalysisConfigBase):
                     pred_c = _eval_gaussian(theta, xc)
                     r2c[split][n] = _r2(pred_c, c)
                     pearson_c[split][n] = _pearson(pred_c, c)
-                if not np.any(np.isnan(xdg)):
-                    pred_dg = _eval_double_generalized(theta, xdg)
-                    r2dg[split][n] = _r2(pred_dg, c)
-                    pearson_dg[split][n] = _pearson(pred_dg, c)
-                if not np.any(np.isnan(xdc)):
-                    pred_dc = _eval_double_gaussian(theta, xdc)
-                    r2dc[split][n] = _r2(pred_dc, c)
-                    pearson_dc[split][n] = _pearson(pred_dc, c)
+                if not np.any(np.isnan(xs)):
+                    pred_s = _eval_tilbury(theta, xs)
+                    r2s[split][n] = _r2(pred_s, c)
+                    pearson_s[split][n] = _pearson(pred_s, c)
 
         # Population dimensionality: eigenvalue spectra of the (N, P) tuning-curve
         # matrices. Modeled curves are reconstructed for neurons with finite fits;
@@ -1165,7 +917,10 @@ class TilburyFitConfig(AnalysisConfigBase):
         ok_both = ok & okc
         mat_tilbury = np.stack([_eval_tilbury(theta, params[n]) for n in np.flatnonzero(ok_both)])
         mat_control = np.stack([_eval_gaussian(theta, params_c[n]) for n in np.flatnonzero(ok_both)])
-        better = pearson["test"][ok_both] > pearson_c["test"][ok_both]
+        # Per-neuron winner picked on the *validation* split (lowest validation
+        # MSE, which within a neuron is the same ranking as highest validation
+        # R^2 -- same denominator), so the test split stays held out.
+        better = r2["validation"][ok_both] > r2c["validation"][ok_both]
         mat_better = np.where(better[:, None], mat_tilbury, mat_control)
         eig_tilbury = _curve_spectrum(mat_tilbury)
         eig_control = _curve_spectrum(mat_control)
@@ -1173,36 +928,9 @@ class TilburyFitConfig(AnalysisConfigBase):
         eig_raw_train = _curve_spectrum(curves["train"])
         eig_raw_test = _curve_spectrum(curves["test"])
 
-        ok_double_both = (~np.isnan(params_dg).any(axis=1)) & (~np.isnan(params_dc).any(axis=1))
-        mat_double_tilbury = np.stack([_eval_double_generalized(theta, params_dg[n]) for n in np.flatnonzero(ok_double_both)])
-        mat_double_control = np.stack([_eval_double_gaussian(theta, params_dc[n]) for n in np.flatnonzero(ok_double_both)])
-        better_double = pearson_dg["test"][ok_double_both] > pearson_dc["test"][ok_double_both]
-        mat_better_double = np.where(better_double[:, None], mat_double_tilbury, mat_double_control)
-        eig_double_tilbury = _curve_spectrum(mat_double_tilbury)
-        eig_double_control = _curve_spectrum(mat_double_control)
-        eig_better_double = _curve_spectrum(mat_better_double)
-
-        # Overall best-of-four: per neuron, whichever of the single/double
-        # generalized/Gaussian fits scores highest on test Pearson, restricted
-        # to neurons where all four fits are finite.
-        ok_all = ok_both & ok_double_both
-        idx_all = np.flatnonzero(ok_all)
-        cand_mats = np.stack(
-            [
-                np.stack([_eval_tilbury(theta, params[n]) for n in idx_all]),
-                np.stack([_eval_gaussian(theta, params_c[n]) for n in idx_all]),
-                np.stack([_eval_double_generalized(theta, params_dg[n]) for n in idx_all]),
-                np.stack([_eval_double_gaussian(theta, params_dc[n]) for n in idx_all]),
-            ],
-            axis=1,
-        )  # (n_kept, 4, P)
-        cand_pearson = np.stack(
-            [pearson["test"][ok_all], pearson_c["test"][ok_all], pearson_dg["test"][ok_all], pearson_dc["test"][ok_all]],
-            axis=1,
-        )  # (n_kept, 4)
-        best_idx = np.argmax(cand_pearson, axis=1)
-        mat_better_overall = cand_mats[np.arange(cand_mats.shape[0]), best_idx]
-        eig_better_overall = _curve_spectrum(mat_better_overall)
+        ok_s = ~np.isnan(params_s).any(axis=1)
+        mat_shrinkage = np.stack([_eval_tilbury(theta, params_s[n]) for n in np.flatnonzero(ok_s)])
+        eig_shrinkage = _curve_spectrum(mat_shrinkage)
 
         return {
             "params": params,
@@ -1221,36 +949,29 @@ class TilburyFitConfig(AnalysisConfigBase):
             "pearson_train_control": pearson_c["train"],
             "pearson_val_control": pearson_c["validation"],
             "pearson_test_control": pearson_c["test"],
-            "params_double_tilbury": params_dg,
-            "r2_init_double_tilbury": r2_init_dg,
-            "r2_train_double_tilbury": r2dg["train"],
-            "r2_val_double_tilbury": r2dg["validation"],
-            "r2_test_double_tilbury": r2dg["test"],
-            "pearson_train_double_tilbury": pearson_dg["train"],
-            "pearson_val_double_tilbury": pearson_dg["validation"],
-            "pearson_test_double_tilbury": pearson_dg["test"],
-            "params_double_control": params_dc,
-            "r2_init_double_control": r2_init_dc,
-            "r2_train_double_control": r2dc["train"],
-            "r2_val_double_control": r2dc["validation"],
-            "r2_test_double_control": r2dc["test"],
-            "pearson_train_double_control": pearson_dc["train"],
-            "pearson_val_double_control": pearson_dc["validation"],
-            "pearson_test_double_control": pearson_dc["test"],
+            "params_shrinkage": params_s,
+            "r2_init_shrinkage": r2_init_s,
+            "r2_train_shrinkage": r2s["train"],
+            "r2_val_shrinkage": r2s["validation"],
+            "r2_test_shrinkage": r2s["test"],
+            "pearson_train_shrinkage": pearson_s["train"],
+            "pearson_val_shrinkage": pearson_s["validation"],
+            "pearson_test_shrinkage": pearson_s["test"],
+            "lambda_combos": lambda_combos,
+            "lambda_scores": lambda_scores,
+            "lambda_best_p": lambda_best_p,
+            "lambda_best_asym": lambda_best_asym,
+            "lambda_score_best": best_score,
             "idx_keep": idx_keep,
             "eig_tilbury": eig_tilbury,
             "eig_control": eig_control,
             "eig_better": eig_better,
-            "eig_double_tilbury": eig_double_tilbury,
-            "eig_double_control": eig_double_control,
-            "eig_better_double": eig_better_double,
-            "eig_better_overall": eig_better_overall,
+            "eig_shrinkage": eig_shrinkage,
             "eig_raw_train": eig_raw_train,
             "eig_raw_test": eig_raw_test,
             "dist_centers": theta,
             "best_env": best_env,
             "param_names": _param_names(),
             "param_names_control": _param_names_gaussian(),
-            "param_names_double_tilbury": _param_names_double_generalized(),
-            "param_names_double_control": _param_names_double_gaussian(),
+            "param_names_shrinkage": _param_names(),
         }
