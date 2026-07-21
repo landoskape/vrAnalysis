@@ -1166,6 +1166,7 @@ class RRRExternalLatentsViewer(Viewer):
         self.add_float("dodge_offset", value=0.3, min=0.0, max=1.0)
         self.add_float("alpha", value=0.5, min=0.0, max=1.0)
         self.add_float("width_rank_axis", value=0.6, min=0.25, max=2.0)
+        self.add_boolean("rank_axis_log", value=True)
 
         for name in ("spks_type", "activity_parameters_name", "rrr_variance", "normalize"):
             self.on_change(name, self.refresh_data)
@@ -1233,10 +1234,11 @@ class RRRExternalLatentsViewer(Viewer):
         ax_group.set_yticks([0, 1])
         ax_group.tick_params(axis="y", labelsize=self.fontsize)
         ax_group.set_ylabel(r"$R^2$", labelpad=-10, fontsize=self.fontsize)
-        ax_group.set_xlabel("from neural", fontsize=self.fontsize)
+        ax_group.set_xlabel("from neural latents", fontsize=self.fontsize)
 
         # --- ax[1]: rank-ordered curve (external/internal -> RRR), log-scale x, shares y with ax[0] ---
-        ax_curve.set_xscale("log")
+        if state["rank_axis_log"]:
+            ax_curve.set_xscale("log")
         _center_spread_plot(
             ax_curve,
             rank_positions,
@@ -1269,7 +1271,7 @@ class RRRExternalLatentsViewer(Viewer):
         )
         ax_curve.tick_params(axis="y", which="both", left=False, labelleft=False)
         ax_curve.tick_params(axis="x", labelsize=self.fontsize)
-        ax_curve.set_xlabel("to neural", fontsize=self.fontsize)
+        ax_curve.set_xlabel("to neural latents", fontsize=self.fontsize)
         ax_curve.legend(loc="upper right", fontsize=self.fontsize, frameon=False)
 
         return fig
@@ -1286,6 +1288,7 @@ def rrr_external_latents_score(
     dodge_offset: float = 0.3,
     alpha: float = 0.5,
     width_rank_axis: float = 0.6,
+    rank_axis_log: bool = True,
     fontsize: float = 8,
     figsize: tuple[float, float] = (5.0, 3.0),
     return_syd_viewer: bool = False,
@@ -1317,6 +1320,8 @@ def rrr_external_latents_score(
         Marker opacity for the beeswarm points.
     width_rank_axis : float
         Width ratio for the rank-axis panel relative to the position/speed/reward panel.
+    rank_axis_log : bool
+        If True, log-scale the rank-axis panel's x-axis.
     fontsize : float
         Tick-label fontsize for both panels.
     figsize : tuple[float, float]
@@ -1336,6 +1341,7 @@ def rrr_external_latents_score(
     viewer.update_float("dodge_offset", value=dodge_offset)
     viewer.update_float("alpha", value=alpha)
     viewer.update_float("width_rank_axis", value=width_rank_axis)
+    viewer.update_boolean("rank_axis_log", value=rank_axis_log)
 
     if return_syd_viewer:
         return viewer
