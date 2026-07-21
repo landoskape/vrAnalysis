@@ -19,12 +19,17 @@ Parked illustration ideas, not yet built here (revisit if the kappa-overlap pane
    denominator (self-vs-self, same sample).
 """
 
-from typing import Literal, Tuple
-from dataclasses import dataclass, field
+from typing import Literal, Sequence, Tuple
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 from matplotlib import pyplot as plt
+from matplotlib.axes import Axes
 from matplotlib.colors import Colormap
+from matplotlib.figure import Figure
+from matplotlib.patches import FancyBboxPatch
+from syd import Viewer
 from vrAnalysis.helpers.plotting import format_spines
 
 
@@ -930,3 +935,343 @@ def plot_kappa_overlap_2D(
         ybounds=_yticks[[0, -1]],
         spines_visible=["bottom", "left"],
     )
+
+
+Kind = Literal["pf", "full"]
+
+
+@dataclass(frozen=True)
+class ComparisonSpec:
+    """One matrix-product schematic."""
+
+    label: str
+    left: Kind
+    right: Kind
+    left_fold: str = r"$i$"
+    right_fold: str = r"$j$"
+    left_cv: bool = False
+
+
+@dataclass(frozen=True)
+class StimSpaceSchematicConfig:
+    """Visual configuration for the SS_cv / SF_cv / FF schematic."""
+
+    comparisons: tuple[ComparisonSpec, ...] = field(
+        default_factory=lambda: (
+            ComparisonSpec("ss_cv", "pf", "pf", left_cv=True),
+            ComparisonSpec("sf_cv", "pf", "full", left_cv=True),
+            ComparisonSpec("ff", "full", "full"),
+        )
+    )
+
+    # Canvas
+    figsize: tuple[float, float] = (11.0, 3.25)
+    dpi: int = 200
+    background: str = "white"
+    font_family: str = "Arial"
+
+    # Colors
+    pf_color: str = "#F05A19"
+    full_color: str = "#111111"
+    box_facecolor: str = "white"
+
+    # Typography
+    matrix_label_size: float = 20
+    fold_label_size: float = 13
+    font_weight: str = "semibold"
+
+    # Box geometry, in axes coordinates
+    box_width: float = 0.105
+    box_height: float = 0.28
+    box_rounding: float = 0.014
+    box_linewidth: float = 1.8
+    matrix_y: float = 0.47
+    fold_pad_x: float = 0.014
+    fold_pad_y: float = 0.02
+
+    # Horizontal layout
+    panel_centers: tuple[float, ...] = (0.17, 0.50, 0.83)
+    pair_gap: float = 0.075
+    operator: str = r"$\bullet$"
+    operator_size: float = 22
+
+    # CV badge
+    cv_text: str = "CV"
+    cv_badge_size: float = 10
+    cv_badge_width: float = 0.034
+    cv_badge_height: float = 0.055
+    cv_badge_pad_x: float = 0.009
+    cv_badge_pad_y: float = 0.012
+    cv_badge_linewidth: float = 1.4
+
+    # Export
+    bbox_inches: str = "tight"
+    transparent: bool = False
+
+
+def _kind_label(kind: Kind) -> str:
+    return "PF" if kind == "pf" else "Full"
+
+
+def _kind_color(kind: Kind, cfg: StimSpaceSchematicConfig) -> str:
+    return cfg.pf_color if kind == "pf" else cfg.full_color
+
+
+def _draw_matrix_box(
+    ax: Axes,
+    *,
+    center_x: float,
+    kind: Kind,
+    fold: str,
+    cfg: StimSpaceSchematicConfig,
+    show_cv: bool = False,
+) -> None:
+    """Draw one rounded matrix box in axes coordinates."""
+
+    color = _kind_color(kind, cfg)
+    left = center_x - cfg.box_width / 2
+    bottom = cfg.matrix_y - cfg.box_height / 2
+
+    box = FancyBboxPatch(
+        (left, bottom),
+        cfg.box_width,
+        cfg.box_height,
+        boxstyle=f"round,pad=0.008,rounding_size={cfg.box_rounding}",
+        transform=ax.transAxes,
+        facecolor=cfg.box_facecolor,
+        edgecolor=color,
+        linewidth=cfg.box_linewidth,
+        clip_on=False,
+    )
+    ax.add_patch(box)
+
+    ax.text(
+        center_x,
+        cfg.matrix_y,
+        _kind_label(kind),
+        transform=ax.transAxes,
+        ha="center",
+        va="center",
+        color=color,
+        fontsize=cfg.matrix_label_size,
+        fontweight=cfg.font_weight,
+    )
+
+    ax.text(
+        left + cfg.box_width - cfg.fold_pad_x,
+        bottom + cfg.fold_pad_y,
+        fold,
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        color=cfg.full_color,
+        fontsize=cfg.fold_label_size,
+    )
+
+    if show_cv:
+        badge_left = left + cfg.box_width - cfg.cv_badge_width - cfg.cv_badge_pad_x
+        badge_bottom = bottom + cfg.box_height - cfg.cv_badge_height - cfg.cv_badge_pad_y
+
+        badge = FancyBboxPatch(
+            (badge_left, badge_bottom),
+            cfg.cv_badge_width,
+            cfg.cv_badge_height,
+            boxstyle=f"round,pad=0.003,rounding_size={cfg.box_rounding * 0.8}",
+            transform=ax.transAxes,
+            facecolor=cfg.box_facecolor,
+            edgecolor=cfg.pf_color,
+            linewidth=cfg.cv_badge_linewidth,
+            clip_on=False,
+        )
+        ax.add_patch(badge)
+        ax.text(
+            badge_left + cfg.cv_badge_width / 2,
+            badge_bottom + cfg.cv_badge_height / 2,
+            cfg.cv_text,
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color=cfg.pf_color,
+            fontsize=cfg.cv_badge_size,
+            fontweight="bold",
+        )
+
+
+def make_stimspace_schematic(
+    cfg: StimSpaceSchematicConfig | None = None,
+) -> tuple[Figure, Axes]:
+    """Create the minimalist stimulus-space spectra schematic."""
+
+    cfg = cfg or StimSpaceSchematicConfig()
+
+    if len(cfg.panel_centers) != len(cfg.comparisons):
+        raise ValueError("panel_centers and comparisons must have the same length: " f"{len(cfg.panel_centers)} != {len(cfg.comparisons)}")
+
+    plt.rcParams.update(
+        {
+            "font.family": cfg.font_family,
+            "svg.fonttype": "none",  # keep text editable in Illustrator
+            "pdf.fonttype": 42,
+        }
+    )
+
+    fig, ax = plt.subplots(figsize=cfg.figsize, dpi=cfg.dpi)
+    fig.patch.set_facecolor(cfg.background)
+    ax.set_facecolor(cfg.background)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    for center, spec in zip(cfg.panel_centers, cfg.comparisons, strict=True):
+        left_x = center - cfg.pair_gap
+        right_x = center + cfg.pair_gap
+
+        _draw_matrix_box(
+            ax,
+            center_x=left_x,
+            kind=spec.left,
+            fold=spec.left_fold,
+            cfg=cfg,
+            show_cv=spec.left_cv,
+        )
+        _draw_matrix_box(
+            ax,
+            center_x=right_x,
+            kind=spec.right,
+            fold=spec.right_fold,
+            cfg=cfg,
+        )
+
+        ax.text(
+            center,
+            cfg.matrix_y,
+            cfg.operator,
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=cfg.operator_size,
+            color=cfg.full_color,
+        )
+
+    fig.tight_layout(pad=0.15)
+    return fig, ax
+
+
+def save_stimspace_schematic(
+    output_stem: str | Path,
+    cfg: StimSpaceSchematicConfig | None = None,
+    formats: Sequence[str] = ("svg", "png"),
+) -> list[Path]:
+    """Render and save the schematic in one or more formats."""
+
+    cfg = cfg or StimSpaceSchematicConfig()
+    output_stem = Path(output_stem)
+    output_stem.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, _ = make_stimspace_schematic(cfg)
+    paths: list[Path] = []
+
+    try:
+        for extension in formats:
+            extension = extension.lower().lstrip(".")
+            path = output_stem.with_suffix(f".{extension}")
+            fig.savefig(
+                path,
+                dpi=cfg.dpi,
+                bbox_inches=cfg.bbox_inches,
+                transparent=cfg.transparent,
+                facecolor=cfg.background,
+            )
+            paths.append(path)
+    finally:
+        plt.close(fig)
+
+    return paths
+
+
+# StimSpaceSchematicConfig fields exposed as live Syd controls.
+_STIMSPACE_TUNABLES = [
+    "matrix_label_size",
+    "fold_label_size",
+    "box_width",
+    "box_height",
+    "box_rounding",
+    "box_linewidth",
+    "matrix_y",
+    "fold_pad_x",
+    "fold_pad_y",
+    "pair_gap",
+    "operator_size",
+    "cv_badge_size",
+    "cv_badge_width",
+    "cv_badge_height",
+    "cv_badge_pad_x",
+    "cv_badge_pad_y",
+    "cv_badge_linewidth",
+]
+
+
+class StimSpaceSchematicViewer(Viewer):
+    """Interactive SS_cv / SF_cv / FF schematic driven by a :class:`StimSpaceSchematicConfig`.
+
+    All layout/typography fields in ``_STIMSPACE_TUNABLES`` are exposed as live sliders;
+    everything else (colors, labels, comparisons) comes straight from ``config``.
+    """
+
+    def __init__(self, config: StimSpaceSchematicConfig):
+        self.cfg = config
+        limits = {
+            "matrix_label_size": (8.0, 36.0),
+            "fold_label_size": (6.0, 24.0),
+            "box_width": (0.02, 0.3),
+            "box_height": (0.05, 0.6),
+            "box_rounding": (0.0, 0.05),
+            "box_linewidth": (0.5, 6.0),
+            "matrix_y": (0.2, 0.8),
+            "fold_pad_x": (0.0, 0.05),
+            "fold_pad_y": (0.0, 0.05),
+            "pair_gap": (0.02, 0.2),
+            "operator_size": (8.0, 40.0),
+            "cv_badge_size": (4.0, 20.0),
+            "cv_badge_width": (0.01, 0.1),
+            "cv_badge_height": (0.02, 0.15),
+            "cv_badge_pad_x": (0.0, 0.03),
+            "cv_badge_pad_y": (0.0, 0.03),
+            "cv_badge_linewidth": (0.5, 4.0),
+        }
+        for name in _STIMSPACE_TUNABLES:
+            lo, hi = limits[name]
+            self.add_float(name, value=float(getattr(config, name)), min=lo, max=hi, step=0.001)
+
+    def plot(self, state):
+        cfg = replace(
+            self.cfg,
+            **{name: state[name] for name in _STIMSPACE_TUNABLES},
+        )
+        fig, _ = make_stimspace_schematic(cfg)
+        return fig
+
+
+def stimspace_schematic(
+    config: StimSpaceSchematicConfig | None = None,
+    return_syd_viewer: bool = False,
+):
+    """Minimalist stimulus-space spectra schematic (SS_cv / SF_cv / FF).
+
+    Every visual knob comes from ``config``; the layout/typography fields in
+    ``_STIMSPACE_TUNABLES`` are also exposed as live Syd sliders.
+
+    Parameters
+    ----------
+    config : StimSpaceSchematicConfig or None
+        Full style/layout config. A default one is created when None.
+    return_syd_viewer : bool
+        If True, return the Syd viewer instead of a rendered figure.
+    """
+    viewer = StimSpaceSchematicViewer(config or StimSpaceSchematicConfig())
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    plt.show()
+    return fig
