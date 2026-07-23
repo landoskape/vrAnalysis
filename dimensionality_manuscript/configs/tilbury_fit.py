@@ -13,9 +13,14 @@ Three models are fit per neuron: this generalized-Gaussian ("tilbury"), a
 plain-Gaussian control (``p = 2``, symmetric width), and a
 *generalized-shrinkage* variant -- the same generalized-Gaussian, but with a
 log-space penalty pulling ``p`` toward 2 and ``sigma_left`` toward
-``sigma_right``, i.e. shrinking the fit toward the Gaussian control. The
-penalty strength is chosen per session by a log-spaced lambda sweep scored on
-the validation curves (see :meth:`TilburyFitConfig.process`).
+``sigma_right``, i.e. shrinking the fit toward the Gaussian control. Read as a
+Bayesian model, the penalty is a Gaussian prior on ``log p`` (centred at
+``log 2``) and on ``log(sigma_left / sigma_right)`` (centred at 0), with the
+lambdas as prior precisions and the fit as the MAP estimate.
+
+The two prior precisions are chosen *per neuron* by a grid sweep scored on the
+validation curve (see :meth:`TilburyFitConfig.process`). Each neuron therefore
+gets its own prior strength rather than one population-level value.
 
 Per session the trial-averaged placefield is built for the train, validation
 and test splits (``registry.time_split``), exactly as the rest of the
@@ -53,6 +58,13 @@ from .regression import VALID_ACTIVITY_PARAMETERS
 
 # Splits used for fit / model-selection / reporting.
 _SPLITS = ("train", "validation", "test")
+
+# Floor on a neuron's train-curve variance when normalising its data term,
+# expressed as a fraction of the whole train matrix's variance. Relative (not a
+# population percentile) so it is invariant to ``activity_parameters_name`` and
+# does not couple neurons through the population composition; at 1e-6 it binds
+# only for neurons ~6 orders of magnitude below the population scale.
+_VAR_FLOOR_FRACTION = 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +127,84 @@ def _r2_batched_torch(pred: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
     ss_res = ((actual - pred) ** 2).sum(dim=1)
     ss_tot = ((actual - actual.mean(dim=1, keepdim=True)) ** 2).sum(dim=1)
     return torch.where(ss_tot > 0, 1.0 - ss_res / ss_tot.clamp(min=1e-12), torch.full_like(ss_tot, float("nan")))
+
+
+def _val_error_and_se(pred: torch.Tensor, actual: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-neuron validation error ``1 - R^2`` and its standard error.
+
+    The error for one neuron is a mean over the ``P`` position bins, so it
+    carries a standard error directly -- no cross-validation folds needed to
+    estimate one. Only ``err`` drives lambda selection; ``se`` is reported so
+    diagnostics can weigh a combination's advantage against the noise in the
+    estimate (see ``scripts/test_lambda_selection.py``).
+
+    Parameters
+    ----------
+    pred, actual : torch.Tensor
+        Predicted and measured validation curves, shape ``(n_cells, P)``.
+
+    Returns
+    -------
+    err : torch.Tensor
+        ``1 - R^2`` per neuron, shape ``(n_cells,)``; NaN where the validation
+        curve is flat.
+    se : torch.Tensor
+        Standard error of ``err``, same shape.
+
+    Notes
+    -----
+    The standard error treats position bins as independent. Trial-averaged
+    placefields are spatially correlated, so this *under*-estimates the true
+    standard error, giving a narrower tolerance band and hence less shrinkage
+    than a correlation-aware (e.g. block-bootstrap) estimate would. That errs
+    toward the unregularized fit, which is the safe direction.
+    """
+    sq = (actual - pred) ** 2  # (n_cells, P)
+    ss_tot = ((actual - actual.mean(dim=1, keepdim=True)) ** 2).sum(dim=1)  # (n_cells,)
+    n_pos = actual.shape[1]
+    # err = P * mean(sq) / ss_tot, so se(err) = P * std(sq)/sqrt(P) / ss_tot.
+    err = sq.sum(dim=1) / ss_tot
+    se = float(np.sqrt(n_pos)) * sq.std(dim=1, unbiased=True) / ss_tot
+    nan = torch.full_like(err, float("nan"))
+    flat = ss_tot <= 0
+    return torch.where(flat, nan, err), torch.where(flat, nan, se)
+
+
+def _select_lambda_per_neuron(val_err: npt.NDArray[np.floating]) -> npt.NDArray[np.integer]:
+    """Per-neuron selection of the shrinkage lambda: lowest validation error.
+
+    Parameters
+    ----------
+    val_err : np.ndarray
+        Validation error ``1 - R^2``, shape ``(n_combos, n_cells)``. NaN marks a
+        combination that failed to fit for that neuron.
+
+    Returns
+    -------
+    np.ndarray
+        Chosen combination index per neuron, ``-1`` where every combination
+        failed, shape ``(n_cells,)``.
+
+    Notes
+    -----
+    A 1-SE variant of this rule -- take the strongest penalty within one
+    standard error of the minimum -- was tried and discarded. Scored on the held
+    out split across four sessions and two different lambda grids, test R^2 fell
+    monotonically as the tolerance band widened (plain > quarter-SE > half-SE >
+    1-SE) under both grids, with the 1-SE rule the only variant that lost to not
+    shrinking at all. The band assumed the bin-wise standard error was a
+    calibrated estimate of selection noise; squared residuals are heavy-tailed
+    enough that it instead admitted most of the grid, collapsing "strongest
+    admissible" to "grid maximum" for most neurons.
+    """
+    n_cells = val_err.shape[1]
+    idx_selected = np.full(n_cells, -1, dtype=int)
+    for n in range(n_cells):
+        err = val_err[:, n]
+        finite = np.flatnonzero(np.isfinite(err))
+        if finite.size:
+            idx_selected[n] = int(finite[np.argmin(err[finite])])
+    return idx_selected
 
 
 def _pearson(pred: npt.NDArray[np.floating], actual: npt.NDArray[np.floating]) -> float:
@@ -484,6 +574,35 @@ _SPEC_SHRINKAGE = _ModelSpec(
 )
 
 
+@dataclass(frozen=True)
+class _FitResult:
+    """One model's batched fit over every neuron.
+
+    Attributes
+    ----------
+    params : np.ndarray
+        Packed parameters, shape ``(n_cells, n_params)``, selected per neuron by
+        best validation R^2 over the descent. Rows are NaN for neurons that
+        never fitted.
+    r2_init : np.ndarray
+        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
+    val_err : np.ndarray
+        Validation error ``1 - R^2`` of ``params``, shape ``(n_cells,)``.
+    val_se : np.ndarray
+        Standard error of ``val_err``, same shape.
+    n_var_floored : int
+        Neurons whose train-curve variance hit the normalisation floor. Expected
+        to be 0; a nonzero count means the data term was rescaled for those
+        neurons and their effective prior is stronger than ``lam`` implies.
+    """
+
+    params: npt.NDArray[np.floating]
+    r2_init: npt.NDArray[np.floating]
+    val_err: npt.NDArray[np.floating]
+    val_se: npt.NDArray[np.floating]
+    n_var_floored: int
+
+
 def _fit_all_neurons(
     theta: npt.NDArray[np.floating],
     curves_train: npt.NDArray[np.floating],
@@ -495,8 +614,30 @@ def _fit_all_neurons(
     learning_rate: float,
     lam: tuple[float, ...] = (),
     verbose: bool = False,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+) -> _FitResult:
     """Batched Adam fit of one model (``spec``) to every neuron jointly.
+
+    Each neuron's data term is its own MSE divided by its own train-curve
+    variance, so the loss is ``mean_n(MSE_n / var_n) + sum_k lam_k * penalty_k``.
+    The penalty is a dimensionless log-space distance, so this per-neuron
+    normalisation is what makes ``lam`` the *same* scale-free data-to-prior
+    ratio for every neuron -- a single global scale instead makes low-amplitude
+    neurons feel a far stronger prior than high-amplitude ones. It also makes
+    ``lam = 0`` reproduce :data:`_SPEC_TILBURY` exactly, since the models then
+    differ in nothing.
+
+    The normalisation is applied to every spec, including the unpenalized ones,
+    so that the ``lam = 0`` identity holds. It is close to free there: the loss
+    is separable across neurons (a neuron's ``raw`` row only ever receives
+    gradient from its own terms) and Adam's per-parameter update is invariant to
+    a constant rescaling of that row's loss. On synthetic curves spanning four
+    orders of magnitude in amplitude the median per-neuron test-R^2 shift is
+    ~1e-9. It is not exactly free, though: the invariance breaks down in float32
+    for neurons whose variance sits orders of magnitude below the population
+    scale, where the unnormalised gradients are small enough for Adam's ``eps``
+    and float32 rounding to bite. Those neurons move (mostly improving, since
+    normalising conditions their gradients better), so the unregularized fits
+    are unchanged for the bulk of the population but not for that tail.
 
     Per-neuron early stopping on the validation curve: at every step the
     current params are scored against ``curves_val`` (same ``theta`` grid as
@@ -521,20 +662,15 @@ def _fit_all_neurons(
     learning_rate : float
         Adam learning rate.
     lam : tuple of float
-        One weight per term returned by ``spec.penalty``, relative to the
-        train-curve variance (so they are scale-free); ignored when the spec
+        One weight per term returned by ``spec.penalty``, as a dimensionless
+        ratio against the variance-normalised data term; ignored when the spec
         has no penalty.
     verbose : bool
         Show a tqdm progress bar.
 
     Returns
     -------
-    best_params : np.ndarray
-        Packed parameters, shape ``(n_cells, n_params)``, best on validation R^2.
-    r2_init : np.ndarray
-        Train-curve R^2 of the analytic initial guess (pre-training), shape ``(n_cells,)``.
-    best_val_r2 : np.ndarray
-        Validation-curve R^2 of ``best_params``, shape ``(n_cells,)``.
+    _FitResult
     """
     n_cells = curves_train.shape[0]
     raw_init = np.stack([spec.init_raw(theta, curves_train[n], sigma_min) for n in range(n_cells)])
@@ -544,6 +680,15 @@ def _fit_all_neurons(
     val_t = torch.as_tensor(curves_val, dtype=torch.float32, device=device)
     raw = torch.nn.Parameter(torch.as_tensor(raw_init, dtype=torch.float32, device=device))
 
+    # Per-neuron data-term normaliser, floored relative to the population scale
+    # (see _VAR_FLOOR_FRACTION). A neuron pushed to the floor has a data term
+    # too weak to resist the prior, so it falls back toward the Gaussian --
+    # the right behaviour for a neuron carrying no signal, but worth counting.
+    var_train = train_t.var(dim=1, unbiased=False)
+    var_floor = _VAR_FLOOR_FRACTION * float(train_t.var(unbiased=False))
+    n_var_floored = int((var_train < var_floor).sum())
+    var_train = var_train.clamp(min=var_floor)
+
     with torch.no_grad():
         init_params = spec.constrain(raw, sigma_min)
         r2_init = _r2_batched_torch(spec.eval_torch(theta_t, init_params), train_t)
@@ -551,12 +696,7 @@ def _fit_all_neurons(
     best_val_r2 = torch.full((n_cells,), float("-inf"), device=device)
     best_params = init_params.clone()
 
-    # The fit loss is an MSE in activity units (whose scale depends entirely on
-    # activity_parameters_name), while the penalty is a dimensionless log-space
-    # distance. Scaling the penalty by the train-curve variance makes ``lam`` a
-    # scale-free ratio, so one lambda grid is meaningful across activity presets.
-    penalty_scale = float(train_t.var()) if spec.penalty is not None else 0.0
-    lam_t = torch.as_tensor(lam, dtype=torch.float32, device=device) * penalty_scale
+    lam_t = torch.as_tensor(lam, dtype=torch.float32, device=device)
 
     optimizer = torch.optim.Adam([raw], lr=learning_rate)
     steps = tqdm(range(num_steps), desc=f"descent fit {spec.name}") if verbose else range(num_steps)
@@ -564,7 +704,7 @@ def _fit_all_neurons(
         optimizer.zero_grad()
         params = spec.constrain(raw, sigma_min)
         pred = spec.eval_torch(theta_t, params)
-        loss = torch.mean((pred - train_t) ** 2)
+        loss = (((pred - train_t) ** 2).mean(dim=1) / var_train).mean()
         if spec.penalty is not None:
             loss = loss + (lam_t * spec.penalty(params)).sum()
         loss.backward()
@@ -579,10 +719,25 @@ def _fit_all_neurons(
         if verbose and step % 100 == 0:
             steps.set_postfix(loss=f"{loss.item():.4g}", val_r2=f"{val_r2.mean().item():.3g}")
 
-    return (
-        best_params.cpu().numpy().astype(np.float64),
-        r2_init.cpu().numpy().astype(np.float64),
-        best_val_r2.cpu().numpy().astype(np.float64),
+    # A neuron whose validation curve is flat scores NaN R^2 every step, so
+    # ``improved`` is never True and it still holds its analytic initial guess.
+    # Mark those rows NaN so every downstream mask drops them uniformly instead
+    # of some paths treating an unfitted seed as a fit.
+    with torch.no_grad():
+        failed = ~torch.isfinite(best_val_r2)
+        val_err, val_se = _val_error_and_se(spec.eval_torch(theta_t, best_params), val_t)
+        nan_row = torch.full_like(best_params, float("nan"))
+        nan_vec = torch.full_like(val_err, float("nan"))
+        best_params = torch.where(failed[:, None], nan_row, best_params)
+        val_err = torch.where(failed, nan_vec, val_err)
+        val_se = torch.where(failed, nan_vec, val_se)
+
+    return _FitResult(
+        params=best_params.cpu().numpy().astype(np.float64),
+        r2_init=r2_init.cpu().numpy().astype(np.float64),
+        val_err=val_err.cpu().numpy().astype(np.float64),
+        val_se=val_se.cpu().numpy().astype(np.float64),
+        n_var_floored=n_var_floored,
     )
 
 
@@ -610,49 +765,62 @@ class TilburyFitConfig(AnalysisConfigBase):
     reliability_fraction_active_thresholds : tuple of (float or None, float or None)
         Minimum reliability and minimum fraction active for neuron inclusion
         (computed on the train split). ``(None, None)`` keeps all neurons.
-    shared_penalty : bool
-        Whether the generalized-shrinkage model uses one shrinkage strength for
-        both penalty terms. ``True`` sweeps :attr:`lambda_grid_shared`
-        (``lam_p == lam_asym``, 5 fits); ``False`` sweeps :attr:`lambda_grid_p`
-        and :attr:`lambda_grid_asym` independently over their outer product
-        (25 fits), which is slower but reveals whether the exponent and
-        asymmetry penalties want different strengths.
     sigma_min : ClassVar[float]
         Lower bound on peak widths (cm).
-    lambda_grid_shared : ClassVar[tuple of float]
-        Strengths swept when ``shared_penalty=True``, spanning both penalties'
-        useful range since one value has to serve both.
     lambda_grid_p : ClassVar[tuple of float]
-        Strengths swept for the exponent penalty when ``shared_penalty=False``.
+        Prior precisions swept for the exponent penalty. Capped at ``1e-1``:
+        held-out scoring across sessions found ``lam_p = 1`` to be the worst
+        column of the grid every time, so the range is spent at the weak end
+        where the useful values sit.
     lambda_grid_asym : ClassVar[tuple of float]
-        Strengths swept for the asymmetry penalty when ``shared_penalty=False``.
-        Centred an order of magnitude higher than :attr:`lambda_grid_p`: the two
-        penalties empirically want very different strengths, so a single shared
-        range would spend most of its combinations where neither wants to be.
+        Prior precisions swept for the asymmetry penalty. Reaches two decades
+        higher than :attr:`lambda_grid_p` because the two penalties empirically
+        want very different strengths -- the best fixed asymmetry penalty sat at
+        the top of a grid ending at ``1``, while the exponent penalty wanted the
+        bottom. Both are dimensionless ratios against ``1 - R^2`` (the data term
+        is variance-normalised per neuron), so the offset reflects the data, not
+        a difference in units.
 
     Notes
     -----
-    All shrinkage strengths are fractions of the train-curve variance (see
-    :func:`_fit_all_neurons`), so the same grids are meaningful for every
-    ``activity_parameters_name``. Every grid starts at exactly ``0.0``, which
-    turns the penalty off entirely and so reproduces the unregularized
-    generalized fit (``params``) -- a free consistency check, and an explicit
-    "no shrinkage wanted" outcome for the sweep to select.
+    The sweep is the outer product of the two grids, evaluated per neuron, so a
+    session costs ``len(lambda_grid_p) * len(lambda_grid_asym)`` shrinkage fits
+    plus the two unregularized ones.
+
+    Both grids start at exactly ``0.0``, which turns that penalty off. The
+    ``(0, 0)`` combination therefore reproduces the unregularized generalized
+    fit (``params``) exactly -- a free consistency check, and an explicit "no
+    shrinkage wanted" outcome available to every neuron.
+
+    Because ``(0, 0)`` is in the grid, the per-neuron selection guarantees the
+    shrinkage model's *validation* score is at least as good as the generalized
+    model's for every neuron. That comparison is vacuous; only the ``*_test``
+    metrics compare the two models informatively.
+
+    A strong lambda *saturates* rather than scaling linearly, which is why the
+    top of each grid does not need to be pushed further. The data term is a
+    variance fraction, so the whole budget a penalty can trade against is at
+    most ~1; a penalty ``lam * d^2`` (with ``d`` a log-space distance) therefore
+    admits at most ``d = sqrt(1 / lam)`` no matter how much the fit would
+    improve. For the asymmetry penalty that bounds the width ratio
+    ``sigma_left / sigma_right`` at ``exp(sqrt(1 / lam_asym))``: 2.7 at
+    ``lam_asym = 1``, and 1.37 at ``lam_asym = 10`` -- with realised
+    asymmetries far tighter, since real fits recover nothing like a full unit of
+    variance. Neurons clipping at the top of ``lambda_grid_asym`` are thus
+    already clamped to near-symmetry, and extending the grid buys little.
     """
 
-    schema_version: str = "v9"
+    schema_version: str = "v10"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "raw"
     num_bins: int = 100
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (0.3, 0.1)
-    shared_penalty: bool = True
 
     sigma_min: ClassVar[float] = 1.0
     max_missing_position_percentage: ClassVar[float] = 5.0
-    lambda_grid_shared: ClassVar[tuple[float, ...]] = (0.0, 1e-2, 1e-1, 1.0, 10.0)
-    lambda_grid_p: ClassVar[tuple[float, ...]] = (0.0, 1e-3, 1e-2, 1e-1, 1.0)
-    lambda_grid_asym: ClassVar[tuple[float, ...]] = (0.0, 1e-1, 1.0, 10.0, 100.0)
+    lambda_grid_p: ClassVar[tuple[float, ...]] = (0.0, 1e-3, 1e-2, 1e-1)
+    lambda_grid_asym: ClassVar[tuple[float, ...]] = (0.0, 1e-1, 1.0, 10.0)
     display_name: ClassVar[str] = "tilbury_fit"
     _result_handling: ClassVar[dict[str, str]] = {
         "idx_keep": "ragged",
@@ -672,7 +840,7 @@ class TilburyFitConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        return {"activity_parameters_name": ["default", "raw"], "shared_penalty": [True, False]}
+        return {"activity_parameters_name": ["default", "raw"]}
 
     @property
     def param_names(self) -> list[str]:
@@ -692,13 +860,9 @@ class TilburyFitConfig(AnalysisConfigBase):
         Returns
         -------
         np.ndarray
-            Shape ``(n_combos, 2)``. With :attr:`shared_penalty` this is
-            :attr:`lambda_grid_shared` repeated across both columns (one value
-            serves both penalties); otherwise it is the outer product of
-            :attr:`lambda_grid_p` and :attr:`lambda_grid_asym`.
+            Outer product of :attr:`lambda_grid_p` and :attr:`lambda_grid_asym`,
+            shape ``(n_combos, 2)``.
         """
-        if self.shared_penalty:
-            return np.array([(lam, lam) for lam in self.lambda_grid_shared], dtype=float)
         return np.array([(lp, la) for lp in self.lambda_grid_p for la in self.lambda_grid_asym], dtype=float)
 
     def validate(self) -> None:
@@ -714,7 +878,6 @@ class TilburyFitConfig(AnalysisConfigBase):
             f"bins={self.num_bins}",
             f"rel={rel}",
             f"frac={frac}",
-            f"shared={self.shared_penalty}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -780,51 +943,40 @@ class TilburyFitConfig(AnalysisConfigBase):
         ).filter_by_environment(best_env)
         return pf.placefield[0].T, pf.count[0]  # (N, P), (P,)
 
-    # -- main --------------------------------------------------------------
+    def prepare_curves(self, session: B2Session, registry: PopulationRegistry) -> tuple[npt.NDArray[np.floating], dict, npt.NDArray[np.bool_], int]:
+        """Build the per-split trial-averaged placefields the fits are run on.
 
-    def process(
-        self,
-        session: B2Session,
-        registry: PopulationRegistry,
-        verbose: bool = False,
-        device: Optional[str] = None,
-        gd_num_steps: int = 10000,
-        gd_learning_rate: float = 0.1,
-    ) -> dict:
-        """Fit the three tuning-curve models per neuron with train/val/test cross-validation.
+        Everything :meth:`process` does before any fitting: pick the
+        best-sampled environment, load and scale the per-split activity, select
+        reliable/active neurons on the train split, trial-average each split,
+        and drop position bins missing from any split so ``theta`` and the
+        curves stay aligned.
 
-        Params are fit by Adam on the train curve, but selected per neuron by
-        best R^2 on the validation curve across the training sweep (guards
-        against overfitting) rather than just taking the final step's params.
-
-        The generalized-shrinkage model additionally sweeps the shrinkage
-        strengths returned by :meth:`lambda_combos` (one shared strength when
-        :attr:`shared_penalty` is True, the per-penalty outer product when it is
-        False), scoring each combination by the mean over neurons of the
-        normalised validation error ``MSE_n / var(val_n)`` (equivalently
-        ``1 - R^2_val``), so every neuron weighs equally. Note
-        the validation split does double duty here (per-neuron early stopping
-        *and* lambda selection); the test split stays untouched, which is what
-        the reported ``*_test`` metrics and ``eig_better`` depend on.
+        Split out from :meth:`process` so diagnostics can drive the fitting
+        internals on exactly the same curves the pipeline uses.
 
         Parameters
         ----------
         session : B2Session
         registry : PopulationRegistry
-        verbose : bool
-            If True, show a tqdm progress bar with optimizer step + loss.
-        device : str or None
-            Torch device for the batched Adam fit (e.g. ``"cpu"``, ``"cuda"``).
-            ``None`` (the default) auto-detects: ``"cuda"`` if
-            ``torch.cuda.is_available()`` else ``"cpu"``.
-        gd_num_steps : int
-            Adam iterations to sweep for validation-best param selection.
-        gd_learning_rate : float
-            Adam learning rate.
-        """
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        Returns
+        -------
+        theta : np.ndarray
+            Retained position bin centres, shape ``(P,)``.
+        curves : dict of str to np.ndarray
+            Trial-averaged placefields per split, each ``(n_kept, P)``.
+        idx_keep : np.ndarray
+            Boolean neuron-selection mask over the session's ROIs.
+        best_env : int
+            Environment the curves were built from.
+
+        Raises
+        ------
+        ValueError
+            If more than :attr:`max_missing_position_percentage` of bins are
+            unvisited in some split, or a curve still holds NaNs afterwards.
+        """
         num_per_env = {i: int(np.sum(session.trial_environment == i)) for i in session.environments}
         best_env = max(num_per_env, key=num_per_env.get)
 
@@ -859,6 +1011,61 @@ class TilburyFitConfig(AnalysisConfigBase):
             if np.any(np.isnan(curves[s])):
                 raise ValueError(f"NaNs in {s} placefield after dropping empty bins!")
 
+        return theta, curves, idx_keep, best_env
+
+    # -- main --------------------------------------------------------------
+
+    def process(
+        self,
+        session: B2Session,
+        registry: PopulationRegistry,
+        verbose: bool = False,
+        device: Optional[str] = None,
+        gd_num_steps: int = 10000,
+        gd_learning_rate: float = 0.1,
+    ) -> dict:
+        """Fit the three tuning-curve models per neuron with train/val/test cross-validation.
+
+        Params are fit by Adam on the train curve, but selected per neuron by
+        best R^2 on the validation curve across the training sweep (guards
+        against overfitting) rather than just taking the final step's params.
+
+        The generalized-shrinkage model additionally sweeps every
+        ``(lam_p, lam_asym)`` combination from :meth:`lambda_combos` and picks,
+        **per neuron**, the one minimising that neuron's validation error
+        ``1 - R^2_val`` (:func:`_select_lambda_per_neuron`). Each neuron
+        therefore gets its own prior strength; the shrinkage "model" is a
+        per-neuron mixture rather than one population-level model. Because the
+        selection ranks combinations *within* a neuron, its per-neuron error
+        normaliser cancels, so the choice is invariant to whether train- or
+        validation-curve variance is used as the denominator.
+
+        Note the validation split does triple duty here (per-neuron early
+        stopping, per-neuron lambda selection, and the ``eig_better`` model
+        choice), so ``r2_val*`` is optimistically biased and should not be read
+        as a performance number. The test split stays untouched, which is what
+        the reported ``*_test`` metrics depend on.
+
+        Parameters
+        ----------
+        session : B2Session
+        registry : PopulationRegistry
+        verbose : bool
+            If True, show a tqdm progress bar with optimizer step + loss.
+        device : str or None
+            Torch device for the batched Adam fit (e.g. ``"cpu"``, ``"cuda"``).
+            ``None`` (the default) auto-detects: ``"cuda"`` if
+            ``torch.cuda.is_available()`` else ``"cpu"``.
+        gd_num_steps : int
+            Adam iterations to sweep for validation-best param selection.
+        gd_learning_rate : float
+            Adam learning rate.
+        """
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        theta, curves, idx_keep, best_env = self.prepare_curves(session, registry)
+
         # Per-neuron fits: generalized (Tilbury), plain-Gaussian control, and
         # generalized-shrinkage (lambda swept on the validation curves).
         n_neurons = curves["train"].shape[0]
@@ -870,26 +1077,49 @@ class TilburyFitConfig(AnalysisConfigBase):
         pearson_s = {split: np.full(n_neurons, np.nan) for split in _SPLITS}
 
         fit_kwargs = dict(sigma_min=self.sigma_min, device=device, num_steps=gd_num_steps, learning_rate=gd_learning_rate, verbose=verbose)
-        params, r2_init, _ = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_TILBURY, **fit_kwargs)
-        params_c, r2_init_c, _ = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_CONTROL, **fit_kwargs)
+        fit = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_TILBURY, **fit_kwargs)
+        fit_c = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_CONTROL, **fit_kwargs)
+        params, params_c = fit.params, fit_c.params
+        r2_init, r2_init_c = fit.r2_init, fit_c.r2_init
 
-        # Shrinkage sweep: score each (lam_p, lam_asym) by the mean normalised
-        # validation error across neurons (1 - R^2_val), keeping the best fit only.
-        # ``lambda_combos`` carries the pairs actually evaluated, so the flat
-        # ``lambda_scores`` stays interpretable whichever grid was swept.
+        # Shrinkage sweep: fit every (lam_p, lam_asym) combination, keeping each
+        # one's per-neuron validation error and its standard error so the choice
+        # can be made per neuron afterwards.
         lambda_combos = self.lambda_combos()
-        lambda_scores = np.full(len(lambda_combos), np.nan)
-        params_s, r2_init_s, best_score, idx_best = None, None, np.inf, 0
+        n_params_s = len(_param_names())
+        sweep_params = np.full((len(lambda_combos), n_neurons, n_params_s), np.nan)
+        sweep_err = np.full((len(lambda_combos), n_neurons), np.nan)
+        sweep_se = np.full((len(lambda_combos), n_neurons), np.nan)
+        r2_init_s = None
         for i, (lam_p, lam_asym) in enumerate(lambda_combos):
-            lam = (float(lam_p), float(lam_asym))
-            p_s, r2i_s, val_r2_s = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_SHRINKAGE, lam=lam, **fit_kwargs)
-            # Neurons whose validation curve is flat never get a finite R^2 (and never beat the
-            # -inf initialisation of the early-stopping tracker); drop them from the score.
-            val_err = 1.0 - val_r2_s
-            lambda_scores[i] = float(np.mean(val_err[np.isfinite(val_err)]))
-            if lambda_scores[i] < best_score:
-                params_s, r2_init_s, best_score, idx_best = p_s, r2i_s, lambda_scores[i], i
-        lambda_best_p, lambda_best_asym = (float(v) for v in lambda_combos[idx_best])
+            fit_s = _fit_all_neurons(
+                theta, curves["train"], curves["validation"], _SPEC_SHRINKAGE, lam=(float(lam_p), float(lam_asym)), **fit_kwargs
+            )
+            sweep_params[i], sweep_err[i], sweep_se[i] = fit_s.params, fit_s.val_err, fit_s.val_se
+            # The analytic seed ignores the penalty, so r2_init is the same for
+            # every combination; keeping the last is keeping all of them.
+            r2_init_s = fit_s.r2_init
+
+        # Per-neuron choice. ``lambda_scores`` (the population mean error per
+        # combination) is kept purely as a diagnostic of the grid's shape.
+        lambda_scores = np.nanmean(sweep_err, axis=1)
+        idx_sel = _select_lambda_per_neuron(sweep_err)
+
+        params_s = np.full((n_neurons, n_params_s), np.nan)
+        lambda_selected = np.full((n_neurons, 2), np.nan)
+        lambda_val_err = np.full(n_neurons, np.nan)
+        rows = np.flatnonzero(idx_sel >= 0)
+        params_s[rows] = sweep_params[idx_sel[rows], rows]
+        lambda_selected[rows] = lambda_combos[idx_sel[rows]]
+        lambda_val_err[rows] = sweep_err[idx_sel[rows], rows]
+
+        # Grid-clipping diagnostic: how many neurons want the strongest penalty
+        # available. Interpret it against the fact that a strong asymmetry
+        # penalty saturates (see the class Notes) -- clipping on lam_asym costs
+        # little, clipping on lam_p would mean the exponent range is too narrow.
+        frac_lambda_clipped_p = float(np.mean(lambda_selected[rows, 0] == self.lambda_grid_p[-1])) if rows.size else np.nan
+        frac_lambda_clipped_asym = float(np.mean(lambda_selected[rows, 1] == self.lambda_grid_asym[-1])) if rows.size else np.nan
+        n_var_floored = fit.n_var_floored
 
         # Score each fit on every split (cheap, done serially).
         for n in range(n_neurons):
@@ -910,27 +1140,31 @@ class TilburyFitConfig(AnalysisConfigBase):
                     pearson_s[split][n] = _pearson(pred_s, c)
 
         # Population dimensionality: eigenvalue spectra of the (N, P) tuning-curve
-        # matrices. Modeled curves are reconstructed for neurons with finite fits;
-        # raw measured placefields (NaN-free by construction) use every selected neuron.
-        ok = ~np.isnan(params).any(axis=1)
-        okc = ~np.isnan(params_c).any(axis=1)
-        ok_both = ok & okc
-        mat_tilbury = np.stack([_eval_tilbury(theta, params[n]) for n in np.flatnonzero(ok_both)])
-        mat_control = np.stack([_eval_gaussian(theta, params_c[n]) for n in np.flatnonzero(ok_both)])
+        # matrices. Every spectrum -- modelled and raw alike -- uses the *same*
+        # neuron set, the ones all three models fitted. Comparing spectra built
+        # from different neuron sets would confound the model comparison with a
+        # change in the population being measured.
+        ok_all = ~(np.isnan(params).any(axis=1) | np.isnan(params_c).any(axis=1) | np.isnan(params_s).any(axis=1))
+        rows_ok = np.flatnonzero(ok_all)
+        if rows_ok.size == 0:
+            raise ValueError("No neuron fitted successfully under all three models; cannot compute spectra.")
+        mat_tilbury = np.stack([_eval_tilbury(theta, params[n]) for n in rows_ok])
+        mat_control = np.stack([_eval_gaussian(theta, params_c[n]) for n in rows_ok])
+        mat_shrinkage = np.stack([_eval_tilbury(theta, params_s[n]) for n in rows_ok])
         # Per-neuron winner picked on the *validation* split (lowest validation
         # MSE, which within a neuron is the same ranking as highest validation
-        # R^2 -- same denominator), so the test split stays held out.
-        better = r2["validation"][ok_both] > r2c["validation"][ok_both]
+        # R^2 -- same denominator), so the test split stays held out. Only the
+        # two unregularized models compete here: the shrinkage model contains
+        # the generalized one at lam=(0,0), so it can never lose on validation
+        # and including it would make the comparison vacuous.
+        better = r2["validation"][ok_all] > r2c["validation"][ok_all]
         mat_better = np.where(better[:, None], mat_tilbury, mat_control)
         eig_tilbury = _curve_spectrum(mat_tilbury)
         eig_control = _curve_spectrum(mat_control)
-        eig_better = _curve_spectrum(mat_better)
-        eig_raw_train = _curve_spectrum(curves["train"])
-        eig_raw_test = _curve_spectrum(curves["test"])
-
-        ok_s = ~np.isnan(params_s).any(axis=1)
-        mat_shrinkage = np.stack([_eval_tilbury(theta, params_s[n]) for n in np.flatnonzero(ok_s)])
         eig_shrinkage = _curve_spectrum(mat_shrinkage)
+        eig_better = _curve_spectrum(mat_better)
+        eig_raw_train = _curve_spectrum(curves["train"][ok_all])
+        eig_raw_test = _curve_spectrum(curves["test"][ok_all])
 
         return {
             "params": params,
@@ -959,10 +1193,13 @@ class TilburyFitConfig(AnalysisConfigBase):
             "pearson_test_shrinkage": pearson_s["test"],
             "lambda_combos": lambda_combos,
             "lambda_scores": lambda_scores,
-            "lambda_best_p": lambda_best_p,
-            "lambda_best_asym": lambda_best_asym,
-            "lambda_score_best": best_score,
+            "lambda_selected": lambda_selected,
+            "lambda_val_err": lambda_val_err,
+            "frac_lambda_clipped_p": frac_lambda_clipped_p,
+            "frac_lambda_clipped_asym": frac_lambda_clipped_asym,
+            "n_var_floored": n_var_floored,
             "idx_keep": idx_keep,
+            "idx_fit": ok_all,
             "eig_tilbury": eig_tilbury,
             "eig_control": eig_control,
             "eig_better": eig_better,
