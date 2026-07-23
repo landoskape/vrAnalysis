@@ -73,6 +73,11 @@ def _r2_placefield_arrays(session: B2Session, smp: SMPs.SpkmapProcessor, idx_env
     return spks_valid, pfpred_valid, r2, reliability
 
 
+# Axes-fraction rectangle (x0, y0, width, height) of the colorscale insets. The scalebar is
+# mirrored from it: same vertical center, same inset from the axes edge (left instead of right).
+_INSET_RECT = (0.72, 0.10, 0.25, 0.15)
+
+
 def _add_colorscale_inset(ax, cmap_name, right_label, left_label=None, right_color="w", left_color="k"):
     """Add a horizontal colorscale inset to the bottom-right of an axes.
 
@@ -90,7 +95,7 @@ def _add_colorscale_inset(ax, cmap_name, right_label, left_label=None, right_col
         Text colors for the right and left labels.
     """
     colors = mpl.colormaps[cmap_name](np.linspace(0, 1, 255))[None, :, :]  # (1, 255, 4)
-    axins = ax.inset_axes([0.72, 0.10, 0.25, 0.15])
+    axins = ax.inset_axes(list(_INSET_RECT))
     axins.imshow(colors, aspect="auto")
     axins.set_xticks([])
     axins.set_yticks([])
@@ -118,26 +123,53 @@ class StackedRasterFocus(Viewer):
         self.session = session
         self.smp = smp
         self.spks = spks
-        self.placefield_prediction = placefield_prediction
         self.extras = extras
         self.figsize = figsize
+
+        # Valid frames define the plotted axis; everything below lives in valid-frame coordinates.
+        idx_valid = extras["idx_valid"]
+        self.spks_valid = spks[idx_valid]
+        self.num_valid = self.spks_valid.shape[0]
+        self.frame_position = extras["frame_position_index"][idx_valid]
+        self.frame_environment = extras["frame_environment_index"][idx_valid]
+        self.frame_period = float(np.median(np.diff(session.timestamps)))
+
+        # Caches for the expensive pieces so widget changes only redo what they invalidate.
+        self._prediction_cache = {"spkmap": placefield_prediction[idx_valid]}
+        self._reliability = smp.get_reliability()
+        self._sort_cache = {}
+        self._activity = None
+        self._prediction = None
+
+        xslice_start = int(np.clip(xslice_start, 0, self.num_valid - 1))
+        xslice_stop = int(np.clip(xslice_stop, xslice_start + 1, self.num_valid))
+
         self.add_selection("prediction_from", value="spkmap", options=["spkmap", "placefield"])
         self.add_boolean("use_reliable", value=True)
         self.add_float("reliability_threshold", value=0.7, min=0, max=1)
         self.add_float("vmax", value=6, min=1, max=20)
-        self.add_integer("xslice_start", value=xslice_start, min=0, max=spks.shape[0] - 1)
-        self.add_integer("xslice_stop", value=xslice_stop, min=1, max=spks.shape[0])
+        self.add_integer("xslice_start", value=xslice_start, min=0, max=self.num_valid - 1)
+        self.add_integer("xslice_stop", value=xslice_stop, min=xslice_start + 1, max=self.num_valid)
         self.add_boolean("show_position", value=False)
         self.add_float("position_height", value=0.5, min=0.1, max=3.0)
         self.add_float("env_gap", value=0.2, min=0.0, max=3.0)
         self.add_boolean("show_zero_sigma", value=False)
+        self.add_boolean("show_scalebar", value=False)
+        self.add_float("scalebar_seconds", value=60.0, min=1.0, max=600.0)
 
-    def plot(self, state):
-        spks_valid = self.spks[self.extras["idx_valid"]]
-        prediction_from = state["prediction_from"]
-        if prediction_from == "spkmap":
-            pred = self.placefield_prediction[self.extras["idx_valid"]]
-        elif prediction_from == "placefield":
+        self.on_change(["prediction_from", "use_reliable", "reliability_threshold"], self.recompute_arrays)
+        self.on_change("xslice_start", self.update_xslice_bounds)
+        self.recompute_arrays(self.state)
+
+    def update_xslice_bounds(self, state):
+        """Keep the slice stop strictly after the slice start."""
+        self.update_integer("xslice_stop", min=state["xslice_start"] + 1)
+
+    def _get_prediction(self, prediction_from: str) -> np.ndarray:
+        """Valid-frame place-field prediction, computed once per ``prediction_from`` mode."""
+        if prediction_from not in self._prediction_cache:
+            if prediction_from != "placefield":
+                raise ValueError(f"Invalid prediction_from: {prediction_from}")
             frame_behavior = get_frame_behavior(self.session)
             placefield = get_placefield(
                 self.spks,
@@ -148,28 +180,33 @@ class StackedRasterFocus(Viewer):
                 smooth_width=1.0,
             )
             pred = get_placefield_prediction(placefield, frame_behavior)[0]
-            pred = pred[self.extras["idx_valid"]]
-        else:
-            raise ValueError(f"Invalid prediction_from: {prediction_from}")
+            self._prediction_cache[prediction_from] = pred[self.extras["idx_valid"]]
+        return self._prediction_cache[prediction_from]
+
+    def recompute_arrays(self, state):
+        """Rebuild the ROI-filtered, ROI-sorted (rois, frames) rasters. Slicing them is then a view."""
+        pred = self._get_prediction(state["prediction_from"])
 
         if state["use_reliable"]:
-            reliability = self.smp.get_reliability()
-            idx_reliable = np.where(
-                np.any(
-                    np.stack([rval > state["reliability_threshold"] for rval in reliability.values], axis=0),
-                    axis=0,
-                )
-            )[0]
+            threshold = state["reliability_threshold"]
+            idx_reliable = np.where(np.any(np.stack([rval > threshold for rval in self._reliability.values], axis=0), axis=0))[0]
         else:
             idx_reliable = np.arange(self.spks.shape[1])
 
-        spks_valid = spks_valid[:, idx_reliable]
-        pred_valid = pred[:, idx_reliable]
-        idx_sort = sort_by_preferred_environment(self.smp, idx_rois=idx_reliable)
+        # Sorting is deterministic given the ROI subset, so key the cache on the subset.
+        sort_key = idx_reliable.tobytes()
+        if sort_key not in self._sort_cache:
+            self._sort_cache[sort_key] = sort_by_preferred_environment(self.smp, idx_rois=idx_reliable)
+        idx_sort = self._sort_cache[sort_key]
 
-        xslice = slice(state["xslice_start"], state["xslice_stop"])
-        num_frames = xslice.stop - xslice.start
-        num_rois = spks_valid.shape[1]
+        self._activity = self.spks_valid[:, idx_reliable].T[idx_sort]
+        self._prediction = pred[:, idx_reliable].T[idx_sort]
+
+    def plot(self, state):
+        xslice = slice(state["xslice_start"], min(state["xslice_stop"], self.num_valid))
+        activity = self._activity[:, xslice]
+        prediction = self._prediction[:, xslice]
+        num_frames = activity.shape[1]
         vmax = state["vmax"]
 
         show_position = state["show_position"]
@@ -187,15 +224,9 @@ class StackedRasterFocus(Viewer):
         ax.append(fig.add_subplot(gs[1, 0], sharex=ax[0], sharey=ax[0]))
         ax.append(fig.add_subplot(gs[2, 0], sharex=ax[0], sharey=ax[0]))
 
-        ax[0].imshow(spks_valid[xslice].T[idx_sort], aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
-        ax[1].imshow(pred_valid[xslice].T[idx_sort], aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
-        ax[2].imshow(
-            spks_valid[xslice].T[idx_sort] - pred_valid[xslice].T[idx_sort],
-            aspect="auto",
-            cmap="bwr",
-            vmin=-vmax,
-            vmax=vmax,
-        )
+        ax[0].imshow(activity, aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
+        ax[1].imshow(prediction, aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
+        ax[2].imshow(activity - prediction, aspect="auto", cmap="bwr", vmin=-vmax, vmax=vmax)
 
         for a in ax:
             a.set_xticks([])
@@ -238,8 +269,8 @@ class StackedRasterFocus(Viewer):
         if show_position:
             ax_pos = fig.add_subplot(gs[3, 0], sharex=ax[0])
             num_bins = len(self.smp.dist_edges) - 1
-            frame_position = self.extras["frame_position_index"][self.extras["idx_valid"]][xslice]
-            frame_environment = self.extras["frame_environment_index"][self.extras["idx_valid"]][xslice]
+            frame_position = self.frame_position[xslice]
+            frame_environment = self.frame_environment[xslice]
             band = num_bins + state["env_gap"] * num_bins
             xpos_base = np.arange(num_frames, dtype=float)
             # Break the line at lap resets (position wraps back) so vertical jumps disappear.
@@ -258,12 +289,29 @@ class StackedRasterFocus(Viewer):
             ax_pos.set_ylabel("Pos.")
             ax_pos.set_xticks([])
             ax_pos.set_yticks([])
-            ax_pos.set_xlabel("Imaging Frames")
             for spine in ["top", "right", "bottom", "left"]:
                 ax_pos.spines[spine].set_visible(False)
             ax_pos.set_yinverted(True)
-        else:
-            ax[2].set_xlabel("Imaging Frames")
+
+        # Optional time scalebar on the bottom raster, mirroring the colorscale inset placement.
+        # Frames are non-contiguous (invalid frames are dropped), so this measures plotted imaging
+        # time, not wall-clock time spanned by the slice.
+        if state["show_scalebar"]:
+            seconds = state["scalebar_seconds"]
+            bar_width = (seconds / self.frame_period) / num_frames  # axes fraction
+            x0 = 1.0 - (_INSET_RECT[0] + _INSET_RECT[2])  # same inset from the edge, mirrored to the left
+            ycenter = _INSET_RECT[1] + _INSET_RECT[3] / 2
+            label = f"{seconds / 60:g} min" if seconds >= 60 else f"{seconds:g} s"
+            ax[2].plot([x0, x0 + bar_width], [ycenter, ycenter], transform=ax[2].transAxes, color="k", linewidth=2.5)
+            ax[2].text(
+                x0 + bar_width / 2,
+                ycenter + 0.05,
+                label,
+                transform=ax[2].transAxes,
+                ha="center",
+                va="bottom",
+                fontsize=10,
+            )
 
         return fig
 
@@ -473,6 +521,7 @@ class R2PlacefieldFocus(Viewer):
         self.add_selection("cloud_style", value="hex", options=["hex", "scatter"])
         self.add_selection("hex_count_norm", value="linear", options=["linear", "log"])
         self.add_float("cloud_alpha", value=0.55, min=0.0, max=1.0)
+        self.add_float_range("r2_ylim", value=(-1.0, 1.0), min=-1.0, max=1.0, step=0.05)
         self.on_change("env", self.recompute_arrays)
         self.recompute_arrays(self.state)
 
@@ -524,7 +573,6 @@ class R2PlacefieldFocus(Viewer):
 
         min_r2 = np.nanmin(r2)
         max_r2 = np.nanmax(r2)
-        max_tick_r2 = np.round(np.nanmax(r2), 1)
         rel_env = reliability.values[idx_env]
         valid = np.isfinite(r2) & np.isfinite(rel_env)
         cloud_alpha = state["cloud_alpha"]
@@ -577,7 +625,6 @@ class R2PlacefieldFocus(Viewer):
         ax[1].set_xlim(-1, 1)
         ax[1].set_xlabel("Spatial Reliability")
         ax[1].set_ylabel(r"$R^2$(Activity, PF Pred.)")
-        ax1ylim = ax[1].get_ylim()
 
         linewidth_example = 1
         linewidth_average = 1.5
@@ -598,35 +645,30 @@ class R2PlacefieldFocus(Viewer):
             Line2D([0], [0], color="k", linewidth=linewidth_average, label="average"),
         ]
         ax[2].legend(handles=legend_elements)
-        ax2ylim = ax[2].get_ylim()
 
-        ax12ylim = (min(ax1ylim[0], ax2ylim[0]), max(ax1ylim[1], ax2ylim[1]))
-        ax[1].set_ylim(ax12ylim)
-        ax[2].set_ylim(ax12ylim)
+        # ax[1] and ax[2] share one user-set y range; spine bounds and ticks are clipped to it.
+        ylim = tuple(state["r2_ylim"])
+        ax[1].set_ylim(ylim)
+        ax[2].set_ylim(ylim)
+        ybounds = [max(min_r2, ylim[0]), min(max_r2, ylim[1])]
+        # Tick the visible extremes (rounded inward so ticks never exceed the spine bounds), plus 0.
+        ytick_low = float(np.ceil(ybounds[0] * 100) / 100)
+        ytick_high = float(np.floor(ybounds[1] * 100) / 100)
+        yticks = [ytick_low, ytick_high] if ytick_low >= 0 else [ytick_low, 0.0, ytick_high]
 
         # Format spines once ylims have been set
-        format_spines(
-            ax[1],
-            x_pos=-0.02,
-            y_pos=-0.02,
-            xbounds=[-1, 1],
-            ybounds=[min_r2, max_r2],
-            xticks=[-1, 0, 1],
-            yticks=[0, max_tick_r2],
-            tick_length=4,
-            spines_visible=["left", "bottom"],
-        )
-        format_spines(
-            ax[2],
-            x_pos=-0.02,
-            y_pos=-0.02,
-            xbounds=[-1, 1],
-            ybounds=[min_r2, max_r2],
-            xticks=[-1, 0, 1],
-            yticks=[0, max_tick_r2],
-            tick_length=4,
-            spines_visible=["left", "bottom"],
-        )
+        for a in (ax[1], ax[2]):
+            format_spines(
+                a,
+                x_pos=-0.02,
+                y_pos=-0.02,
+                xbounds=[-1, 1],
+                ybounds=ybounds,
+                xticks=[-1, 0, 1],
+                yticks=yticks,
+                tick_length=4,
+                spines_visible=["left", "bottom"],
+            )
         return fig
 
 
@@ -942,6 +984,8 @@ def stacked_raster_plot(
     position_height: float = 0.5,
     env_gap: float = 0.2,
     show_zero_sigma: bool = False,
+    show_scalebar: bool = False,
+    scalebar_seconds: float = 60.0,
     return_syd_viewer: bool = False,
 ):
     """
@@ -965,6 +1009,10 @@ def stacked_raster_plot(
         Extra vertical gap between environment bands in the position panel, as a fraction of ``num_bins``.
     show_zero_sigma : bool
         If True, draw a ``0 sigma`` label on the left of the gray_r colorscale inset.
+    show_scalebar : bool
+        If True, draw a time scalebar on the bottom-left of the residual raster.
+    scalebar_seconds : float
+        Duration of the scalebar, in seconds of imaging time.
     return_syd_viewer : bool
         If True, return the Syd viewer with state seeded from the other arguments.
     """
@@ -987,12 +1035,15 @@ def stacked_raster_plot(
     viewer.update_boolean("use_reliable", value=use_reliable)
     viewer.update_float("reliability_threshold", value=reliability_threshold)
     viewer.update_float("vmax", value=vmax)
-    viewer.update_integer("xslice_start", value=xslice.start if xslice.start is not None else 0)
-    viewer.update_integer("xslice_stop", value=xslice.stop if xslice.stop is not None else spks.shape[0])
     viewer.update_boolean("show_position", value=show_position)
     viewer.update_float("position_height", value=position_height)
     viewer.update_float("env_gap", value=env_gap)
     viewer.update_boolean("show_zero_sigma", value=show_zero_sigma)
+    viewer.update_boolean("show_scalebar", value=show_scalebar)
+    viewer.update_float("scalebar_seconds", value=scalebar_seconds)
+
+    # Seeding via update_* does not fire on_change before deployment, so refresh the cached rasters.
+    viewer.recompute_arrays(viewer.state)
 
     if return_syd_viewer:
         return viewer
@@ -1221,6 +1272,7 @@ def example_r2_placefield(
     cloud_style: str = "hex",
     cloud_alpha: float | None = None,
     hex_count_norm: str = "linear",
+    r2_ylim: tuple[float, float] = (-1.0, 1.0),
     return_syd_viewer: bool = False,
 ):
     """
@@ -1237,6 +1289,8 @@ def example_r2_placefield(
         Color mapping for hexbin counts (ignored when ``cloud_style="scatter"``).
         ``log`` uses ``matplotlib.colors.LogNorm`` so sparse regions are visible
         when a few bins dominate the count range.
+    r2_ylim : tuple[float, float]
+        Shared y limits for the two R² panels, within ``(-1, 1)``.
     """
     if cloud_style not in ("hex", "scatter"):
         raise ValueError(f"cloud_style must be 'hex' or 'scatter', got {cloud_style!r}")
@@ -1254,6 +1308,7 @@ def example_r2_placefield(
     viewer.update_selection("cloud_style", value=cloud_style)
     viewer.update_selection("hex_count_norm", value=hex_count_norm)
     viewer.update_float("cloud_alpha", value=cloud_alpha)
+    viewer.update_float_range("r2_ylim", value=tuple(r2_ylim))
 
     if return_syd_viewer:
         return viewer

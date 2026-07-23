@@ -54,10 +54,11 @@ _FIT_KEY_PARAM_KEYS = {
 }
 _TILBURY_REL_FA = (0.3, 0.1)
 
-# Population alpha-comparison panel (ax[3] of PlacefieldPopulationViewer): the selected source_key
-# spectrum plus the three Tilbury-fit eigenvalue spectra, each a per-mouse power-law-exponent
-# beeswarm. "eig_gaussian" in the request is the plain-Gaussian control key ``eig_control``.
-_POP_EIG_KEYS = ["eig_better", "eig_tilbury", "eig_shrinkage", "eig_control"]
+# Population alpha-comparison panel (ax[-1] of PlacefieldPopulationViewer): the selected source_key
+# spectrum plus the four Tilbury-fit eigenvalue spectra, each a per-mouse power-law-exponent
+# beeswarm, in plotting order (shrinkage sits between the composite and the unregularized
+# generalized fit). "eig_gaussian" in the request is the plain-Gaussian control key ``eig_control``.
+_POP_EIG_KEYS = ["eig_better", "eig_shrinkage", "eig_tilbury", "eig_control"]
 _POP_ALPHA_COLORS = {
     "source_key": "orange",
     "eig_better": "red",
@@ -1115,6 +1116,17 @@ class SpectrumFigureViewer(Viewer):
                 existing = merged_axes.setdefault(name, [])
                 existing.extend(opt for opt in options if opt not in existing)
 
+        # Param axes only the Tilbury-fit aggregator has get their own widget: a fit_key selection
+        # must pin all of them, otherwise the sliced spectrum keeps an extra param dimension. Axes
+        # shared with the spectra aggregators reuse the widget above. (With the current
+        # TilburyFitConfig every axis is shared, so this branch is a no-op -- it stays general so an
+        # added fit-only axis keeps working.)
+        self._fit_axes: list[str] = list(results_fit.param_axes) if results_fit is not None else []
+        if results_fit is not None:
+            for name, options in results_fit.param_axes.items():
+                if name not in merged_axes:
+                    merged_axes[name] = list(options)
+
         self._tuple_labels: dict[str, dict[str, tuple]] = {}
         for name, options in merged_axes.items():
             if any(isinstance(opt, tuple) for opt in options):
@@ -1148,6 +1160,23 @@ class SpectrumFigureViewer(Viewer):
     encode_param = PlacefieldSpectraViewer.encode_param
     _sel_params = PlacefieldSpectraViewer._sel_params
 
+    def _fit_sel_params(self, state: dict) -> dict:
+        """Params pinning every Tilbury-fit param axis, decoding tuple labels back to tuples.
+
+        The fit aggregator's own :meth:`_sel_params` analogue: it selects over
+        ``results_fit.param_axes`` (``activity_parameters_name``, plus any fit-only axes) rather
+        than over a spectra aggregator's axes.
+        """
+        params = {}
+        for name in self._fit_axes:
+            if name not in state:
+                continue
+            value = state[name]
+            if name in self._tuple_labels:
+                value = self._tuple_labels[name][value]
+            params[name] = value
+        return params
+
     @staticmethod
     def _cfg_from_state(state: dict, prefix: str) -> AdaptiveAlphaConfig:
         """Build an :class:`AdaptiveAlphaConfig` from the ``{prefix}_*`` widgets in ``state``."""
@@ -1158,17 +1187,6 @@ class SpectrumFigureViewer(Viewer):
             adaptive_buffer=state[f"{prefix}_adaptive_buffer"],
             minimum_window_size=state[f"{prefix}_minimum_window_size"],
         )
-
-    def _alpha_per_mouse(self, spec: np.ndarray, start: int, end: int, deriv_width: int, method: str) -> np.ndarray:
-        """Per-mouse power-law exponent via ``method`` over ranks ``[start, end)``.
-
-        Unused by this class's own :meth:`plot` (which is adaptive-only); kept for
-        :class:`PlacefieldPopulationViewer`, which binds to it directly.
-        """
-        if method == "window":
-            return _decay_alpha_per_mouse(spec, start, end)
-        local = _local_alpha_curve(spec, deriv_width)
-        return _deriv_alpha_per_mouse(local, start, end)
 
     def _spectrum(self, state: dict, key: str, cfg: AdaptiveAlphaConfig) -> np.ndarray:
         """Mouse-averaged ``(mice, dims)`` spectrum for ``key``, normalized per ``state``, smoothed per ``cfg``."""
@@ -1250,10 +1268,11 @@ class SpectrumFigureViewer(Viewer):
         length across sessions but are stored as ``"pad"`` keys, so the aggregator NaN-pads them to a
         common length. Each session is converted from the PCA convention to the ``ss_cv`` covariance
         convention with ``P / (P - 1)``, gated by whichever ``params*`` arrays back ``key`` (see
-        :data:`_FIT_KEY_PARAM_KEYS`). The ``activity_parameters_name`` follows the shared syd
-        selection; the reliability/fraction-active threshold remains fixed at :data:`_TILBURY_REL_FA`.
+        :data:`_FIT_KEY_PARAM_KEYS`). Every fit param axis (``activity_parameters_name``, ...)
+        follows its syd widget; the reliability/fraction-active threshold is
+        not a fit axis and remains fixed at :data:`_TILBURY_REL_FA`.
         """
-        fit_params = {"activity_parameters_name": state["activity_parameters_name"]}
+        fit_params = self._fit_sel_params(state)
         param_keys = _FIT_KEY_PARAM_KEYS[key]
         selected = self.results_fit.sel(
             keys=[key, *param_keys],
@@ -1470,11 +1489,11 @@ class SpectrumFigureViewer(Viewer):
 
         # --- ax[1]: per-mouse power-law exponent, PF / fits / CA1 ---
         _beeswarm_panel(ax[1], alpha_values, beeswarm_colors, beeswarm_labels, self.fontsize, state["beewidth"])
-        ax[1].set_ylabel(f"Power-law exponent")
+        ax[1].set_ylabel(f"Decay exponent")
 
         # --- ax[2]: signed participation ratio, PF / fits / CA1 ---
         _beeswarm_panel(ax[2], pr_values, beeswarm_colors, beeswarm_labels, self.fontsize, state["beewidth"], yscale=state["yscale"])
-        ax[2].set_ylabel("Dimensionality (Participation Ratio)")
+        ax[2].set_ylabel("Dimensionality")
         return fig
 
 
@@ -1870,9 +1889,13 @@ def spectrum_figure(
         ``subspace_name='svca_subspace'`` and ``smooth_width=None`` (``activity_parameters_name``
         follows the shared selection), and requires ``results_subspace``.
     fit_key : str or list of str
-        Extra ax[0] overlays from the Tilbury-fit aggregator: any of ``eig_tilbury`` (blue),
-        ``eig_control`` (green), ``eig_shrinkage`` (purple), or ``eig_better`` (red) --
-        see :data:`_FIT_KEYS`/:data:`_FIT_KEY_COLORS`. These are always at the fit's fixed
+        Extra ax[0] overlays from the Tilbury-fit aggregator: any of ``eig_tilbury`` (blue, the
+        unregularized generalized Gaussian), ``eig_control`` (green, the plain-Gaussian control),
+        ``eig_shrinkage`` (purple, the generalized fit with the Gaussian-centered shrinkage penalty
+        at its per-neuron validation-selected lambdas), or ``eig_better`` (red, the per-neuron
+        generalized/Gaussian composite) -- see :data:`_FIT_KEYS`/:data:`_FIT_KEY_COLORS`. The fit
+        aggregator's own param axes (``activity_parameters_name``) are set
+        through ``**selections`` like any other axis. These are always at the fit's fixed
         reliability/fraction-active threshold ``(0.3, 0.1)``; if the shared
         ``reliability_fraction_active_thresholds`` selection differs, ax[0] is titled
         ``"REL-FA Not MATCHED!"``. Requires ``results_fit``.
@@ -1953,6 +1976,8 @@ def spectrum_figure(
         if agg is None:
             continue
         valid_selections.update(agg.param_axes)
+    if results_fit is not None:
+        valid_selections.update(results_fit.param_axes)
     for key, value in selections.items():
         if key not in valid_selections:
             raise ValueError(f"Unknown selection {key!r}. Options: {sorted(valid_selections)}")
@@ -1987,15 +2012,69 @@ def _short_mouse_name(name: str) -> str:
     return name
 
 
+def _add_param_axis_widgets(viewer: Viewer, axes: dict[str, list]) -> dict[str, dict[str, tuple]]:
+    """Add one selection widget per param axis of an aggregator, seeded with preferred defaults.
+
+    Tuple-valued options are shown as string labels (:func:`_tuple_label`), since syd selections take
+    scalars; the returned maps decode a widget value back to its tuple (see :func:`_decode_params`).
+
+    Parameters
+    ----------
+    viewer : Viewer
+        Viewer to add the widgets to.
+    axes : dict
+        ``ResultsAggregator.param_axes``: axis name -> list of stored values.
+
+    Returns
+    -------
+    dict
+        Label -> raw-value map per tuple-valued axis; axes with scalar options are absent.
+    """
+    tuple_labels: dict[str, dict[str, tuple]] = {}
+    for name, options in axes.items():
+        if any(isinstance(opt, tuple) for opt in options):
+            label_map = {_tuple_label(opt): opt for opt in options}
+            tuple_labels[name] = label_map
+            widget_options = list(label_map)
+        else:
+            widget_options = list(options)
+        viewer.add_selection(name, options=widget_options)
+        if name in _PREFERRED_DEFAULTS:
+            default = _PREFERRED_DEFAULTS[name]
+            default = _tuple_label(default) if name in tuple_labels and isinstance(default, tuple) else default
+            if default in widget_options:
+                viewer.update_selection(name, value=default)
+    return tuple_labels
+
+
+def _decode_params(state: dict, names: list[str], tuple_labels: dict[str, dict[str, tuple]]) -> dict:
+    """Params pinning each axis in ``names``, decoding tuple labels back to tuples.
+
+    Every param axis of an aggregator must be pinned before slicing it, otherwise ``sel`` leaves that
+    axis as an extra dimension of the returned arrays.
+    """
+    params = {}
+    for name in names:
+        if name not in state:
+            continue
+        value = state[name]
+        if name in tuple_labels:
+            value = tuple_labels[name][value]
+        params[name] = value
+    return params
+
+
 class PlacefieldExampleFitViewer(Viewer):
     """Tilbury generalized-Gaussian placefield fits: grid of example single-neuron fits.
 
     An ``n_rows x n_cols`` grid of example single-neuron fits from one session (the top neurons by
     test R^2 that also clear the improvement threshold). Each panel overlays the held-out test
-    placefield (points) against the fitted generalized-Gaussian (Tilbury) and plain-Gaussian control
-    curves. The stored :class:`~dimensionality_manuscript.configs.tilbury_fit.TilburyFitConfig`
+    placefield (points) against the three fitted curves: generalized-Gaussian (Tilbury, blue),
+    plain-Gaussian control (black) and generalized-shrinkage (purple). The stored
+    :class:`~dimensionality_manuscript.configs.tilbury_fit.TilburyFitConfig`
     results already hold the fitted parameters and R^2; only the held-out test curve is not stored,
-    so it is rebuilt from the deterministic train/test split and trial-averaging (no re-fit).
+    so it is rebuilt from the deterministic train/test split and trial-averaging (no re-fit). The fit
+    param axes (``activity_parameters_name``) are selectable widgets.
 
     The population summaries live in the separate :class:`PlacefieldPopulationViewer`.
     """
@@ -2014,11 +2093,15 @@ class PlacefieldExampleFitViewer(Viewer):
         self.config = results.config_class
         self.fontsize = fontsize
         self.figsize = figsize
-        # Rebuilding the test curve is cheap (deterministic trial-average), but cache by session_uid
-        # so switching back to a session in the viewer is instant.
-        self._fit_cache: dict[str, dict] = {}
+        # Rebuilding the test curve is cheap (deterministic trial-average), but cache by
+        # (session_uid, fit params) so switching back to a session in the viewer is instant.
+        self._fit_cache: dict[tuple, dict] = {}
 
         self.add_selection("example_session", options=list(results.session_ids), value=results.session_ids[0])
+        # One widget per TilburyFitConfig param axis (activity_parameters_name, ...):
+        # the stored fits exist once per combination, so every one must be pinned before slicing.
+        self._fit_axes = list(results.param_axes)
+        self._tuple_labels = _add_param_axis_widgets(self, results.param_axes)
         self.add_integer("n_rows", value=n_rows, min=1, max=6)
         self.add_integer("n_cols", value=n_cols, min=1, max=6)
         # Example neurons are drawn at random from those with generalized test R2 above r2_threshold
@@ -2030,13 +2113,18 @@ class PlacefieldExampleFitViewer(Viewer):
         self.add_integer("random_seed", value=0, min=0, max=100000)
         self.add_boolean("normalize_curves", value=True)
 
-    def _example_fit(self, session_uid: str) -> dict:
-        """Return the (cached) example fit for ``session_uid``, loading it on a miss."""
-        if session_uid not in self._fit_cache:
-            self._fit_cache[session_uid] = self._load_example_fit(session_uid)
-        return self._fit_cache[session_uid]
+    def _fit_sel_params(self, state: dict) -> dict:
+        """Params pinning every TilburyFitConfig param axis, decoded from the widgets."""
+        return _decode_params(state, self._fit_axes, self._tuple_labels)
 
-    def _load_example_fit(self, session_uid: str) -> dict:
+    def _example_fit(self, session_uid: str, fit_params: dict) -> dict:
+        """Return the (cached) example fit for ``session_uid`` at ``fit_params``, loading it on a miss."""
+        cache_key = (session_uid, tuple(sorted(fit_params.items())))
+        if cache_key not in self._fit_cache:
+            self._fit_cache[cache_key] = self._load_example_fit(session_uid, fit_params)
+        return self._fit_cache[cache_key]
+
+    def _load_example_fit(self, session_uid: str, fit_params: dict) -> dict:
         """Assemble one session's example fit from stored results plus a rebuilt test curve.
 
         The fitted parameters and R^2 come straight from the aggregated
@@ -2045,12 +2133,19 @@ class PlacefieldExampleFitViewer(Viewer):
         trial-averaging (``_avg_placefield``) the fit used; ``best_env``, the bin edges and the
         dropped-bin mask are recomputed exactly as :meth:`TilburyFitConfig.process` does.
 
+        Parameters
+        ----------
+        session_uid : str
+            Session to load.
+        fit_params : dict
+            One value per TilburyFitConfig param axis (see :meth:`_fit_sel_params`).
+
         Returns
         -------
         dict
             ``theta`` (P,), ``test_curve`` (n_kept, P), ``params`` (n_kept, 6),
             ``params_control`` (n_kept, 4), ``params_shrinkage`` (n_kept, 6), ``r2_test`` (n_kept,),
-            ``r2_test_control`` (n_kept,),
+            ``r2_test_control`` (n_kept,), ``r2_test_shrinkage`` (n_kept,),
             aligned so panel ``n`` uses row ``n`` of each.
         """
         config = self.config
@@ -2058,9 +2153,10 @@ class PlacefieldExampleFitViewer(Viewer):
         session = self.results.sessions[idx]
 
         sel = self.results.sel(
-            keys=["params", "params_control", "params_shrinkage", "r2_test", "r2_test_control", "idx_keep"],
+            keys=["params", "params_control", "params_shrinkage", "r2_test", "r2_test_control", "r2_test_shrinkage", "idx_keep"],
             load_ragged=True,
             squeeze_ones=False,
+            **fit_params,
         )
         idx_keep = sel["idx_keep"][idx]  # (N_total,) bool; kept neurons, in order
         n_kept = int(np.sum(idx_keep))
@@ -2071,6 +2167,7 @@ class PlacefieldExampleFitViewer(Viewer):
         params_shrinkage = sel["params_shrinkage"][idx][:n_kept]
         r2_test = sel["r2_test"][idx][:n_kept]
         r2_test_control = sel["r2_test_control"][idx][:n_kept]
+        r2_test_shrinkage = sel["r2_test_shrinkage"][idx][:n_kept]
 
         # Original ROI indices that entered the fit: population.idx_neurons (the AND of
         # session.idx_rois across all spks_types), NOT the current-spks_type session.idx_rois.
@@ -2105,6 +2202,7 @@ class PlacefieldExampleFitViewer(Viewer):
             "params_shrinkage": params_shrinkage,
             "r2_test": r2_test,
             "r2_test_control": r2_test_control,
+            "r2_test_shrinkage": r2_test_shrinkage,
             "idx_keep": idx_keep,
             "idx_neurons": idx_neurons,
         }
@@ -2120,7 +2218,7 @@ class PlacefieldExampleFitViewer(Viewer):
 
         n_rows = int(state["n_rows"])
         n_cols = int(state["n_cols"])
-        fit = self._example_fit(state["example_session"])
+        fit = self._example_fit(state["example_session"], self._fit_sel_params(state))
 
         plt.rcParams["font.size"] = self.fontsize
         fig = plt.figure(figsize=self.figsize, layout="constrained")
@@ -2268,24 +2366,30 @@ class PlacefieldFitFigureViewer(Viewer):
         self.strict = strict
         self.fontsize = fontsize
         self.figsize = figsize
-        # Rebuilding a session's test curves is cheap but cache by session_uid so the same session
-        # appearing for several requested neurons is only loaded once.
-        self._fit_cache: dict[str, dict] = {}
+        # Rebuilding a session's test curves is cheap but cache by (session_uid, fit params) so the
+        # same session appearing for several requested neurons is only loaded once.
+        self._fit_cache: dict[tuple, dict] = {}
 
         self.add_integer("n_rows", value=n_rows, min=1, max=8)
         self.add_integer("n_cols", value=n_cols, min=1, max=8)
+        # One widget per TilburyFitConfig param axis (see PlacefieldExampleFitViewer).
+        self._fit_axes = list(results.param_axes)
+        self._tuple_labels = _add_param_axis_widgets(self, results.param_axes)
         self.add_selection("normalize", options=list(_FIT_FIGURE_NORMALIZATIONS), value=normalize)
         # normalize_independent: scale each of the three curves (test data, generalized, gaussian) by
         # its own statistic (shape-only comparison), instead of the whole group by the test-data curve.
         self.add_boolean("normalize_independent", value=normalize_independent)
 
-    def _session_fit(self, session_uid: str) -> dict:
-        """Return the (cached) per-session fit bundle for ``session_uid``, loading it on a miss."""
-        if session_uid not in self._fit_cache:
-            self._fit_cache[session_uid] = self._load_session_fit(session_uid)
-        return self._fit_cache[session_uid]
+    _fit_sel_params = PlacefieldExampleFitViewer._fit_sel_params
 
-    def _load_session_fit(self, session_uid: str) -> dict:
+    def _session_fit(self, session_uid: str, fit_params: dict) -> dict:
+        """Return the (cached) per-session fit bundle for ``session_uid`` at ``fit_params``."""
+        cache_key = (session_uid, tuple(sorted(fit_params.items())))
+        if cache_key not in self._fit_cache:
+            self._fit_cache[cache_key] = self._load_session_fit(session_uid, fit_params)
+        return self._fit_cache[cache_key]
+
+    def _load_session_fit(self, session_uid: str, fit_params: dict) -> dict:
         """Assemble one session's fit bundle: kept-neuron fits, rebuilt test curves, and the
         original-ROI-index -> kept-row map needed to resolve a hand-picked neuron.
 
@@ -2314,6 +2418,7 @@ class PlacefieldFitFigureViewer(Viewer):
             keys=["params", "params_control", "params_shrinkage", "r2_test", "r2_test_control", "idx_keep"],
             load_ragged=True,
             squeeze_ones=False,
+            **fit_params,
         )
         idx_keep = np.asarray(sel["idx_keep"][idx], dtype=bool)  # (N_available,) over population.idx_neurons
         n_kept = int(np.sum(idx_keep))
@@ -2358,7 +2463,7 @@ class PlacefieldFitFigureViewer(Viewer):
             "session": session,
         }
 
-    def _resolve(self, session_uid: str, roi: int) -> tuple[dict, Optional[int], str]:
+    def _resolve(self, session_uid: str, roi: int, fit_params: dict) -> tuple[dict, Optional[int], str]:
         """Map a hand-picked ``(session_uid, original ROI index)`` to its kept-row in the fit bundle.
 
         Returns ``(fit, kept_row, status)`` where ``status`` is ``"ok"`` (``kept_row`` is the row of
@@ -2366,7 +2471,7 @@ class PlacefieldFitFigureViewer(Viewer):
         pipeline — silent / filtered out), or ``"not_fit"`` (available but dropped by the reliability
         / fraction-active thresholds). ``kept_row`` is ``None`` for the two failure statuses.
         """
-        fit = self._session_fit(session_uid)
+        fit = self._session_fit(session_uid, fit_params)
         idx_neurons = fit["idx_neurons"]
         pos = np.flatnonzero(idx_neurons == roi)
         if pos.size == 0:
@@ -2383,6 +2488,7 @@ class PlacefieldFitFigureViewer(Viewer):
         method = state["normalize"]
         independent = bool(state["normalize_independent"])
         n_show = n_rows * n_cols
+        fit_params = self._fit_sel_params(state)
 
         plt.rcParams["font.size"] = self.fontsize
         fig, axs = plt.subplots(n_rows, n_cols, figsize=self.figsize, squeeze=False, layout="constrained")
@@ -2400,7 +2506,7 @@ class PlacefieldFitFigureViewer(Viewer):
                 continue
 
             session_uid, roi = self.session_uids[cell], self.neurons[cell]
-            fit, kept_row, status = self._resolve(session_uid, roi)
+            fit, kept_row, status = self._resolve(session_uid, roi, fit_params)
             if status != "ok":
                 # Traced but not fittable: flag loudly (strict) or leave a titled empty panel.
                 if self.strict:
@@ -2474,21 +2580,27 @@ class PlacefieldPopulationViewer(Viewer):
     :class:`~dimensionality_manuscript.configs.tilbury_fit.TilburyFitConfig` results (one fit per
     neuron; the reported quality is held-out test R^2):
 
-    - gs[0]: per-mouse peak-exponent (``p``) density (thin gray lines) with the across-mouse mean
-      (bold dark line) and a reference line at ``p = 2`` (the ordinary-Gaussian exponent).
-    - gs[1]: per-mouse median test R^2 for the generalized vs Gaussian model (paired, thin gray)
-      with the across-mouse mean (bold dark line).
+    - gs[0]: per-mouse peak-exponent (``p``) density for both generalized fits — unregularized
+      (blue) and shrinkage (purple) — thin per-mouse lines with the bold across-mouse mean, and a
+      reference line at ``p = 2`` (the ordinary-Gaussian exponent).
+    - gs[1]: per-mouse median test R^2 for the shrinkage, generalized and Gaussian models (paired,
+      thin gray, in that column order) with the across-mouse mean (bold dark line).
     - gs[2]: fraction of neurons where the generalized fit beats the Gaussian, either pooled to one
       per-mouse beeswarm (``fraction_view="pooled"``) or broken down with one beeswarm of per-session
       values per mouse (``fraction_view="by_mouse"``).
-    - gs[3]: across-mouse power-law exponent beeswarms — the selected ``source_key``
+    - gs[-1]: across-mouse power-law exponent beeswarms — the selected ``source_key``
       spectrum (from ``results_spectra``/``results_cvpca``) plus the :data:`_POP_EIG_KEYS` fit
-      spectra (colors in :data:`_POP_ALPHA_COLORS`) — estimated by a window log-log fit
-      or the mean five-point-derivative local exponent, with optional log-space pre-smoothing.
+      spectra (colors in :data:`_POP_ALPHA_COLORS`) — estimated exactly as in
+      :class:`SpectrumFigureViewer`: the median five-point-derivative local exponent over each
+      session's own peak-curvature-to-noise-floor window (:func:`_second_derivative_window`),
+      computed per session and averaged by mouse, under one :class:`AdaptiveAlphaConfig` (the
+      ``source_*`` widgets). Keys with no negative entry borrow their window from that session's
+      ``ss_cvpca`` row when ``results_spectra`` is given.
 
     The example single-neuron fits live in the separate :class:`PlacefieldExampleFitViewer`.
-    ``TilburyFitConfig`` has no param grid; the gs[3] param-axis widgets come from the spectra
-    aggregators.
+    ``TilburyFitConfig``'s param axes (``activity_parameters_name``) are merged
+    with the spectra aggregators' axes into one widget per axis; every panel is sliced to that
+    selection.
     """
 
     def __init__(
@@ -2496,6 +2608,7 @@ class PlacefieldPopulationViewer(Viewer):
         results: ResultsAggregator,
         results_spectra: ResultsAggregator | None = None,
         results_cvpca: ResultsAggregator | None = None,
+        source_cfg: AdaptiveAlphaConfig | None = None,
         num_bins: int = 80,
         fontsize: float = 9.0,
         figsize: tuple[float, float] = (6.0, 3.0),
@@ -2503,8 +2616,12 @@ class PlacefieldPopulationViewer(Viewer):
         self.results = results
         self.results_spectra = results_spectra
         self.results_cvpca = results_cvpca
-        # Reused by _spectrum/_sel_params (borrowed from PlacefieldSpectraViewer): the source_key
-        # spectrum for the ax[3] alpha panel comes from these, resolved via SOURCE_OF_KEY.
+        # Alias so the SpectrumFigureViewer methods borrowed below (which fetch the eig spectra from
+        # ``results_fit``) resolve to this viewer's Tilbury-fit aggregator.
+        self.results_fit = results
+        self.source_cfg = source_cfg if source_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]
+        # Reused by _spectrum_sessions/_sel_params (borrowed from the spectra viewers): the source_key
+        # spectrum for the gs[-1] alpha panel comes from these, resolved via SOURCE_OF_KEY.
         self._agg = {"stimspace": results_spectra, "cvpca": results_cvpca}
         self.config = results.config_class
         self.fontsize = fontsize
@@ -2523,82 +2640,90 @@ class PlacefieldPopulationViewer(Viewer):
             self.add_selection("source_key", options=source_options, value="ss_cv")
 
         # One widget per shared param-axis name (same tuple-label scheme as SpectrumFigureViewer), so
-        # the source_key spectrum can be sliced (activity_parameters_name, smooth_widths, ...).
+        # the source_key spectrum can be sliced (activity_parameters_name, smooth_widths, ...). The
+        # TilburyFitConfig axes (activity_parameters_name) are merged in: every panel
+        # here slices the fit results, so each of its axes must be pinned by a widget too.
         merged_axes: dict[str, list] = {}
-        for agg in self._agg.values():
+        for agg in list(self._agg.values()) + [results]:
             if agg is None:
                 continue
             for name, options in agg.param_axes.items():
                 existing = merged_axes.setdefault(name, [])
                 existing.extend(opt for opt in options if opt not in existing)
+        self._fit_axes = list(results.param_axes)
+        self._tuple_labels = _add_param_axis_widgets(self, merged_axes)
 
-        self._tuple_labels: dict[str, dict[str, tuple]] = {}
-        for name, options in merged_axes.items():
-            if any(isinstance(opt, tuple) for opt in options):
-                label_map = {_tuple_label(opt): opt for opt in options}
-                self._tuple_labels[name] = label_map
-                widget_options = list(label_map)
-            else:
-                widget_options = options
-            self.add_selection(name, options=widget_options)
-            if name in _PREFERRED_DEFAULTS:
-                default = self.encode_param(name, _PREFERRED_DEFAULTS[name])
-                if default in widget_options:
-                    self.update_selection(name, value=default)
-
-        # Alpha-estimation controls (shared by all four ax[3] curves), mirroring spectrum_figure.
+        # Adaptive median-FPD estimation controls, shared by every gs[-1] curve: one widget per
+        # AdaptiveAlphaConfig field (same "source"-prefixed scheme as SpectrumFigureViewer).
         self.add_boolean("normalize", value=True)
-        self.add_selection("alpha_method", options=["window", "5-pt deriv"], value="window")
-        self.add_integer_range("fit_range", value=(10, 30), min=1, max=500)
-        self.add_integer("deriv_width", value=1, min=1, max=10)
-        self.add_selection("smooth_kind", options=["none", "boxcar", "gaussian"], value="none")
-        self.add_float("smooth_width", value=3.0, min=0.0, max=50.0, step=0.5)
+        cfg = self.source_cfg
+        self.add_selection("source_smooth_method", options=["none", "boxcar", "gaussian"], value=cfg.smooth_method)
+        self.add_float("source_smooth_width", value=cfg.smooth_width, min=0.0, max=50.0, step=0.5)
+        self.add_integer("source_fpd_window_size", value=cfg.fpd_window_size, min=1, max=50)
+        self.add_integer("source_adaptive_buffer", value=cfg.adaptive_buffer, min=0, max=50)
+        self.add_integer("source_minimum_window_size", value=cfg.minimum_window_size, min=1, max=500)
 
     encode_param = PlacefieldSpectraViewer.encode_param
     _sel_params = PlacefieldSpectraViewer._sel_params
-    _spectrum = PlacefieldSpectraViewer._spectrum
-    _alpha_per_mouse = SpectrumFigureViewer._alpha_per_mouse
-
-    def _eig_spectrum(self, state: dict, key: str) -> np.ndarray:
-        """Mouse-averaged ``(mice, dims)`` Tilbury-fit eigenvalue spectrum for ``key``.
-
-        ``key`` is one of :data:`_POP_EIG_KEYS` (all ``"pad"`` keys, so
-        ``avg_by_mouse`` nanmean works). Normalize/log-space smoothing match the source_key spectrum
-        so all four ax[3] curves are estimated identically.
-        """
-        spec = self.results.sel(keys=[key], avg_by_mouse=True)[key]
-        spec = np.atleast_2d(np.asarray(spec, dtype=float))
-        if state["normalize"]:
-            spec = spec / np.nansum(spec, axis=1)[:, None]
-        return _smooth_spectrum(spec, state["smooth_kind"], state["smooth_width"])
+    # Adaptive-alpha machinery is shared verbatim with the spectrum figure: same per-session spectra
+    # (raw + smoothed), same fit-aggregator eig spectra, same AdaptiveAlphaConfig assembly.
+    # staticmethod on the source class: re-wrap, otherwise the plain function rebinds as a method.
+    _cfg_from_state = staticmethod(SpectrumFigureViewer._cfg_from_state)
+    _spectrum_sessions = SpectrumFigureViewer._spectrum_sessions
+    _fit_spectrum_raw_sessions = SpectrumFigureViewer._fit_spectrum_raw_sessions
+    _fit_spectrum_sessions = SpectrumFigureViewer._fit_spectrum_sessions
+    _fit_sel_params = SpectrumFigureViewer._fit_sel_params
 
     def _aggregate_stats(self, state: dict) -> dict:
-        """Per-session and per-mouse summary arrays for the population panels."""
+        """Per-session and per-mouse summary arrays for the population panels.
+
+        Covers all three fits: the unregularized generalized Gaussian (``params`` / ``*_test``), the
+        plain-Gaussian control (``*_test_control``) and the generalized-shrinkage fit at its
+        validation-selected lambda (``params_shrinkage`` / ``*_test_shrinkage``).
+        """
         sel = self.results.sel(
-            keys=["params", "r2_test", "r2_test_control", "pearson_test", "pearson_test_control", "idx_keep"],
+            keys=[
+                "params",
+                "params_shrinkage",
+                "r2_test",
+                "r2_test_control",
+                "r2_test_shrinkage",
+                "pearson_test",
+                "pearson_test_control",
+                "pearson_test_shrinkage",
+                "idx_keep",
+            ],
             load_ragged=True,
             squeeze_ones=False,
+            **self._fit_sel_params(state),
         )
         params = sel["params"]  # (n_sess, N, 6)
-        _performance_key = "r2_test" if state["metric"] == "r2" else "pearson_test"
-        _performance_control_key = "r2_test_control" if state["metric"] == "r2" else "pearson_test_control"
-        performance_test = sel[_performance_key]  # (n_sess, N)
-        performance_test_control = sel[_performance_control_key]  # (n_sess, N)
+        params_shrinkage = sel["params_shrinkage"]  # (n_sess, N, 6)
+        _suffix = "r2_test" if state["metric"] == "r2" else "pearson_test"
+        performance_test = sel[_suffix]  # (n_sess, N)
+        performance_test_control = sel[f"{_suffix}_control"]  # (n_sess, N)
+        performance_test_shrinkage = sel[f"{_suffix}_shrinkage"]  # (n_sess, N)
         idx_keep = sel["idx_keep"]  # (n_sess,) object array of bool masks
 
         # Drop sessions with less than 200 fitted neurons (all-NaN r2 rows).
-        idx_valid = np.sum(~np.isnan(performance_test), axis=1) >= 200
+        idx_valid = np.sum(~np.isnan(performance_test), axis=-1) >= 200
         idx_peak = self.config.param_names.index("p")
         peak = params[..., idx_peak][idx_valid]
+        # param_names_shrinkage matches param_names (same generalized-Gaussian layout), so the
+        # exponent lives in the same column.
+        peak_shrinkage = params_shrinkage[..., idx_peak][idx_valid]
         performance_test = performance_test[idx_valid]
         performance_test_control = performance_test_control[idx_valid]
+        performance_test_shrinkage = performance_test_shrinkage[idx_valid]
         idx_keep = idx_keep[idx_valid]
         mouse_names = self.results.mouse_names[idx_valid]
 
-        # Per-session median test R2 (generalized, gaussian) and fraction of kept neurons improved.
-        avg_performance = np.full((performance_test.shape[0], 2), np.nan)
-        avg_performance[:, 0] = np.nanmedian(performance_test, axis=1)
-        avg_performance[:, 1] = np.nanmedian(performance_test_control, axis=1)
+        # Per-session median test R2 (shrinkage, generalized, gaussian -- the gs[1] column order) and
+        # the fraction of kept neurons where the generalized fit beats the Gaussian.
+        avg_performance = np.full((performance_test.shape[0], 3), np.nan)
+        avg_performance[:, 0] = np.nanmedian(performance_test_shrinkage, axis=1)
+        avg_performance[:, 1] = np.nanmedian(performance_test, axis=1)
+        avg_performance[:, 2] = np.nanmedian(performance_test_control, axis=1)
         improvement = performance_test - performance_test_control
         fraction_better = np.full(performance_test.shape[0], np.nan)
         for i, imp in enumerate(improvement):
@@ -2606,20 +2731,24 @@ class PlacefieldPopulationViewer(Viewer):
             if num_keep > 0:
                 fraction_better[i] = np.nansum(imp > 0) / num_keep
 
-        # Per-session KDE of the peak exponent over a fixed [0, 10] grid.
+        # Per-session KDE of the peak exponent over a fixed [0, 10] grid, for both generalized fits.
         edges_peak = np.linspace(0.0, 10.0, state["num_bins"] + 1)
         centers_peak = edge2center(edges_peak)
-        density_peak = np.full((peak.shape[0], len(centers_peak)), np.nan)
-        for i, row in enumerate(peak):
-            row = row[np.isfinite(row)]
-            if len(row) < 2:
-                continue
-            density_peak[i] = gaussian_kde(row)(centers_peak)
+
+        def _densities(peaks: np.ndarray) -> np.ndarray:
+            density = np.full((peaks.shape[0], len(centers_peak)), np.nan)
+            for i, row in enumerate(peaks):
+                row = row[np.isfinite(row)]
+                if len(row) < 2:
+                    continue
+                density[i] = gaussian_kde(row)(centers_peak)
+            return density
 
         mouse_avg_performance, mouse_avg_names = average_by_mouse(avg_performance, mouse_names, include_mouse_names=True)
         return {
             "centers_peak": centers_peak,
-            "mouse_density_peak": average_by_mouse(density_peak, mouse_names),
+            "mouse_density_peak": average_by_mouse(_densities(peak), mouse_names),
+            "mouse_density_peak_shrinkage": average_by_mouse(_densities(peak_shrinkage), mouse_names),
             "mouse_avg_performance": mouse_avg_performance,
             "mouse_fraction_better": average_by_mouse(fraction_better, mouse_names),
             "fraction_better": fraction_better,
@@ -2637,48 +2766,61 @@ class PlacefieldPopulationViewer(Viewer):
         outer = fig.add_gridspec(1, num_cols, width_ratios=width_ratios)
 
         # --- gs[0]: per-mouse peak-exponent density + across-mouse mean, reference at p=2 ---
+        # Both generalized fits are shown: the unregularized one (blue) and the shrinkage one
+        # (purple), whose penalty pulls p toward the Gaussian value of 2.
         ax1 = fig.add_subplot(outer[0, 0])
         centers_peak = stats["centers_peak"]
-        mouse_density_peak = stats["mouse_density_peak"]
-        ax1.plot(centers_peak, mouse_density_peak.T, color="0.7", linewidth=0.8)
-        ax1.plot(centers_peak, np.nanmean(mouse_density_peak, axis=0), color="k", linewidth=2.0)
+        peak_densities = (
+            (stats["mouse_density_peak"], _GENERALIZED_COLOR, "Generalized"),
+            (stats["mouse_density_peak_shrinkage"], _SHRINKAGE_COLOR, "Shrinkage"),
+        )
+        for density, color, label in peak_densities:
+            ax1.plot(centers_peak, density.T, color=color, linewidth=0.8, alpha=0.3)
+            ax1.plot(centers_peak, np.nanmean(density, axis=0), color=color, linewidth=2.0, label=label)
         ax1.axvline(x=2.0, color="k", linestyle=":", linewidth=0.8)
         ax1.set_xticks([0, 2, 4, 6, 8, 10])
         ax1.set_xlabel("Peak Exponent")
         ax1.set_ylabel("Density")
+        ax1.legend(fontsize=self.fontsize * 0.8, frameon=False, loc="upper right")
         format_spines(
             ax1,
             x_pos=-0.02,
             y_pos=-0.02,
             xbounds=(0, 10),
-            ybounds=(0, np.round(np.nanmax(mouse_density_peak), 2)),
+            ybounds=(0, np.round(max(np.nanmax(d) for d, _, _ in peak_densities), 2)),
             spines_visible=["bottom", "left"],
             xticks=[0, 2, 4, 6, 8, 10],
         )
 
-        # --- gs[1]: per-mouse median test R2, generalized vs gaussian, paired ---
+        # --- gs[1]: per-mouse median test R2, shrinkage vs generalized vs gaussian, paired ---
         ax2 = fig.add_subplot(outer[0, 1])
         mouse_avg_performance = stats["mouse_avg_performance"]
-        ax2.plot([0, 1], mouse_avg_performance.T, color="0.7", marker="o", markersize=3, linewidth=0.8)
-        ax2.plot([0, 1], np.nanmean(mouse_avg_performance, axis=0), color="k", marker="o", markersize=5, linewidth=2.0)
+        x_models = [0, 1, 2]
+        ax2.plot(x_models, mouse_avg_performance.T, color="0.7", marker="o", markersize=3, linewidth=0.8)
+        ax2.plot(x_models, np.nanmean(mouse_avg_performance, axis=0), color="k", marker="o", markersize=5, linewidth=2.0)
         ax2.set_ylabel("Test R²" if state["metric"] == "r2" else "Test Correlation")
         ylims = ax2.get_ylim()
-        ymin = min(0, ylims[0])
-        ymax = 1
-        ax2.set_xticks([0, 1])
-        ax2.set_xlim(-0.5, 1.5)
+        if state["metric"] == "cc":
+            ymin = min(0, ylims[0])
+            ymax = 1
+        else:
+            ymin = ylims[0]
+            ymax = ylims[1]
+            ybounds = (np.fix(ymin * 10) / 10, np.fix(ymax * 10) / 10)
+        ax2.set_xticks(x_models)
+        ax2.set_xlim(-0.5, 2.5)
         ax2.set_ylim(ymin, ymax)
         format_spines(
             ax2,
             x_pos=-0.02,
             y_pos=-0.02,
-            xbounds=(0, 1),
+            xbounds=(0, 2),
             ybounds=(ymin, ymax),
             spines_visible=["bottom", "left"],
-            xticks=[0, 1],
+            xticks=x_models,
             # yticks=[ymin, 0.5, ymax],
         )
-        ax2.set_xticklabels(["Generalized", "Gaussian"], rotation=45, ha="right")
+        ax2.set_xticklabels(["Shrinkage", "Generalized", "Gaussian"], rotation=45, ha="right")
 
         # --- gs[2]: fraction generalized > gaussian, pooled or broken down by mouse ---
         if state["fraction_view"] != "none":
@@ -2726,21 +2868,46 @@ class PlacefieldPopulationViewer(Viewer):
             )
             ax3.set_xticks(xticks, labels=[])
 
-        # --- gs[3]: across-mouse power-law exponent for source_key spectrum + eig fit spectra ---
+        # --- gs[-1]: across-mouse adaptive power-law exponent, source_key spectrum + eig fit spectra ---
+        # Each session's exponent is the median five-point-derivative local exponent over its own
+        # peak-curvature-to-noise-floor window (_second_derivative_window), then averaged by mouse --
+        # the same estimator spectrum_figure uses, under the single "source" AdaptiveAlphaConfig.
         ax4 = fig.add_subplot(outer[0, -1])
-        start, end = (int(v) for v in state["fit_range"])
-        deriv_width = int(state["deriv_width"])
-        method = state["alpha_method"]
+        cfg = self._cfg_from_state(state, "source")
+
+        # Fixed fallback window source: ss_cvpca, fetched unconditionally (harmless self-fallback
+        # when source_key already is that key). Keys that aren't cross-validated have no negative
+        # entry to locate a noise floor with, so they borrow that session's ss_cvpca window.
+        cvpca = self._spectrum_sessions(state, "ss_cvpca", cfg) if self.results_spectra is not None else None
+
+        def _adaptive_alpha(raw: np.ndarray, smooth: np.ndarray, mouse_names, session_ids) -> np.ndarray:
+            """Per-mouse adaptive exponent for one key's per-session raw/smoothed spectrum."""
+            fb_raw, fb_smooth = None, None
+            if cvpca is not None:
+                cvpca_raw, cvpca_smooth, _, cvpca_session_ids = cvpca
+                fb_raw = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_raw)
+                fb_smooth = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_smooth)
+            return average_by_mouse(
+                _median_fpd_alpha_per_session(
+                    raw,
+                    smooth,
+                    cfg.fpd_window_size,
+                    cfg.adaptive_buffer,
+                    cfg.minimum_window_size,
+                    fb_raw,
+                    fb_smooth,
+                ),
+                mouse_names,
+            )
+
         alpha_values, alpha_colors, alpha_labels = [], [], []
         if self.results_spectra is not None:
             source_key = state["source_key"]
-            spec = self._spectrum(state, source_key)
-            alpha_values.append(self._alpha_per_mouse(spec, start, end, deriv_width, method))
+            alpha_values.append(_adaptive_alpha(*self._spectrum_sessions(state, source_key, cfg)))
             alpha_colors.append(_POP_ALPHA_COLORS["source_key"])
             alpha_labels.append(source_key)
         for key in _POP_EIG_KEYS:
-            spec = self._eig_spectrum(state, key)
-            alpha_values.append(self._alpha_per_mouse(spec, start, end, deriv_width, method))
+            alpha_values.append(_adaptive_alpha(*self._fit_spectrum_sessions(state, key, cfg)))
             alpha_colors.append(_POP_ALPHA_COLORS[key])
             alpha_labels.append(_POP_ALPHA_LABELS[key])
         _beeswarm_panel(ax4, alpha_values, alpha_colors, alpha_labels, self.fontsize, state["beewidth"])
@@ -2762,14 +2929,16 @@ def placefield_example_fits(
     figsize: tuple[float, float] = (8.0, 3.0),
     save_path=None,
     return_syd_viewer: bool = False,
+    **selections,
 ):
     """
     Tilbury generalized-Gaussian placefield-fit figure: grid of example single-neuron fits.
 
-    An ``n_rows x n_cols`` grid of example single-neuron fits (test placefield vs generalized-Gaussian
-    and plain-Gaussian curves) for ``example_session``. The fitted parameters and R^2 come from the
-    stored results; only the held-out test curve is rebuilt on the fly (deterministic trial-average,
-    no re-fit). Population summaries are in :func:`placefield_population`.
+    An ``n_rows x n_cols`` grid of example single-neuron fits (test placefield vs the generalized-
+    Gaussian, plain-Gaussian and generalized-shrinkage curves) for ``example_session``. The fitted
+    parameters and R^2 come from the stored results; only the held-out test curve is rebuilt on the
+    fly (deterministic trial-average, no re-fit). Population summaries are in
+    :func:`placefield_population`.
 
     Parameters
     ----------
@@ -2800,6 +2969,9 @@ def placefield_example_fits(
         If given (and ``return_syd_viewer`` is False), save the rendered figure here.
     return_syd_viewer : bool
         If True, return the Syd viewer with state seeded from the other arguments.
+    **selections
+        Overrides for the fit's parameter-axis selections, keyed by raw ``param_axes`` name of
+        ``results`` (``activity_parameters_name``).
 
     Returns
     -------
@@ -2822,6 +2994,10 @@ def placefield_example_fits(
     viewer.update_float("improvement_threshold", value=improvement_threshold)
     viewer.update_integer("random_seed", value=random_seed)
     viewer.update_boolean("normalize_curves", value=normalize_curves)
+    for key, value in selections.items():
+        if key not in results.param_axes:
+            raise ValueError(f"Unknown selection {key!r}. Options: {sorted(results.param_axes)}")
+        viewer.update_selection(key, value=_tuple_label(value) if isinstance(value, tuple) else value)
     if return_syd_viewer:
         return viewer
 
@@ -2846,6 +3022,7 @@ def placefield_fit_figure(
     figsize: tuple[float, float] = (8.0, 4.0),
     save_path=None,
     return_syd_viewer: bool = False,
+    **selections,
 ):
     """Tilbury placefield-fit figure for a hand-picked, ordered list of ``(session, neuron)`` examples.
 
@@ -2888,6 +3065,9 @@ def placefield_fit_figure(
         If given (and ``return_syd_viewer`` is False), save the rendered figure here.
     return_syd_viewer : bool
         If True, return the Syd viewer with state seeded from the other arguments.
+    **selections
+        Overrides for the fit's parameter-axis selections, keyed by raw ``param_axes`` name of
+        ``results`` (``activity_parameters_name``).
 
     Returns
     -------
@@ -2911,6 +3091,10 @@ def placefield_fit_figure(
     viewer.update_integer("n_cols", value=n_cols)
     viewer.update_selection("normalize", value=normalize)
     viewer.update_boolean("normalize_independent", value=normalize_independent)
+    for key, value in selections.items():
+        if key not in results.param_axes:
+            raise ValueError(f"Unknown selection {key!r}. Options: {sorted(results.param_axes)}")
+        viewer.update_selection(key, value=_tuple_label(value) if isinstance(value, tuple) else value)
     if return_syd_viewer:
         return viewer
 
@@ -2931,11 +3115,7 @@ def placefield_population(
     source_key: str = "ss_cv",
     metric: str = "r2",
     normalize: bool = True,
-    alpha_method: str = "window",
-    fit_range: tuple[int, int] = (10, 30),
-    deriv_width: int = 1,
-    smooth_kind: str = "none",
-    smooth_width: float = 3.0,
+    source_cfg: AdaptiveAlphaConfig | None = None,
     fontsize: float = 9.0,
     figsize: tuple[float, float] = (8.0, 3.0),
     save_path=None,
@@ -2945,22 +3125,24 @@ def placefield_population(
     """
     Tilbury generalized-Gaussian placefield-fit figure: population summaries (no examples).
 
-    Four panels over every session in ``results``: gs[0] the per-mouse peak-exponent density (thin
-    gray) with the across-mouse mean (bold) and a reference at ``p = 2``; gs[1] the per-mouse median
-    test R^2 for the generalized vs Gaussian model (paired); gs[2] the fraction of neurons where the
-    generalized fit beats the Gaussian, either pooled (one per-mouse beeswarm) or broken down by
-    mouse; gs[3] the across-mouse power-law exponent for the selected ``source_key`` spectrum and the
-    ``eig_better``/``eig_tilbury``/``eig_control`` fit spectra (colors orange/red/blue/black),
-    estimated by the same window or five-point-derivative method as :func:`spectrum_figure`. Example
-    single-neuron fits are in :func:`placefield_example_fits`.
+    Four panels over every session in ``results``: gs[0] the per-mouse peak-exponent density for the
+    generalized (blue) and shrinkage (purple) fits with the across-mouse mean (bold) and a reference
+    at ``p = 2``; gs[1] the per-mouse median test R^2 for the shrinkage, generalized and Gaussian
+    models (paired, in that order); gs[2] the fraction of neurons where the generalized fit beats the
+    Gaussian, either pooled (one per-mouse beeswarm) or broken down by mouse; gs[-1] the across-mouse
+    power-law exponent for the selected ``source_key`` spectrum and the
+    ``eig_better``/``eig_shrinkage``/``eig_tilbury``/``eig_control`` fit spectra (colors
+    orange/red/purple/blue/black), estimated by the same fixed adaptive median-FPD fit as
+    :func:`spectrum_figure`. Example single-neuron fits are in :func:`placefield_example_fits`.
 
     Parameters
     ----------
     results : ResultsAggregator
         Aggregated :class:`TilburyFitConfig` results (source of the ``eig_*`` spectra).
     results_spectra : ResultsAggregator or None
-        Aggregated StimSpaceSpectra results, source of the ``source_key`` spectrum in gs[3]. If None,
-        gs[3] shows only the three eig fit spectra.
+        Aggregated StimSpaceSpectra results, source of the ``source_key`` spectrum in gs[-1] and of
+        the fixed ``ss_cvpca`` window-fallback source. If None, gs[-1] shows only the four eig fit
+        spectra, and every key must locate its own adaptive window.
     results_cvpca : ResultsAggregator or None
         Aggregated CVPCAConfig results; when given, ``reg_covariances_fixed`` is also a valid
         ``source_key``.
@@ -2969,25 +3151,23 @@ def placefield_population(
     fraction_view : {"pooled", "by_mouse"}
         gs[2] layout: one pooled per-mouse beeswarm, or one per-session beeswarm per mouse.
     beewidth : float
-        Beeswarm point spread in x-axis units (gs[2] and gs[3]).
+        Beeswarm point spread in x-axis units (gs[2] and gs[-1]).
     source_key : str
-        Which spectrum drives the gs[3] orange curve: ``ss_cv``/``ss_direct``/``ss_cvpca`` (from
+        Which spectrum drives the gs[-1] orange curve: ``ss_cv``/``ss_direct``/``ss_cvpca`` (from
         ``results_spectra``) or ``reg_covariances_fixed`` (from ``results_cvpca``).
     metric : {"r2", "cc"}
         Which performance metric drives the gs[1] and gs[2] panels: held-out test R^2 or Pearson correlation.
     normalize : bool
-        If True, normalize each gs[3] spectrum by its sum before smoothing (does not affect alpha).
-    alpha_method : {"window", "5-pt deriv"}
-        gs[3] exponent estimator: a log-log window fit, or the mean five-point-derivative local
-        exponent over the window.
-    fit_range : tuple[int, int]
-        0-based ``[start, end)`` rank window for the gs[3] exponent (all four curves).
-    deriv_width : int
-        Stencil half-width for the five-point-derivative local exponent (``alpha_method="5-pt deriv"``).
-    smooth_kind : {"none", "boxcar", "gaussian"}
-        Log-space pre-smoothing applied to each gs[3] spectrum before fitting.
-    smooth_width : float
-        Boxcar full-width in rank units; the Gaussian uses ``sigma = smooth_width / 2``.
+        If True, normalize each gs[-1] spectrum by its sum (per session) before smoothing.
+    source_cfg : AdaptiveAlphaConfig or None
+        Fixed adaptive-fit configuration (smoothing, five-point-derivative window, adaptive buffer,
+        minimum window size) shared by every gs[-1] curve. Defaults to
+        ``ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]`` when None. The exponent is the median
+        five-point-derivative local exponent over each session's own peak-curvature-to-noise-floor
+        window, computed per session and averaged by mouse; sessions with fewer than
+        ``source_cfg.minimum_window_size`` finite local-exponent values in that window are NaN. Keys
+        whose row has no negative entry borrow the window from that session's ``ss_cvpca`` row (only
+        available when ``results_spectra`` is given). See :func:`spectrum_figure`.
     fontsize : float
         Base font size applied via ``plt.rcParams``.
     figsize : tuple[float, float]
@@ -2997,8 +3177,9 @@ def placefield_population(
     return_syd_viewer : bool
         If True, return the Syd viewer with state seeded from the other arguments.
     **selections
-        Overrides for the gs[3] parameter-axis selections, keyed by raw ``param_axes`` name of
-        ``results_spectra``/``results_cvpca`` (e.g. ``activity_parameters_name``, ``smooth_widths``,
+        Overrides for the parameter-axis selections, keyed by raw ``param_axes`` name of ``results``
+        (``activity_parameters_name``) or of
+        ``results_spectra``/``results_cvpca`` (e.g. ``smooth_widths``,
         ``reliability_fraction_active_thresholds``). See :func:`spectrum_figure`.
 
     Returns
@@ -3010,6 +3191,7 @@ def placefield_population(
         results,
         results_spectra=results_spectra,
         results_cvpca=results_cvpca,
+        source_cfg=source_cfg,
         num_bins=num_bins,
         fontsize=fontsize,
         figsize=figsize,
@@ -3020,7 +3202,7 @@ def placefield_population(
     if results_spectra is not None:
         viewer.update_selection("source_key", value=source_key)
 
-    valid_selections = set()
+    valid_selections = set(results.param_axes)
     for agg in viewer._agg.values():
         if agg is None:
             continue
@@ -3030,11 +3212,6 @@ def placefield_population(
             raise ValueError(f"Unknown selection {key!r}. Options: {sorted(valid_selections)}")
         viewer.update_selection(key, value=viewer.encode_param(key, value))
     viewer.update_boolean("normalize", value=normalize)
-    viewer.update_selection("alpha_method", value=alpha_method)
-    viewer.update_integer_range("fit_range", value=tuple(fit_range))
-    viewer.update_integer("deriv_width", value=deriv_width)
-    viewer.update_selection("smooth_kind", value=smooth_kind)
-    viewer.update_float("smooth_width", value=smooth_width)
     viewer.update_selection("metric", value=metric)
     if return_syd_viewer:
         return viewer

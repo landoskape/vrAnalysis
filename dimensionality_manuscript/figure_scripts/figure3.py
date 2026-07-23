@@ -562,7 +562,7 @@ class SubspaceCrossPerMouseViewer(Viewer):
         self.add_selection("curve_smooth_kind", options=["none", "boxcar", "gaussian", "median"], value="none")
         self.add_float("curve_smooth_width", value=3.0, min=0.0, max=50.0, step=0.5)
         self.add_float("kink_threshold", value=0.95, min=0.0, max=1.0, step=0.01)
-        self.add_selection("distribution_metric", options=["gini", "missing_structure"], value="gini")
+        self.add_selection("distribution_metric", options=["gini", "weighted_missing", "missing_structure"], value="gini")
 
         self.on_change("mouse", self.update_mouse)
         self.update_mouse(self.state)
@@ -571,18 +571,20 @@ class SubspaceCrossPerMouseViewer(Viewer):
         n_sess = int(np.sum(self.results.mouse_names == state["mouse"]))
         self.update_integer("session", max=max(n_sess - 1, 0))
 
-    def _mouse_cross(self, state):
-        """Cross matrices for the selected mouse, shape (n_sess_mouse, n_full, n_pf)."""
+    def _mouse_results(self, state):
+        """Selected results for the chosen mouse; ``cross`` has shape (n_sess_mouse, n_full, n_pf)."""
         _sel_state = {k: v for k, v in state.items() if k in self.results.param_axes}
-        return self.results.sel(mouse=state["mouse"], squeeze_ones=False, **_sel_state)["cross"]
+        return self.results.sel(mouse=state["mouse"], squeeze_ones=False, **_sel_state)
 
     def _mouse_session_ids(self, mouse):
         return [sid for sid, m in zip(self.results.session_ids, self.results.mouse_names) if m == mouse]
 
     def plot(self, state):
         mouse = state["mouse"]
-        cross = self._mouse_cross(state)
+        _out = self._mouse_results(state)
+        cross = _out["cross"]
         energy = cross**2
+        variance_activity = _out["variance_activity"][:, : cross.shape[1]]
         energy_on_full = np.nansum(energy, axis=2)  # (n_sess, n_full)
         valid_full_dims = np.isfinite(cross).any(axis=2)
         energy_on_full = np.where(valid_full_dims, energy_on_full, np.nan)
@@ -595,6 +597,11 @@ class SubspaceCrossPerMouseViewer(Viewer):
         if state["distribution_metric"] == "gini":
             distribution_metric = _gini(energy_on_full, axis=1)
             distribution_label = "Gini Equality"
+        elif state["distribution_metric"] == "weighted_missing":
+            _numerator = np.where(valid_full_dims, (1 - energy_on_full) * variance_activity, np.nan)
+            _denominator = np.where(valid_full_dims, variance_activity, np.nan)
+            distribution_metric = np.nansum(_numerator, axis=1) / np.nansum(_denominator, axis=1)
+            distribution_label = "Weighted Missing"
         else:
             distribution_metric = np.nanmean(np.where(valid_full_dims, 1 - energy_on_full, np.nan), axis=1)
             distribution_label = "Missing Structure"
@@ -709,9 +716,10 @@ def subspace_crossspace_per_mouse(
         Boxcar/median full-width in dim units; the Gaussian uses ``sigma = curve_smooth_width / 2``.
     kink_threshold : float
         Threshold (fraction of max) for the kink position metric in the right panel.
-    distribution_metric : {"gini", "missing_structure"}
+    distribution_metric : {"gini", "weighted_missing", "missing_structure"}
         Metric shown with max energy. Missing structure is the mean uncaptured
-        fraction over valid full dimensions.
+        fraction over valid full dimensions; weighted missing is the same uncaptured
+        fraction weighted by each full dimension's activity variance.
     figsize : tuple[float, float]
         Figure size in inches.
     return_syd_viewer : bool
