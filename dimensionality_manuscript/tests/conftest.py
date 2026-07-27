@@ -54,6 +54,18 @@ MODEL_NAMES: tuple[str, ...] = (
     "fullregressor_leak_no_intercept",
     "rrr",
     "rrr_no_intercept",
+    "fullregressor_decoder_only_predreward",
+    "fullregressor_predreward",
+    "fullregressor_leak_predreward",
+    "fullregressor_decoder_only_1dspeed_predreward",
+    "fullregressor_1dspeed_predreward",
+    "fullregressor_leak_1dspeed_predreward",
+    "fullregressor_decoder_only_predreward_no_intercept",
+    "fullregressor_predreward_no_intercept",
+    "fullregressor_leak_predreward_no_intercept",
+    "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+    "fullregressor_1dspeed_predreward_no_intercept",
+    "fullregressor_leak_1dspeed_predreward_no_intercept",
 )
 
 

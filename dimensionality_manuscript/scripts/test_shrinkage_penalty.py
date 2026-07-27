@@ -1,11 +1,24 @@
-"""Compare shared vs separate shrinkage penalties on a handful of sessions.
+"""Diagnose the per-neuron shrinkage-prior selection on a handful of sessions.
 
-Runs :meth:`TilburyFitConfig.process` twice per session -- once with
-``shared_penalty=True`` (one strength for both penalty terms, ``len(lambda_grid)``
-fits) and once with ``shared_penalty=False`` (independent strengths over the full
-outer product, ``len(lambda_grid) ** 2`` fits) -- and reports, per session, the
-selected strengths, the validation score they achieved, and the held-out test
-performance of all three models.
+Runs :meth:`TilburyFitConfig.process` per session and reports the things that
+tell you whether the shrinkage machinery is behaving:
+
+* the distribution of per-neuron selected ``(lam_p, lam_asym)`` -- how many
+  neurons want no prior at all, what the typical strength is;
+* **grid clipping** -- how many neurons want the strongest penalty on offer.
+  Read it against the saturation argument in ``TilburyFitConfig``'s Notes: a
+  strong asymmetry penalty already clamps the widths to near-equal, so clipping
+  on ``lam_asym`` costs little, whereas clipping on ``lam_p`` would mean the
+  exponent range is genuinely too narrow;
+* ``n_var_floored``, which should be 0 -- nonzero means some neuron's
+  train-curve variance hit the normalisation floor and its effective prior is
+  stronger than its ``lam`` implies;
+* the ``lam = (0, 0)`` consistency check: that combination is the unregularized
+  generalized model exactly, so its population validation score must match the
+  generalized fit's;
+* held-out (test) performance of all three models, which is the only
+  informative shrinkage-vs-generalized comparison -- on *validation* the
+  shrinkage model wins by construction, since ``(0, 0)`` is in its grid.
 
 Nothing is written to the results store; this is a diagnostic only.
 
@@ -18,14 +31,12 @@ Usage
     python -m dimensionality_manuscript.scripts.test_shrinkage_penalty \
         --mice ATL022 --sessions-per-mouse 1 --num-steps 2000
 
-Note the cost: with the default 7-point grid, ``shared_penalty=False`` is 49
-fits per session against 7 for the shared sweep, so a session takes roughly 6x
-longer on the separate branch. Start with ``--num-steps`` well below the 10000
-the pipeline uses.
+Note the cost: the sweep is the full ``lambda_grid_p`` x ``lambda_grid_asym``
+outer product, so a session costs that many fits plus the two unregularized
+ones. Start with ``--num-steps`` well below the 10000 the pipeline uses.
 """
 
 import argparse
-from dataclasses import replace
 
 import numpy as np
 
@@ -72,50 +83,111 @@ def select_sessions(mice: list[str] | None, sessions_per_mouse: int, seed: int) 
     return chosen
 
 
-def summarize(result: dict) -> dict:
-    """Condense one ``process`` result into the numbers this comparison cares about."""
-    p = result["params_shrinkage"][:, 5]
-    asym = np.abs(np.log(result["params_shrinkage"][:, 3]) - np.log(result["params_shrinkage"][:, 4]))
+def summarize(result: dict, config: TilburyFitConfig) -> dict:
+    """Condense one ``process`` result into the numbers this diagnostic cares about.
+
+    Parameters
+    ----------
+    result : dict
+        Return value of :meth:`TilburyFitConfig.process`.
+    config : TilburyFitConfig
+        The config that produced ``result``; supplies the grid endpoints used to
+        label the clipping columns.
+
+    Returns
+    -------
+    dict
+        One row of the report tables.
+    """
+    selected = result["lambda_selected"]  # (N, 2)
+    fitted = np.isfinite(selected).all(axis=1)
+    lam_p, lam_asym = selected[fitted, 0], selected[fitted, 1]
+
+    params_s = result["params_shrinkage"]
+    p = params_s[:, 5]
+    asym = np.abs(np.log(params_s[:, 3]) - np.log(params_s[:, 4]))
+
+    # lam = (0, 0) is the unregularized generalized model exactly, so its sweep
+    # score must match the generalized fit's population validation error.
+    combos = result["lambda_combos"]
+    idx_zero = int(np.flatnonzero((combos[:, 0] == 0) & (combos[:, 1] == 0))[0])
+    r2_val_gen = result["r2_val"]
+    score_gen = float(np.nanmean(1.0 - r2_val_gen[np.isfinite(r2_val_gen)]))
+
     return {
-        "lam_p": result["lambda_best_p"],
-        "lam_asym": result["lambda_best_asym"],
-        "val_score": result["lambda_score_best"],
-        "r2_test_gen": np.nanmedian(result["r2_test"]),
-        "r2_test_gauss": np.nanmedian(result["r2_test_control"]),
-        "r2_test_shrink": np.nanmedian(result["r2_test_shrinkage"]),
-        "p_dev": np.nanmean(np.abs(p - 2.0)),
-        "asym": np.nanmean(asym),
-        "n_neurons": int(np.sum(~np.isnan(result["r2_test_shrinkage"]))),
+        "n_fit": int(fitted.sum()),
+        "n_kept": int(selected.shape[0]),
+        "frac_lam_p_zero": float(np.mean(lam_p == 0.0)) if fitted.any() else np.nan,
+        "frac_lam_asym_zero": float(np.mean(lam_asym == 0.0)) if fitted.any() else np.nan,
+        "median_lam_p": float(np.median(lam_p)) if fitted.any() else np.nan,
+        "median_lam_asym": float(np.median(lam_asym)) if fitted.any() else np.nan,
+        "clip_p": result["frac_lambda_clipped_p"],
+        "clip_asym": result["frac_lambda_clipped_asym"],
+        "n_var_floored": result["n_var_floored"],
+        "score_lam_zero": float(result["lambda_scores"][idx_zero]),
+        "score_gen": score_gen,
+        "r2_test_gen": float(np.nanmedian(result["r2_test"])),
+        "r2_test_gauss": float(np.nanmedian(result["r2_test_control"])),
+        "r2_test_shrink": float(np.nanmedian(result["r2_test_shrinkage"])),
+        "p_dev": float(np.nanmean(np.abs(p - 2.0))),
+        "asym": float(np.nanmean(asym)),
+        "grid_max_p": config.lambda_grid_p[-1],
+        "grid_max_asym": config.lambda_grid_asym[-1],
     }
 
 
-def report(rows: list[tuple[str, dict, dict]]) -> None:
-    """Print the per-session shared-vs-separate comparison table."""
-    print("\n" + "=" * 118)
-    print("Selected shrinkage strengths and held-out performance (median test R^2)")
-    print("=" * 118)
-    header = f"{'session':<28} {'mode':<8} {'lam_p':>9} {'lam_asym':>9} {'val score':>10} {'R2 shrink':>10} {'R2 gen':>9} {'R2 gauss':>9} {'|p-2|':>7} {'asym':>7}"
+def report(rows: list[tuple[str, dict]]) -> None:
+    """Print the per-session diagnostic tables."""
+    print("\n" + "=" * 100)
+    print("Per-neuron shrinkage prior selection")
+    print("=" * 100)
+    header = (
+        f"{'session':<28} {'n fit':>9} {'lam_p=0':>8} {'lam_a=0':>8} {'med lam_p':>10} "
+        f"{'med lam_a':>10} {'clip_p':>7} {'clip_a':>7} {'floor':>6}"
+    )
     print(header)
     print("-" * len(header))
-    for uid, shared, separate in rows:
-        for label, stats in (("shared", shared), ("separate", separate)):
-            print(
-                f"{uid if label == 'shared' else '':<28} {label:<8} "
-                f"{stats['lam_p']:>9.2e} {stats['lam_asym']:>9.2e} {stats['val_score']:>10.4f} "
-                f"{stats['r2_test_shrink']:>10.4f} {stats['r2_test_gen']:>9.4f} {stats['r2_test_gauss']:>9.4f} "
-                f"{stats['p_dev']:>7.3f} {stats['asym']:>7.3f}"
-            )
-        print("-" * len(header))
+    for uid, s in rows:
+        print(
+            f"{uid:<28} {s['n_fit']:>5}/{s['n_kept']:<3} {s['frac_lam_p_zero']:>8.2f} {s['frac_lam_asym_zero']:>8.2f} "
+            f"{s['median_lam_p']:>10.3g} {s['median_lam_asym']:>10.3g} {s['clip_p']:>7.2f} {s['clip_asym']:>7.2f} "
+            f"{s['n_var_floored']:>6}"
+        )
 
-    # Aggregate: does the separate sweep actually buy anything?
-    val_gain = [shared["val_score"] - separate["val_score"] for _, shared, separate in rows]
-    r2_gain = [separate["r2_test_shrink"] - shared["r2_test_shrink"] for _, shared, separate in rows]
-    ratio = [separate["lam_p"] / separate["lam_asym"] for _, _, separate in rows]
-    print(f"\nSessions compared: {len(rows)}")
-    print(f"Validation score improvement from separate lambdas (positive = better): mean {np.mean(val_gain):+.4f}, max {np.max(val_gain):+.4f}")
-    print(f"Median test R^2 change from separate lambdas (positive = better):       mean {np.mean(r2_gain):+.4f}, max {np.max(r2_gain):+.4f}")
-    print(f"Selected lam_p / lam_asym ratio on the separate sweep: {['%.3g' % r for r in ratio]}")
-    print("(A ratio far from 1 means the two penalties genuinely want different strengths.)")
+    print("\n" + "=" * 100)
+    print("Held-out performance (median test R^2) and fitted shape")
+    print("=" * 100)
+    header2 = f"{'session':<28} {'R2 shrink':>10} {'R2 gen':>9} {'R2 gauss':>9} {'|p-2|':>7} {'asym':>7}"
+    print(header2)
+    print("-" * len(header2))
+    for uid, s in rows:
+        print(
+            f"{uid:<28} {s['r2_test_shrink']:>10.4f} {s['r2_test_gen']:>9.4f} {s['r2_test_gauss']:>9.4f} "
+            f"{s['p_dev']:>7.3f} {s['asym']:>7.3f}"
+        )
+
+    # --- consistency check: lam=(0,0) must reproduce the generalized fit ---
+    print("\nConsistency check -- lam=(0,0) vs the unregularized generalized fit:")
+    worst = 0.0
+    for uid, s in rows:
+        delta = abs(s["score_lam_zero"] - s["score_gen"])
+        worst = max(worst, delta)
+        flag = "" if delta < 1e-6 else "   <-- MISMATCH"
+        print(f"  {uid:<28} lam0 {s['score_lam_zero']:.6f} vs gen {s['score_gen']:.6f}  (delta {delta:.2e}){flag}")
+    print(f"  Worst delta: {worst:.2e} (should be ~0; nonzero means the two paths have diverged)")
+
+    # --- grid adequacy ---
+    clip_p = [s["clip_p"] for _, s in rows]
+    clip_a = [s["clip_asym"] for _, s in rows]
+    floored = sum(s["n_var_floored"] for _, s in rows)
+    grid_max_p, grid_max_asym = rows[0][1]["grid_max_p"], rows[0][1]["grid_max_asym"]
+    print(f"\nSessions: {len(rows)}")
+    print(f"Neurons whose plain best lam_p sits at the grid max ({grid_max_p:g}):    mean {np.mean(clip_p):.2f}, max {np.max(clip_p):.2f}")
+    print(f"Neurons whose plain best lam_asym sits at the grid max ({grid_max_asym:g}): mean {np.mean(clip_a):.2f}, max {np.max(clip_a):.2f}")
+    print("  (More than ~0.1 means the grid is too narrow -- extend lambda_grid_p / lambda_grid_asym.)")
+    print(f"Neurons hitting the variance floor: {floored} (should be 0)")
+    print("\nNote: the shrinkage model contains the generalized model at lam=(0,0), so it cannot lose")
+    print("on validation. Judge it only by the test-R2 column above.")
 
 
 def main():
@@ -130,16 +202,15 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Show a progress bar for every fit")
     args = parser.parse_args()
 
-    base = TilburyFitConfig(activity_parameters_name=args.activity_parameters_name)
-    registry = PopulationRegistry(registry_params=base.data_config.to_registry_params())
+    config = TilburyFitConfig(activity_parameters_name=args.activity_parameters_name)
+    registry = PopulationRegistry(registry_params=config.data_config.to_registry_params())
     sessions = select_sessions(args.mice, args.sessions_per_mouse, args.seed)
 
-    n_shared = len(replace(base, shared_penalty=True).lambda_combos())
-    n_separate = len(replace(base, shared_penalty=False).lambda_combos())
+    n_combos = len(config.lambda_combos())
     print(f"Sessions: {len(sessions)} | Adam steps: {args.num_steps}")
-    print(f"  shared grid:   {list(base.lambda_grid_shared)} -> {n_shared} combos")
-    print(f"  separate grid: lam_p {list(base.lambda_grid_p)} x lam_asym {list(base.lambda_grid_asym)} -> {n_separate} combos")
-    print(f"Fits per session: {2 + n_shared} (shared) + {2 + n_separate} (separate)")
+    print(f"  lam_p grid:    {list(config.lambda_grid_p)}")
+    print(f"  lam_asym grid: {list(config.lambda_grid_asym)}")
+    print(f"Fits per session: {n_combos} shrinkage + 2 unregularized")
 
     process_kwargs = dict(
         verbose=args.verbose,
@@ -150,17 +221,16 @@ def main():
 
     rows = []
     for session in sessions:
-        session.params.spks_type = base.data_config.spks_type
-        print(f"\n### {session.session_uid}")
-        stats = {}
-        for shared in (True, False):
-            config = replace(base, shared_penalty=shared)
-            print(f"  fitting shared_penalty={shared} ...", flush=True)
-            result = config.process(session, registry, **process_kwargs)
-            stats[shared] = summarize(result)
-            s = stats[shared]
-            print(f"    lam_p={s['lam_p']:.3g} lam_asym={s['lam_asym']:.3g} val={s['val_score']:.4f} n={s['n_neurons']}")
-        rows.append((session.session_uid, stats[True], stats[False]))
+        session.params.spks_type = config.data_config.spks_type
+        print(f"\n### {session.session_uid}", flush=True)
+        result = config.process(session, registry, **process_kwargs)
+        stats = summarize(result, config)
+        rows.append((session.session_uid, stats))
+        print(
+            f"    n_fit={stats['n_fit']}/{stats['n_kept']} "
+            f"med lam=({stats['median_lam_p']:.3g}, {stats['median_lam_asym']:.3g}) "
+            f"clip=({stats['clip_p']:.2f}, {stats['clip_asym']:.2f})"
+        )
 
     report(rows)
 
