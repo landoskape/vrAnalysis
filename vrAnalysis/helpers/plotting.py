@@ -6,8 +6,11 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.typing import ColorType
 from typing import Literal
-from panel import state
 import syd
+
+DOUBLE_WIDTH = 6.85  # inches
+ONEHALF_WIDTH = 4.48  # inches
+SINGLE_WIDTH = 3.35  # inches
 
 
 def add_scaled_limits(

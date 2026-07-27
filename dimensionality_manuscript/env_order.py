@@ -24,6 +24,10 @@ from vrAnalysis.sessions import B2Session
 
 MAX_ENV_SLOTS = 3
 
+# Shared palette for environment slots, indexed by slot. Lives here rather than in a figure
+# script so every panel that splits by environment reads the same colors.
+ENV_SLOT_COLORS: tuple[str, ...] = ("k", "blue", "green")
+
 
 def _session_sort_key(session: B2Session) -> tuple:
     """Chronological sort key ``(date, session_id)`` for one session."""

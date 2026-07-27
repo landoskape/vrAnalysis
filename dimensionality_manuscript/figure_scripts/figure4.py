@@ -2,12 +2,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, ttest_rel, wilcoxon
 from matplotlib import pyplot as plt
 from syd import Viewer
 
 from vrAnalysis.helpers import edge2center
-from vrAnalysis.helpers.plotting import save_figure, beeswarm, format_spines
+from vrAnalysis.helpers.plotting import save_figure, beeswarm, format_spines, errorPlot
 from dimilibi.helpers import fit_powerlaw_decay, fit_powerlaw_derivatives
 from dimensionality_manuscript import ResultsAggregator, average_by_mouse
 from dimensionality_manuscript.registry import PopulationRegistry
@@ -60,7 +60,7 @@ _TILBURY_REL_FA = (0.3, 0.1)
 # generalized fit). "eig_gaussian" in the request is the plain-Gaussian control key ``eig_control``.
 _POP_EIG_KEYS = ["eig_better", "eig_shrinkage", "eig_tilbury", "eig_control"]
 _POP_ALPHA_COLORS = {
-    "source_key": "orange",
+    "source_key": "darkorange",
     "eig_better": "red",
     "eig_tilbury": "blue",
     "eig_shrinkage": "purple",
@@ -339,6 +339,183 @@ def _median_fpd_alpha_per_session(
     )
 
 
+# --- Log-space decay-model fits: power law vs exponential ---------------------------------------
+# For each spectrum, fit two candidate decay laws and report both how well each describes the
+# spectrum (log-space MSE) and each fit's characteristic parameter, following Tilbury et al.'s
+# comparison of ``n^-alpha`` against ``exp(-n^2 / 2 M^2)`` fits. Both models are linear in log-space:
+#   power law      log(lambda) = c - alpha * log(n)      (feature log n; parameter alpha)
+#   exponential    log(lambda) = c - n^2 / (2 M^2)       (feature n^2;   parameter M)
+# so each fit is one ordinary least squares of ``log(lambda)`` on the model's feature. The MSE is
+# the mean squared log-space residual over the fit window; because both share ``log(lambda)`` as the
+# response, a constant rescaling of the spectrum (normalization, ss_cvpca scaling) only shifts the
+# intercept and leaves the MSE unchanged. The reported parameter comes from the fitted slope:
+# ``alpha = -slope`` for the power law, ``M = 1 / sqrt(-2 * slope)`` for the exponential. The xtick
+# labels are the reduced equations, as drawn in the Tilbury paper.
+_DECAY_MODELS: tuple[tuple[str, str], ...] = (
+    ("power", r"$n^{-\alpha}$"),
+    ("exp2", r"$e^{-n^2/2M^2}$"),
+)
+
+
+def _decay_feature(model: str, n: np.ndarray) -> np.ndarray:
+    """Log-space regressor for one decay model at 1-based ranks ``n``."""
+    if model == "power":
+        return np.log(n)
+    if model == "exp2":
+        return n**2
+    raise ValueError(f"Unknown decay model {model!r}. Available: {[m for m, _ in _DECAY_MODELS]}")
+
+
+def _decay_param_from_slope(model: str, slope: float) -> float:
+    """Characteristic parameter of a decay fit from its log-space slope.
+
+    Power law ``log(lambda) = c - alpha * log(n)`` -> ``alpha = -slope``. Exponential
+    ``log(lambda) = c - n^2 / (2 M^2)`` -> slope on ``n^2`` is ``-1 / (2 M^2)``, so
+    ``M = 1 / sqrt(-2 * slope)`` (NaN for a non-decaying, non-negative slope).
+    """
+    if model == "power":
+        return float(-slope)
+    if slope < 0:
+        return float(1.0 / np.sqrt(-2.0 * slope))
+    return np.nan
+
+
+def _logspace_decay_fit(row: np.ndarray, start: int, end: int, model: str) -> tuple[float, float]:
+    """Log-space MSE and characteristic parameter of one decay-model fit over ranks ``[start, end)``.
+
+    ``row`` is one spectrum (a single mouse or session). The fit is a degree-1 least squares of
+    ``log(row)`` on :func:`_decay_feature`; ranks are 1-based (``index + 1``), matching
+    :func:`~dimilibi.helpers.fit_powerlaw_decay`. Non-positive/NaN entries are dropped. Returns
+    ``(mse, param)`` -- ``param`` is ``alpha`` (power law) or ``M`` (exponential), see
+    :func:`_decay_param_from_slope`. Both are NaN with fewer than three usable points (too few to fit
+    two parameters and leave a residual).
+    """
+    start, end = _clamp_range(start, end, row.size)
+    if end - start < 3:
+        return np.nan, np.nan
+    n = np.arange(start, end) + 1.0
+    values = np.asarray(row[start:end], dtype=float)
+    with np.errstate(invalid="ignore"):
+        log_lambda = np.where(values > 0, np.log(values), np.nan)
+    feature = _decay_feature(model, n)
+    mask = np.isfinite(log_lambda) & np.isfinite(feature)
+    if int(mask.sum()) < 3:
+        return np.nan, np.nan
+    slope, intercept = np.polyfit(feature[mask], log_lambda[mask], 1)
+    residual = log_lambda[mask] - (slope * feature[mask] + intercept)
+    return float(np.mean(residual**2)), _decay_param_from_slope(model, slope)
+
+
+def _decay_window_session(
+    raw_row: np.ndarray,
+    fit_row: np.ndarray,
+    buffer: int,
+    fallback_raw_row: np.ndarray | None = None,
+    fallback_fit_row: np.ndarray | None = None,
+) -> tuple[int, int]:
+    """Adaptive peak-to-noise-floor fit window for one session (see :func:`_second_derivative_window`).
+
+    Mirrors :func:`_median_fpd_alpha_session`'s window selection: if ``raw_row`` has no negative
+    entry (not cross-validated, so no noise-floor onset to find) and a fallback pair is given, the
+    window boundaries are borrowed from the fallback spectrum instead.
+    """
+    window_raw_row, window_fit_row = raw_row, fit_row
+    if fallback_raw_row is not None and _first_negative_index(raw_row) == raw_row.size and np.any(np.isfinite(fallback_raw_row)):
+        window_raw_row, window_fit_row = fallback_raw_row, fallback_fit_row
+    return _second_derivative_window(window_raw_row, window_fit_row, buffer)
+
+
+def _decay_fit_per_session(
+    raw_spec: np.ndarray,
+    fit_spec: np.ndarray,
+    model: str,
+    fit_zone: str,
+    fixed_range: tuple[int, int],
+    buffer: int,
+    fallback_raw_spec: np.ndarray | None = None,
+    fallback_fit_spec: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-session log-space MSE and characteristic parameter of one decay model.
+
+    ``fit_zone == "fixed"`` uses ``fixed_range`` (a ``(start, end)`` index window) for every session;
+    ``"adaptive"`` locates each session's own peak-curvature-to-noise-floor window via
+    :func:`_decay_window_session` (with the ``ss_cvpca`` fallback for non-cross-validated rows). The
+    fit itself always uses the smoothed spectrum ``fit_spec`` (matching the adaptive-alpha path);
+    ``raw_spec`` only locates the adaptive window.
+
+    Returns ``(mse, param)`` arrays, each shape ``(n_sessions,)`` -- ``param`` is ``alpha`` (power
+    law) or ``M`` (exponential), see :func:`_logspace_decay_fit`.
+    """
+    mse = np.full(raw_spec.shape[0], np.nan)
+    param = np.full(raw_spec.shape[0], np.nan)
+    for i in range(raw_spec.shape[0]):
+        if fit_zone == "fixed":
+            start, end = fixed_range
+        else:
+            fb_raw = fallback_raw_spec[i] if fallback_raw_spec is not None else None
+            fb_fit = fallback_fit_spec[i] if fallback_fit_spec is not None else None
+            start, end = _decay_window_session(raw_spec[i], fit_spec[i], buffer, fb_raw, fb_fit)
+        mse[i], param[i] = _logspace_decay_fit(fit_spec[i], start, end, model)
+    return mse, param
+
+
+def _decay_stat_panel(ax, data_list, colors, labels, display: str, beewidth: float, fontsize: float, xtick_labels) -> None:
+    """One panel of a per-curve statistic at the two decay-model x-positions (power law, exponential).
+
+    ``data_list`` holds one ``(n_mice, 2)`` array per curve option (its two columns are the power-law
+    and exponential values). NaN mice are dropped by every mode.
+
+    - ``display == "each"``: one faint per-mouse line across x=``[0, 1]`` per curve, plus a bold
+      across-mouse mean line.
+    - ``display == "errorPlot"``: the across-mouse mean +/- SE band per curve (via
+      :func:`~vrAnalysis.helpers.plotting.errorPlot`).
+    - ``display == "swarm"``: no per-mouse connections -- one beeswarm column per (decay model, curve)
+      at ``x = model_index * n_curves + curve_index`` (blocks ``[0 .. n_curves-1]`` for the power law,
+      then ``[n_curves .. 2*n_curves-1]`` for the exponential), each with a short horizontal mean line.
+      ``beewidth`` sets the point spread; the reduced-equation label sits under each block.
+    """
+    if display == "swarm":
+        n_curves = len(data_list)
+        line_extent = np.array([-0.25, 0.25])
+        for j in range(2):  # decay model column: 0 = power law, 1 = exponential
+            for k, (data, color) in enumerate(zip(data_list, colors)):
+                vals = np.asarray(data, dtype=float)[:, j]
+                x = j * n_curves + k
+                offsets = np.zeros_like(vals)
+                finite = np.isfinite(vals)
+                if finite.any():
+                    offsets[finite] = beeswarm(vals[finite])
+                ax.plot(
+                    x + beewidth * offsets, vals, color=color, linestyle="none", marker="o",
+                    markersize=3, alpha=0.3, label=labels[k] if j == 0 else None,
+                )
+                ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=2.0)
+        n_pos = 2 * n_curves
+        ax.set_xlim(-0.5, n_pos - 0.5)
+        centers = [(n_curves - 1) / 2.0, n_curves + (n_curves - 1) / 2.0]
+        format_spines(
+            ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"],
+            xbounds=[0, n_pos - 1], ybounds=list(ax.get_ylim()),
+        )
+        ax.set_xticks(centers, labels=xtick_labels, fontsize=fontsize)
+        return
+
+    x = np.array([0.0, 1.0])
+    for data, color, label in zip(data_list, colors, labels):
+        data = np.atleast_2d(np.asarray(data, dtype=float))
+        if display == "errorPlot":
+            errorPlot(x, data, axis=0, se=True, ax=ax, color=color, alpha=0.25, label=label, linewidth=2.0)
+        else:  # "each"
+            ax.plot(x, data.T, color=color, alpha=0.3, linewidth=0.8)
+            ax.plot(x, np.nanmean(data, axis=0), color=color, linewidth=2.0, label=label)
+    ax.set_xlim(-0.3, 1.3)
+    format_spines(
+        ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"],
+        xbounds=[0, 1], ybounds=list(ax.get_ylim()),
+    )
+    ax.set_xticks([0, 1], labels=xtick_labels, fontsize=fontsize)
+
+
 def _signed_participation_ratio(spec: np.ndarray) -> np.ndarray:
     """Signed participation ratio ``(sum lambda)^2 / sum(lambda^2)`` per mouse.
 
@@ -349,6 +526,37 @@ def _signed_participation_ratio(spec: np.ndarray) -> np.ndarray:
     s2 = np.nansum(spec**2, axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(s2 > 0, s1**2 / s2, np.nan)
+
+
+def _paired_pvalue(a: np.ndarray, b: np.ndarray, method: str) -> float:
+    """Two-sided paired-sample p-value of ``a`` vs ``b`` over the mice finite in both.
+
+    ``method`` is ``"ttest"`` (:func:`scipy.stats.ttest_rel`) or ``"wilcoxon"``
+    (:func:`scipy.stats.wilcoxon`, signed-rank). Returns NaN with fewer than two paired
+    observations, and ``1.0`` when the two are numerically identical (no difference to test).
+    """
+    mask = np.isfinite(a) & np.isfinite(b)
+    if int(mask.sum()) < 2:
+        return np.nan
+    a, b = a[mask], b[mask]
+    if np.allclose(a, b):
+        return 1.0
+    if method == "wilcoxon":
+        return float(wilcoxon(a, b, alternative="two-sided").pvalue)
+    return float(ttest_rel(a, b).pvalue)
+
+
+def _significance_stars(p: float) -> str:
+    """Tiered significance label: ``***`` p<0.001, ``**`` p<0.01, ``*`` p<0.05, else ``ns``."""
+    if not np.isfinite(p):
+        return "ns"
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return "ns"
 
 
 def _beeswarm_panel(ax, values_list, colors, labels, fontsize, beewidth: float = 0.2, each_alpha: float = 0.3, yscale: str = "linear") -> None:
@@ -2105,13 +2313,19 @@ class PlacefieldExampleFitViewer(Viewer):
         self.add_integer("n_rows", value=n_rows, min=1, max=6)
         self.add_integer("n_cols", value=n_cols, min=1, max=6)
         # Example neurons are drawn at random from those with generalized test R2 above r2_threshold
-        # AND (generalized - gaussian) test R2 above improvement_threshold (so the example both fits
-        # well and beats the plain Gaussian). The seed makes the draw reproducible; if too few clear
-        # both thresholds the extra panels are left empty.
+        # AND (generalized - gaussian) OR (shrinkage - gaussian) test R2 above improvement_threshold
+        # (so the example fits well and beats the plain Gaussian via either the generalized or the
+        # shrinkage fit). The seed makes the draw reproducible; if too few clear both thresholds the
+        # extra panels are left empty.
         self.add_float("r2_threshold", value=0.5, min=-1.0, max=1.0, step=0.05)
         self.add_float("improvement_threshold", value=0.0, min=0.0, max=1.0, step=0.01)
         self.add_integer("random_seed", value=0, min=0, max=100000)
-        self.add_boolean("normalize_curves", value=True)
+        # Per-panel normalization (see PlacefieldFitFigureViewer): divide the curve group by a
+        # statistic (std / sum / max / none). normalize_independent scales each of the four curves
+        # by its own statistic (shape-only); otherwise the group shares the test-data curve's scale,
+        # keeping the fits overlaid on the data.
+        self.add_selection("normalize", options=list(_FIT_FIGURE_NORMALIZATIONS), value="sum")
+        self.add_boolean("normalize_independent", value=True)
 
     def _fit_sel_params(self, state: dict) -> dict:
         """Params pinning every TilburyFitConfig param axis, decoded from the widgets."""
@@ -2146,14 +2360,23 @@ class PlacefieldExampleFitViewer(Viewer):
             ``theta`` (P,), ``test_curve`` (n_kept, P), ``params`` (n_kept, 6),
             ``params_control`` (n_kept, 4), ``params_shrinkage`` (n_kept, 6), ``r2_test`` (n_kept,),
             ``r2_test_control`` (n_kept,), ``r2_test_shrinkage`` (n_kept,),
-            aligned so panel ``n`` uses row ``n`` of each.
+            ``lambda_selected`` (n_kept, 2), aligned so panel ``n`` uses row ``n`` of each.
         """
         config = self.config
         idx = self.results._session_index[session_uid]
         session = self.results.sessions[idx]
 
         sel = self.results.sel(
-            keys=["params", "params_control", "params_shrinkage", "r2_test", "r2_test_control", "r2_test_shrinkage", "idx_keep"],
+            keys=[
+                "params",
+                "params_control",
+                "params_shrinkage",
+                "r2_test",
+                "r2_test_control",
+                "r2_test_shrinkage",
+                "lambda_selected",
+                "idx_keep",
+            ],
             load_ragged=True,
             squeeze_ones=False,
             **fit_params,
@@ -2168,6 +2391,7 @@ class PlacefieldExampleFitViewer(Viewer):
         r2_test = sel["r2_test"][idx][:n_kept]
         r2_test_control = sel["r2_test_control"][idx][:n_kept]
         r2_test_shrinkage = sel["r2_test_shrinkage"][idx][:n_kept]
+        lambda_selected = sel["lambda_selected"][idx][:n_kept]  # (n_kept, 2): per-neuron (lam_p, lam_asym)
 
         # Original ROI indices that entered the fit: population.idx_neurons (the AND of
         # session.idx_rois across all spks_types), NOT the current-spks_type session.idx_rois.
@@ -2203,18 +2427,14 @@ class PlacefieldExampleFitViewer(Viewer):
             "r2_test": r2_test,
             "r2_test_control": r2_test_control,
             "r2_test_shrinkage": r2_test_shrinkage,
+            "lambda_selected": lambda_selected,
             "idx_keep": idx_keep,
             "idx_neurons": idx_neurons,
         }
 
     def plot(self, state: dict):
-        def _optional_normalization(curve: np.ndarray) -> np.ndarray:
-            if state["normalize_curves"]:
-                sum = np.nansum(curve)
-                if sum == 0:
-                    return curve
-                return curve / np.nansum(curve)
-            return curve
+        method = state["normalize"]
+        independent = bool(state["normalize_independent"])
 
         n_rows = int(state["n_rows"])
         n_cols = int(state["n_cols"])
@@ -2228,8 +2448,11 @@ class PlacefieldExampleFitViewer(Viewer):
         n_show = n_rows * n_cols
         r2 = fit["r2_test"]
         r2c = fit["r2_test_control"]
-        # Well-fit by the generalized model AND beating the plain Gaussian by improvement_threshold.
-        eligible = np.flatnonzero(np.isfinite(r2) & np.isfinite(r2c) & (r2 > state["r2_threshold"]) & (r2 - r2c > state["improvement_threshold"]))
+        r2s = fit["r2_test_shrinkage"]
+        # Well-fit by the generalized model AND beating the plain Gaussian by improvement_threshold
+        # via *either* the generalized or the shrinkage fit (OR logic).
+        improves = ((r2 - r2c) > state["improvement_threshold"]) | ((r2s - r2c) > state["improvement_threshold"])
+        eligible = np.flatnonzero(np.isfinite(r2) & np.isfinite(r2c) & np.isfinite(r2s) & (r2 > state["r2_threshold"]) & improves)
         rng = np.random.default_rng(int(state["random_seed"]))
         # Random draw without replacement; if too few clear the threshold, extra panels stay empty.
         chosen = rng.choice(eligible, size=n_show, replace=False) if eligible.size > n_show else eligible
@@ -2252,41 +2475,31 @@ class PlacefieldExampleFitViewer(Viewer):
             idx_within_fit_neurons = np.where(fit["idx_keep"])[0][n]
             idx_within_idx_rois = fit["idx_neurons"][idx_within_fit_neurons]
 
+            data = fit["test_curve"][n]
+            gen = _eval_tilbury(theta, fit["params"][n])
+            gauss = _eval_gaussian(theta, fit["params_control"][n])
+            shrink = _eval_tilbury(theta, fit["params_shrinkage"][n])
+            # normalize_independent: each curve divided by its own statistic (shape-only). Otherwise
+            # the whole set shares the test-data curve's scale, keeping the fits overlaid on the data.
+            if independent:
+                data = data / _fit_figure_scale(data, method)
+                gen = gen / _fit_figure_scale(gen, method)
+                gauss = gauss / _fit_figure_scale(gauss, method)
+                shrink = shrink / _fit_figure_scale(shrink, method)
+            else:
+                scale = _fit_figure_scale(data, method)
+                data, gen, gauss, shrink = data / scale, gen / scale, gauss / scale, shrink / scale
+
             first = cell == 0
-            ax.plot(
-                theta,
-                _optional_normalization(fit["test_curve"][n]),
-                "o",
-                color="red",
-                ms=2.5,
-                alpha=0.5,
-                label="Test data" if first else None,
+            ax.plot(theta, data, "o", color="red", ms=2.5, alpha=0.5, label="Test data" if first else None)
+            ax.plot(theta, gen, "-", color=_GENERALIZED_COLOR, lw=1.5, label="Generalized" if first else None)
+            ax.plot(theta, gauss, "-", color=_GAUSSIAN_COLOR, lw=1.5, label="Gaussian" if first else None)
+            ax.plot(theta, shrink, "-", color=_SHRINKAGE_COLOR, lw=1.5, label="Generalized (shrinkage)" if first else None)
+            lam_p, lam_asym = fit["lambda_selected"][n]
+            ax.set_title(
+                f"{state['example_session']} | Neuron: {idx_within_idx_rois} | R²={fit['r2_test'][n]:.2f} | λ=({lam_p:g}, {lam_asym:g})",
+                fontsize=self.fontsize,
             )
-            ax.plot(
-                theta,
-                _optional_normalization(_eval_tilbury(theta, fit["params"][n])),
-                "-",
-                color=_GENERALIZED_COLOR,
-                lw=1.5,
-                label="Generalized" if first else None,
-            )
-            ax.plot(
-                theta,
-                _optional_normalization(_eval_gaussian(theta, fit["params_control"][n])),
-                "-",
-                color=_GAUSSIAN_COLOR,
-                lw=1.5,
-                label="Gaussian" if first else None,
-            )
-            ax.plot(
-                theta,
-                _optional_normalization(_eval_tilbury(theta, fit["params_shrinkage"][n])),
-                "-",
-                color=_SHRINKAGE_COLOR,
-                lw=1.5,
-                label="Generalized (shrinkage)" if first else None,
-            )
-            ax.set_title(f"{state['example_session']} | Neuron: {idx_within_idx_rois} | R²={fit['r2_test'][n]:.2f}", fontsize=self.fontsize)
             if first:
                 ax.legend(fontsize=self.fontsize * 0.8, frameon=False, loc="upper right")
         return fig
@@ -2296,6 +2509,11 @@ class PlacefieldExampleFitViewer(Viewer):
 # (test data + both fits) is divided by, computed on the *test-data* curve so the fits stay overlaid
 # on the data while every panel shares a common scale (needed for sharey).
 _FIT_FIGURE_NORMALIZATIONS = ("std", "sum", "max", "none")
+
+# Which generalized-family fit(s) PlacefieldFitFigureViewer overlays alongside the plain-Gaussian
+# control: just the unregularized generalized fit, just the shrinkage fit, or both. When only one is
+# shown it is drawn in the generalized (blue) color; "both" keeps generalized blue and shrinkage purple.
+_FIT_MODEL_OPTIONS = ("generalized", "shrinkage", "both")
 
 
 def _fit_figure_scale(ref: np.ndarray, method: str) -> float:
@@ -2334,9 +2552,10 @@ class PlacefieldFitFigureViewer(Viewer):
 
     The first ``n_rows * n_cols`` entries of the list are plotted, in order, into a shared-axes grid
     (``sharex``/``sharey``); each panel overlays the held-out test placefield (points) against the
-    fitted generalized-Gaussian (Tilbury), generalized-shrinkage and plain-Gaussian control curves. The whole group in a
-    panel is normalized by the test-data curve's statistic (``normalize``: std / sum / max / none),
-    so the fits stay overlaid on the data while panels remain comparable under ``sharey``.
+    plain-Gaussian control (always shown) and the generalized-family fit(s) selected by ``fit_model``
+    (generalized, shrinkage, or both). The whole group in a panel is normalized by the test-data
+    curve's statistic (``normalize``: std / sum / max / none), so the fits stay overlaid on the data
+    while panels remain comparable under ``sharey``.
     """
 
     def __init__(
@@ -2349,6 +2568,7 @@ class PlacefieldFitFigureViewer(Viewer):
         n_cols: int = 3,
         normalize: str = "std",
         normalize_independent: bool = False,
+        fit_model: str = "both",
         strict: bool = True,
         fontsize: float = 9.0,
         figsize: tuple[float, float] = (8.0, 4.0),
@@ -2357,6 +2577,8 @@ class PlacefieldFitFigureViewer(Viewer):
             raise ValueError(f"session_uids and neurons must be the same length, got {len(session_uids)} and {len(neurons)}.")
         if normalize not in _FIT_FIGURE_NORMALIZATIONS:
             raise ValueError(f"Unknown normalize {normalize!r}. Options: {list(_FIT_FIGURE_NORMALIZATIONS)}")
+        if fit_model not in _FIT_MODEL_OPTIONS:
+            raise ValueError(f"Unknown fit_model {fit_model!r}. Options: {list(_FIT_MODEL_OPTIONS)}")
 
         self.results = results
         self.registry = registry
@@ -2379,6 +2601,8 @@ class PlacefieldFitFigureViewer(Viewer):
         # normalize_independent: scale each of the three curves (test data, generalized, gaussian) by
         # its own statistic (shape-only comparison), instead of the whole group by the test-data curve.
         self.add_boolean("normalize_independent", value=normalize_independent)
+        # Which generalized-family fit(s) to overlay (the plain-Gaussian control is always shown).
+        self.add_selection("fit_model", options=list(_FIT_MODEL_OPTIONS), value=fit_model)
 
     _fit_sel_params = PlacefieldExampleFitViewer._fit_sel_params
 
@@ -2533,20 +2757,28 @@ class PlacefieldFitFigureViewer(Viewer):
             first = cell == 0
             last = cell == n_show - 1
             ax.plot(theta, data, "o", color="gray", ms=2.5, alpha=0.5, label="Test data" if first else None)
-            ax.plot(theta, gen, "-", color=_GENERALIZED_COLOR, lw=1.5, label="Generalized" if first else None)
             ax.plot(theta, gauss, "-", color=_GAUSSIAN_COLOR, lw=1.5, label="Gaussian" if first else None)
-            ax.plot(theta, shrink, "-", color=_SHRINKAGE_COLOR, lw=1.5, label="Generalized (shrinkage)" if first else None)
+            # Overlay the requested generalized-family fit(s). A lone fit is drawn blue (the
+            # generalized color); "both" keeps generalized blue and shrinkage purple.
+            fit_model = state["fit_model"]
+            if fit_model in ("generalized", "both"):
+                ax.plot(theta, gen, "-", color=_GENERALIZED_COLOR, lw=1.5, label="Generalized" if first else None)
+            if fit_model in ("shrinkage", "both"):
+                shrink_color = _SHRINKAGE_COLOR if fit_model == "both" else _GENERALIZED_COLOR
+                shrink_label = "Generalized (shrinkage)" if fit_model == "both" else "Generalized"
+                ax.plot(theta, shrink, "-", color=shrink_color, lw=1.5, label=shrink_label if first else None)
             # ax.set_title(f"{session_uid}\nroi {roi}  R²={fit['r2_test'][kept_row]:.2f}", fontsize=self.fontsize * 0.8)
             if first:
-                ax.legend(fontsize=self.fontsize - 1, frameon=False, loc="upper left", markerfirst=True)
+                ax.legend(fontsize=self.fontsize - 1, frameon=False, loc="upper right", markerfirst=True)
 
         xbounds = (0, theta[-1] + (theta[1] - theta[0]) / 2)
         xticks = xbounds
         ylims = [ax.get_ylim() for ax in axs.flat if ax.get_visible()]
-        ymin = 0
         ymax = max(yl[1] for yl in ylims)
-        ylims = (ymin, ymax)
-        ybounds = (ymin, np.floor(ymax * 10) / 10)
+        # Extend the drawn y-range a touch below 0 so the test-data points sitting at ~0 are not
+        # clipped by the bottom edge; the spine (ybounds) still starts at exactly 0.
+        ylims = (-0.05 * ymax, ymax)
+        ybounds = (0, np.floor(ymax * 10) / 10)
         for cell in range(n_show):
             r, c = divmod(cell, n_cols)
             ax = axs[r, c]
@@ -2632,6 +2864,15 @@ class PlacefieldPopulationViewer(Viewer):
         self.add_selection("fraction_view", options=["pooled", "by_mouse", "none"], value="none")
         self.add_float("beewidth", value=0.2, min=0.0, max=1.0, step=0.01)
         self.add_selection("metric", value="cc", options=["r2", "cc"])
+        # Which generalized fit to show. "both" plots the unregularized (blue) and the shrinkage
+        # (purple) fits side by side, as before. "generalized"/"shrinkage" plot only that one fit,
+        # always drawn blue and labelled "Generalized" -- the caller knows which it is from the
+        # parameter request. "include_better" toggles the per-neuron "better" composite in gs[-1].
+        self.add_selection("generalized_fit", options=["both", "generalized", "shrinkage"], value="both")
+        self.add_boolean("include_better", value=True)
+        # Paired test for the gs[1] fit-vs-Gaussian comparison(s): two-sided paired t-test or
+        # Wilcoxon signed-rank, on the per-mouse averages. Bonferroni-corrected when "both".
+        self.add_selection("paired_test", options=["ttest", "wilcoxon"], value="ttest")
 
         # --- ax[3] population power-law-exponent panel: source_key spectrum + eig fit spectra ---
         # source_key options mirror spectrum_figure (StimSpace keys, plus the CVPCA key when given).
@@ -2770,10 +3011,16 @@ class PlacefieldPopulationViewer(Viewer):
         # (purple), whose penalty pulls p toward the Gaussian value of 2.
         ax1 = fig.add_subplot(outer[0, 0])
         centers_peak = stats["centers_peak"]
-        peak_densities = (
-            (stats["mouse_density_peak"], _GENERALIZED_COLOR, "Generalized"),
-            (stats["mouse_density_peak_shrinkage"], _SHRINKAGE_COLOR, "Shrinkage"),
-        )
+        fit_sel = state["generalized_fit"]
+        if fit_sel == "both":
+            peak_densities = (
+                (stats["mouse_density_peak"], _GENERALIZED_COLOR, "Generalized"),
+                (stats["mouse_density_peak_shrinkage"], _SHRINKAGE_COLOR, "Shrinkage"),
+            )
+        elif fit_sel == "shrinkage":
+            peak_densities = ((stats["mouse_density_peak_shrinkage"], "black", "Generalized"),)
+        else:  # "generalized"
+            peak_densities = ((stats["mouse_density_peak"], "black", "Generalized"),)
         for density, color, label in peak_densities:
             ax1.plot(centers_peak, density.T, color=color, linewidth=0.8, alpha=0.3)
             ax1.plot(centers_peak, np.nanmean(density, axis=0), color=color, linewidth=2.0, label=label)
@@ -2781,7 +3028,8 @@ class PlacefieldPopulationViewer(Viewer):
         ax1.set_xticks([0, 2, 4, 6, 8, 10])
         ax1.set_xlabel("Peak Exponent")
         ax1.set_ylabel("Density")
-        ax1.legend(fontsize=self.fontsize * 0.8, frameon=False, loc="upper right")
+        if fit_sel == "both":
+            ax1.legend(fontsize=self.fontsize * 0.8, frameon=False, loc="upper right")
         format_spines(
             ax1,
             x_pos=-0.02,
@@ -2794,8 +3042,16 @@ class PlacefieldPopulationViewer(Viewer):
 
         # --- gs[1]: per-mouse median test R2, shrinkage vs generalized vs gaussian, paired ---
         ax2 = fig.add_subplot(outer[0, 1])
-        mouse_avg_performance = stats["mouse_avg_performance"]
-        x_models = [0, 1, 2]
+        # mouse_avg_performance columns are [shrinkage, generalized, gaussian]; pick the selected
+        # generalized fit (or both) plus the gaussian control, relabelling the chosen fit "Generalized".
+        if fit_sel == "both":
+            perf_cols, perf_labels = [0, 1, 2], ["Shrinkage", "Generalized", "Gaussian"]
+        elif fit_sel == "shrinkage":
+            perf_cols, perf_labels = [0, 2], ["Generalized", "Gaussian"]
+        else:  # "generalized"
+            perf_cols, perf_labels = [1, 2], ["Generalized", "Gaussian"]
+        mouse_avg_performance = stats["mouse_avg_performance"][:, perf_cols]
+        x_models = list(range(len(perf_cols)))
         ax2.plot(x_models, mouse_avg_performance.T, color="0.7", marker="o", markersize=3, linewidth=0.8)
         ax2.plot(x_models, np.nanmean(mouse_avg_performance, axis=0), color="k", marker="o", markersize=5, linewidth=2.0)
         ax2.set_ylabel("Test R²" if state["metric"] == "r2" else "Test Correlation")
@@ -2807,20 +3063,40 @@ class PlacefieldPopulationViewer(Viewer):
             ymin = ylims[0]
             ymax = ylims[1]
             ybounds = (np.fix(ymin * 10) / 10, np.fix(ymax * 10) / 10)
+        # Headroom above the data for the significance asterisks (spine still bounded at ymax).
+        y_headroom = 0.05 * (ymax - ymin)
         ax2.set_xticks(x_models)
-        ax2.set_xlim(-0.5, 2.5)
-        ax2.set_ylim(ymin, ymax)
+        ax2.set_xlim(-0.5, len(x_models) - 0.5)
+        ax2.set_ylim(ymin, ymax + y_headroom)
         format_spines(
             ax2,
             x_pos=-0.02,
             y_pos=-0.02,
-            xbounds=(0, 2),
+            xbounds=(0, len(x_models) - 1),
             ybounds=(ymin, ymax),
             spines_visible=["bottom", "left"],
             xticks=x_models,
             # yticks=[ymin, 0.5, ymax],
         )
-        ax2.set_xticklabels(["Shrinkage", "Generalized", "Gaussian"], rotation=45, ha="right")
+        ax2.set_xticklabels(perf_labels, rotation=45, ha="right")
+
+        # Planned two-sided paired comparison of each generalized fit against the Gaussian control
+        # (always the last column). Bonferroni-corrected for the number of comparisons (1 when a
+        # single fit is shown, 2 when "both"). An asterisk tier is drawn over each generalized column.
+        gaussian_perf = mouse_avg_performance[:, -1]
+        n_comparisons = mouse_avg_performance.shape[1] - 1
+        for i in range(n_comparisons):
+            p = _paired_pvalue(mouse_avg_performance[:, i], gaussian_perf, state["paired_test"])
+            p_corrected = min(p * n_comparisons, 1.0) if np.isfinite(p) else np.nan
+            ax2.text(
+                x_models[i],
+                ymax,
+                _significance_stars(p_corrected),
+                ha="center",
+                va="bottom",
+                fontsize=self.fontsize * 1.3,
+                fontweight="bold",
+            )
 
         # --- gs[2]: fraction generalized > gaussian, pooled or broken down by mouse ---
         if state["fraction_view"] != "none":
@@ -2905,13 +3181,28 @@ class PlacefieldPopulationViewer(Viewer):
             source_key = state["source_key"]
             alpha_values.append(_adaptive_alpha(*self._spectrum_sessions(state, source_key, cfg)))
             alpha_colors.append(_POP_ALPHA_COLORS["source_key"])
-            alpha_labels.append(source_key)
-        for key in _POP_EIG_KEYS:
+            alpha_labels.append("Data")
+        # Assemble the eig fit spectra: "better" composite (if requested), the selected generalized
+        # fit(s), then the gaussian control -- keeping _POP_EIG_KEYS' order. A single-fit selection
+        # draws that fit blue and labelled "Generalized" (matching gs[0]/gs[1]).
+        eig_keys = ["eig_better"] if state["include_better"] else []
+        if fit_sel == "both":
+            eig_keys += ["eig_shrinkage", "eig_tilbury"]
+        elif fit_sel == "shrinkage":
+            eig_keys.append("eig_shrinkage")
+        else:  # "generalized"
+            eig_keys.append("eig_tilbury")
+        eig_keys.append("eig_control")
+        for key in eig_keys:
             alpha_values.append(_adaptive_alpha(*self._fit_spectrum_sessions(state, key, cfg)))
-            alpha_colors.append(_POP_ALPHA_COLORS[key])
-            alpha_labels.append(_POP_ALPHA_LABELS[key])
+            if fit_sel != "both" and key in ("eig_shrinkage", "eig_tilbury"):
+                alpha_colors.append(_GENERALIZED_COLOR)
+                alpha_labels.append("Generalized")
+            else:
+                alpha_colors.append(_POP_ALPHA_COLORS[key])
+                alpha_labels.append(_POP_ALPHA_LABELS[key])
         _beeswarm_panel(ax4, alpha_values, alpha_colors, alpha_labels, self.fontsize, state["beewidth"])
-        ax4.set_ylabel("Power-law exponent")
+        ax4.set_ylabel("Decay exponent")
         return fig
 
 
@@ -2924,7 +3215,8 @@ def placefield_example_fits(
     r2_threshold: float = 0.5,
     improvement_threshold: float = 0.0,
     random_seed: int = 0,
-    normalize_curves: bool = True,
+    normalize: str = "sum",
+    normalize_independent: bool = True,
     fontsize: float = 9.0,
     figsize: tuple[float, float] = (8.0, 3.0),
     save_path=None,
@@ -2954,13 +3246,19 @@ def placefield_example_fits(
     r2_threshold : float
         Example neurons must have generalized test R^2 above this threshold.
     improvement_threshold : float
-        Example neurons must also beat the plain Gaussian by at least this much test R^2
-        (``r2_generalized - r2_gaussian > improvement_threshold``).
+        Example neurons must also beat the plain Gaussian by at least this much test R^2 via
+        *either* the generalized or the shrinkage fit (OR logic):
+        ``max(r2_generalized, r2_shrinkage) - r2_gaussian > improvement_threshold``.
     random_seed : int
         Seed for the random example draw (reproducible). If fewer than ``n_rows * n_cols`` neurons
         clear both thresholds, the leftover panels are left empty.
-    normalize_curves : bool
-        If True, normalize each curve (data and fits) by its sum
+    normalize : {"std", "sum", "max", "none"}
+        Per-panel, the curve group is divided by this statistic (of the test-data curve unless
+        ``normalize_independent``).
+    normalize_independent : bool
+        If True, divide each of the four curves (test data, generalized, gaussian, shrinkage) by its
+        *own* statistic instead of the shared test-data one — a shape-only comparison that removes
+        amplitude differences (they no longer overlay). Default True.
     fontsize : float
         Base font size applied via ``plt.rcParams``.
     figsize : tuple[float, float]
@@ -2993,7 +3291,8 @@ def placefield_example_fits(
     viewer.update_float("r2_threshold", value=r2_threshold)
     viewer.update_float("improvement_threshold", value=improvement_threshold)
     viewer.update_integer("random_seed", value=random_seed)
-    viewer.update_boolean("normalize_curves", value=normalize_curves)
+    viewer.update_selection("normalize", value=normalize)
+    viewer.update_boolean("normalize_independent", value=normalize_independent)
     for key, value in selections.items():
         if key not in results.param_axes:
             raise ValueError(f"Unknown selection {key!r}. Options: {sorted(results.param_axes)}")
@@ -3017,6 +3316,7 @@ def placefield_fit_figure(
     n_cols: int = 3,
     normalize: str = "std",
     normalize_independent: bool = False,
+    fit_model: str = "both",
     strict: bool = True,
     fontsize: float = 9.0,
     figsize: tuple[float, float] = (8.0, 4.0),
@@ -3054,6 +3354,10 @@ def placefield_fit_figure(
         If True, divide each of the three curves (test data, generalized, gaussian) by its *own*
         statistic instead of the shared test-data one — a shape-only comparison that removes amplitude
         differences between the fits and the data (they no longer overlay). Default False.
+    fit_model : {"generalized", "shrinkage", "both"}
+        Which generalized-family fit(s) to overlay alongside the always-shown plain-Gaussian control.
+        A lone fit is drawn in the generalized (blue) color; ``"both"`` keeps generalized blue and
+        shrinkage purple. Default ``"both"``.
     strict : bool
         If True (default), a requested ROI that never entered the pipeline or was dropped before
         fitting raises ``ValueError``. If False, that panel is left empty with a red status title.
@@ -3083,6 +3387,7 @@ def placefield_fit_figure(
         n_cols=n_cols,
         normalize=normalize,
         normalize_independent=normalize_independent,
+        fit_model=fit_model,
         strict=strict,
         fontsize=fontsize,
         figsize=figsize,
@@ -3091,6 +3396,7 @@ def placefield_fit_figure(
     viewer.update_integer("n_cols", value=n_cols)
     viewer.update_selection("normalize", value=normalize)
     viewer.update_boolean("normalize_independent", value=normalize_independent)
+    viewer.update_selection("fit_model", value=fit_model)
     for key, value in selections.items():
         if key not in results.param_axes:
             raise ValueError(f"Unknown selection {key!r}. Options: {sorted(results.param_axes)}")
@@ -3114,6 +3420,9 @@ def placefield_population(
     beewidth: float = 0.2,
     source_key: str = "ss_cv",
     metric: str = "r2",
+    generalized_fit: str = "both",
+    include_better: bool = True,
+    paired_test: str = "ttest",
     normalize: bool = True,
     source_cfg: AdaptiveAlphaConfig | None = None,
     fontsize: float = 9.0,
@@ -3157,6 +3466,15 @@ def placefield_population(
         ``results_spectra``) or ``reg_covariances_fixed`` (from ``results_cvpca``).
     metric : {"r2", "cc"}
         Which performance metric drives the gs[1] and gs[2] panels: held-out test R^2 or Pearson correlation.
+    generalized_fit : {"both", "generalized", "shrinkage"}
+        Which generalized fit to show in gs[0]/gs[1]/gs[-1]. ``"both"`` plots the unregularized (blue)
+        and shrinkage (purple) fits side by side; a single choice plots only that fit, drawn blue and
+        labelled "Generalized".
+    include_better : bool
+        Include the per-neuron "better" composite eig spectrum in the gs[-1] exponent panel.
+    paired_test : {"ttest", "wilcoxon"}
+        Two-sided paired test used for the gs[1] fit-vs-Gaussian asterisks (Bonferroni-corrected when
+        ``generalized_fit="both"``): paired t-test or Wilcoxon signed-rank, on the per-mouse averages.
     normalize : bool
         If True, normalize each gs[-1] spectrum by its sum (per session) before smoothing.
     source_cfg : AdaptiveAlphaConfig or None
@@ -3213,6 +3531,307 @@ def placefield_population(
         viewer.update_selection(key, value=viewer.encode_param(key, value))
     viewer.update_boolean("normalize", value=normalize)
     viewer.update_selection("metric", value=metric)
+    viewer.update_selection("generalized_fit", value=generalized_fit)
+    viewer.update_boolean("include_better", value=include_better)
+    viewer.update_selection("paired_test", value=paired_test)
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    if save_path is not None:
+        save_figure(fig, save_path)
+    plt.show()
+    return fig
+
+
+class PlacefieldSpectrumMSEViewer(Viewer):
+    """Decay-law goodness-of-fit for the Tilbury placefield eigenspectra.
+
+    Two candidate decay laws are compared -- power law ``n^-alpha`` and exponential
+    ``exp(-n^2 / 2 M^2)`` (:data:`_DECAY_MODELS`, the two xtick positions in each panel). Both are fit
+    (log-space) to every spectrum: the ``source_key`` data spectrum (from
+    ``results_spectra``/``results_cvpca``) plus the generalized-shrinkage, unregularized generalized
+    and plain-Gaussian fit eigenspectra from the Tilbury-fit aggregator.
+
+    - ax[0]: each fit's characteristic parameter -- the power-law exponent ``alpha`` at the power-law
+      tick and the exponential characteristic dimension ``M`` at the exponential tick (y-axis
+      "Characteristic Dim.").
+    - ax[1]: the log-space MSE of each fit at the same two x-positions. A spectrum that follows one
+      law reads low there and high at the other -- the point of the comparison, since Gaussian-tuned
+      populations decay too fast to be genuine power laws.
+
+    Every curve option is one colour; ``display="each"`` draws a faint per-mouse line across the two
+    x-positions plus a bold across-mouse mean, ``display="errorPlot"`` draws the across-mouse mean
+    +/- SE band, and ``display="swarm"`` drops the per-mouse connections for one beeswarm column per
+    (decay model, curve) with a short horizontal mean line. The fit window is either fixed
+    (``fit_zone="fixed"``, the ``fixed_range`` integer
+    range, default ``(10, 50)``) or per-session adaptive (``fit_zone="adaptive"``, the same
+    peak-curvature-to-noise-floor window and :class:`AdaptiveAlphaConfig` machinery as
+    :class:`PlacefieldPopulationViewer`'s exponent panel). Spectra, log-space smoothing, param-axis
+    widgets and mouse-averaging match that viewer exactly.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        results_spectra: ResultsAggregator | None = None,
+        results_cvpca: ResultsAggregator | None = None,
+        source_cfg: AdaptiveAlphaConfig | None = None,
+        fontsize: float = 9.0,
+        figsize: tuple[float, float] = (8.0, 3.0),
+    ):
+        self.results = results
+        self.results_spectra = results_spectra
+        self.results_cvpca = results_cvpca
+        # Alias so the borrowed SpectrumFigureViewer methods (which fetch eig spectra from
+        # ``results_fit``) resolve to this viewer's Tilbury-fit aggregator.
+        self.results_fit = results
+        self.source_cfg = source_cfg if source_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]
+        # Reused by _spectrum_sessions/_sel_params (borrowed): the data spectrum column comes from
+        # these, resolved via SOURCE_OF_KEY.
+        self._agg = {"stimspace": results_spectra, "cvpca": results_cvpca}
+        self.fontsize = fontsize
+        self.figsize = figsize
+
+        # Which generalized fit(s) to include as columns, mirroring PlacefieldPopulationViewer:
+        # "both" -> shrinkage (purple) and unregularized generalized (blue); a single choice draws
+        # just that fit, blue and labelled "Generalized".
+        self.add_selection("generalized_fit", options=["both", "generalized", "shrinkage"], value="both")
+        # Fit-window mode: per-session adaptive window, or the same fixed [start, end) for every session.
+        self.add_selection("fit_zone", options=["adaptive", "fixed"], value="adaptive")
+        self.add_integer_range("fixed_range", value=(10, 50), min=1, max=500)
+        # How each curve is drawn across the two decay-model x-positions: "each" -> per-mouse lines +
+        # bold mean; "errorPlot" -> across-mouse mean +/- SE band; "swarm" -> one beeswarm column per
+        # (decay model, curve), no per-mouse connections (uses ``beewidth``).
+        self.add_selection("display", options=["each", "errorPlot", "swarm"], value="each")
+        self.add_float("beewidth", value=0.2, min=0.0, max=1.0, step=0.01)
+
+        # Data-spectrum source (the first column); options mirror spectrum_figure.
+        if results_spectra is not None:
+            source_options = list(_STIMSPACE_KEYS) + (list(_CVPCA_KEYS) if results_cvpca is not None else [])
+            self.add_selection("source_key", options=source_options, value="ss_cv")
+
+        # One widget per shared param-axis name (same tuple-label scheme as SpectrumFigureViewer), so
+        # both the data spectrum and the Tilbury-fit eig spectra can be sliced.
+        merged_axes: dict[str, list] = {}
+        for agg in list(self._agg.values()) + [results]:
+            if agg is None:
+                continue
+            for name, options in agg.param_axes.items():
+                existing = merged_axes.setdefault(name, [])
+                existing.extend(opt for opt in options if opt not in existing)
+        self._fit_axes = list(results.param_axes)
+        self._tuple_labels = _add_param_axis_widgets(self, merged_axes)
+
+        # Log-space smoothing + adaptive-window controls, shared by every column (same
+        # "source"-prefixed AdaptiveAlphaConfig scheme as SpectrumFigureViewer).
+        self.add_boolean("normalize", value=True)
+        cfg = self.source_cfg
+        self.add_selection("source_smooth_method", options=["none", "boxcar", "gaussian"], value=cfg.smooth_method)
+        self.add_float("source_smooth_width", value=cfg.smooth_width, min=0.0, max=50.0, step=0.5)
+        self.add_integer("source_fpd_window_size", value=cfg.fpd_window_size, min=1, max=50)
+        self.add_integer("source_adaptive_buffer", value=cfg.adaptive_buffer, min=0, max=50)
+        self.add_integer("source_minimum_window_size", value=cfg.minimum_window_size, min=1, max=500)
+
+    encode_param = PlacefieldSpectraViewer.encode_param
+    _sel_params = PlacefieldSpectraViewer._sel_params
+    # Adaptive-window / spectra machinery shared verbatim with the spectrum figure.
+    _cfg_from_state = staticmethod(SpectrumFigureViewer._cfg_from_state)
+    _spectrum_sessions = SpectrumFigureViewer._spectrum_sessions
+    _fit_spectrum_raw_sessions = SpectrumFigureViewer._fit_spectrum_raw_sessions
+    _fit_spectrum_sessions = SpectrumFigureViewer._fit_spectrum_sessions
+    _fit_sel_params = SpectrumFigureViewer._fit_sel_params
+
+    def _columns(self, state: dict, cfg: AdaptiveAlphaConfig) -> list[tuple]:
+        """Assemble the spectrum columns: ``(raw, smooth, mouse_names, session_ids, color, label)``.
+
+        Order matches the request -- data, then the selected generalized fit(s), then the Gaussian
+        control (see :data:`_POP_ALPHA_COLORS` / :data:`_POP_ALPHA_LABELS`).
+        """
+        fit_sel = state["generalized_fit"]
+        columns: list[tuple] = []
+        if self.results_spectra is not None:
+            raw, smooth, mouse_names, session_ids = self._spectrum_sessions(state, state["source_key"], cfg)
+            columns.append((raw, smooth, mouse_names, session_ids, _POP_ALPHA_COLORS["source_key"], "Data"))
+        if fit_sel == "both":
+            eig_keys = ["eig_shrinkage", "eig_tilbury"]
+        elif fit_sel == "shrinkage":
+            eig_keys = ["eig_shrinkage"]
+        else:  # "generalized"
+            eig_keys = ["eig_tilbury"]
+        eig_keys.append("eig_control")
+        for key in eig_keys:
+            raw, smooth, mouse_names, session_ids = self._fit_spectrum_sessions(state, key, cfg)
+            if fit_sel != "both" and key in ("eig_shrinkage", "eig_tilbury"):
+                color, label = _GENERALIZED_COLOR, "Generalized"
+            else:
+                color, label = _POP_ALPHA_COLORS[key], _POP_ALPHA_LABELS[key]
+            columns.append((raw, smooth, mouse_names, session_ids, color, label))
+        return columns
+
+    def plot(self, state: dict):
+        cfg = self._cfg_from_state(state, "source")
+        fit_zone = state["fit_zone"]
+        fixed_range = tuple(int(v) for v in state["fixed_range"])
+        display = state["display"]
+        columns = self._columns(state, cfg)
+
+        # Fixed fallback window source (ss_cvpca) for non-cross-validated fit spectra in adaptive
+        # mode; harmless when a column already is cross-validated (it locates its own window then).
+        cvpca = self._spectrum_sessions(state, "ss_cvpca", cfg) if self.results_spectra is not None else None
+
+        # For every column, compute the per-mouse (mse, param) at both decay models as (n_mice, 2)
+        # matrices (column 0 = power law, column 1 = exponential), matching _DECAY_MODELS' order.
+        model_keys = [m for m, _ in _DECAY_MODELS]
+        xtick_labels = [lbl for _, lbl in _DECAY_MODELS]
+        colors, labels = [], []
+        mse_mats, param_mats = [], []
+        for raw, smooth, mouse_names, session_ids, color, label in columns:
+            fb_raw = fb_smooth = None
+            if fit_zone == "adaptive" and cvpca is not None:
+                cvpca_raw, cvpca_smooth, _, cvpca_session_ids = cvpca
+                fb_raw = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_raw)
+                fb_smooth = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_smooth)
+            mse_cols, param_cols = [], []
+            for model_key in model_keys:
+                mse_s, param_s = _decay_fit_per_session(
+                    raw, smooth, model_key, fit_zone, fixed_range, cfg.adaptive_buffer, fb_raw, fb_smooth
+                )
+                mse_cols.append(average_by_mouse(mse_s, mouse_names))
+                param_cols.append(average_by_mouse(param_s, mouse_names))
+            mse_mats.append(np.stack(mse_cols, axis=1))  # (n_mice, 2)
+            param_mats.append(np.stack(param_cols, axis=1))
+            colors.append(color)
+            labels.append(label)
+
+        beewidth = state["beewidth"]
+        plt.rcParams["font.size"] = self.fontsize
+        fig, axes = plt.subplots(1, 2, figsize=self.figsize, layout="constrained")
+
+        # ax[0]: each fit's characteristic parameter -- power-law exponent (alpha) at the power-law
+        # tick, exponential characteristic dimension (M) at the exponential tick.
+        _decay_stat_panel(axes[0], param_mats, colors, labels, display, beewidth, self.fontsize, xtick_labels)
+        axes[0].set_ylabel("Characteristic Dim.")
+        axes[0].legend(fontsize=self.fontsize * 0.8, frameon=False)
+
+        # ax[1]: log-space MSE of each fit, same format.
+        _decay_stat_panel(axes[1], mse_mats, colors, labels, display, beewidth, self.fontsize, xtick_labels)
+        axes[1].set_ylabel("Log-space MSE")
+        return fig
+
+
+def placefield_spectrum_mse(
+    results: ResultsAggregator,
+    results_spectra: ResultsAggregator | None = None,
+    results_cvpca: ResultsAggregator | None = None,
+    generalized_fit: str = "both",
+    fit_zone: str = "adaptive",
+    fixed_range: tuple[int, int] = (10, 50),
+    display: str = "each",
+    beewidth: float = 0.2,
+    source_key: str = "ss_cv",
+    normalize: bool = True,
+    source_cfg: AdaptiveAlphaConfig | None = None,
+    fontsize: float = 9.0,
+    figsize: tuple[float, float] = (7.0, 3.0),
+    save_path=None,
+    return_syd_viewer: bool = False,
+    **selections,
+):
+    """Decay-law goodness-of-fit for the Tilbury placefield eigenspectra.
+
+    Two panels comparing a power-law (``n^-alpha``) against an exponential (``exp(-n^2 / 2 M^2)``)
+    fit of every spectrum: the ``source_key`` data spectrum plus the
+    ``eig_shrinkage``/``eig_tilbury``/``eig_control`` Tilbury-fit eigenspectra (colors
+    purple/blue/black, data orange). ax[0] shows each fit's characteristic parameter (power-law
+    exponent ``alpha`` at x=0, exponential dimension ``M`` at x=1); ax[1] shows the log-space MSE of
+    each fit at the same two x-positions. Reading MSE across the two ticks shows which decay law each
+    spectrum follows -- the comparison Tilbury et al. use to distinguish high-dimensional power-law
+    codes from the fast-decaying Gaussian-tuned code.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        Aggregated :class:`TilburyFitConfig` results (source of the ``eig_*`` spectra).
+    results_spectra : ResultsAggregator or None
+        Aggregated StimSpaceSpectra results, source of the ``source_key`` data spectrum and of the
+        fixed ``ss_cvpca`` adaptive-window fallback. If None, the data column is dropped and every
+        column must locate its own adaptive window.
+    results_cvpca : ResultsAggregator or None
+        Aggregated CVPCAConfig results; when given, ``reg_covariances_fixed`` is also a valid
+        ``source_key``.
+    generalized_fit : {"both", "generalized", "shrinkage"}
+        Which generalized fit column(s) to show alongside the data and Gaussian columns. ``"both"``
+        shows shrinkage (purple) and unregularized generalized (blue); a single choice shows only
+        that fit, drawn blue and labelled "Generalized".
+    fit_zone : {"adaptive", "fixed"}
+        ``"adaptive"`` locates each session's own peak-curvature-to-noise-floor window (the
+        :class:`AdaptiveAlphaConfig` machinery, with the ``ss_cvpca`` fallback for non-cross-validated
+        spectra); ``"fixed"`` fits every session over ``fixed_range``.
+    fixed_range : tuple[int, int]
+        ``(start, end)`` index window used when ``fit_zone="fixed"`` (default ``(10, 50)``).
+    display : {"each", "errorPlot", "swarm"}
+        ``"each"`` draws a faint per-mouse line across the two decay-model x-positions plus a bold
+        across-mouse mean; ``"errorPlot"`` draws the across-mouse mean +/- SE band; ``"swarm"`` drops
+        the per-mouse connections and draws one beeswarm column per (decay model, curve) with a short
+        horizontal mean line (spread set by ``beewidth``).
+    beewidth : float
+        Beeswarm point spread in x-axis units, used only when ``display="swarm"``.
+    source_key : str
+        Which spectrum is the data column: ``ss_cv``/``ss_direct``/``ss_cvpca`` (from
+        ``results_spectra``) or ``reg_covariances_fixed`` (from ``results_cvpca``).
+    normalize : bool
+        Normalize each spectrum by its sum (per session) before smoothing. Does not affect the MSE
+        (a constant rescale only shifts the log-space intercept), kept for parity with the other
+        spectrum figures.
+    source_cfg : AdaptiveAlphaConfig or None
+        Log-space smoothing + adaptive-window configuration shared by every column. Defaults to
+        ``ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]`` when None.
+    fontsize : float
+        Base font size applied via ``plt.rcParams``.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    save_path : str or pathlib.Path or None
+        If given (and ``return_syd_viewer`` is False), save the rendered figure here.
+    return_syd_viewer : bool
+        If True, return the Syd viewer with state seeded from the other arguments.
+    **selections
+        Overrides for the parameter-axis selections, keyed by raw ``param_axes`` name of ``results``
+        or of ``results_spectra``/``results_cvpca`` (e.g. ``activity_parameters_name``,
+        ``smooth_widths``, ``reliability_fraction_active_thresholds``).
+
+    Returns
+    -------
+    matplotlib.figure.Figure or PlacefieldSpectrumMSEViewer
+        The rendered figure, or the Syd viewer when ``return_syd_viewer`` is True.
+    """
+    viewer = PlacefieldSpectrumMSEViewer(
+        results,
+        results_spectra=results_spectra,
+        results_cvpca=results_cvpca,
+        source_cfg=source_cfg,
+        fontsize=fontsize,
+        figsize=figsize,
+    )
+    viewer.update_selection("generalized_fit", value=generalized_fit)
+    viewer.update_selection("fit_zone", value=fit_zone)
+    viewer.update_integer_range("fixed_range", value=tuple(fixed_range))
+    viewer.update_selection("display", value=display)
+    viewer.update_float("beewidth", value=beewidth)
+    if results_spectra is not None:
+        viewer.update_selection("source_key", value=source_key)
+
+    valid_selections = set(results.param_axes)
+    for agg in viewer._agg.values():
+        if agg is None:
+            continue
+        valid_selections.update(agg.param_axes)
+    for key, value in selections.items():
+        if key not in valid_selections:
+            raise ValueError(f"Unknown selection {key!r}. Options: {sorted(valid_selections)}")
+        viewer.update_selection(key, value=viewer.encode_param(key, value))
+    viewer.update_boolean("normalize", value=normalize)
+
     if return_syd_viewer:
         return viewer
 

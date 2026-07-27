@@ -6,6 +6,7 @@ import matplotlib as mpl
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.legend_handler import HandlerTuple
+from matplotlib.patches import Rectangle
 from syd import Viewer
 
 from vrAnalysis.helpers import sort_by_preferred_environment, vectorRSquared, edge2center
@@ -21,6 +22,8 @@ from vrAnalysis.processors.spkmaps import Maps, Reliability
 from dimensionality_manuscript.configs.pfpred_quality import PFPredQualityConfig, _kde_r2
 from dimensionality_manuscript.configs.behavior_speed_env import ENV_REWARD_MAP, REFERENCE_ENV_LENGTH_CM, WINDOW_FRACTION
 from dimensionality_manuscript import ResultsAggregator, average_by_mouse
+from dimensionality_manuscript.blender import RIG_HFOV_DEG, RenderParams, load_vr_room_images
+from dimensionality_manuscript.env_order import ENV_SLOT_COLORS
 
 plt.rcParams["font.size"] = 18
 
@@ -503,6 +506,311 @@ class TraversalFocus(Viewer):
         ax_cbar_error.text(0.5, 0.02, f"-{int(state['vmax'])}", fontsize=12, ha="center", va="bottom", color="w")
         ax_cbar_error.text(0.5, 0.98, f"{int(state['vmax'])}", fontsize=12, ha="center", va="top", color="w")
         ax_cbar_error.set_ylabel("Error ($\sigma$)", fontsize=12)
+
+        return fig
+
+
+class PlaceFieldPredictionFocus(Viewer):
+    """Place field, trial consistency, PF prediction, and prediction error for one ROI/environment.
+
+    Up to four columns, all sharing the VR-position axis (columns 1, 3, 4) and the trial axis (row 1):
+
+    1. Trial-by-position spike map with the place field (trial average) below.
+    2. Per-trial consistency with the other trials, with the weighted average (reliability) below.
+       Dropped when ``show_consistency`` is False.
+    3. The place-field prediction of each trial, with its trial average below. Dropped when
+       ``show_prediction`` is False.
+    4. Prediction error (prediction - activity), with the per-position RMS error below.
+
+    Turning both toggles off leaves the two-column version: the data and the error.
+
+    The place-field prediction of a trial is the place field itself: ``get_placefield_prediction``
+    predicts each frame from the trial-averaged map, so in position units every trial's prediction
+    is the same row. Column 3 is therefore the place field tiled across trials (masked where the
+    trial has no data), which is what makes column 4 a picture of trial-to-trial variability.
+    """
+
+    def __init__(
+        self,
+        env_maps: Maps,
+        reliability: Reliability,
+        fraction_active: np.ndarray,
+        figsize: tuple[float, float] = (12.0, 6.0),
+    ):
+        self.env_maps = env_maps
+        self.reliability = reliability
+        self.fraction_active = fraction_active
+        self.distcenters = env_maps.distcenters
+        self.figsize = figsize
+
+        self.num_rois = env_maps.spkmap[0].shape[0]
+        self.num_envs = len(env_maps.environments)
+
+        self.add_selection("roi", value=0, options=list(range(self.num_rois)))
+        self.add_integer("env", value=0, min=0, max=self.num_envs - 1)
+        self.add_float("reliability_threshold", value=0.7, min=0, max=1)
+        self.add_float("fraction_active_threshold", value=0.5, min=0, max=1)
+        self.add_float("vmax", value=5, min=1, max=20)
+        self.add_float("vmax_error", value=5, min=1, max=20)
+        self.add_float("fontsize", value=12, min=4, max=30)
+        self.add_boolean("show_consistency", value=True)
+        self.add_boolean("show_prediction", value=True)
+        self.on_change(["env", "reliability_threshold", "fraction_active_threshold"], self.update_filters)
+
+        self.update_filters(self.state)
+
+    def update_filters(self, state):
+        env = state["env"]
+        reliability_threshold = state["reliability_threshold"]
+        fraction_active_threshold = state["fraction_active_threshold"]
+        idx_reliable = self.reliability.values[env] > reliability_threshold
+        idx_active = self.fraction_active[env] > fraction_active_threshold
+        idx_options = np.where(idx_reliable & idx_active)[0]
+        self.update_selection("roi", options=list(idx_options))
+
+    def plot(self, state):
+        env = state["env"]
+        roi = state["roi"]
+        vmax = state["vmax"]
+        vmax_error = state["vmax_error"]
+        fontsize = state["fontsize"]
+        show_consistency = state["show_consistency"]
+        show_prediction = state["show_prediction"]
+
+        # Set before any artist is created so axis labels, tick labels, and legends all pick it up.
+        plt.rcParams["font.size"] = fontsize
+
+        spkmap = self.env_maps.spkmap[env][roi]
+        placefield = np.nanmean(spkmap, axis=0)
+
+        # Every trial is predicted by the same place field; mask where the trial has no data.
+        pred_spkmap = np.broadcast_to(placefield, spkmap.shape).copy()
+        pred_spkmap[np.isnan(spkmap)] = np.nan
+        error = pred_spkmap - spkmap
+        avg_prediction = np.nanmean(pred_spkmap, axis=0)
+        rms_error = np.sqrt(np.nanmean(error**2, axis=0))
+
+        xlims = [self.distcenters[0], self.distcenters[-1]]
+        ylims = [spkmap.shape[0] + 0.5, -0.5]
+        extent = (xlims[0], xlims[1], spkmap.shape[0], 0)
+        xlims_clean = (np.round(xlims[0] / 50) * 50, np.round(xlims[1] / 50) * 50)
+        xlabels = [f"{int(round(x))}" for x in xlims_clean]
+        # One y range for the three line panels so place field, prediction, and error are comparable.
+        ymax_pf = np.nanmax([np.nanmax(placefield), np.nanmax(avg_prediction), np.nanmax(rms_error)]) * 1.2
+
+        cmap = mpl.colormaps["gray_r"]
+        norm = plt.Normalize(vmin=0, vmax=vmax)
+        rgba = cmap(norm(np.linspace(0, vmax, 100)))
+
+        cmap_err = mpl.colormaps["bwr"]
+        norm_err = plt.Normalize(vmin=-vmax_error, vmax=vmax_error)
+        rgba_err = cmap_err(norm_err(np.linspace(-vmax_error, vmax_error, 100)))
+
+        # Columns are added left to right, so the optional ones only shift what follows them.
+        width_ratios = [3]
+        icol_consistency = None
+        icol_prediction = None
+        if show_consistency:
+            icol_consistency = len(width_ratios)
+            width_ratios.append(1)
+        if show_prediction:
+            icol_prediction = len(width_ratios)
+            width_ratios.append(3)
+        icol_error = len(width_ratios)
+        width_ratios.append(3)
+
+        fig = plt.figure(figsize=self.figsize, layout="constrained")
+        gs = fig.add_gridspec(2, len(width_ratios), width_ratios=width_ratios, height_ratios=[6, 1])
+        ax_spkmap = fig.add_subplot(gs[0, 0])
+        ax_placefield = fig.add_subplot(gs[1, 0])
+        ax_error = fig.add_subplot(gs[0, icol_error])
+        ax_rms_error = fig.add_subplot(gs[1, icol_error])
+        ax_colorbar = ax_spkmap.inset_axes([0.225, 0.15, 0.125, 0.7])
+        ax_cbar_error = ax_error.inset_axes([0.225, 0.15, 0.125, 0.7])
+
+        # ------------------------------------------------------------- col 1: activity --
+        ax_spkmap.imshow(spkmap, interpolation="none", aspect="auto", cmap="gray_r", vmin=0, vmax=vmax, extent=extent)
+        ax_spkmap.set_ylabel("Trials")
+        ax_spkmap.set_xlim(xlims_clean)
+        ax_spkmap.set_ylim(ylims[0], ylims[1])
+        format_spines(
+            ax_spkmap,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            xbounds=xlims_clean,
+            xticks=[],
+            yticks=[],
+            tick_length=4,
+            tick_fontsize=fontsize,
+            spines_visible=["left"],
+        )
+
+        ax_placefield.plot(self.distcenters, placefield, color="k", linewidth=1.5)
+        ax_placefield.set_facecolor(("black", 0.04))
+        ax_placefield.set_xlabel("VR Position", labelpad=-10)
+        ax_placefield.set_xlim(xlims_clean)
+        ax_placefield.set_ylim(-0.05, ymax_pf)
+        ax_placefield.text(xlims[0], ymax_pf, "Place Field", ha="left", va="top", color="k", fontsize=fontsize)
+        format_spines(
+            ax_placefield,
+            x_pos=-0.02,
+            y_pos=-0.15,
+            xbounds=xlims_clean,
+            xticks=xlims_clean,
+            xlabels=xlabels,
+            yticks=[],
+            tick_length=4,
+            tick_fontsize=fontsize,
+            spines_visible=["bottom"],
+        )
+
+        # ---------------------------------------------------------- col 2: consistency --
+        if show_consistency:
+            ax_consistency = fig.add_subplot(gs[0, icol_consistency])
+            ax_reliability = fig.add_subplot(gs[1, icol_consistency])
+
+            trial_weights = np.sqrt(np.mean(spkmap**2, axis=1))
+            trial_consistency = _jit_reliability_loo(spkmap[None, ...])[0]
+            trial_weights = trial_weights / np.max(trial_weights)
+
+            idx_include = trial_weights > 0
+            trial_numbers = np.arange(spkmap.shape[0])[idx_include]
+            trial_weights = trial_weights[idx_include] / np.max(trial_weights[idx_include])
+            trial_consistency = trial_consistency[idx_include]
+            half_trial_number = max(trial_numbers) / 2
+
+            ax_consistency.scatter(trial_consistency, trial_numbers, color="k", s=5, alpha=trial_weights)
+            ax_consistency.set_facecolor(("black", 0.04))
+            ax_consistency.set_xlim(-1.05, 1.05)
+            ax_consistency.set_ylim(ylims[0], ylims[1])
+            ax_consistency.set_xlabel(r"$\sigma$")
+            ax_consistency.text(
+                -0.5,
+                half_trial_number,
+                r"$\sigma = \mathrm{corr}(\langle\mathrm{other\ trials}\rangle)$",
+                ha="center",
+                va="center",
+                rotation=90,
+                fontsize=fontsize,
+            )
+            format_spines(
+                ax_consistency,
+                x_pos=-0.02,
+                y_pos=-0.02,
+                xbounds=(-1, 1),
+                xticks=[-1, 0, 1],
+                yticks=[],
+                tick_length=4,
+                tick_fontsize=fontsize,
+                spines_visible=["bottom"],
+            )
+
+            reliability = np.sum(trial_weights * trial_consistency) / np.sum(trial_weights)
+            ax_reliability.plot([-1, 1], [0, 0], color="black", linewidth=1.5)
+            ax_reliability.plot([reliability], [0], color="black", marker="o", markersize=8)
+            ax_reliability.set_xlim(-1, 1)
+            ax_reliability.set_ylim(-0.05, 0.05)
+            ax_reliability.set_xlabel("Reliability")
+            format_spines(
+                ax_reliability,
+                x_pos=-0.02,
+                y_pos=-0.02,
+                xbounds=(-1, 1),
+                xticks=[-1, 0, 1],
+                yticks=[],
+                tick_length=4,
+                tick_fontsize=fontsize,
+                spines_visible=["bottom"],
+            )
+
+        # ----------------------------------------------------------- col 3: prediction --
+        if show_prediction:
+            ax_prediction = fig.add_subplot(gs[0, icol_prediction])
+            ax_avg_prediction = fig.add_subplot(gs[1, icol_prediction])
+
+            ax_prediction.imshow(pred_spkmap, interpolation="none", aspect="auto", cmap="gray_r", vmin=0, vmax=vmax, extent=extent)
+            ax_prediction.set_xlim(xlims_clean)
+            ax_prediction.set_ylim(ylims[0], ylims[1])
+            format_spines(
+                ax_prediction,
+                x_pos=-0.02,
+                y_pos=-0.02,
+                xbounds=xlims_clean,
+                xticks=[],
+                yticks=[],
+                tick_length=4,
+                tick_fontsize=fontsize,
+                spines_visible=[],
+            )
+
+            ax_avg_prediction.plot(self.distcenters, avg_prediction, color="k", linewidth=1.5)
+            ax_avg_prediction.set_facecolor(("black", 0.04))
+            ax_avg_prediction.set_xlabel("VR Position", labelpad=-10)
+            ax_avg_prediction.set_xlim(xlims_clean)
+            ax_avg_prediction.set_ylim(-0.05, ymax_pf)
+            ax_avg_prediction.text(xlims[0], ymax_pf, "PF Prediction", ha="left", va="top", color="k", fontsize=fontsize)
+            format_spines(
+                ax_avg_prediction,
+                x_pos=-0.02,
+                y_pos=-0.15,
+                xbounds=xlims_clean,
+                xticks=xlims_clean,
+                xlabels=xlabels,
+                yticks=[],
+                tick_length=4,
+                tick_fontsize=fontsize,
+                spines_visible=["bottom"],
+            )
+
+        # ---------------------------------------------------------------- col 4: error --
+        ax_error.imshow(error, interpolation="none", aspect="auto", cmap="bwr", vmin=-vmax_error, vmax=vmax_error, extent=extent)
+        ax_error.set_xlim(xlims_clean)
+        ax_error.set_ylim(ylims[0], ylims[1])
+        format_spines(
+            ax_error,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            xbounds=xlims_clean,
+            xticks=[],
+            yticks=[],
+            tick_length=4,
+            tick_fontsize=fontsize,
+            spines_visible=[],
+        )
+
+        ax_rms_error.plot(self.distcenters, rms_error, color="k", linewidth=1.5)
+        ax_rms_error.set_facecolor(("black", 0.04))
+        ax_rms_error.set_xlabel("VR Position", labelpad=-10)
+        ax_rms_error.set_xlim(xlims_clean)
+        ax_rms_error.set_ylim(-0.05, ymax_pf)
+        ax_rms_error.text(xlims[0], ymax_pf, "RMS Error", ha="left", va="top", color="k", fontsize=fontsize)
+        format_spines(
+            ax_rms_error,
+            x_pos=-0.02,
+            y_pos=-0.15,
+            xbounds=xlims_clean,
+            xticks=xlims_clean,
+            xlabels=xlabels,
+            yticks=[],
+            tick_length=4,
+            tick_fontsize=fontsize,
+            spines_visible=["bottom"],
+        )
+
+        # --------------------------------------------------------- inset colorscales --
+        ax_colorbar.imshow(np.flipud(rgba[:, None, ...]), aspect="auto", extent=(0, 1, 0, 1))
+        ax_colorbar.set_xticks([])
+        ax_colorbar.set_yticks([])
+        ax_colorbar.text(0.5, 0.02, r"0", fontsize=fontsize, ha="center", va="bottom", color="k")
+        ax_colorbar.text(0.5, 0.98, f"{int(vmax)}", fontsize=fontsize, ha="center", va="top", color="w")
+        ax_colorbar.set_ylabel("Fluorescence ($\sigma$)", fontsize=fontsize)
+
+        ax_cbar_error.imshow(np.flipud(rgba_err[:, None, ...]), aspect="auto", extent=(0, 1, 0, 1))
+        ax_cbar_error.set_xticks([])
+        ax_cbar_error.set_yticks([])
+        ax_cbar_error.text(0.5, 0.02, f"-{int(vmax_error)}", fontsize=fontsize, ha="center", va="bottom", color="w")
+        ax_cbar_error.text(0.5, 0.98, f"{int(vmax_error)}", fontsize=fontsize, ha="center", va="top", color="w")
+        ax_cbar_error.set_ylabel("Error ($\sigma$)", fontsize=fontsize)
 
         return fig
 
@@ -1264,6 +1572,94 @@ def example_traversal(
     return fig
 
 
+def example_placefield_prediction(
+    session: B2Session,
+    roi: int,
+    env: int,
+    reliability_threshold: float = 0.7,
+    fraction_active_threshold: float = 0.5,
+    vmax: float = 5,
+    vmax_error: float = 5,
+    fontsize: float = 12.0,
+    show_consistency: bool = True,
+    show_prediction: bool = True,
+    figsize: tuple[float, float] = (12.0, 6.0),
+    return_syd_viewer: bool = False,
+):
+    """
+    Plot an example place field alongside its prediction and prediction error, in position units.
+
+    Combines :func:`example_placefield` (columns 1-2: the trial-by-position spike map with the
+    place field below, and the per-trial consistency with the reliability below) with the
+    prediction panels of :func:`example_traversal` recast onto the VR-position axis (column 3: the
+    place-field prediction of each trial with its trial average below; column 4: the prediction
+    error with the per-position RMS error below). The gray_r and bwr colorscales are drawn as
+    insets on the activity and error maps, in the style of :func:`example_placefield`.
+
+    Columns 2 and 3 are optional: ``show_consistency=False, show_prediction=False`` leaves the
+    two-column version, the data and the error.
+
+    Parameters
+    ----------
+    session : B2Session
+        Session to load the environment maps and reliability from.
+    roi : int
+        ROI to plot. Must pass the reliability / fraction-active filters.
+    env : int
+        Index into ``env_maps.environments``.
+    reliability_threshold, fraction_active_threshold : float
+        Filters defining which ROIs are selectable in the viewer.
+    vmax : float
+        Upper limit (in sigma) of the gray_r colorscale for the activity and prediction maps.
+    vmax_error : float
+        Saturation (in sigma) of the symmetric bwr colorscale for the error map.
+    fontsize : float
+        Single font size for the whole panel: axis labels, tick labels, in-axes annotations,
+        colorscale labels, and legends.
+    show_consistency : bool
+        Draw the trial-consistency / reliability column (column 2).
+    show_prediction : bool
+        Draw the place-field prediction column (column 3).
+    figsize : tuple[float, float]
+        Figure size in inches. Not rescaled when columns are dropped, so the remaining columns
+        get wider; pass a narrower width for the two-column (activity + error) version.
+    return_syd_viewer : bool
+        If True, return the Syd viewer with state seeded from the other arguments.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or PlaceFieldPredictionFocus
+    """
+    smp = SMPs.SpkmapProcessor(session, params=SMPs.SpkmapParams())
+
+    env_maps = smp.get_env_maps()
+    env_maps.distcenters = smp.dist_centers
+    env_maps.pop_nan_positions()
+    reliability = smp.get_reliability()
+    fraction_active = np.stack([FractionActive.compute(spkmap, 2, 1) for spkmap in env_maps.spkmap])
+
+    viewer = PlaceFieldPredictionFocus(env_maps, reliability, fraction_active, figsize=figsize)
+    _seed_roi_filtered_viewer(
+        viewer,
+        env=env,
+        roi=roi,
+        reliability_threshold=reliability_threshold,
+        fraction_active_threshold=fraction_active_threshold,
+        vmax=vmax,
+    )
+    viewer.update_float("vmax_error", value=vmax_error)
+    viewer.update_float("fontsize", value=fontsize)
+    viewer.update_boolean("show_consistency", value=show_consistency)
+    viewer.update_boolean("show_prediction", value=show_prediction)
+
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    plt.show()
+    return fig
+
+
 def example_r2_placefield(
     results: ResultsAggregator,
     session: B2Session,
@@ -1502,6 +1898,411 @@ def placefield_reliability(
     viewer.update_selection("swarm_mode", value=swarm_mode)
     viewer.update_float("beewidth", value=beewidth)
     viewer.update_float("hist_alpha", value=hist_alpha)
+
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    plt.show()
+    return fig
+
+
+# ---------------------------------------------------------------------------------------
+# VR environment schematic
+# ---------------------------------------------------------------------------------------
+
+# Environments shown, top row first. These are the ATL cohort's three environments, ordered
+# so the reward zone walks leftward down the figure (150 -> 100 -> 50 cm).
+VR_SCHEMATIC_ENVS: tuple[int, ...] = (1, 3, 4)
+
+# Reward-zone geometry is stored per session, not as a colony-wide constant: ENV_REWARD_MAP
+# gives the zone *start* in cm, and the drawn width is a presentation choice.
+VR_REWARD_ZONE_WIDTH_CM: float = 20.0
+VR_REWARD_LEGEND_LABEL: str = "reward zones (90% of trials)"
+
+# RenderParams fields, in the order the viewer registers them. Changing any of these makes
+# the viewer shell out to Blender; every other parameter is pure matplotlib.
+_VR_RENDER_PARAMS: tuple[str, ...] = (
+    "entrance_offset_cm",
+    "hfov_deg",
+    "panel_aspect",
+    "panel_width_px",
+    "camera_height_cm",
+    "yaw_deg",
+    "use_dof",
+    "light_scale",
+    "exposure",
+    "samples",
+)
+
+
+class VREnvironmentSchematic(Viewer):
+    """The three VR environments as rendered room stills, stacked with reward-zone tracks.
+
+    One row per environment: four panels showing what the mouse sees standing at the
+    entrance of each room, and below them a track arrow with the reward zone marked. Arrow
+    and zone take the environment's color from :data:`ENV_SLOT_COLORS`, the same palette the
+    ``by_env`` panels of figure 3 use. The whole thing is drawn into a single axes in units
+    of one panel height, with the figure sized so that unit is exactly ``panel_height_in``
+    inches -- so every gap, arrow, and swatch keeps its proportion under any scaling.
+
+    Parameters split into two groups. The render parameters (see
+    :class:`~dimensionality_manuscript.blender.RenderParams`) control the camera and are
+    resolved by driving Blender headlessly; results are cached on disk, so revisiting a
+    setting is instant but a new one costs a couple of seconds per environment. The layout
+    parameters are plain matplotlib and redraw immediately.
+    """
+
+    def __init__(self, envs: tuple[int, ...] = VR_SCHEMATIC_ENVS):
+        self.envs = tuple(envs)
+
+        # --- render parameters (each change re-renders in Blender) ---
+        defaults = RenderParams()
+        self.add_float("entrance_offset_cm", value=defaults.entrance_offset_cm, min=-10.0, max=45.0)
+        self.add_float("hfov_deg", value=defaults.hfov_deg, min=30.0, max=RIG_HFOV_DEG)
+        self.add_float("panel_aspect", value=defaults.panel_aspect, min=0.6, max=4.0)
+        self.add_integer("panel_width_px", value=defaults.panel_width_px, min=160, max=1600)
+        self.add_float("camera_height_cm", value=defaults.camera_height_cm, min=0.5, max=14.5)
+        self.add_float("yaw_deg", value=defaults.yaw_deg, min=-90.0, max=90.0)
+        self.add_boolean("use_dof", value=defaults.use_dof)
+        self.add_float("light_scale", value=defaults.light_scale, min=0.1, max=5.0)
+        self.add_float("exposure", value=defaults.exposure, min=-3.0, max=3.0)
+        self.add_integer("samples", value=defaults.samples, min=4, max=128)
+
+        # --- layout parameters (immediate redraw) ---
+        # Finer step than the 0.01 default: this one is multiplied by ~6.7 layout units to
+        # get the figure width, so 0.01 increments are ~0.07 in jumps in the saved figure.
+        self.add_float("panel_height_in", value=0.85, min=0.3, max=3.0, step=0.001)
+        self.add_float("room_gap", value=0.05, min=0.0, max=0.6)
+        self.add_float("env_gap", value=0.34, min=0.0, max=1.5)
+        self.add_float("arrow_gap", value=0.14, min=0.0, max=1.0)
+        self.add_float("track_height", value=0.16, min=0.04, max=0.5)
+        self.add_float("margin", value=0.06, min=0.0, max=0.5)
+        self.add_float("panel_border", value=0.0, min=0.0, max=3.0)
+        self.add_boolean("show_reward_zones", value=True)
+        self.add_float("reward_zone_width_cm", value=VR_REWARD_ZONE_WIDTH_CM, min=2.0, max=60.0)
+        self.add_float("reward_zone_alpha", value=0.4, min=0.0, max=1.0)
+        self.add_boolean("show_legend", value=True)
+        self.add_float("legend_yoffset", value=0.0, min=-0.5, max=1.5)
+        self.add_boolean("show_scalebar", value=True)
+        self.add_float("fontsize", value=9.0, min=4.0, max=24.0)
+
+        self.on_change(list(_VR_RENDER_PARAMS), self.reload_images)
+        self.reload_images(self.state)
+
+    def reload_images(self, state):
+        """Render (or fetch from cache) the room stills for every environment."""
+        params = RenderParams(**{name: state[name] for name in _VR_RENDER_PARAMS})
+        self.images = {env: load_vr_room_images(env, params) for env in self.envs}
+
+        room_counts = {env: len(images) for env, images in self.images.items()}
+        if len(set(room_counts.values())) != 1:
+            raise RuntimeError(f"Environments returned different room counts: {room_counts}. Every environment should have four rooms.")
+        self.num_rooms = next(iter(room_counts.values()))
+
+    def _env_color(self, env: int):
+        """Shared environment-slot color, matching the ``by_env`` panels in figure 3."""
+        return ENV_SLOT_COLORS[self.envs.index(env) % len(ENV_SLOT_COLORS)]
+
+    def plot(self, state):
+        panel_w = state["panel_aspect"]
+        room_gap = state["room_gap"]
+        arrow_gap = state["arrow_gap"]
+        track_height = state["track_height"]
+        env_gap = state["env_gap"]
+        margin = state["margin"]
+        fontsize = state["fontsize"]
+        show_legend = state["show_legend"]
+        reward_zone_alpha = state["reward_zone_alpha"]
+
+        # Everything below is in units of one panel height; the figure is then sized so that
+        # unit is panel_height_in inches, which is what keeps the layout rigid under scaling.
+        track_w = self.num_rooms * panel_w + (self.num_rooms - 1) * room_gap
+        row_pitch = 1.0 + arrow_gap + track_height + env_gap
+        panel_tops = [-row * row_pitch for row in range(len(self.envs))]
+        arrow_ys = [top - 1.0 - arrow_gap - track_height / 2 for top in panel_tops]
+
+        # The legend sits one environment-gap below the last track, in its own band, nudged
+        # by legend_yoffset (positive pushes it further down).
+        legend_y = arrow_ys[-1] - track_height / 2 - env_gap - track_height / 2 - state["legend_yoffset"]
+        # min() rather than legend_y alone: a negative offset can lift the legend above the
+        # last track, and the bottom edge has to follow whichever band ends up lowest.
+        y_bottom = (min(legend_y, arrow_ys[-1]) if show_legend else arrow_ys[-1]) - track_height / 2
+
+        width = track_w + 2 * margin
+        height = (0.0 - y_bottom) + 2 * margin
+        scale = state["panel_height_in"]
+
+        plt.close("all")
+        fig = plt.figure(figsize=(width * scale, height * scale))
+        # A single axes filling the whole figure, no ticks, no spines. Because the axes box
+        # aspect matches the data aspect exactly, set_aspect("equal") introduces no padding
+        # and one data unit lands on exactly `scale` inches.
+        ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+        ax.set_xlim(-margin, track_w + margin)
+        ax.set_ylim(y_bottom - margin, margin)
+        ax.set_axis_off()
+
+        for env, panel_top, arrow_y in zip(self.envs, panel_tops, arrow_ys):
+            color = self._env_color(env)
+
+            for room, image in enumerate(self.images[env]):
+                x0 = room * (panel_w + room_gap)
+                ax.imshow(image, extent=(x0, x0 + panel_w, panel_top - 1.0, panel_top), aspect="auto", zorder=2)
+                if state["panel_border"] > 0:
+                    ax.add_patch(
+                        Rectangle(
+                            (x0, panel_top - 1.0),
+                            panel_w,
+                            1.0,
+                            facecolor="none",
+                            edgecolor="black",
+                            linewidth=state["panel_border"],
+                            zorder=3,
+                        )
+                    )
+
+            # Track arrow: the mouse runs left to right over the full environment length.
+            ax.annotate(
+                "",
+                xy=(track_w, arrow_y),
+                xytext=(0.0, arrow_y),
+                arrowprops=dict(arrowstyle="-|>", color=color, linewidth=1.2, shrinkA=0, shrinkB=0, mutation_scale=fontsize * 1.4),
+                zorder=4,
+            )
+
+            if state["show_reward_zones"]:
+                # ENV_REWARD_MAP holds the zone start in cm on the 200 cm reference track.
+                start = track_w * ENV_REWARD_MAP[env] / REFERENCE_ENV_LENGTH_CM
+                zone_width = track_w * state["reward_zone_width_cm"] / REFERENCE_ENV_LENGTH_CM
+                ax.add_patch(
+                    Rectangle(
+                        (start, arrow_y - track_height / 2),
+                        zone_width,
+                        track_height,
+                        facecolor=color,
+                        alpha=reward_zone_alpha,
+                        edgecolor="none",
+                        zorder=5,
+                    )
+                )
+
+        if show_legend:
+            # The zones are environment-colored, so the swatch is split into one segment per
+            # environment rather than drawn in a neutral grey that matches nothing on the plot.
+            swatch_w = 0.55 * panel_w / 1.6  # scales with panel width so the row stays balanced
+            segment_w = swatch_w / len(self.envs)
+            for segment, env in enumerate(self.envs):
+                ax.add_patch(
+                    Rectangle(
+                        (segment * segment_w, legend_y - track_height / 2),
+                        segment_w,
+                        track_height,
+                        facecolor=self._env_color(env),
+                        alpha=reward_zone_alpha,
+                        edgecolor="none",
+                        zorder=5,
+                    )
+                )
+            ax.text(swatch_w + 0.12, legend_y, VR_REWARD_LEGEND_LABEL, ha="left", va="center", fontsize=fontsize, zorder=5)
+
+        if state["show_scalebar"]:
+            ax.text(
+                track_w,
+                legend_y if show_legend else y_bottom,
+                f"{REFERENCE_ENV_LENGTH_CM:g}cm",
+                ha="right",
+                va="center",
+                fontsize=fontsize,
+                zorder=5,
+            )
+
+        # Set last: imshow(aspect="auto") resets the axes aspect on every call, so an earlier
+        # set_aspect would be silently undone. The figure was sized from the same layout, so
+        # this adds no padding -- it just makes the units isotropic if figsize is overridden.
+        ax.set_aspect("equal")
+        return fig
+
+
+def vr_environment_schematic(
+    envs: tuple[int, ...] = VR_SCHEMATIC_ENVS,
+    entrance_offset_cm: float = 2.0,
+    hfov_deg: float = 90.0,
+    panel_aspect: float = 1.6,
+    panel_width_px: int = 480,
+    camera_height_cm: float = 7.5,
+    yaw_deg: float = 0.0,
+    use_dof: bool = False,
+    light_scale: float = 1.0,
+    exposure: float = 0.0,
+    samples: int = 32,
+    panel_height_in: float = 0.85,
+    room_gap: float = 0.05,
+    env_gap: float = 0.34,
+    arrow_gap: float = 0.14,
+    track_height: float = 0.16,
+    margin: float = 0.06,
+    panel_border: float = 0.0,
+    show_reward_zones: bool = True,
+    reward_zone_width_cm: float = VR_REWARD_ZONE_WIDTH_CM,
+    reward_zone_alpha: float = 0.4,
+    show_legend: bool = True,
+    legend_yoffset: float = 0.0,
+    show_scalebar: bool = True,
+    fontsize: float = 9.0,
+    return_syd_viewer: bool = False,
+):
+    """
+    The three VR environments, each as four room stills over a reward-zone track.
+
+    One row per environment. Each row shows what the mouse sees standing at the entrance of
+    each of the four rooms -- rendered from the ``vrEnvironment_*.blend`` files by driving
+    Blender headlessly -- above an arrow spanning the 200 cm track with the reward zone
+    drawn as a grey box at its true position. Everything lands in a single bare axes laid
+    out in units of one panel height, and the figure is sized so that unit is exactly
+    ``panel_height_in`` inches.
+
+    Renders are cached on disk under ``RegistryPaths.cache_path / "vr_renders"``, keyed by
+    the render parameters and the .blend modification times. A parameter set seen before
+    loads instantly; a new one costs roughly two seconds per environment.
+
+    Parameters
+    ----------
+    envs : tuple of int
+        Environments to draw, top row first.
+    entrance_offset_cm : float
+        Camera position in cm past each room's doorway plane. 0 sits in the doorway itself;
+        negative values look into the room from the previous one.
+    hfov_deg : float
+        Horizontal field of view. The rig's real optics are ~152 deg (``RIG_HFOV_DEG``),
+        which is heavily fisheyed; 90 deg reads better at panel size.
+    panel_aspect : float
+        Panel width / height. Also sets the rendered aspect, so the vertical field of view
+        follows from it and ``hfov_deg``.
+    panel_width_px : int
+        Rendered panel width in pixels.
+    camera_height_cm : float
+        Eye height above the floor; the corridor walls are 15 cm tall.
+    yaw_deg : float
+        Camera rotation off the track axis. 0 looks straight down the corridor.
+    use_dof : bool
+        Enable the camera's depth of field, which softens the far end of the corridor.
+    light_scale : float
+        Multiplier on every light's energy -- changes shading contrast.
+    exposure : float
+        Color-management exposure in stops -- brightness only, shading untouched.
+    samples : int
+        EEVEE render samples.
+    panel_height_in : float
+        Inches per layout unit, i.e. the height of one rendered panel.
+    room_gap, env_gap, arrow_gap : float
+        Gaps between panels in a row, between environment rows, and between a row's panels
+        and its track arrow. In panel-height units.
+    track_height : float
+        Height of the arrow band and the reward-zone box, in panel-height units.
+    margin : float
+        Padding around the whole layout, in panel-height units.
+    panel_border : float
+        Line width of a black border around each panel; 0 draws none.
+    show_reward_zones : bool
+        Draw the reward-zone box on each track.
+    reward_zone_width_cm : float
+        Drawn width of the reward zone. Reward geometry is stored per session rather than as
+        a colony constant, so only the zone start comes from the data; this is presentation.
+    reward_zone_alpha : float
+        Opacity of the reward-zone boxes, which take their environment's color.
+    show_legend : bool
+        Draw the reward-zone swatch and label below the last environment.
+    legend_yoffset : float
+        Extra vertical shift of the legend row, in panel-height units; positive pushes it
+        further below the last track. The figure grows or shrinks to follow it.
+    show_scalebar : bool
+        Draw the track-length label at the right of the legend row.
+    fontsize : float
+        Font size in points for the legend and scale labels.
+    return_syd_viewer : bool
+        If True, return the Syd viewer with state seeded from the other arguments.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or VREnvironmentSchematic
+
+    Notes
+    -----
+    **There is no figsize argument** -- unlike the other figure factories in this module,
+    the figure size is *derived* from the layout. The layout is built in abstract units
+    where 1 unit is one panel height, and ``panel_height_in`` is the only knob in absolute
+    units. Writing ``n_rooms`` for the rooms per environment (4) and ``n_envs`` for the
+    number of rows::
+
+        track_w   = n_rooms * panel_aspect + (n_rooms - 1) * room_gap
+        row_pitch = 1 + arrow_gap + track_height + env_gap
+
+        width_units  = track_w + 2 * margin
+        height_units = n_envs * row_pitch - env_gap + 2 * margin
+                       + (env_gap + track_height + legend_yoffset if show_legend else 0)
+
+        figsize = (width_units * panel_height_in, height_units * panel_height_in)
+
+    So width responds to ``panel_aspect``, ``room_gap`` and ``margin``; height responds to
+    ``arrow_gap``, ``track_height``, ``env_gap``, ``margin``, ``show_legend`` and
+    ``legend_yoffset``; and ``panel_height_in`` scales both together. Because the axes box
+    aspect is then exactly the data aspect, ``set_aspect("equal")`` adds no padding and one
+    data unit lands on exactly ``panel_height_in`` inches in *both* directions.
+
+    Two things do not scale, because they are specified in points rather than layout units:
+    ``fontsize`` and ``panel_border``. Doubling ``panel_height_in`` leaves the legend text
+    at the same physical size, so it reads as relatively smaller.
+
+    To target a figure width, back-solve ``panel_height_in`` from ``width_units`` rather than
+    guessing. For a 7-inch column at default gaps::
+
+        width_units = 4 * 1.6 + 3 * 0.05 + 2 * 0.06                        # 6.67
+        fig = vr_environment_schematic(panel_height_in=7.0 / width_units)  # 1.0495 -> 1.049
+
+    I'm targeting figure width of 2.25 and use room_gap=0, margin=0.05, panel_aspect=1.6, so:
+        width_units = 4 * 1.6 + 3 * 0.0 + 2 * 0.05 = 6.67
+        fig_width = width_units * panel_height_in = 2.25 = 6.67 * x
+        panel_height_in = 2.25 / 6.67 = 0.346
+
+    Syd rounds every float parameter to its slider step, so the width lands within one step
+    of the target rather than exactly on it -- here ``panel_height_in`` has ``step=0.001``,
+    giving 6.997 in instead of 7.000. That is well under a printer's tolerance; if a figure
+    must be exact to the pixel, scale it at the LaTeX or Illustrator stage instead of
+    fighting the slider. Height then follows from the vertical parameters; adjust
+    ``env_gap`` or ``panel_aspect`` if the result is too tall for the space.
+    """
+    viewer = VREnvironmentSchematic(envs=envs)
+
+    viewer.update_float("entrance_offset_cm", value=entrance_offset_cm)
+    viewer.update_float("hfov_deg", value=hfov_deg)
+    viewer.update_float("panel_aspect", value=panel_aspect)
+    viewer.update_integer("panel_width_px", value=panel_width_px)
+    viewer.update_float("camera_height_cm", value=camera_height_cm)
+    viewer.update_float("yaw_deg", value=yaw_deg)
+    viewer.update_boolean("use_dof", value=use_dof)
+    viewer.update_float("light_scale", value=light_scale)
+    viewer.update_float("exposure", value=exposure)
+    viewer.update_integer("samples", value=samples)
+
+    viewer.update_float("panel_height_in", value=panel_height_in)
+    viewer.update_float("room_gap", value=room_gap)
+    viewer.update_float("env_gap", value=env_gap)
+    viewer.update_float("arrow_gap", value=arrow_gap)
+    viewer.update_float("track_height", value=track_height)
+    viewer.update_float("margin", value=margin)
+    viewer.update_float("panel_border", value=panel_border)
+    viewer.update_boolean("show_reward_zones", value=show_reward_zones)
+    viewer.update_float("reward_zone_width_cm", value=reward_zone_width_cm)
+    viewer.update_float("reward_zone_alpha", value=reward_zone_alpha)
+    viewer.update_boolean("show_legend", value=show_legend)
+    viewer.update_float("legend_yoffset", value=legend_yoffset)
+    viewer.update_boolean("show_scalebar", value=show_scalebar)
+    viewer.update_float("fontsize", value=fontsize)
+
+    # Seeding via update_* does not fire on_change before deployment, so pull the renders for
+    # the seeded parameters explicitly.
+    viewer.reload_images(viewer.state)
 
     if return_syd_viewer:
         return viewer

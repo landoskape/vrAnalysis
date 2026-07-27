@@ -19,7 +19,7 @@ from dimensionality_manuscript import ResultsAggregator, ResultsStore, get_data_
 from dimensionality_manuscript.scripts.status import status
 from dimensionality_manuscript.subspace_analysis.stimspace import StimSpaceSubspace
 from dimensionality_manuscript import average_by_mouse
-from ..env_order import MAX_ENV_SLOTS
+from ..env_order import ENV_SLOT_COLORS, MAX_ENV_SLOTS
 
 
 def _gini(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -943,9 +943,7 @@ _FAMILIARITY_COLORS = {
     "Behaving": CONDITION_COLORS["behaving"],
     "w/ ITIs": CONDITION_COLORS["itis"],
     "w/ Spont.": CONDITION_COLORS["spontaneous"],
-    "Env #1": "k",
-    "Env #2": "blue",
-    "Env #3": "green",
+    **{f"Env #{slot + 1}": color for slot, color in enumerate(ENV_SLOT_COLORS)},
 }
 _ENV_FULL_SCOPES = ["within_env", "outside_env", "with_iti", "with_spontaneous"]
 

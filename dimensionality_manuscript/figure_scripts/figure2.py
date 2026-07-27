@@ -1055,7 +1055,17 @@ _LATENTS_EACH_KEYS = [
     "test_score_each_rrr_to_pred",
     "test_score_each_pred_to_rrr",
 ]
-_LATENTS_DIM_KEYS = ["num_pos_params", "num_speed_params", "num_reward_params"]
+# The external and internal models optimize hyperparameters independently, so each set of
+# per-dimension scores must be sliced with its own model's column counts. The unsuffixed keys
+# describe the external model (the ``*_true`` scores); ``*_pred`` describe the internal model.
+_LATENTS_DIM_KEYS = [
+    "num_pos_params_true",
+    "num_speed_params_true",
+    "num_reward_params_true",
+    "num_pos_params_pred",
+    "num_speed_params_pred",
+    "num_reward_params_pred",
+]
 
 # The three regressor groups that make up the external model's basis (see
 # RRRToExternalLatentsConfig / _pos_speed_reward_dims), in column order.
@@ -1086,26 +1096,77 @@ def _valid_agg(values: np.ndarray, agg) -> float:
     return float(agg(finite)) if finite.size else np.nan
 
 
+def _omission_param_count(num_reward: int) -> int | None:
+    """Width of the omission-response block at the tail of a session's reward columns.
+
+    ``FullRegressorModel.build_regressors`` appends the reward blocks in the order
+    (expectation, delivered response, omission response), so omission is the trailing slice of
+    the reward group. With ``expectation_symmetric=True`` and ``reward_num_basis_lags = L`` the
+    widths are ``(2L + 1, L + 1, L + 1)``, hence ``num_reward = 4L + 3`` and the omission width
+    is ``L + 1 = (num_reward + 1) / 4``.
+
+    Parameters
+    ----------
+    num_reward : int
+        Total number of reward regressor columns for one session (``num_reward_params``).
+
+    Returns
+    -------
+    int or None
+        The omission block width, or None when ``num_reward`` is not of the form ``4L + 3``.
+        A mismatch means ``make_temporal_basis(remove_empty=True)`` dropped columns, so the
+        block boundaries can no longer be inferred from the stored dimension counts alone.
+    """
+    if num_reward <= 0 or (num_reward + 1) % 4 != 0:
+        return None
+    return (num_reward + 1) // 4
+
+
 def _group_agg_scores(
     each_scores: np.ndarray,
     num_pos: np.ndarray,
     num_speed: np.ndarray,
     num_reward: np.ndarray,
     agg,
+    exclude_omission: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-mouse (position, speed, reward) aggregate of a per-dimension score array.
+    """Per-session (position, speed, reward) aggregate of a per-dimension score array.
 
-    Each mouse's own ``(num_pos, num_speed, num_reward)`` boundaries slice its row of
-    ``each_scores`` before aggregating, since a mouse's basis dimensionality (num_basis,
-    num_environments, reward_num_basis_lags) differs from every other mouse's, so raw
-    column index has no shared meaning across mice.
+    Each session's own ``(num_pos, num_speed, num_reward)`` boundaries slice its row of
+    ``each_scores`` before aggregating, since a session's basis dimensionality (num_basis,
+    num_environments, reward_num_basis_lags) differs from every other session's, so raw
+    column index has no shared meaning across sessions.
+
+    Parameters
+    ----------
+    each_scores : np.ndarray
+        Per-dimension scores, shape (n_sessions, n_columns).
+    num_pos, num_speed, num_reward : np.ndarray
+        Per-session column counts for each group, shape (n_sessions,).
+    agg : callable
+        Reduction applied within a group (``np.nanmean`` or ``np.nanmedian``).
+    exclude_omission : bool
+        If True, drop the trailing omission-response columns from the reward group. On sessions
+        with very few omission trials those columns are near-constant, so their R^2 is a
+        measure of an unestimable regressor rather than of reward coding. Sessions whose reward
+        width does not decompose (see :func:`_omission_param_count`) yield NaN and drop out.
+
+    Returns
+    -------
+    tuple of np.ndarray
+        Per-session (position, speed, reward) aggregates, each shape (n_sessions,).
     """
-    n_mice = each_scores.shape[0]
-    pos_out = np.full(n_mice, np.nan)
-    speed_out = np.full(n_mice, np.nan)
-    reward_out = np.full(n_mice, np.nan)
-    for i in range(n_mice):
+    n_sessions = each_scores.shape[0]
+    pos_out = np.full(n_sessions, np.nan)
+    speed_out = np.full(n_sessions, np.nan)
+    reward_out = np.full(n_sessions, np.nan)
+    for i in range(n_sessions):
         npos, nspeed, nreward = int(num_pos[i]), int(num_speed[i]), int(num_reward[i])
+        if exclude_omission:
+            num_omission = _omission_param_count(nreward)
+            # An undecomposable width leaves an empty reward slice, so _valid_agg returns NaN
+            # and the session drops out rather than being silently mis-sliced.
+            nreward = nreward - num_omission if num_omission is not None else 0
         row = each_scores[i]
         pos_out[i] = _valid_agg(row[:npos], agg)
         speed_out[i] = _valid_agg(row[npos : npos + nspeed], agg)
@@ -1136,11 +1197,15 @@ class RRRExternalLatentsViewer(Viewer):
     - ax[0] (Position/Speed/Reward): ``rrr_to_*`` (RRR -> external/internal) is scored per
       external-basis dimension. Those dimensions aren't a single homogeneous group -- they're
       the concatenation of position, speed, and reward regressors (see
-      ``RRRToExternalLatentsConfig`` / ``_pos_speed_reward_dims``), and mice differ in how many
-      columns each sub-group has. Each mouse's per-dimension scores are therefore split into
-      (position, speed, reward) using that mouse's own boundaries, aggregated (mean or median,
-      per ``agg_method``) within each group, and drawn as three beeswarms, each dodged into
-      External (black) / Internal (red) halves.
+      ``RRRToExternalLatentsConfig`` / ``_pos_speed_reward_dims``), and sessions differ in how
+      many columns each sub-group has. Each session's per-dimension scores are therefore split
+      into (position, speed, reward) using that session's own boundaries, aggregated (mean or
+      median, per ``agg_method``) within each group, and drawn as three beeswarms, each dodged
+      into External (black) / Internal (red) halves. One point is one session (results are
+      selected with ``avg_by_mouse=False``), not one mouse. ``exclude_reward_omission`` drops
+      the omission-response columns from the reward group. External and Internal latents come
+      from two different models with independently optimized hyperparameters, so each half is
+      sliced with its own column counts (``num_*_params`` vs ``num_*_params_pred``).
     - ax[1] (Rank, log-scale): ``*_to_rrr`` (external/internal -> RRR) is scored per RRR-latent
       (dim=0 of the ridge fit); RRR latents are rank-ordered (1-indexed for the log axis), so
       those scores are drawn as a mean+/-SE (or median+/-IQR) curve over every available rank.
@@ -1162,11 +1227,14 @@ class RRRExternalLatentsViewer(Viewer):
         self.add_selection("rrr_variance", value=0.95, options=list(VALID_RRR_VARIANCE))
         self.add_boolean("normalize", value=False)
         self.add_selection("agg_method", value="mean", options=["mean", "median"])
+        self.add_selection("latents_show", value="both", options=["both", "external", "internal"])
+        self.add_boolean("exclude_reward_omission", value=False)
         self.add_float("beewidth", value=0.3, min=0.0, max=1.0)
         self.add_float("dodge_offset", value=0.3, min=0.0, max=1.0)
         self.add_float("alpha", value=0.5, min=0.0, max=1.0)
         self.add_float("width_rank_axis", value=0.6, min=0.25, max=2.0)
         self.add_boolean("rank_axis_log", value=True)
+        self.add_integer("inset_num_dims", value=10, min=2, max=50)
 
         for name in ("spks_type", "activity_parameters_name", "rrr_variance", "normalize"):
             self.on_change(name, self.refresh_data)
@@ -1192,19 +1260,41 @@ class RRRExternalLatentsViewer(Viewer):
         dodge = state["dodge_offset"]
         alpha = state["alpha"]
 
+        # External/Internal/both selection. Single -> black; both -> black/red.
+        show = state["latents_show"]
+        show_true = show in ("both", "external")
+        show_pred = show in ("both", "internal")
+        both = show == "both"
+        color_true = _LATENTS_EXTERNAL_COLOR
+        color_pred = _LATENTS_INTERNAL_COLOR if both else _LATENTS_EXTERNAL_COLOR
+
         n_ranks = max(_trimmed_rank_length(out["test_score_each_true_to_rrr"], out["test_score_each_pred_to_rrr"]), 1)
         curve_true = out["test_score_each_true_to_rrr"][:, :n_ranks]
         curve_pred = out["test_score_each_pred_to_rrr"][:, :n_ranks]
         rank_positions = np.arange(1, n_ranks + 1)  # 1-indexed: rank 0 is undefined on a log axis
 
+        exclude_omission = state["exclude_reward_omission"]
         pos_true, speed_true, reward_true = _group_agg_scores(
-            out["test_score_each_rrr_to_true"], out["num_pos_params"], out["num_speed_params"], out["num_reward_params"], agg
+            out["test_score_each_rrr_to_true"],
+            out["num_pos_params_true"],
+            out["num_speed_params_true"],
+            out["num_reward_params_true"],
+            agg,
+            exclude_omission=exclude_omission,
         )
         pos_pred, speed_pred, reward_pred = _group_agg_scores(
-            out["test_score_each_rrr_to_pred"], out["num_pos_params"], out["num_speed_params"], out["num_reward_params"], agg
+            out["test_score_each_rrr_to_pred"],
+            out["num_pos_params_pred"],
+            out["num_speed_params_pred"],
+            out["num_reward_params_pred"],
+            agg,
+            exclude_omission=exclude_omission,
         )
         group_scores = [(pos_true, pos_pred), (speed_true, speed_pred), (reward_true, reward_pred)]
-        group_centers = np.arange(len(_LATENTS_GROUP_NAMES), dtype=float)
+        group_names = list(_LATENTS_GROUP_NAMES)
+        if exclude_omission:
+            group_names[-1] = "Reward (no omission)"
+        group_centers = np.arange(len(group_names), dtype=float)
 
         plt.close("all")
         fig = plt.figure(figsize=self.figsize, layout="constrained")
@@ -1214,23 +1304,30 @@ class RRRExternalLatentsViewer(Viewer):
 
         # --- ax[0]: three dodged pos/speed/reward beeswarms (RRR -> external/internal) ---
         for center, (true_vals, pred_vals) in zip(group_centers, group_scores):
-            for vals, x0, color in [(true_vals, center - dodge, _LATENTS_EXTERNAL_COLOR), (pred_vals, center + dodge, _LATENTS_INTERNAL_COLOR)]:
+            entries = []
+            if show_true:
+                entries.append((true_vals, center - dodge if both else center, color_true))
+            if show_pred:
+                entries.append((pred_vals, center + dodge if both else center, color_pred))
+            for vals, x0, color in entries:
                 finite_vals = vals[np.isfinite(vals)]
                 offsets = beeswarm(finite_vals) if finite_vals.size > 1 else np.zeros_like(finite_vals)
                 ax_group.plot(x0 + beewidth * offsets, finite_vals, linestyle="none", color=color, marker="o", markersize=4, alpha=alpha)
 
         spacing_required = 1.2 * (dodge + beewidth)
         ax_group.set_xlim(group_centers[0] - spacing_required, group_centers[-1] + spacing_required)
+        # Fix ylim before format_spines so the bottom-spine position is data-independent (and, via
+        # sharey, identical on ax_curve -> continuous x-spine across both panels).
+        ax_group.set_ylim(-0.1, 1.1)
         format_spines(
             ax_group,
-            x_pos=-0.02,
-            y_pos=-0.02,
+            x_pos=-0.01,
+            y_pos=-0.01,
             spines_visible=["left", "bottom"],
             xbounds=[group_centers[0], group_centers[-1]],
             ybounds=[0, 1],
         )
-        ax_group.set_xticks(group_centers, labels=_LATENTS_GROUP_NAMES, rotation=45, rotation_mode="anchor", ha="right", fontsize=self.fontsize)
-        ax_group.set_ylim(-0.1, 1.1)
+        ax_group.set_xticks(group_centers, labels=group_names, rotation=0, rotation_mode="anchor", ha="center", fontsize=self.fontsize)
         ax_group.set_yticks([0, 1])
         ax_group.tick_params(axis="y", labelsize=self.fontsize)
         ax_group.set_ylabel(r"$R^2$", labelpad=-10, fontsize=self.fontsize)
@@ -1239,40 +1336,85 @@ class RRRExternalLatentsViewer(Viewer):
         # --- ax[1]: rank-ordered curve (external/internal -> RRR), log-scale x, shares y with ax[0] ---
         if state["rank_axis_log"]:
             ax_curve.set_xscale("log")
-        _center_spread_plot(
-            ax_curve,
-            rank_positions,
-            curve_true,
-            axis=0,
-            agg_method=agg_method,
-            color=_LATENTS_EXTERNAL_COLOR,
-            linewidth=1.5,
-            alpha=0.2,
-            label="External",
-        )
-        _center_spread_plot(
-            ax_curve,
-            rank_positions,
-            curve_pred,
-            axis=0,
-            agg_method=agg_method,
-            color=_LATENTS_INTERNAL_COLOR,
-            linewidth=1.5,
-            alpha=0.2,
-            label="Internal",
-        )
+        if show_true:
+            _center_spread_plot(
+                ax_curve,
+                rank_positions,
+                curve_true,
+                axis=0,
+                agg_method=agg_method,
+                color=color_true,
+                linewidth=1.5,
+                alpha=0.2,
+                label="External",
+            )
+        if show_pred:
+            _center_spread_plot(
+                ax_curve,
+                rank_positions,
+                curve_pred,
+                axis=0,
+                agg_method=agg_method,
+                color=color_pred,
+                linewidth=1.5,
+                alpha=0.2,
+                label="Internal",
+            )
+
+        # Inset highlighting the initial-dimension dropoff (linear x only).
+        if not state["rank_axis_log"]:
+            n_inset = min(state["inset_num_dims"], n_ranks)
+            inset_ypush = 0 if both else 0.05
+            axins = ax_curve.inset_axes([0.35, 0.35 + inset_ypush, 0.60, 0.45])
+            if show_true:
+                _center_spread_plot(
+                    axins,
+                    rank_positions[:n_inset],
+                    curve_true[:, :n_inset],
+                    axis=0,
+                    agg_method=agg_method,
+                    color=color_true,
+                    linewidth=1.5,
+                    alpha=0.2,
+                )
+            if show_pred:
+                _center_spread_plot(
+                    axins,
+                    rank_positions[:n_inset],
+                    curve_pred[:, :n_inset],
+                    axis=0,
+                    agg_method=agg_method,
+                    color=color_pred,
+                    linewidth=1.5,
+                    alpha=0.2,
+                )
+            axins.set_xlim(0, max(n_inset, 2))
+            axins.set_ylim(-0.1, 1.1)
+            format_spines(
+                axins,
+                x_pos=-0.02,
+                y_pos=-0.01,
+                spines_visible=["left", "bottom"],
+                xbounds=[0, n_inset],
+                ybounds=[0, 1],
+                xticks=[0, n_inset],
+                yticks=[0, 1],
+                tick_fontsize=self.fontsize * 0.95,
+            )
+
         format_spines(
             ax_curve,
-            x_pos=-0.02,
-            y_pos=-0.02,
+            x_pos=-0.01,
+            y_pos=-0.01,
             spines_visible=["bottom"],
             xbounds=[1, max(n_ranks, 2)],
             ybounds=[0, 1],
         )
         ax_curve.tick_params(axis="y", which="both", left=False, labelleft=False)
         ax_curve.tick_params(axis="x", labelsize=self.fontsize)
-        ax_curve.set_xlabel("to neural latents", fontsize=self.fontsize)
-        ax_curve.legend(loc="upper right", fontsize=self.fontsize, frameon=False)
+        ax_curve.set_xlabel("rank\nto neural latents", fontsize=self.fontsize)
+        if both:
+            ax_curve.legend(loc="upper right", fontsize=self.fontsize, frameon=False)
 
         return fig
 
@@ -1284,11 +1426,14 @@ def rrr_external_latents_score(
     rrr_variance: float | str = 0.95,
     normalize: bool = False,
     agg_method: str = "mean",
+    latents_show: str = "both",
+    exclude_reward_omission: bool = False,
     beewidth: float = 0.3,
     dodge_offset: float = 0.3,
     alpha: float = 0.5,
     width_rank_axis: float = 0.6,
     rank_axis_log: bool = True,
+    inset_num_dims: int = 10,
     fontsize: float = 8,
     figsize: tuple[float, float] = (5.0, 3.0),
     return_syd_viewer: bool = False,
@@ -1297,9 +1442,10 @@ def rrr_external_latents_score(
     RRR <-> external-latents predictability from ``RRRToExternalLatentsConfig`` results.
 
     Two panels sharing one y-axis (R^2) with independent x-axes. ax[0] (Position/Speed/Reward)
-    splits ``rrr_to_*`` (RRR -> external/internal) per mouse into position/speed/reward sub-groups
-    (their sizes vary by mouse -- see ``RRRToExternalLatentsConfig``), aggregates within each
-    group, and draws three beeswarms, each dodged into External/Internal halves. ax[1] (Rank,
+    splits ``rrr_to_*`` (RRR -> external/internal) per session into position/speed/reward sub-groups
+    (their sizes vary by session -- see ``RRRToExternalLatentsConfig``), aggregates within each
+    group, and draws three beeswarms (one point per session), each dodged into External/Internal
+    halves. ax[1] (Rank,
     log-scale) draws ``*_to_rrr`` (external/internal -> RRR), scored per RRR-latent and rank-
     ordered, as a mean+/-SE (or median+/-IQR) curve over every available rank.
 
@@ -1310,8 +1456,15 @@ def rrr_external_latents_score(
     spks_type, activity_parameters_name, rrr_variance, normalize
         Selects which stored variation to read (see ``RRRToExternalLatentsConfig``).
     agg_method : {"mean", "median"}
-        Aggregation used both for the per-mouse position/speed/reward group scores and for the
+        Aggregation used both for the per-session position/speed/reward group scores and for the
         rank-ordered curve's center line (mean+/-SE or median+/-IQR).
+    latents_show : {"both", "external", "internal"}
+        Which latents to draw. "both" colors External black and Internal red; a single selection
+        is drawn in black.
+    exclude_reward_omission : bool
+        If True, drop the omission-response columns from the reward group. Sessions with few
+        omission trials fit many omission regressors to almost no events, making those columns
+        near-constant; their R^2 then reports an unestimable regressor rather than reward coding.
     beewidth : float
         Horizontal spread of points within one beeswarm (External or Internal) half.
     dodge_offset : float
@@ -1322,6 +1475,9 @@ def rrr_external_latents_score(
         Width ratio for the rank-axis panel relative to the position/speed/reward panel.
     rank_axis_log : bool
         If True, log-scale the rank-axis panel's x-axis.
+    inset_num_dims : int
+        Number of initial ranks shown in the ax[1] inset. The inset only appears when
+        ``rank_axis_log`` is False.
     fontsize : float
         Tick-label fontsize for both panels.
     figsize : tuple[float, float]
@@ -1337,11 +1493,14 @@ def rrr_external_latents_score(
     viewer.refresh_data(viewer.state)  # pre-deploy update_* may not fire on_change
 
     viewer.update_selection("agg_method", value=agg_method)
+    viewer.update_selection("latents_show", value=latents_show)
+    viewer.update_boolean("exclude_reward_omission", value=exclude_reward_omission)
     viewer.update_float("beewidth", value=beewidth)
     viewer.update_float("dodge_offset", value=dodge_offset)
     viewer.update_float("alpha", value=alpha)
     viewer.update_float("width_rank_axis", value=width_rank_axis)
     viewer.update_boolean("rank_axis_log", value=rank_axis_log)
+    viewer.update_integer("inset_num_dims", value=inset_num_dims)
 
     if return_syd_viewer:
         return viewer
