@@ -53,6 +53,18 @@ FIGURE_MODEL_NAMES: list[ModelName] = [
     "rrr",
 ]
 
+# Predictive-reward variants actually swept by the pipeline. All twelve are registered in
+# MODEL_NAMES and can be built with get_model / scored by hand, but sweeping every one of
+# them would quadruple the fullregressor cost for variants we aren't reporting.
+SWEPT_PREDREWARD_MODEL_NAMES: tuple[ModelName, ...] = (
+    "fullregressor_decoder_only_1dspeed_predreward",
+    "fullregressor_1dspeed_predreward",
+)
+
+SWEPT_MODEL_NAMES: list[ModelName] = [
+    name for name in MODEL_NAMES if "_predreward" not in name or name in SWEPT_PREDREWARD_MODEL_NAMES
+]
+
 
 def _log_int_values(start: int, stop: int, num: int = 25) -> np.ndarray:
     """Unique integer values spaced logarithmically over ``[start, stop]``."""
@@ -94,7 +106,7 @@ class RegressionConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "model_name": list(MODEL_NAMES),
+            "model_name": list(SWEPT_MODEL_NAMES),
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
             # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
         }

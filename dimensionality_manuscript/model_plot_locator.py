@@ -52,17 +52,20 @@ def select_models(
 
 def _is_reduced_main(name: str, meta: ModelMetadata) -> bool:
     """Whether ``name`` belongs on the reduced plot main axis."""
+    # Predictive-reward models are a parallel family of the fullregressor models, so they land
+    # on the reduced axis under the same rules -- strip the suffix before the name checks.
+    base = name.replace("_predreward", "")
     if meta.vector_gain:
         return False
     if meta.one_d_pos and meta.main:
         return True
-    if name == "rrr":
+    if base == "rrr":
         return True
-    if "_no_intercept" in name:
+    if "_no_intercept" in base:
         return False
-    if name.endswith("_decoder_only_1dspeed"):
+    if base.endswith("_decoder_only_1dspeed"):
         return True
-    if name.endswith("_decoder_only") and not meta.high_d_speed:
+    if base.endswith("_decoder_only") and not meta.high_d_speed:
         return True
     return False
 

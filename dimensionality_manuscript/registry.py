@@ -55,6 +55,19 @@ ModelName = Literal[
     # Reduced Rank Regression models
     "rrr",
     "rrr_no_intercept",
+    # Predictive-reward models (predictive-only expectation, no omission response)
+    "fullregressor_decoder_only_predreward",
+    "fullregressor_predreward",
+    "fullregressor_leak_predreward",
+    "fullregressor_decoder_only_1dspeed_predreward",
+    "fullregressor_1dspeed_predreward",
+    "fullregressor_leak_1dspeed_predreward",
+    "fullregressor_decoder_only_predreward_no_intercept",
+    "fullregressor_predreward_no_intercept",
+    "fullregressor_leak_predreward_no_intercept",
+    "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+    "fullregressor_1dspeed_predreward_no_intercept",
+    "fullregressor_leak_1dspeed_predreward_no_intercept",
 ]
 
 # Type alias for subspace names
@@ -621,6 +634,19 @@ MODEL_NAMES: tuple[ModelName] = (
     # Reduced rank regression models
     "rrr",
     "rrr_no_intercept",
+    # Predictive-reward models (predictive-only expectation, no omission response)
+    "fullregressor_decoder_only_predreward",
+    "fullregressor_predreward",
+    "fullregressor_leak_predreward",
+    "fullregressor_decoder_only_1dspeed_predreward",
+    "fullregressor_1dspeed_predreward",
+    "fullregressor_leak_1dspeed_predreward",
+    "fullregressor_decoder_only_predreward_no_intercept",
+    "fullregressor_predreward_no_intercept",
+    "fullregressor_leak_predreward_no_intercept",
+    "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+    "fullregressor_1dspeed_predreward_no_intercept",
+    "fullregressor_leak_1dspeed_predreward_no_intercept",
 )
 
 
@@ -690,6 +716,19 @@ def short_model_name(model_name: ModelName) -> str:
         # Reduced rank regression models
         "rrr": "RRR",
         "rrr_no_intercept": "RRR (no int)",
+        # Predictive-reward models
+        "fullregressor_decoder_only_predreward": "HighD-Pos+HighD-Speed+PredReward",
+        "fullregressor_predreward": "Int. HighD-Pos+HighD-Speed+PredReward",
+        "fullregressor_leak_predreward": "Int. HighD-Pos+HighD-Speed+PredReward + Leak",
+        "fullregressor_decoder_only_1dspeed_predreward": "HD-Pos+Speed+PredReward",
+        "fullregressor_1dspeed_predreward": "Int. HD-Pos+Speed+PredReward",
+        "fullregressor_leak_1dspeed_predreward": "Int. HD-Pos+Speed+PredReward + Leak",
+        "fullregressor_decoder_only_predreward_no_intercept": "HighD-Pos+HighD-Speed+PredReward (no int)",
+        "fullregressor_predreward_no_intercept": "Int. HighD-Pos+HighD-Speed+PredReward (no int)",
+        "fullregressor_leak_predreward_no_intercept": "Int. HighD-Pos+HighD-Speed+PredReward (no int) + Leak",
+        "fullregressor_decoder_only_1dspeed_predreward_no_intercept": "HD-Pos+Speed+PredReward (no int)",
+        "fullregressor_1dspeed_predreward_no_intercept": "Int. HD-Pos+Speed+PredReward (no int)",
+        "fullregressor_leak_1dspeed_predreward_no_intercept": "Int. HD-Pos+Speed+PredReward (no int) + Leak",
     }
     if model_name not in _short_name_mapping:
         raise ValueError(f"Model name {model_name} not found in short name mapping.")
@@ -752,6 +791,19 @@ def get_model(
         "fullregressor_decoder_only_no_intercept",
         "fullregressor_no_intercept",
         "fullregressor_leak_no_intercept",
+        # Predictive-reward models
+        "fullregressor_decoder_only_predreward",
+        "fullregressor_predreward",
+        "fullregressor_leak_predreward",
+        "fullregressor_decoder_only_1dspeed_predreward",
+        "fullregressor_1dspeed_predreward",
+        "fullregressor_leak_1dspeed_predreward",
+        "fullregressor_decoder_only_predreward_no_intercept",
+        "fullregressor_predreward_no_intercept",
+        "fullregressor_leak_predreward_no_intercept",
+        "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+        "fullregressor_1dspeed_predreward_no_intercept",
+        "fullregressor_leak_1dspeed_predreward_no_intercept",
     ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
@@ -828,6 +880,19 @@ def get_model(
         # Reduced rank regression models
         "rrr": ReducedRankRegressionModel,
         "rrr_no_intercept": ReducedRankRegressionModel,
+        # Predictive-reward models
+        "fullregressor_decoder_only_predreward": FullRegressorModel,
+        "fullregressor_predreward": FullRegressorModel,
+        "fullregressor_leak_predreward": FullRegressorModel,
+        "fullregressor_decoder_only_1dspeed_predreward": FullRegressorModel,
+        "fullregressor_1dspeed_predreward": FullRegressorModel,
+        "fullregressor_leak_1dspeed_predreward": FullRegressorModel,
+        "fullregressor_decoder_only_predreward_no_intercept": FullRegressorModel,
+        "fullregressor_predreward_no_intercept": FullRegressorModel,
+        "fullregressor_leak_predreward_no_intercept": FullRegressorModel,
+        "fullregressor_decoder_only_1dspeed_predreward_no_intercept": FullRegressorModel,
+        "fullregressor_1dspeed_predreward_no_intercept": FullRegressorModel,
+        "fullregressor_leak_1dspeed_predreward_no_intercept": FullRegressorModel,
     }
     _kwargs_lookup: dict[str, dict[str, Any]] = {
         "external_placefield_1d": dict(internal=False, gain=False),
@@ -866,6 +931,41 @@ def get_model(
         # Reduced rank regression models
         "rrr": dict(fit_intercept=True),
         "rrr_no_intercept": dict(fit_intercept=False),
+        # Predictive-reward models
+        "fullregressor_decoder_only_predreward": dict(
+            speed_basis=True, predictive_reward=True, split_train=False, predict_latents=False, fit_intercept=True
+        ),
+        "fullregressor_predreward": dict(speed_basis=True, predictive_reward=True, split_train=True, predict_latents=True, fit_intercept=True),
+        "fullregressor_leak_predreward": dict(
+            speed_basis=True, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=True
+        ),
+        "fullregressor_decoder_only_1dspeed_predreward": dict(
+            speed_basis=False, predictive_reward=True, split_train=False, predict_latents=False, fit_intercept=True
+        ),
+        "fullregressor_1dspeed_predreward": dict(
+            speed_basis=False, predictive_reward=True, split_train=True, predict_latents=True, fit_intercept=True
+        ),
+        "fullregressor_leak_1dspeed_predreward": dict(
+            speed_basis=False, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=True
+        ),
+        "fullregressor_decoder_only_predreward_no_intercept": dict(
+            speed_basis=True, predictive_reward=True, split_train=False, predict_latents=False, fit_intercept=False
+        ),
+        "fullregressor_predreward_no_intercept": dict(
+            speed_basis=True, predictive_reward=True, split_train=True, predict_latents=True, fit_intercept=False
+        ),
+        "fullregressor_leak_predreward_no_intercept": dict(
+            speed_basis=True, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=False
+        ),
+        "fullregressor_decoder_only_1dspeed_predreward_no_intercept": dict(
+            speed_basis=False, predictive_reward=True, split_train=False, predict_latents=False, fit_intercept=False
+        ),
+        "fullregressor_1dspeed_predreward_no_intercept": dict(
+            speed_basis=False, predictive_reward=True, split_train=True, predict_latents=True, fit_intercept=False
+        ),
+        "fullregressor_leak_1dspeed_predreward_no_intercept": dict(
+            speed_basis=False, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=False
+        ),
     }
     if model_name not in MODEL_NAMES:
         raise ValueError(f"Model {model_name} not found in registry.")

@@ -952,6 +952,7 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         predict_latents: bool = True,
         speed_basis: bool = True,
         no_reward: bool = False,
+        predictive_reward: bool = False,
         fit_intercept: bool = True,
         hyperparameters: FullRegressorHyperparameters = FullRegressorHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
@@ -968,10 +969,23 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         self.speed_basis = speed_basis
         self.no_reward = no_reward
 
+        if predictive_reward and no_reward:
+            raise ValueError("predictive_reward and no_reward are mutually exclusive!")
+        self.predictive_reward = predictive_reward
+
         # Name the three components of the reward regressors for optional manual sculpting of the model
         # (Not going to put this in the main constructor API yet unless it helps)
-        self.reward_inclusion = {"expectation": True, "delivered_response": True, "omission_response": True}
-        self.expectation_symmetric = True
+        # ------------------------------------------------------------------------------------
+        # The predictive_reward flag makes the reward regressors causally clean: the expectation
+        # basis only looks forward in time (so it can't report on whether reward actually arrived)
+        # and the omission response -- which is only defined after the fact -- is dropped entirely.
+        # The delivered response is unchanged.
+        self.reward_inclusion = {
+            "expectation": True,
+            "delivered_response": True,
+            "omission_response": not predictive_reward,
+        }
+        self.expectation_symmetric = not predictive_reward
 
         # This model requires double-cross-validation to prevent non-spatial leakage
         # between activity and position in the training set. To account for this, the
@@ -1165,6 +1179,8 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
         as_list : bool
             If True, will return the different components of the basis as a list of tensors rather than concatenating them.
             The order of the list is [position_basis, speed_basis, reward_expectation_basis, reward_delivery_basis, reward_omission_basis].
+            Reward components excluded by ``no_reward`` / ``predictive_reward`` are simply absent from the list, so index
+            positionally at your own risk.
 
         Returns
         -------
@@ -1255,6 +1271,8 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             True position basis, rather than a prediction of the position basis from source neurons..
             The "_leak" suffix indicates that the model was trained without double-cross-validation,
             which allows for non-spatial leakage between activity and position in the training set.
+            The "_predreward" suffix indicates that the reward regressors are causally clean, i.e. the
+            expectation basis is predictive-only and there is no reward omission response.
 
             Note that if predict_latents is False, split_train is ignored.
         """
@@ -1267,6 +1285,8 @@ class FullRegressorModel(RegressionModel[FullRegressorHyperparameters]):
             model_name += "_1dspeed"
         if self.no_reward:
             model_name += "_noreward"
+        if self.predictive_reward:
+            model_name += "_predreward"
         if not self.fit_intercept:
             model_name += "_no_intercept"
         return model_name

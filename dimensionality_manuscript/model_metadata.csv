@@ -31,3 +31,15 @@ idx,model_name,main,one_d_pos,high_d_pos,speed,reward,unconstrained,internal,lea
 29,fullregressor_leak_no_intercept,0,0,1,0,1,0,1,1,0,1,1,fullregressor_leak_1dspeed
 30,rrr,1,0,0,0,0,1,0,0,0,0,0,
 31,rrr_no_intercept,0,0,0,0,0,1,0,0,0,1,0,rrr
+32,fullregressor_decoder_only_predreward,0,0,1,0,1,0,0,0,0,0,1,fullregressor_decoder_only_1dspeed_predreward
+33,fullregressor_predreward,0,0,1,0,1,0,1,0,0,0,1,fullregressor_1dspeed_predreward
+34,fullregressor_leak_predreward,0,0,1,0,1,0,1,1,0,0,1,fullregressor_leak_1dspeed_predreward
+35,fullregressor_decoder_only_1dspeed_predreward,1,0,1,0,1,0,0,0,0,0,0,
+36,fullregressor_1dspeed_predreward,1,0,1,0,1,0,1,0,0,0,0,fullregressor_decoder_only_1dspeed_predreward
+37,fullregressor_leak_1dspeed_predreward,1,0,1,0,1,0,1,1,0,0,0,fullregressor_decoder_only_1dspeed_predreward
+38,fullregressor_decoder_only_predreward_no_intercept,0,0,1,0,1,0,0,0,0,1,1,fullregressor_decoder_only_1dspeed_predreward
+39,fullregressor_predreward_no_intercept,0,0,1,0,1,0,1,0,0,1,1,fullregressor_1dspeed_predreward
+40,fullregressor_leak_predreward_no_intercept,0,0,1,0,1,0,1,1,0,1,1,fullregressor_leak_1dspeed_predreward
+41,fullregressor_decoder_only_1dspeed_predreward_no_intercept,0,0,1,0,1,0,0,0,0,1,0,fullregressor_decoder_only_1dspeed_predreward
+42,fullregressor_1dspeed_predreward_no_intercept,0,0,1,0,1,0,1,0,0,1,0,fullregressor_1dspeed_predreward
+43,fullregressor_leak_1dspeed_predreward_no_intercept,0,0,1,0,1,0,1,1,0,1,0,fullregressor_leak_1dspeed_predreward
