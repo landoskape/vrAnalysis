@@ -20,7 +20,8 @@ Parked illustration ideas, not yet built here (revisit if the kappa-overlap pane
 """
 
 from typing import Literal, Sequence, Tuple
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
+import json
 from pathlib import Path
 import numpy as np
 import numpy.typing as npt
@@ -28,7 +29,7 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.colors import Colormap
 from matplotlib.figure import Figure
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import Circle, FancyArrow, FancyBboxPatch
 from syd import Viewer
 from vrAnalysis.helpers.plotting import format_spines
 
@@ -1272,6 +1273,922 @@ def stimspace_schematic(
     if return_syd_viewer:
         return viewer
 
+    fig = viewer.plot(viewer.state)
+    plt.show()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Pipeline flow schematics: "dim" (spectra -> dimensionality) and "svr" (ratio)
+# ---------------------------------------------------------------------------
+
+FlowStyle = Literal["pf", "full", "process"]
+FlowRole = Literal["pair", "process", "spectrum", "outcome"]
+FlowConnector = Literal["dot", "arrow"]
+
+# Draw order: arrows tuck behind the boxes they point into; labels sit on top.
+_Z_ARROW = 1
+_Z_BOX = 2
+_Z_TEXT = 3
+
+
+@dataclass(frozen=True)
+class FlowNode:
+    """One rounded box in a pipeline row.
+
+    Parameters
+    ----------
+    text : str
+        Box label. Newlines wrap; mathtext (``$..$``) is supported.
+    style : {"pf", "full", "process"}
+        Color scheme: placefield (orange), full CA1 (black), or processing step (gray).
+    role : {"pair", "process", "spectrum", "outcome"}
+        What the box is in the pipeline. Selects its default width -- ``pair_width``,
+        ``process_width``, ``spectrum_width`` or ``outcome_width`` -- so each stage can be
+        sized independently. "pair" boxes also use ``pair_label_size`` for their text.
+    superscript : str
+        Small corner tag drawn at the top-right inside the box (e.g. ``"cv"``).
+    width : float or None
+        Column-width override in layout units. None uses the role's width.
+    """
+
+    text: str
+    style: FlowStyle
+    role: FlowRole = "process"
+    superscript: str = ""
+    width: float | None = None
+
+
+@dataclass(frozen=True)
+class FlowRow:
+    """One row of the pipeline: a sequence of boxes joined by dot/arrow connectors."""
+
+    title: str
+    cells: tuple[FlowNode, ...]
+    connectors: tuple[FlowConnector, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.connectors) != len(self.cells) - 1:
+            raise ValueError(f"connectors must have len(cells) - 1 entries: {len(self.connectors)} != {len(self.cells) - 1}")
+
+
+@dataclass(frozen=True)
+class FlowVariant:
+    """A registered schematic: the rows plus the optional variance-circle summary.
+
+    ``figsize`` is the variant's default canvas in inches, used whenever the config does
+    not set an explicit ``figsize``. Tune the layout so the drawing fills that width.
+    """
+
+    rows: tuple[FlowRow, ...]
+    figsize: tuple[float, float]
+    show_circle: bool = False
+    divide_label: str = "divide"
+    divide_start_col: int = 2
+
+
+_PF_I = r"$\mathrm{PF}_\mathrm{i}$"
+_PF_J = r"$\mathrm{PF}_\mathrm{j}$"
+_FULL_I = r"$\mathrm{Full}_\mathrm{i}$"
+_FULL_J = r"$\mathrm{Full}_\mathrm{j}$"
+
+FLOW_VARIANTS: dict[str, FlowVariant] = {
+    "dim": FlowVariant(
+        figsize=(4.5, 1.0),
+        rows=(
+            FlowRow(
+                title="reliable placefield structure",
+                cells=(
+                    FlowNode(_PF_I, "pf", role="pair", superscript="cv"),
+                    FlowNode(_PF_J, "pf", role="pair", superscript="cv"),
+                    FlowNode("x-cov\nsvd", "process", role="process"),
+                    FlowNode("placefield\nspectrum", "pf", role="spectrum"),
+                    FlowNode("dimensionality", "process", role="outcome"),
+                ),
+                connectors=("dot", "arrow", "arrow", "arrow"),
+            ),
+            FlowRow(
+                title="reliable CA1 structure",
+                cells=(
+                    FlowNode(_FULL_I, "full", role="pair"),
+                    FlowNode(_FULL_J, "full", role="pair"),
+                    FlowNode("svd", "process", role="process"),
+                    FlowNode("full CA1\nspectrum", "full", role="spectrum"),
+                    FlowNode("dimensionality", "process", role="outcome"),
+                ),
+                connectors=("dot", "arrow", "arrow", "arrow"),
+            ),
+        ),
+    ),
+    "svr": FlowVariant(
+        figsize=(6.85, 1.16),
+        rows=(
+            FlowRow(
+                title="reliable placefield structure",
+                cells=(
+                    FlowNode(_PF_I, "pf", role="pair", superscript="cv"),
+                    FlowNode(_FULL_J, "full", role="pair"),
+                    FlowNode("x-cov\nsvd", "process", role="process"),
+                    FlowNode("PF Shared\nSpectrum", "pf", role="spectrum"),
+                    FlowNode("sum of x-val'd\nspectral mass", "process", role="outcome"),
+                ),
+                connectors=("dot", "arrow", "arrow", "arrow"),
+            ),
+            FlowRow(
+                title="reliable CA1 structure",
+                cells=(
+                    FlowNode(_FULL_I, "full", role="pair"),
+                    FlowNode(_FULL_J, "full", role="pair"),
+                    FlowNode("svd", "process", role="process"),
+                    FlowNode("full CA1\nspectrum", "full", role="spectrum"),
+                    FlowNode("sum of x-val'd\nspectral mass", "process", role="outcome"),
+                ),
+                connectors=("dot", "arrow", "arrow", "arrow"),
+            ),
+        ),
+        show_circle=True,
+        divide_label="divide",
+        divide_start_col=4,
+    ),
+}
+
+# Per-variant deltas from the (dim-tuned) dataclass defaults. Each variant is tuned to fill
+# its FlowVariant.figsize width at a short height; "dim" needs no delta. See
+# :func:`default_flow_config`, which layers these onto FlowSchematicConfig.
+_VARIANT_PRESETS: dict[str, dict[str, float]] = {
+    "dim": {},
+    "svr": {
+        "spectrum_width": 1.3,
+        "circle_gap": 0.62,
+        "circle_label_size": 7.0,
+        "circle_outer_label_y": -0.55,
+        "inner_offset_x": -0.30,
+        "question_size": 18.0,
+    },
+}
+
+
+@dataclass(frozen=True)
+class FlowSchematicConfig:
+    """Full configuration for both pipeline schematics.
+
+    ``figsize`` is the page: the canvas is exactly that many inches and the drawing is
+    never rescaled to fit it. Geometry is expressed in abstract layout units that map to
+    inches at a fixed rate of ``unit_scale`` inches per unit, and the whole drawing is
+    pinned by its top-left corner at (``origin_x``, ``origin_y``) inches in from the
+    top-left of the canvas. Content that does not fit simply runs off the edge -- set the
+    publication figsize first, then tune the layout until everything sits inside it.
+
+    When ``figsize`` is None the canvas is instead sized snugly around the drawing, with
+    the origin offsets mirrored as trailing margins.
+    """
+
+    variant: str = "dim"
+
+    # Canvas. figsize None means "use the variant's default canvas" (see FlowVariant);
+    # set it to pin an explicit size instead. The bare dataclass defaults below are the
+    # "dim" variant tuned to fill its 4.5in width; per-variant deltas live in
+    # ``_VARIANT_PRESETS`` and are applied by :func:`default_flow_config`.
+    figsize: tuple[float, float] | None = None
+    unit_scale: float = 0.572
+    # When True, unit_scale is recomputed at render time so the drawing exactly fills
+    # (figwidth - 2*origin_x); the stored unit_scale is then only a fallback for fit_width
+    # off. Height is not auto-fit -- pick the variant figsize height to suit.
+    fit_width: bool = True
+    origin_x: float = 0.08
+    origin_y: float = 0.05
+    dpi: int = 200
+    background: str = "white"
+    font_family: str = "Arial"
+    font_weight: str = "bold"
+
+    # Colors (face / edge / text per style)
+    pf_face: str = "#F05A19"
+    pf_edge: str = "#1A1A1A"
+    pf_text: str = "white"
+    full_face: str = "#0A0A0A"
+    full_edge: str = "#0A0A0A"
+    full_text: str = "white"
+    process_face: str = "#CFCFCF"
+    process_edge: str = "#3F4A52"
+    process_text: str = "#111111"
+    arrow_color: str = "#0A0A0A"
+    title_color: str = "#111111"
+
+    # Box geometry. One shared height for every box; one width per pipeline role, so the
+    # input pair, the svd step, the spectrum and the outcome each size independently.
+    box_height: float = 0.5
+    pair_width: float = 1.0
+    process_width: float = 1.05
+    spectrum_width: float = 1.25
+    outcome_width: float = 1.45
+    box_rounding: float = 0.14
+    box_linewidth: float = 0.8
+
+    # Connectors. Thin shaft with a proportional head.
+    dot_gap: float = 0.28
+    dot_radius: float = 0.05
+    arrow_len: float = 0.52
+    arrow_shaft: float = 0.03
+    arrow_head_width: float = 0.1
+    arrow_head_length: float = 0.09
+
+    # Rows and titles. Titles center on the whole canvas width.
+    row_pitch: float = 0.86
+    title_pad: float = 0.05
+    title_size: float = 7.0
+
+    # Typography. Every size here is a font size in points.
+    label_size: float = 7.0
+    pair_label_size: float = 7.0
+    superscript_size: float = 5.0
+    superscript_pad: float = 0.1
+    linespacing: float = 1.0
+
+    # Divide arrow (svr only). Sits below the row midline (divide_y_offset < 0) with the
+    # "divide" label centered on the sum-of-spectral-mass boxes, above the arrow.
+    divide_label_size: float = 7.0
+    divide_label_pad: float = 0.05
+    divide_y_offset: float = -0.07
+
+    # Variance circle (svr only). The outer radius is NOT configured -- it is derived so
+    # the circle spans the row band (see _flow_geometry). Knobs: horizontal gap to the
+    # pipeline, inner-circle size/offset, label font size, and question-mark placement.
+    circle_gap: float = 0.35
+    inner_radius_frac: float = 0.52
+    inner_offset_x: float = -0.28
+    inner_offset_y: float = 0.34
+    circle_label_size: float = 9.0
+    circle_outer_label: str = "All CA1\nvariance"
+    circle_inner_label: str = "placefield\nvariance"
+    circle_outer_label_y: float = -0.58
+    question_mark: str = "?"
+    question_size: float = 30.0
+    question_x: float = 0.5
+    question_y: float = 0.05
+
+    # Export. bbox_inches is None so the saved file is exactly ``figsize``. "tight" undoes
+    # that in both directions: it crops in to the ink when the drawing is small, and
+    # expands out to swallow overflow when it is large (the artists are unclipped).
+    bbox_inches: str | None = None
+    transparent: bool = False
+
+
+def _flow_colors(style: FlowStyle, cfg: FlowSchematicConfig) -> tuple[str, str, str]:
+    """Return (facecolor, edgecolor, textcolor) for a node style."""
+    if style == "pf":
+        return cfg.pf_face, cfg.pf_edge, cfg.pf_text
+    if style == "full":
+        return cfg.full_face, cfg.full_edge, cfg.full_text
+    return cfg.process_face, cfg.process_edge, cfg.process_text
+
+
+def _role_width(role: FlowRole, cfg: FlowSchematicConfig) -> float:
+    """Default box width in layout units for a pipeline role."""
+    return {
+        "pair": cfg.pair_width,
+        "process": cfg.process_width,
+        "spectrum": cfg.spectrum_width,
+        "outcome": cfg.outcome_width,
+    }[role]
+
+
+def _flow_layout(variant: FlowVariant, cfg: FlowSchematicConfig) -> tuple[list[float], list[float], list[float]]:
+    """Compute shared column geometry.
+
+    Returns
+    -------
+    tuple of lists
+        (column_widths, column_lefts, connector_widths). Columns are shared across rows
+        so every row stays aligned; each width is the max requested by any row.
+    """
+    n_cols = len(variant.rows[0].cells)
+    if any(len(row.cells) != n_cols for row in variant.rows):
+        raise ValueError("all rows in a variant must have the same number of cells")
+
+    widths: list[float] = []
+    for col in range(n_cols):
+        candidates = []
+        for row in variant.rows:
+            node = row.cells[col]
+            candidates.append(node.width if node.width is not None else _role_width(node.role, cfg))
+        widths.append(max(candidates))
+
+    connector_widths: list[float] = []
+    for col in range(n_cols - 1):
+        kinds = {row.connectors[col] for row in variant.rows}
+        connector_widths.append(cfg.dot_gap if kinds == {"dot"} else cfg.arrow_len)
+
+    lefts: list[float] = []
+    cursor = 0.0
+    for col in range(n_cols):
+        lefts.append(cursor)
+        cursor += widths[col]
+        if col < n_cols - 1:
+            cursor += connector_widths[col]
+    return widths, lefts, connector_widths
+
+
+def _draw_flow_node(ax: Axes, node: FlowNode, left: float, width: float, y_center: float, cfg: FlowSchematicConfig) -> None:
+    """Draw one rounded box with its label and optional corner superscript."""
+    face, edge, text_color = _flow_colors(node.style, cfg)
+    bottom = y_center - cfg.box_height / 2
+
+    ax.add_patch(
+        FancyBboxPatch(
+            (left, bottom),
+            width,
+            cfg.box_height,
+            boxstyle=f"round,pad=0,rounding_size={cfg.box_rounding}",
+            facecolor=face,
+            edgecolor=edge,
+            linewidth=cfg.box_linewidth,
+            zorder=_Z_BOX,
+        )
+    )
+
+    fontsize = cfg.pair_label_size if node.role == "pair" else cfg.label_size
+    ax.text(
+        left + width / 2,
+        y_center,
+        node.text,
+        ha="center",
+        va="center",
+        color=text_color,
+        fontsize=fontsize,
+        fontweight=cfg.font_weight,
+        linespacing=cfg.linespacing,
+        zorder=_Z_TEXT,
+    )
+
+    if node.superscript:
+        ax.text(
+            left + width - cfg.superscript_pad,
+            y_center + cfg.box_height / 2 - cfg.superscript_pad,
+            node.superscript,
+            ha="right",
+            va="top",
+            color=text_color,
+            fontsize=cfg.superscript_size,
+            fontweight=cfg.font_weight,
+            zorder=_Z_TEXT,
+        )
+
+
+def _draw_flow_arrow(ax: Axes, x0: float, x1: float, y: float, cfg: FlowSchematicConfig) -> None:
+    """Draw a horizontal block arrow from x0 to x1, behind the boxes."""
+    ax.add_patch(
+        FancyArrow(
+            x0,
+            y,
+            x1 - x0,
+            0.0,
+            width=cfg.arrow_shaft,
+            head_width=cfg.arrow_head_width,
+            head_length=min(cfg.arrow_head_length, abs(x1 - x0)),
+            length_includes_head=True,
+            color=cfg.arrow_color,
+            zorder=_Z_ARROW,
+        )
+    )
+
+
+def _draw_variance_circle(ax: Axes, center_x: float, center_y: float, radius: float, cfg: FlowSchematicConfig) -> None:
+    """Draw the nested placefield-variance / all-CA1-variance circle at a derived radius."""
+    ax.add_patch(Circle((center_x, center_y), radius, facecolor=cfg.full_face, edgecolor="none", zorder=_Z_BOX))
+
+    inner_radius = radius * cfg.inner_radius_frac
+    inner_x = center_x + radius * cfg.inner_offset_x
+    inner_y = center_y + radius * cfg.inner_offset_y
+    ax.add_patch(Circle((inner_x, inner_y), inner_radius, facecolor=cfg.pf_face, edgecolor="none", zorder=_Z_BOX))
+
+    ax.text(
+        inner_x,
+        inner_y,
+        cfg.circle_inner_label,
+        ha="center",
+        va="center",
+        color=cfg.pf_text,
+        fontsize=cfg.circle_label_size,
+        linespacing=cfg.linespacing,
+        zorder=_Z_TEXT,
+    )
+    ax.text(
+        center_x,
+        center_y + radius * cfg.circle_outer_label_y,
+        cfg.circle_outer_label,
+        ha="center",
+        va="center",
+        color=cfg.full_text,
+        fontsize=cfg.circle_label_size,
+        linespacing=cfg.linespacing,
+        zorder=_Z_TEXT,
+    )
+    ax.text(
+        center_x + radius * cfg.question_x,
+        center_y + radius * cfg.question_y,
+        cfg.question_mark,
+        ha="center",
+        va="center",
+        color=cfg.pf_face,
+        fontsize=cfg.question_size,
+        fontweight="bold",
+        zorder=_Z_TEXT,
+    )
+
+
+@dataclass(frozen=True)
+class _FlowGeometry:
+    """Laid-out positions (layout units) shared by the renderer and the figsize helper.
+
+    Bounds are the tight extent of the drawing itself; the origin offsets are applied
+    later, when the layout is placed on the canvas.
+    """
+
+    widths: list[float]
+    lefts: list[float]
+    row_centers: list[float]
+    mid_y: float
+    circle_center_x: float
+    circle_center_y: float
+    circle_radius: float
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    @property
+    def width(self) -> float:
+        return self.x_max - self.x_min
+
+    @property
+    def height(self) -> float:
+        return self.y_max - self.y_min
+
+
+def _flow_geometry(variant: FlowVariant, cfg: FlowSchematicConfig) -> _FlowGeometry:
+    """Lay out one variant and return its positions and tight bounds in layout units.
+
+    The variance circle (svr) is sized to span the row band exactly: its top meets the top
+    of the first row's title text and its bottom meets the bottom of the last row's boxes,
+    so its radius and vertical center are derived here, not configured.
+    """
+    widths, lefts, _ = _flow_layout(variant, cfg)
+    flow_right = lefts[-1] + widths[-1]
+    row_centers = [-i * cfg.row_pitch for i in range(len(variant.rows))]
+    mid_y = float(np.mean(row_centers))
+
+    # Row band: top of the first row's title text down to the bottom of the last row's boxes.
+    top = row_centers[0] + cfg.box_height / 2 + cfg.title_pad + cfg.title_size / 72 / cfg.unit_scale
+    bottom = row_centers[-1] - cfg.box_height / 2
+
+    circle_center_x = 0.0
+    circle_center_y = mid_y
+    circle_radius = 0.0
+    if variant.show_circle:
+        circle_radius = (top - bottom) / 2
+        circle_center_y = (top + bottom) / 2
+        circle_center_x = flow_right + cfg.circle_gap + circle_radius
+        content_right = circle_center_x + circle_radius
+    else:
+        content_right = flow_right
+
+    return _FlowGeometry(
+        widths=widths,
+        lefts=lefts,
+        row_centers=row_centers,
+        mid_y=mid_y,
+        circle_center_x=circle_center_x,
+        circle_center_y=circle_center_y,
+        circle_radius=circle_radius,
+        x_min=0.0,
+        x_max=content_right,
+        y_min=bottom,
+        y_max=top,
+    )
+
+
+def default_flow_config(variant: str) -> FlowSchematicConfig:
+    """The tuned default config for a variant.
+
+    Layers the variant's entries in ``_VARIANT_PRESETS`` onto the (dim-tuned) dataclass
+    defaults. This is what :func:`flow_schematic` uses when no config is supplied.
+
+    Parameters
+    ----------
+    variant : str
+        Registry key, e.g. "dim" or "svr".
+
+    Returns
+    -------
+    FlowSchematicConfig
+    """
+    if variant not in _VARIANT_PRESETS:
+        raise ValueError(f"unknown variant {variant!r}; options are {sorted(_VARIANT_PRESETS)}")
+    return FlowSchematicConfig(variant=variant, **_VARIANT_PRESETS[variant])
+
+
+def flow_figsize(cfg: FlowSchematicConfig) -> tuple[float, float]:
+    """Canvas size in inches for a config.
+
+    Returns ``cfg.figsize`` verbatim when it is set -- it is authoritative and the drawing
+    is never rescaled to match it. Otherwise falls back to the variant's default canvas
+    (:attr:`FlowVariant.figsize`).
+
+    Parameters
+    ----------
+    cfg : FlowSchematicConfig
+
+    Returns
+    -------
+    tuple of (float, float)
+        Width and height in inches.
+    """
+    if cfg.figsize is not None:
+        return float(cfg.figsize[0]), float(cfg.figsize[1])
+    if cfg.variant not in FLOW_VARIANTS:
+        raise ValueError(f"unknown variant {cfg.variant!r}; options are {sorted(FLOW_VARIANTS)}")
+    return FLOW_VARIANTS[cfg.variant].figsize
+
+
+def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure, Axes]:
+    """Render a registered pipeline schematic ("dim" or "svr").
+
+    Parameters
+    ----------
+    cfg : FlowSchematicConfig or None
+        Full style/layout config; a default (variant "dim") is created when None.
+
+    Returns
+    -------
+    tuple of (Figure, Axes)
+    """
+    cfg = cfg or FlowSchematicConfig()
+    if cfg.variant not in FLOW_VARIANTS:
+        raise ValueError(f"unknown variant {cfg.variant!r}; options are {sorted(FLOW_VARIANTS)}")
+    variant = FLOW_VARIANTS[cfg.variant]
+
+    fig_w, fig_h = flow_figsize(cfg)
+    if cfg.fit_width:
+        # Recompute unit_scale so the drawing exactly fills (figwidth - 2*origin_x). For a
+        # variant with the derived circle, geom.width depends on unit_scale (the circle
+        # radius carries the title headroom, which is points/unit_scale), so iterate to the
+        # fixed point -- it converges in a couple of steps (one for circle-free variants).
+        target = fig_w - 2 * cfg.origin_x
+        for _ in range(8):
+            new_scale = target / _flow_geometry(variant, cfg).width
+            if abs(new_scale - cfg.unit_scale) < 1e-6:
+                cfg = replace(cfg, unit_scale=new_scale)
+                break
+            cfg = replace(cfg, unit_scale=new_scale)
+
+    plt.rcParams.update(
+        {
+            "font.family": cfg.font_family,
+            "mathtext.fontset": "custom",
+            "mathtext.rm": cfg.font_family,
+            "mathtext.it": f"{cfg.font_family}:italic",
+            "mathtext.bf": f"{cfg.font_family}:bold",
+            "svg.fonttype": "none",  # keep text editable in Illustrator
+            "pdf.fonttype": 42,
+        }
+    )
+
+    geom = _flow_geometry(variant, cfg)
+    widths, lefts = geom.widths, geom.lefts
+    row_centers = geom.row_centers
+    mid_y = geom.mid_y
+    circle_center_x = geom.circle_center_x
+
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=cfg.dpi)
+    fig.patch.set_facecolor(cfg.background)
+
+    # The axes IS the page: it fills the figure, and the view spans exactly as many layout
+    # units as fit on the canvas at unit_scale inches per unit. That makes the x and y
+    # scales equal by construction (no aspect-driven refitting) and pins the drawing's
+    # top-left corner origin_x / origin_y inches in from the canvas corner. Anything that
+    # does not fit runs off the edge instead of shrinking the rest to accommodate it.
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    ax.set_facecolor(cfg.background)
+    x_left = geom.x_min - cfg.origin_x / cfg.unit_scale
+    y_top = geom.y_max + cfg.origin_y / cfg.unit_scale
+    x_right = x_left + fig_w / cfg.unit_scale
+    ax.set_xlim(x_left, x_right)
+    ax.set_ylim(y_top - fig_h / cfg.unit_scale, y_top)
+    ax.axis("off")
+    # Titles center on the pipeline (the box row), not the whole canvas. For dim the
+    # pipeline fills the canvas so this is figure-centered; for svr it keeps the titles
+    # over the boxes rather than drifting right toward the circle.
+    pipeline_center_x = (lefts[0] + lefts[-1] + widths[-1]) / 2
+
+    for row, y_center in zip(variant.rows, row_centers, strict=True):
+        for col, node in enumerate(row.cells):
+            _draw_flow_node(ax, node, lefts[col], widths[col], y_center, cfg)
+
+        for col, connector in enumerate(row.connectors):
+            gap_start = lefts[col] + widths[col]
+            gap_end = lefts[col + 1]
+            if connector == "dot":
+                ax.add_patch(
+                    Circle(
+                        ((gap_start + gap_end) / 2, y_center),
+                        cfg.dot_radius,
+                        facecolor=cfg.arrow_color,
+                        edgecolor="none",
+                        zorder=_Z_BOX,
+                    )
+                )
+            else:
+                _draw_flow_arrow(ax, gap_start, gap_end, y_center, cfg)
+
+        ax.text(
+            pipeline_center_x,
+            y_center + cfg.box_height / 2 + cfg.title_pad,
+            row.title,
+            ha="center",
+            va="bottom",
+            color=cfg.title_color,
+            fontsize=cfg.title_size,
+            fontweight="bold",
+            zorder=_Z_TEXT,
+        )
+
+    if variant.show_circle:
+        # Divide arrow: left edge aligned with the sum-of-spectral-mass boxes (left edge of
+        # the divide_start_col column), running into the circle, below the row midline.
+        divide_col = variant.divide_start_col
+        box_left = lefts[divide_col]
+        box_right = lefts[divide_col] + widths[divide_col]
+        x1 = circle_center_x - geom.circle_radius - cfg.circle_gap / 2
+        divide_y = mid_y + cfg.divide_y_offset
+        _draw_flow_arrow(ax, box_left, x1, divide_y, cfg)
+        # "divide" centered on the boxes, above the arrow.
+        ax.text(
+            (box_left + box_right) / 2,
+            divide_y + cfg.arrow_shaft / 2 + cfg.divide_label_pad,
+            variant.divide_label,
+            ha="center",
+            va="bottom",
+            color=cfg.title_color,
+            fontsize=cfg.divide_label_size,
+            fontweight="bold",
+            zorder=_Z_TEXT,
+        )
+        _draw_variance_circle(ax, circle_center_x, geom.circle_center_y, geom.circle_radius, cfg)
+
+    # The axes fills the canvas, so clipping to it clips to the page. Patches clip by
+    # default; text does not. Without this, overflow is merely drawn out of view and still
+    # exists as geometry -- a tight bounding box (Jupyter's inline backend uses one) would
+    # expand to swallow it and show the full drawing no matter how small figsize was.
+    for text in ax.texts:
+        text.set_clip_on(True)
+
+    return fig, ax
+
+
+def save_flow_schematic(
+    output_stem: str | Path,
+    cfg: FlowSchematicConfig | None = None,
+    formats: Sequence[str] = ("svg", "png"),
+    figsize: tuple[float, float] | None = None,
+) -> list[Path]:
+    """Render and save a pipeline schematic in one or more formats.
+
+    Parameters
+    ----------
+    output_stem : str or Path
+        Output path without extension; one file is written per entry in ``formats``.
+    cfg : FlowSchematicConfig or None
+    formats : Sequence[str]
+    figsize : tuple of (float, float) or None
+        Explicit canvas size in inches, overriding ``cfg.figsize``. The file is written at
+        exactly this size (``cfg.bbox_inches`` is None by default; setting it to "tight"
+        would crop back to the ink).
+    """
+    cfg = cfg or FlowSchematicConfig()
+    if figsize is not None:
+        cfg = replace(cfg, figsize=figsize)
+    output_stem = Path(output_stem)
+    output_stem.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, _ = make_flow_schematic(cfg)
+    paths: list[Path] = []
+    try:
+        for extension in formats:
+            # Append rather than with_suffix: a stem like "figure_1.5in" would otherwise
+            # have its ".5in" stripped as a suffix and silently overwrite a sibling file.
+            path = output_stem.with_name(f"{output_stem.name}.{extension.lower().lstrip('.')}")
+            fig.savefig(
+                path,
+                dpi=cfg.dpi,
+                bbox_inches=cfg.bbox_inches,
+                transparent=cfg.transparent,
+                facecolor=cfg.background,
+            )
+            paths.append(path)
+    finally:
+        plt.close(fig)
+    return paths
+
+
+_DEFAULT_FLOW_CONFIG_DIR = Path(__file__).parent / "configs"
+
+# Viewer-only footprint tint: shows where the canvas edge falls against the white GUI
+# panel. Deliberately not a FlowSchematicConfig field so it can never reach an export.
+_FOOTPRINT_FACECOLOR = "#F4F4F4"
+
+
+def save_flow_config(cfg: FlowSchematicConfig, path: str | Path) -> Path:
+    """Write a config to JSON.
+
+    Parameters
+    ----------
+    cfg : FlowSchematicConfig
+    path : str or Path
+        Destination; a ``.json`` suffix is added when missing and parent directories
+        are created.
+
+    Returns
+    -------
+    Path
+        The file that was written.
+    """
+    path = Path(path)
+    if path.suffix.lower() != ".json":
+        # Append rather than with_suffix: a name like "flow_v1.2" has a spurious suffix.
+        path = path.with_name(path.name + ".json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
+    return path
+
+
+def load_flow_config(path: str | Path) -> FlowSchematicConfig:
+    """Read a config previously written by :func:`save_flow_config`.
+
+    Keys that are no longer :class:`FlowSchematicConfig` fields (e.g. a since-removed
+    ``circle_radius``) are dropped, so configs saved by older versions still load.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if data.get("figsize") is not None:
+        data["figsize"] = tuple(data["figsize"])
+    known = {f.name for f in fields(FlowSchematicConfig)}
+    data = {k: v for k, v in data.items() if k in known}
+    return FlowSchematicConfig(**data)
+
+
+# FlowSchematicConfig float fields exposed as live Syd sliders, with (min, max, step).
+_FLOW_TUNABLES: dict[str, tuple[float, float, float]] = {
+    "unit_scale": (0.05, 1.2, 0.005),
+    "origin_x": (0.0, 3.0, 0.01),
+    "origin_y": (0.0, 3.0, 0.01),
+    "box_height": (0.05, 4.0, 0.01),
+    "pair_width": (0.05, 8.0, 0.01),
+    "process_width": (0.05, 8.0, 0.01),
+    "spectrum_width": (0.05, 8.0, 0.01),
+    "outcome_width": (0.05, 8.0, 0.01),
+    "box_rounding": (0.0, 0.5, 0.005),
+    "box_linewidth": (0.0, 6.0, 0.1),
+    "dot_gap": (0.0, 2.0, 0.01),
+    "dot_radius": (0.0, 0.4, 0.005),
+    "arrow_len": (0.0, 3.0, 0.01),
+    "arrow_shaft": (0.0, 0.6, 0.005),
+    "arrow_head_width": (0.0, 1.2, 0.01),
+    "arrow_head_length": (0.0, 1.0, 0.01),
+    "row_pitch": (0.05, 4.0, 0.01),
+    "title_pad": (0.0, 1.0, 0.01),
+    "title_size": (2.0, 36.0, 0.5),
+    "label_size": (2.0, 36.0, 0.5),
+    "pair_label_size": (2.0, 36.0, 0.5),
+    "superscript_size": (2.0, 36.0, 0.5),
+    "superscript_pad": (0.0, 0.4, 0.005),
+    "linespacing": (0.5, 2.5, 0.01),
+    "divide_label_size": (2.0, 36.0, 0.5),
+    "divide_label_pad": (0.0, 0.6, 0.01),
+    "divide_y_offset": (-1.0, 1.0, 0.01),
+    "circle_gap": (0.0, 2.0, 0.01),
+    "inner_radius_frac": (0.1, 0.95, 0.01),
+    "inner_offset_x": (-0.8, 0.8, 0.01),
+    "inner_offset_y": (-0.8, 0.8, 0.01),
+    "circle_label_size": (2.0, 36.0, 0.5),
+    "circle_outer_label_y": (-0.95, 0.95, 0.01),
+    "question_size": (2.0, 60.0, 0.5),
+    "question_x": (-0.95, 0.95, 0.01),
+    "question_y": (-0.95, 0.95, 0.01),
+}
+
+
+class FlowSchematicViewer(Viewer):
+    """Interactive pipeline schematic driven by a :class:`FlowSchematicConfig`.
+
+    The variant registry key plus every geometry/typography field in ``_FLOW_TUNABLES``
+    is a live control; colors and label text come straight from ``config``. Every font
+    control is a raw point size, and each pipeline role (pair / process / spectrum /
+    outcome) has its own width slider. Figure size is controlled by ``auto_figsize``: on,
+    the canvas is sized snugly around the drawing; when off, the ``fig_width`` /
+    ``fig_height`` sliders fix the canvas and the drawing keeps its true physical scale
+    on it, overflowing if it is too big. Tune ``unit_scale`` (inches per layout unit) and
+    the font sizes to make it fit.
+
+    The ``config_name`` text box and "Save config JSON" button dump the live parameters
+    to ``config_dir/<config_name>.json``, reloadable with :func:`load_flow_config`.
+
+    ``show_footprint`` tints the canvas and outlines its border so the figure extent is
+    visible against the GUI panel. It is a viewer-only display aid: it is not a
+    :class:`FlowSchematicConfig` field, so it never reaches a saved config or an export.
+    """
+
+    def __init__(self, config: FlowSchematicConfig, config_dir: str | Path | None = None):
+        self.cfg = config
+        self.config_dir = Path(config_dir) if config_dir is not None else _DEFAULT_FLOW_CONFIG_DIR
+
+        self.add_selection("variant", value=config.variant, options=sorted(FLOW_VARIANTS))
+        self.add_text("config_name", value=config.variant)
+        self.add_button("save_config", label="Save config JSON", callback=self.save_config, replot=False)
+
+        self.add_boolean("show_footprint", value=True)
+        self.add_boolean("fit_width", value=config.fit_width)
+        self.add_boolean("auto_figsize", value=config.figsize is None)
+        natural_width, natural_height = flow_figsize(config)
+        self.add_float("fig_width", value=natural_width, min=0.05, max=30.0, step=0.05)
+        self.add_float("fig_height", value=natural_height, min=0.05, max=30.0, step=0.05)
+        for name, (lo, hi, step) in _FLOW_TUNABLES.items():
+            # Widen the slider to admit the incoming value; syd otherwise clamps it to the
+            # range and the viewer would silently render something other than the config.
+            value = float(getattr(config, name))
+            self.add_float(name, value=value, min=min(lo, value), max=max(hi, value), step=step)
+
+    def config_from_state(self, state) -> FlowSchematicConfig:
+        """Build the config the current control values describe."""
+        figsize = None if state["auto_figsize"] else (state["fig_width"], state["fig_height"])
+        return replace(
+            self.cfg,
+            variant=state["variant"],
+            figsize=figsize,
+            fit_width=state["fit_width"],
+            **{name: state[name] for name in _FLOW_TUNABLES},
+        )
+
+    def save_config(self, state) -> None:
+        """Button callback: write the live parameters to ``config_dir/<config_name>.json``."""
+        name = state["config_name"].strip() or state["variant"]
+        path = save_flow_config(self.config_from_state(state), self.config_dir / name)
+        print(f"Saved flow schematic config to {path}")
+
+    def plot(self, state):
+        fig, _ = make_flow_schematic(self.config_from_state(state))
+        if state["show_footprint"]:
+            fig.patch.set_facecolor(_FOOTPRINT_FACECOLOR)
+        return fig
+
+
+def flow_schematic(
+    variant: str = "dim",
+    figsize: tuple[float, float] | None = None,
+    config: FlowSchematicConfig | None = None,
+    config_dir: str | Path | None = None,
+    return_syd_viewer: bool = False,
+    **overrides,
+):
+    """Pipeline schematic for the spectra ("dim") and shared-variance-ratio ("svr") analyses.
+
+    Parameters
+    ----------
+    variant : str
+        Registry key: "dim" (two matched spectra, each reduced to a dimensionality) or
+        "svr" (PF-shared vs full spectral mass, divided, with the variance circle).
+    figsize : tuple of (float, float) or None
+        Canvas size in inches, taken literally. The drawing is placed on it at
+        ``unit_scale`` inches per layout unit, pinned ``origin_x`` / ``origin_y`` inches
+        in from the top-left, and is never rescaled to fit -- oversized content runs off
+        the edge. None keeps whatever ``config`` specifies, which by default falls back to
+        the variant's canvas (:attr:`FlowVariant.figsize`).
+    config : FlowSchematicConfig or None
+        Full style/layout config. When None, the variant's tuned default
+        (:func:`default_flow_config`) is used.
+    config_dir : str or Path or None
+        Directory the viewer's "Save config JSON" button writes into. Defaults to
+        ``schematics/configs``.
+    return_syd_viewer : bool
+        If True, return the un-deployed Syd viewer instead of a rendered figure.
+    **overrides
+        Any :class:`FlowSchematicConfig` field, applied on top of ``config``.
+
+    Returns
+    -------
+    Figure or Viewer
+        The rendered figure, or the Syd viewer when ``return_syd_viewer`` is True.
+    """
+    base = config if config is not None else default_flow_config(variant)
+    cfg = replace(base, variant=variant, **overrides)
+    if figsize is not None:
+        cfg = replace(cfg, figsize=figsize)
+    viewer = FlowSchematicViewer(cfg, config_dir=config_dir)
+
+    if return_syd_viewer:
+        return viewer
+
+    # The footprint tint is a GUI aid only; the returned figure is export-ready.
+    viewer.update_boolean("show_footprint", value=False)
     fig = viewer.plot(viewer.state)
     plt.show()
     return fig
