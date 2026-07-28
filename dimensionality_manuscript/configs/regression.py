@@ -61,9 +61,7 @@ SWEPT_PREDREWARD_MODEL_NAMES: tuple[ModelName, ...] = (
     "fullregressor_1dspeed_predreward",
 )
 
-SWEPT_MODEL_NAMES: list[ModelName] = [
-    name for name in MODEL_NAMES if "_predreward" not in name or name in SWEPT_PREDREWARD_MODEL_NAMES
-]
+SWEPT_MODEL_NAMES: list[ModelName] = [name for name in MODEL_NAMES if "_predreward" not in name or name in SWEPT_PREDREWARD_MODEL_NAMES]
 
 
 def _log_int_values(start: int, stop: int, num: int = 25) -> np.ndarray:
@@ -324,12 +322,14 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "model_name": list(FIGURE_MODEL_NAMES),
+            "model_name": list(FIGURE_MODEL_NAMES) + list(SWEPT_PREDREWARD_MODEL_NAMES),
         }
 
     def validate(self):
-        if self.model_name not in FIGURE_MODEL_NAMES:
-            raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(FIGURE_MODEL_NAMES)}")
+        if self.model_name not in (FIGURE_MODEL_NAMES + list(SWEPT_PREDREWARD_MODEL_NAMES)):
+            raise ValueError(
+                f"Unknown model_name {self.model_name!r}. Available: {', '.join(FIGURE_MODEL_NAMES + list(SWEPT_PREDREWARD_MODEL_NAMES))}"
+            )
 
     def summary(self) -> str:
         parts = [
