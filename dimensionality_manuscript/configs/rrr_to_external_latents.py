@@ -2,14 +2,19 @@
 
 Uses Ridge Regression (Optuna-optimized alpha) to measure how much variance in a regression
 model's latents is explained by RRR latents and vice versa. Two *different* models supply the
-two latent sets, because each is the correct model for its own question:
+two latent sets, because each is the correct model for its own question. They are chosen
+together by the ``model_ext_int_pair`` config parameter:
 
-- **external** latents come from ``EXTERNAL_MODEL_NAME`` (``predict_latents=False``). Its basis
+- **external** latents come from ``model_ext_int_pair[0]`` (``predict_latents=False``). Its basis
   functions are built directly from behavior, so they are ground-truth external variables that
   never touch neural activity.
-- **internal** latents come from ``INTERNAL_MODEL_NAME`` (``predict_latents=True``,
+- **internal** latents come from ``model_ext_int_pair[1]`` (``predict_latents=True``,
   ``split_train=True``). Its encoder-predicted basis is the population's *estimate* of those
   external variables.
+
+The two members of a pair must share a regressor structure (same ``speed_basis`` /
+``predictive_reward`` flags), so that the (position, speed, reward) breakdown means the same
+thing on both sides — see ``VALID_MODEL_EXT_INT_PAIRS``.
 
 The internal model is deliberately the double-cross-validated one, **not** the ``_leak`` variant.
 A leak model trains its encoder and decoder on the same split, which lets the basis act as a
@@ -32,23 +37,48 @@ import torch
 from dimilibi import RidgeRegression
 from vrAnalysis.sessions import B2Session, SpksTypes
 
-from ..registry import ACTIVITY_PARAMETERS_NAMES, PopulationRegistry, get_model
+from ..registry import ACTIVITY_PARAMETERS_NAMES, ModelName, PopulationRegistry, get_model
 from ..regression_models.hyperparameters import FullRegressorHyperparameters
+from ..regression_models.models import FullRegressorModel
 from ..pipeline.base import AnalysisConfigBase
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
 VALID_RRR_VARIANCE: list[Union[float, str]] = [1.0, 0.95, "match"]
 
-# Both models are hard-coded: these comparisons only make sense against one fixed regressor
-# structure, since the pos/speed/reward dimensionality breakdown below is derived from
-# FullRegressorModel with speed_basis=False, no_reward=False.
+# The (external, internal) model pairs this analysis knows how to run. The first element supplies
+# the true (behavior-derived) basis; it has predict_latents=False and so exposes only
+# "basis_functions". The second supplies the encoder-predicted basis; it needs predict_latents=True
+# to expose "basis_functions_predicted". Both members of a pair share their regressor structure so
+# the pos/speed/reward breakdown is comparable across them.
 #
-# EXTERNAL supplies the true (behavior-derived) basis; it has predict_latents=False and so
-# exposes only "basis_functions". INTERNAL supplies the encoder-predicted basis; it needs
-# predict_latents=True to expose "basis_functions_predicted".
-EXTERNAL_MODEL_NAME: str = "fullregressor_decoder_only_1dspeed"
-INTERNAL_MODEL_NAME: str = "fullregressor_1dspeed"
+# The second pair is the predictive-reward variant (causally clean reward regressors: predictive-only
+# expectation basis, no omission response), matching SWEPT_PREDREWARD_MODEL_NAMES in configs/regression.py.
+VALID_MODEL_EXT_INT_PAIRS: list[tuple[ModelName, ModelName]] = [
+    ("fullregressor_decoder_only_1dspeed", "fullregressor_1dspeed"),
+    ("fullregressor_decoder_only_1dspeed_predreward", "fullregressor_1dspeed_predreward"),
+]
+DEFAULT_MODEL_EXT_INT_PAIR: tuple[ModelName, ModelName] = VALID_MODEL_EXT_INT_PAIRS[0]
+
+
+def pair_has_omission_response(model_ext_int_pair: tuple[ModelName, ModelName]) -> bool:
+    """Whether a pair's reward block ends with an omission-response sub-block.
+
+    Predictive-reward models drop the omission response entirely (see
+    ``FullRegressorModel.reward_inclusion``), so downstream code that slices the omission
+    columns off the reward group has nothing to remove for them.
+
+    Parameters
+    ----------
+    model_ext_int_pair : tuple[ModelName, ModelName]
+        The ``(external, internal)`` model names.
+
+    Returns
+    -------
+    bool
+        True when both models include omission-response regressors.
+    """
+    return not any(name.endswith("_predreward") for name in model_ext_int_pair)
 
 
 def _zscore(x: torch.Tensor, dim: int = 0, eps: float = 1e-8) -> torch.Tensor:
@@ -119,22 +149,24 @@ def _gather_latents(
     registry: PopulationRegistry,
     spks_type: SpksTypes,
     activity_parameters_name: str,
+    model_ext_int_pair: tuple[ModelName, ModelName],
     method: str,
     rrr_variance: Optional[Union[float, str]],
     normalize: bool,
 ) -> dict[str, torch.Tensor]:
     normalize_func = _zscore if normalize else lambda x, dim=None: x
 
-    ext_model = get_model(EXTERNAL_MODEL_NAME, registry, activity_parameters=activity_parameters_name)
-    int_model = get_model(INTERNAL_MODEL_NAME, registry, activity_parameters=activity_parameters_name)
+    external_model_name, internal_model_name = model_ext_int_pair
+    ext_model = get_model(external_model_name, registry, activity_parameters=activity_parameters_name)
+    int_model = get_model(internal_model_name, registry, activity_parameters=activity_parameters_name)
     rrr_model = get_model("rrr", registry, activity_parameters=activity_parameters_name)
 
     # Boundary check: the internal model must expose an encoder-predicted basis, and the external
     # model's basis must be behavior-derived rather than activity-derived.
     if not int_model.predict_latents:
-        raise ValueError(f"INTERNAL_MODEL_NAME={INTERNAL_MODEL_NAME!r} must have predict_latents=True to expose a predicted basis.")
+        raise ValueError(f"Internal model {internal_model_name!r} must have predict_latents=True to expose a predicted basis.")
     if ext_model.predict_latents:
-        raise ValueError(f"EXTERNAL_MODEL_NAME={EXTERNAL_MODEL_NAME!r} must have predict_latents=False so its basis is behavior-derived.")
+        raise ValueError(f"External model {external_model_name!r} must have predict_latents=False so its basis is behavior-derived.")
 
     hyperparameters_ext = ext_model.get_best_hyperparameters(session, spks_type=spks_type, method=method)[0]
     hyperparameters_int = int_model.get_best_hyperparameters(session, spks_type=spks_type, method=method)[0]
@@ -179,9 +211,10 @@ def _gather_latents(
         "test_external_true": normalize_func(torch.tensor(test_external_true), dim=0),
         "test_external_pred": normalize_func(torch.tensor(test_external_pred), dim=0),
         "test_rrr": normalize_func(torch.tensor(test_latents[:idx_last_rrr_latent]), dim=1).T,
-        "hyperparameters_ext": hyperparameters_ext,
-        "hyperparameters_int": hyperparameters_int,
-        "num_environments": len(session.environments),
+        # Reported separately per model: the external and internal models optimize their
+        # hyperparameters independently, so their basis column counts generally differ.
+        "dims_ext": _pos_speed_reward_dims(ext_model, hyperparameters_ext, len(session.environments)),
+        "dims_int": _pos_speed_reward_dims(int_model, hyperparameters_int, len(session.environments)),
     }
 
 
@@ -201,18 +234,48 @@ def _optimize_alpha(
     return study.best_params["alpha"], study.best_value
 
 
-def _pos_speed_reward_dims(hyperparameters: FullRegressorHyperparameters, num_environments: int) -> tuple[int, int, int]:
+def _pos_speed_reward_dims(
+    model: FullRegressorModel,
+    hyperparameters: FullRegressorHyperparameters,
+    num_environments: int,
+) -> tuple[int, int, int]:
     """Split a model's basis dimensionality into (position, speed, reward) components.
 
-    Applies to both ``EXTERNAL_MODEL_NAME`` and ``INTERNAL_MODEL_NAME``, which share a regressor
-    structure: ``speed_basis=False`` (single z-scored speed regressor) and ``no_reward=False``
-    with all three reward components (expectation, delivered response, omission response)
-    included and ``expectation_symmetric=True`` (see ``FullRegressorModel.build_regressors``).
-    The two models optimize hyperparameters independently, so call this once per model.
+    Mirrors the column order built by ``FullRegressorModel.build_regressors``: position, speed,
+    then the included reward blocks (expectation, delivered response, omission response). The
+    widths follow the model's own regressor flags, so a predictive-reward model — whose
+    expectation basis is predictive-only and which has no omission response — gets a narrower
+    reward block than the symmetric-expectation default. Models optimize hyperparameters
+    independently, so call this once per model.
+
+    Parameters
+    ----------
+    model : FullRegressorModel
+        The model whose regressor structure (``speed_basis``, ``no_reward``,
+        ``reward_inclusion``, ``expectation_symmetric``) sets the block widths.
+    hyperparameters : FullRegressorHyperparameters
+        The hyperparameters the model was run with.
+    num_environments : int
+        Number of environments in the session (position basis is tiled per environment).
+
+    Returns
+    -------
+    tuple of int
+        ``(num_position, num_speed, num_reward)`` column counts.
     """
     num_pos = hyperparameters.num_basis * num_environments
-    num_speed = 1
-    num_reward = 4 * hyperparameters.reward_num_basis_lags + 3
+    num_speed = hyperparameters.speed_num_basis if model.speed_basis else 1
+
+    num_reward = 0
+    if not model.no_reward:
+        num_lags = hyperparameters.reward_num_basis_lags
+        if model.reward_inclusion["expectation"]:
+            num_reward += 2 * num_lags + 1 if model.expectation_symmetric else num_lags + 1
+        if model.reward_inclusion["delivered_response"]:
+            num_reward += num_lags + 1
+        if model.reward_inclusion["omission_response"]:
+            num_reward += num_lags + 1
+
     return num_pos, num_speed, num_reward
 
 
@@ -220,9 +283,9 @@ def _pos_speed_reward_dims(hyperparameters: FullRegressorHyperparameters, num_en
 class RRRToExternalLatentsConfig(AnalysisConfigBase):
     """Measure latent-to-latent predictability between RRR and regression-model latents.
 
-    The ``*_true`` latents come from ``EXTERNAL_MODEL_NAME`` (behavior-derived basis) and the
-    ``*_pred`` latents from ``INTERNAL_MODEL_NAME`` (encoder-predicted basis). See the module
-    docstring for why these are two different models.
+    The ``*_true`` latents come from the external model (behavior-derived basis) and the
+    ``*_pred`` latents from the internal model (encoder-predicted basis), both named by
+    ``model_ext_int_pair``. See the module docstring for why these are two different models.
 
     Parameters
     ----------
@@ -230,6 +293,9 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Spike type to use for the population.
     activity_parameters_name : str
         Activity scaling method.
+    model_ext_int_pair : tuple[ModelName, ModelName]
+        ``(external, internal)`` model names supplying the true and predicted bases. Must be
+        one of ``VALID_MODEL_EXT_INT_PAIRS``.
     method : str
         Hyperparameter optimization method.
     rrr_variance : float or str
@@ -239,18 +305,23 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Whether to z-score latents before regression.
     """
 
-    schema_version: str = "v6"
-    # v5: hard-code external_model_name to EXTERNAL_MODEL_NAME and add
+    schema_version: str = "v7"
+    # v5: hard-code external_model_name to the decoder-only regressor and add
     # num_pos_params/num_speed_params/num_reward_params to the output.
-    # v6: take the true basis from EXTERNAL_MODEL_NAME (decoder-only) and the predicted basis
-    # from INTERNAL_MODEL_NAME (double-cross-validated) instead of both from one leak model;
+    # v6: take the true basis from the external (decoder-only) model and the predicted basis
+    # from the internal (double-cross-validated) model instead of both from one leak model;
     # report per-model column counts (num_*_params for external, num_*_params_pred for
     # internal) since the two optimize hyperparameters independently; align the three models'
     # frames before regressing.
+    # v7: the model pair is a config parameter (model_ext_int_pair) instead of a module
+    # constant, so the predictive-reward regressors can be analyzed too; the pos/speed/reward
+    # column counts are now derived from each model's own regressor flags rather than assuming
+    # the symmetric-expectation, 1d-speed structure.
 
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     activity_parameters_name: str = "default"
+    model_ext_int_pair: tuple[ModelName, ModelName] = DEFAULT_MODEL_EXT_INT_PAIR
     method: str = "preferred"
     rrr_variance: Union[float, str] = 0.95
     normalize: bool = False
@@ -264,6 +335,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
             "rrr_variance": list(VALID_RRR_VARIANCE),
             "normalize": [True, False],
+            "model_ext_int_pair": list(VALID_MODEL_EXT_INT_PAIRS),
         }
 
     def validate(self):
@@ -275,14 +347,17 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             )
         if not (isinstance(self.rrr_variance, float) or self.rrr_variance == "match"):
             raise ValueError(f"rrr_variance must be a float or 'match', got {self.rrr_variance!r}")
+        if tuple(self.model_ext_int_pair) not in VALID_MODEL_EXT_INT_PAIRS:
+            raise ValueError(f"Unknown model_ext_int_pair {self.model_ext_int_pair!r}. Available: {VALID_MODEL_EXT_INT_PAIRS}")
 
     def summary(self) -> str:
+        external_model_name, internal_model_name = self.model_ext_int_pair
         parts = [
             self.display_name,
             f"spks={self.spks_type}",
             f"method={self.method}",
-            f"ext={EXTERNAL_MODEL_NAME}",
-            f"int={INTERNAL_MODEL_NAME}",
+            f"ext={external_model_name}",
+            f"int={internal_model_name}",
             f"rrr_var={self.rrr_variance}",
             f"norm={self.normalize}",
         ]
@@ -297,21 +372,14 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
             registry,
             spks_type=self.spks_type,
             activity_parameters_name=self.activity_parameters_name,
+            model_ext_int_pair=self.model_ext_int_pair,
             method=self.method,
             rrr_variance=self.rrr_variance,
             normalize=self.normalize,
         )
 
-        # Reported separately per model: the external and internal models optimize their
-        # hyperparameters independently, so their basis column counts generally differ.
-        num_pos_params_true, num_speed_params_true, num_reward_params_true = _pos_speed_reward_dims(
-            data["hyperparameters_ext"],
-            data["num_environments"],
-        )
-        num_pos_params_pred, num_speed_params_pred, num_reward_params_pred = _pos_speed_reward_dims(
-            data["hyperparameters_int"],
-            data["num_environments"],
-        )
+        num_pos_params_true, num_speed_params_true, num_reward_params_true = data["dims_ext"]
+        num_pos_params_pred, num_speed_params_pred, num_reward_params_pred = data["dims_int"]
 
         alpha_rrr_to_true, score_rrr_to_true = _optimize_alpha(
             data["train_rrr"],
