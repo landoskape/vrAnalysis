@@ -1336,12 +1336,13 @@ class FlowRow:
 class FlowVariant:
     """A registered schematic: the rows plus the optional variance-circle summary.
 
-    ``figsize`` is the variant's default canvas in inches, used whenever the config does
-    not set an explicit ``figsize``. Tune the layout so the drawing fills that width.
+    ``fig_width`` is the variant's default canvas width in inches -- the one fixed
+    physical dimension of the drawing. Everything else is relative: the layout is solved
+    to fill that width and the canvas height follows from it (see :func:`flow_figsize`).
     """
 
     rows: tuple[FlowRow, ...]
-    figsize: tuple[float, float]
+    fig_width: float
     show_circle: bool = False
     divide_label: str = "divide"
     divide_start_col: int = 2
@@ -1354,7 +1355,7 @@ _FULL_J = r"$\mathrm{Full}_\mathrm{j}$"
 
 FLOW_VARIANTS: dict[str, FlowVariant] = {
     "dim": FlowVariant(
-        figsize=(4.5, 1.0),
+        fig_width=4.475,
         rows=(
             FlowRow(
                 title="reliable placefield structure",
@@ -1381,7 +1382,7 @@ FLOW_VARIANTS: dict[str, FlowVariant] = {
         ),
     ),
     "svr": FlowVariant(
-        figsize=(6.85, 1.16),
+        fig_width=6.8,
         rows=(
             FlowRow(
                 title="reliable placefield structure",
@@ -1412,15 +1413,13 @@ FLOW_VARIANTS: dict[str, FlowVariant] = {
     ),
 }
 
-# Per-variant deltas from the (dim-tuned) dataclass defaults. Each variant is tuned to fill
-# its FlowVariant.figsize width at a short height; "dim" needs no delta. See
+# Per-variant deltas from the (dim-tuned) dataclass defaults. "dim" needs no delta. See
 # :func:`default_flow_config`, which layers these onto FlowSchematicConfig.
 _VARIANT_PRESETS: dict[str, dict[str, float]] = {
     "dim": {},
     "svr": {
         "spectrum_width": 1.3,
         "circle_gap": 0.62,
-        "circle_label_size": 7.0,
         "circle_outer_label_y": -0.55,
         "inner_offset_x": -0.30,
         "question_size": 18.0,
@@ -1432,35 +1431,37 @@ _VARIANT_PRESETS: dict[str, dict[str, float]] = {
 class FlowSchematicConfig:
     """Full configuration for both pipeline schematics.
 
-    ``figsize`` is the page: the canvas is exactly that many inches and the drawing is
-    never rescaled to fit it. Geometry is expressed in abstract layout units that map to
-    inches at a fixed rate of ``unit_scale`` inches per unit, and the whole drawing is
-    pinned by its top-left corner at (``origin_x``, ``origin_y``) inches in from the
-    top-left of the canvas. Content that does not fit simply runs off the edge -- set the
-    publication figsize first, then tune the layout until everything sits inside it.
+    ``fig_width`` is the only fixed physical quantity: the canvas is exactly that many
+    inches wide. Everything else is relative, expressed in abstract layout units. The
+    inches-per-unit scale is *solved* rather than configured, from
 
-    When ``figsize`` is None the canvas is instead sized snugly around the drawing, with
-    the origin offsets mirrored as trailing margins.
+        ``unit_scale * (2 * margin_x + drawing_width_in_units) == fig_width``
+
+    and the canvas height then follows as ``unit_scale * (2 * margin_y + drawing_height)``,
+    so the page always grows to fit the drawing instead of the drawing being cropped to
+    the page. x and y share the one scale, so the drawing is never distorted.
+
+    Font sizes are the exception -- they stay in points, because a publication figure needs
+    real type sizes. That means changing the layout changes how big the type looks relative
+    to the boxes, so re-check the labels after retuning widths.
     """
 
     variant: str = "dim"
 
-    # Canvas. figsize None means "use the variant's default canvas" (see FlowVariant);
-    # set it to pin an explicit size instead. The bare dataclass defaults below are the
-    # "dim" variant tuned to fill its 4.5in width; per-variant deltas live in
+    # Canvas. fig_width None means "use the variant's width" (see FlowVariant); set it to
+    # pin a different one. Margins are layout units, applied on all four sides. The bare
+    # dataclass defaults below are the "dim" variant; per-variant deltas live in
     # ``_VARIANT_PRESETS`` and are applied by :func:`default_flow_config`.
-    figsize: tuple[float, float] | None = None
-    unit_scale: float = 0.572
-    # When True, unit_scale is recomputed at render time so the drawing exactly fills
-    # (figwidth - 2*origin_x); the stored unit_scale is then only a fallback for fit_width
-    # off. Height is not auto-fit -- pick the variant figsize height to suit.
-    fit_width: bool = True
-    origin_x: float = 0.08
-    origin_y: float = 0.05
+    fig_width: float | None = None
+    margin_x: float = 0.14
+    margin_y: float = 0.02
     dpi: int = 200
     background: str = "white"
     font_family: str = "Arial"
-    font_weight: str = "bold"
+    # Applies to every string in the schematic. Note that the mathtext labels ($..$) render
+    # through mathtext.rm and ignore it, so anything other than "normal" makes the plain
+    # labels disagree in weight with the PF_i / Full_i boxes.
+    font_weight: str = "normal"
 
     # Colors (face / edge / text per style)
     pf_face: str = "#F05A19"
@@ -1496,18 +1497,18 @@ class FlowSchematicConfig:
     # Rows and titles. Titles center on the whole canvas width.
     row_pitch: float = 0.86
     title_pad: float = 0.05
-    title_size: float = 7.0
+    title_size: float = 8.0
 
     # Typography. Every size here is a font size in points.
-    label_size: float = 7.0
-    pair_label_size: float = 7.0
+    label_size: float = 8.0
+    pair_label_size: float = 8.0
     superscript_size: float = 5.0
     superscript_pad: float = 0.1
     linespacing: float = 1.0
 
     # Divide arrow (svr only). Sits below the row midline (divide_y_offset < 0) with the
     # "divide" label centered on the sum-of-spectral-mass boxes, above the arrow.
-    divide_label_size: float = 7.0
+    divide_label_size: float = 8.0
     divide_label_pad: float = 0.05
     divide_y_offset: float = -0.07
 
@@ -1518,7 +1519,7 @@ class FlowSchematicConfig:
     inner_radius_frac: float = 0.52
     inner_offset_x: float = -0.28
     inner_offset_y: float = 0.34
-    circle_label_size: float = 9.0
+    circle_label_size: float = 8.0
     circle_outer_label: str = "All CA1\nvariance"
     circle_inner_label: str = "placefield\nvariance"
     circle_outer_label_y: float = -0.58
@@ -1527,9 +1528,9 @@ class FlowSchematicConfig:
     question_x: float = 0.5
     question_y: float = 0.05
 
-    # Export. bbox_inches is None so the saved file is exactly ``figsize``. "tight" undoes
-    # that in both directions: it crops in to the ink when the drawing is small, and
-    # expands out to swallow overflow when it is large (the artists are unclipped).
+    # Export. bbox_inches is None so the saved file is exactly the solved canvas -- in
+    # particular exactly ``fig_width`` wide, which is the whole point. "tight" would crop
+    # back to the ink instead and give up that guarantee.
     bbox_inches: str | None = None
     transparent: bool = False
 
@@ -1692,7 +1693,7 @@ def _draw_variance_circle(ax: Axes, center_x: float, center_y: float, radius: fl
         va="center",
         color=cfg.pf_face,
         fontsize=cfg.question_size,
-        fontweight="bold",
+        fontweight=cfg.font_weight,
         zorder=_Z_TEXT,
     )
 
@@ -1726,12 +1727,16 @@ class _FlowGeometry:
         return self.y_max - self.y_min
 
 
-def _flow_geometry(variant: FlowVariant, cfg: FlowSchematicConfig) -> _FlowGeometry:
+def _flow_geometry(variant: FlowVariant, cfg: FlowSchematicConfig, unit_scale: float) -> _FlowGeometry:
     """Lay out one variant and return its positions and tight bounds in layout units.
 
     The variance circle (svr) is sized to span the row band exactly: its top meets the top
     of the first row's title text and its bottom meets the bottom of the last row's boxes,
     so its radius and vertical center are derived here, not configured.
+
+    ``unit_scale`` (inches per layout unit) is needed only to convert the title's point
+    size into layout units; it is what makes the layout mildly self-referential and is
+    solved for in :func:`_flow_metrics`.
     """
     widths, lefts, _ = _flow_layout(variant, cfg)
     flow_right = lefts[-1] + widths[-1]
@@ -1739,7 +1744,7 @@ def _flow_geometry(variant: FlowVariant, cfg: FlowSchematicConfig) -> _FlowGeome
     mid_y = float(np.mean(row_centers))
 
     # Row band: top of the first row's title text down to the bottom of the last row's boxes.
-    top = row_centers[0] + cfg.box_height / 2 + cfg.title_pad + cfg.title_size / 72 / cfg.unit_scale
+    top = row_centers[0] + cfg.box_height / 2 + cfg.title_pad + cfg.title_size / 72 / unit_scale
     bottom = row_centers[-1] - cfg.box_height / 2
 
     circle_center_x = 0.0
@@ -1788,12 +1793,62 @@ def default_flow_config(variant: str) -> FlowSchematicConfig:
     return FlowSchematicConfig(variant=variant, **_VARIANT_PRESETS[variant])
 
 
-def flow_figsize(cfg: FlowSchematicConfig) -> tuple[float, float]:
-    """Canvas size in inches for a config.
+@dataclass(frozen=True)
+class FlowMetrics:
+    """The solved page: layout positions plus the scale and canvas they imply."""
 
-    Returns ``cfg.figsize`` verbatim when it is set -- it is authoritative and the drawing
-    is never rescaled to match it. Otherwise falls back to the variant's default canvas
-    (:attr:`FlowVariant.figsize`).
+    geom: _FlowGeometry
+    unit_scale: float
+    fig_width: float
+    fig_height: float
+
+
+def _flow_variant(cfg: FlowSchematicConfig) -> FlowVariant:
+    if cfg.variant not in FLOW_VARIANTS:
+        raise ValueError(f"unknown variant {cfg.variant!r}; options are {sorted(FLOW_VARIANTS)}")
+    return FLOW_VARIANTS[cfg.variant]
+
+
+def flow_metrics(cfg: FlowSchematicConfig) -> FlowMetrics:
+    """Solve the page for a config: scale, canvas size and laid-out geometry.
+
+    Width is the fixed input. ``unit_scale`` is whatever makes the margined drawing exactly
+    that wide, and the height is then read off the same scale, so the canvas always fits its
+    contents. The drawing width depends (weakly) on the scale itself -- the title's point
+    size becomes layout-unit headroom, which the svr variant's circle radius picks up -- so
+    the equation is solved by fixed-point iteration; it converges in a couple of steps, and
+    immediately for circle-free variants.
+
+    Parameters
+    ----------
+    cfg : FlowSchematicConfig
+
+    Returns
+    -------
+    FlowMetrics
+    """
+    variant = _flow_variant(cfg)
+    fig_width = float(cfg.fig_width if cfg.fig_width is not None else variant.fig_width)
+
+    unit_scale = 1.0
+    for _ in range(32):
+        new_scale = fig_width / (2 * cfg.margin_x + _flow_geometry(variant, cfg, unit_scale).width)
+        converged = abs(new_scale - unit_scale) < 1e-9
+        unit_scale = new_scale
+        if converged:
+            break
+
+    geom = _flow_geometry(variant, cfg, unit_scale)
+    return FlowMetrics(
+        geom=geom,
+        unit_scale=unit_scale,
+        fig_width=fig_width,
+        fig_height=unit_scale * (2 * cfg.margin_y + geom.height),
+    )
+
+
+def flow_figsize(cfg: FlowSchematicConfig) -> tuple[float, float]:
+    """Canvas size in inches for a config: the fixed width and the height it implies.
 
     Parameters
     ----------
@@ -1804,11 +1859,8 @@ def flow_figsize(cfg: FlowSchematicConfig) -> tuple[float, float]:
     tuple of (float, float)
         Width and height in inches.
     """
-    if cfg.figsize is not None:
-        return float(cfg.figsize[0]), float(cfg.figsize[1])
-    if cfg.variant not in FLOW_VARIANTS:
-        raise ValueError(f"unknown variant {cfg.variant!r}; options are {sorted(FLOW_VARIANTS)}")
-    return FLOW_VARIANTS[cfg.variant].figsize
+    metrics = flow_metrics(cfg)
+    return metrics.fig_width, metrics.fig_height
 
 
 def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure, Axes]:
@@ -1824,23 +1876,9 @@ def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure,
     tuple of (Figure, Axes)
     """
     cfg = cfg or FlowSchematicConfig()
-    if cfg.variant not in FLOW_VARIANTS:
-        raise ValueError(f"unknown variant {cfg.variant!r}; options are {sorted(FLOW_VARIANTS)}")
-    variant = FLOW_VARIANTS[cfg.variant]
-
-    fig_w, fig_h = flow_figsize(cfg)
-    if cfg.fit_width:
-        # Recompute unit_scale so the drawing exactly fills (figwidth - 2*origin_x). For a
-        # variant with the derived circle, geom.width depends on unit_scale (the circle
-        # radius carries the title headroom, which is points/unit_scale), so iterate to the
-        # fixed point -- it converges in a couple of steps (one for circle-free variants).
-        target = fig_w - 2 * cfg.origin_x
-        for _ in range(8):
-            new_scale = target / _flow_geometry(variant, cfg).width
-            if abs(new_scale - cfg.unit_scale) < 1e-6:
-                cfg = replace(cfg, unit_scale=new_scale)
-                break
-            cfg = replace(cfg, unit_scale=new_scale)
+    variant = _flow_variant(cfg)
+    metrics = flow_metrics(cfg)
+    fig_w, fig_h = metrics.fig_width, metrics.fig_height
 
     plt.rcParams.update(
         {
@@ -1854,7 +1892,7 @@ def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure,
         }
     )
 
-    geom = _flow_geometry(variant, cfg)
+    geom = metrics.geom
     widths, lefts = geom.widths, geom.lefts
     row_centers = geom.row_centers
     mid_y = geom.mid_y
@@ -1863,18 +1901,14 @@ def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure,
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=cfg.dpi)
     fig.patch.set_facecolor(cfg.background)
 
-    # The axes IS the page: it fills the figure, and the view spans exactly as many layout
-    # units as fit on the canvas at unit_scale inches per unit. That makes the x and y
-    # scales equal by construction (no aspect-driven refitting) and pins the drawing's
-    # top-left corner origin_x / origin_y inches in from the canvas corner. Anything that
-    # does not fit runs off the edge instead of shrinking the rest to accommodate it.
+    # The axes IS the page: it fills the figure and its view is exactly the drawing plus
+    # the margins. Both canvas dimensions came from that same view times unit_scale, so the
+    # x and y scales are equal by construction -- no aspect-driven refitting, and nothing
+    # can fall off the edge.
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
     ax.set_facecolor(cfg.background)
-    x_left = geom.x_min - cfg.origin_x / cfg.unit_scale
-    y_top = geom.y_max + cfg.origin_y / cfg.unit_scale
-    x_right = x_left + fig_w / cfg.unit_scale
-    ax.set_xlim(x_left, x_right)
-    ax.set_ylim(y_top - fig_h / cfg.unit_scale, y_top)
+    ax.set_xlim(geom.x_min - cfg.margin_x, geom.x_max + cfg.margin_x)
+    ax.set_ylim(geom.y_min - cfg.margin_y, geom.y_max + cfg.margin_y)
     ax.axis("off")
     # Titles center on the pipeline (the box row), not the whole canvas. For dim the
     # pipeline fills the canvas so this is figure-centered; for svr it keeps the titles
@@ -1909,7 +1943,7 @@ def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure,
             va="bottom",
             color=cfg.title_color,
             fontsize=cfg.title_size,
-            fontweight="bold",
+            fontweight=cfg.font_weight,
             zorder=_Z_TEXT,
         )
 
@@ -1931,15 +1965,16 @@ def make_flow_schematic(cfg: FlowSchematicConfig | None = None) -> tuple[Figure,
             va="bottom",
             color=cfg.title_color,
             fontsize=cfg.divide_label_size,
-            fontweight="bold",
+            fontweight=cfg.font_weight,
             zorder=_Z_TEXT,
         )
         _draw_variance_circle(ax, circle_center_x, geom.circle_center_y, geom.circle_radius, cfg)
 
-    # The axes fills the canvas, so clipping to it clips to the page. Patches clip by
-    # default; text does not. Without this, overflow is merely drawn out of view and still
-    # exists as geometry -- a tight bounding box (Jupyter's inline backend uses one) would
-    # expand to swallow it and show the full drawing no matter how small figsize was.
+    # The page is sized around the box geometry, but type is measured in points and can
+    # still spill past it (an over-long label, an oversized title). The axes fills the
+    # canvas, so clipping to it clips to the page. Patches clip by default; text does not,
+    # and unclipped text still exists as geometry -- a tight bounding box (Jupyter's inline
+    # backend uses one) would expand to swallow it and quietly change the figure width.
     for text in ax.texts:
         text.set_clip_on(True)
 
@@ -1950,7 +1985,7 @@ def save_flow_schematic(
     output_stem: str | Path,
     cfg: FlowSchematicConfig | None = None,
     formats: Sequence[str] = ("svg", "png"),
-    figsize: tuple[float, float] | None = None,
+    fig_width: float | None = None,
 ) -> list[Path]:
     """Render and save a pipeline schematic in one or more formats.
 
@@ -1960,14 +1995,14 @@ def save_flow_schematic(
         Output path without extension; one file is written per entry in ``formats``.
     cfg : FlowSchematicConfig or None
     formats : Sequence[str]
-    figsize : tuple of (float, float) or None
-        Explicit canvas size in inches, overriding ``cfg.figsize``. The file is written at
-        exactly this size (``cfg.bbox_inches`` is None by default; setting it to "tight"
-        would crop back to the ink).
+    fig_width : float or None
+        Canvas width in inches, overriding ``cfg.fig_width``. The height follows from the
+        layout. The file is written at exactly that size (``cfg.bbox_inches`` is None by
+        default; setting it to "tight" would crop back to the ink).
     """
     cfg = cfg or FlowSchematicConfig()
-    if figsize is not None:
-        cfg = replace(cfg, figsize=figsize)
+    if fig_width is not None:
+        cfg = replace(cfg, fig_width=fig_width)
     output_stem = Path(output_stem)
     output_stem.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2029,8 +2064,6 @@ def load_flow_config(path: str | Path) -> FlowSchematicConfig:
     ``circle_radius``) are dropped, so configs saved by older versions still load.
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if data.get("figsize") is not None:
-        data["figsize"] = tuple(data["figsize"])
     known = {f.name for f in fields(FlowSchematicConfig)}
     data = {k: v for k, v in data.items() if k in known}
     return FlowSchematicConfig(**data)
@@ -2038,9 +2071,8 @@ def load_flow_config(path: str | Path) -> FlowSchematicConfig:
 
 # FlowSchematicConfig float fields exposed as live Syd sliders, with (min, max, step).
 _FLOW_TUNABLES: dict[str, tuple[float, float, float]] = {
-    "unit_scale": (0.05, 1.2, 0.005),
-    "origin_x": (0.0, 3.0, 0.01),
-    "origin_y": (0.0, 3.0, 0.01),
+    "margin_x": (0.0, 3.0, 0.01),
+    "margin_y": (0.0, 3.0, 0.01),
     "box_height": (0.05, 4.0, 0.01),
     "pair_width": (0.05, 8.0, 0.01),
     "process_width": (0.05, 8.0, 0.01),
@@ -2083,11 +2115,9 @@ class FlowSchematicViewer(Viewer):
     The variant registry key plus every geometry/typography field in ``_FLOW_TUNABLES``
     is a live control; colors and label text come straight from ``config``. Every font
     control is a raw point size, and each pipeline role (pair / process / spectrum /
-    outcome) has its own width slider. Figure size is controlled by ``auto_figsize``: on,
-    the canvas is sized snugly around the drawing; when off, the ``fig_width`` /
-    ``fig_height`` sliders fix the canvas and the drawing keeps its true physical scale
-    on it, overflowing if it is too big. Tune ``unit_scale`` (inches per layout unit) and
-    the font sizes to make it fit.
+    outcome) has its own width slider. ``fig_width`` is the only physical dimension: the
+    canvas is always that wide, the scale is solved to fill it, and the height follows
+    from the layout -- so widening a box grows the page rather than overflowing it.
 
     The ``config_name`` text box and "Save config JSON" button dump the live parameters
     to ``config_dir/<config_name>.json``, reloadable with :func:`load_flow_config`.
@@ -2106,11 +2136,10 @@ class FlowSchematicViewer(Viewer):
         self.add_button("save_config", label="Save config JSON", callback=self.save_config, replot=False)
 
         self.add_boolean("show_footprint", value=True)
-        self.add_boolean("fit_width", value=config.fit_width)
-        self.add_boolean("auto_figsize", value=config.figsize is None)
-        natural_width, natural_height = flow_figsize(config)
-        self.add_float("fig_width", value=natural_width, min=0.05, max=30.0, step=0.05)
-        self.add_float("fig_height", value=natural_height, min=0.05, max=30.0, step=0.05)
+        # None means "the variant's width"; resolve it so the slider starts somewhere real.
+        # Switching variant afterwards therefore keeps the slider's width, not the new
+        # variant's -- reset it by hand when comparing the two at their publication sizes.
+        self.add_float("fig_width", value=flow_metrics(config).fig_width, min=0.5, max=30.0, step=0.025)
         for name, (lo, hi, step) in _FLOW_TUNABLES.items():
             # Widen the slider to admit the incoming value; syd otherwise clamps it to the
             # range and the viewer would silently render something other than the config.
@@ -2119,12 +2148,10 @@ class FlowSchematicViewer(Viewer):
 
     def config_from_state(self, state) -> FlowSchematicConfig:
         """Build the config the current control values describe."""
-        figsize = None if state["auto_figsize"] else (state["fig_width"], state["fig_height"])
         return replace(
             self.cfg,
             variant=state["variant"],
-            figsize=figsize,
-            fit_width=state["fit_width"],
+            fig_width=state["fig_width"],
             **{name: state[name] for name in _FLOW_TUNABLES},
         )
 
@@ -2143,7 +2170,7 @@ class FlowSchematicViewer(Viewer):
 
 def flow_schematic(
     variant: str = "dim",
-    figsize: tuple[float, float] | None = None,
+    fig_width: float | None = None,
     config: FlowSchematicConfig | None = None,
     config_dir: str | Path | None = None,
     return_syd_viewer: bool = False,
@@ -2156,12 +2183,11 @@ def flow_schematic(
     variant : str
         Registry key: "dim" (two matched spectra, each reduced to a dimensionality) or
         "svr" (PF-shared vs full spectral mass, divided, with the variance circle).
-    figsize : tuple of (float, float) or None
-        Canvas size in inches, taken literally. The drawing is placed on it at
-        ``unit_scale`` inches per layout unit, pinned ``origin_x`` / ``origin_y`` inches
-        in from the top-left, and is never rescaled to fit -- oversized content runs off
-        the edge. None keeps whatever ``config`` specifies, which by default falls back to
-        the variant's canvas (:attr:`FlowVariant.figsize`).
+    fig_width : float or None
+        Canvas width in inches -- the figure's one fixed dimension. The layout is scaled to
+        fill it and the height follows from what the drawing needs. None keeps whatever
+        ``config`` specifies, which by default falls back to the variant's publication
+        width (:attr:`FlowVariant.fig_width`).
     config : FlowSchematicConfig or None
         Full style/layout config. When None, the variant's tuned default
         (:func:`default_flow_config`) is used.
@@ -2180,8 +2206,8 @@ def flow_schematic(
     """
     base = config if config is not None else default_flow_config(variant)
     cfg = replace(base, variant=variant, **overrides)
-    if figsize is not None:
-        cfg = replace(cfg, figsize=figsize)
+    if fig_width is not None:
+        cfg = replace(cfg, fig_width=fig_width)
     viewer = FlowSchematicViewer(cfg, config_dir=config_dir)
 
     if return_syd_viewer:

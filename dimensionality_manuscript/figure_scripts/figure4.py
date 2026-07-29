@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 from scipy.stats import gaussian_kde, ttest_rel, wilcoxon
 from matplotlib import pyplot as plt
+from matplotlib.lines import Line2D
 from syd import Viewer
 
 from vrAnalysis.helpers import edge2center
@@ -12,6 +13,7 @@ from dimilibi.helpers import fit_powerlaw_decay, fit_powerlaw_derivatives
 from dimensionality_manuscript import ResultsAggregator, average_by_mouse
 from dimensionality_manuscript.registry import PopulationRegistry
 from dimensionality_manuscript.configs.tilbury_fit import TilburyFitConfig, _eval_tilbury, _eval_gaussian, _SPLITS
+from .legends import LEGEND_LOCS, LEGEND_KNOBS, add_legend_widgets, update_legend_widgets, apply_legend
 
 # Selectable spectrum keys and which aggregator each one comes from. StimSpace keys resolve
 # against the StimSpaceSpectra aggregator; CVPCA keys against the CVPCAConfig aggregator.
@@ -459,7 +461,53 @@ def _decay_fit_per_session(
     return mse, param
 
 
-def _decay_stat_panel(ax, data_list, colors, labels, display: str, beewidth: float, fontsize: float, xtick_labels) -> None:
+def _zero_to_max_ticks(data_list, step: float = 5.0) -> tuple[tuple[float, float], list[float]]:
+    """``(ybounds, yticks)`` for a non-negative statistic: the range ``[0, max]`` over ``data_list``.
+
+    Ticks are ``0`` and the largest multiple of ``step`` at or below the data maximum (just ``[0]``
+    when the maximum falls below one step). ``data_list`` is any collection of arrays; non-finite
+    entries are ignored.
+    """
+    finite = np.concatenate([np.asarray(d, dtype=float).ravel() for d in data_list]) if len(data_list) else np.array([])
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return (0.0, 1.0), [0.0]
+    ymax = float(np.max(finite))
+    top_tick = step * np.floor(ymax / step)
+    return (0.0, ymax), [0.0] if top_tick <= 0 else [0.0, float(top_tick)]
+
+
+def _format_stat_spines(ax, xbounds, ybounds, yticks) -> None:
+    """:func:`format_spines` for a decay-stat panel, honoring an explicit y range / ticks when given.
+
+    With ``ybounds`` the axis bottom is pinned there (the top keeps matplotlib's padded auto limit) and
+    the y spine is bounded to it; without it the spine spans the current limits, as before.
+    """
+    if ybounds is not None:
+        ax.set_ylim(bottom=ybounds[0])
+    format_spines(
+        ax,
+        x_pos=-0.02,
+        y_pos=-0.02,
+        spines_visible=["left", "bottom"],
+        xbounds=list(xbounds),
+        ybounds=list(ybounds) if ybounds is not None else list(ax.get_ylim()),
+        **({} if yticks is None else {"yticks": list(yticks)}),
+    )
+
+
+def _decay_stat_panel(
+    ax,
+    data_list,
+    colors,
+    labels,
+    display: str,
+    beewidth: float,
+    fontsize: float,
+    xtick_labels,
+    ybounds: tuple[float, float] | None = None,
+    yticks=None,
+) -> None:
     """One panel of a per-curve statistic at the two decay-model x-positions (power law, exponential).
 
     ``data_list`` holds one ``(n_mice, 2)`` array per curve option (its two columns are the power-law
@@ -473,6 +521,9 @@ def _decay_stat_panel(ax, data_list, colors, labels, display: str, beewidth: flo
       at ``x = model_index * n_curves + curve_index`` (blocks ``[0 .. n_curves-1]`` for the power law,
       then ``[n_curves .. 2*n_curves-1]`` for the exponential), each with a short horizontal mean line.
       ``beewidth`` sets the point spread; the reduced-equation label sits under each block.
+
+    ``ybounds``/``yticks`` override the y range and ticks (see :func:`_format_stat_spines`); by default
+    the y spine spans the automatic limits and keeps matplotlib's ticks.
     """
     if display == "swarm":
         n_curves = len(data_list)
@@ -486,17 +537,20 @@ def _decay_stat_panel(ax, data_list, colors, labels, display: str, beewidth: flo
                 if finite.any():
                     offsets[finite] = beeswarm(vals[finite])
                 ax.plot(
-                    x + beewidth * offsets, vals, color=color, linestyle="none", marker="o",
-                    markersize=3, alpha=0.3, label=labels[k] if j == 0 else None,
+                    x + beewidth * offsets,
+                    vals,
+                    color=color,
+                    linestyle="none",
+                    marker="o",
+                    markersize=3,
+                    alpha=0.3,
+                    label=labels[k] if j == 0 else None,
                 )
                 ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=2.0)
         n_pos = 2 * n_curves
         ax.set_xlim(-0.5, n_pos - 0.5)
         centers = [(n_curves - 1) / 2.0, n_curves + (n_curves - 1) / 2.0]
-        format_spines(
-            ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"],
-            xbounds=[0, n_pos - 1], ybounds=list(ax.get_ylim()),
-        )
+        _format_stat_spines(ax, [0, n_pos - 1], ybounds, yticks)
         ax.set_xticks(centers, labels=xtick_labels, fontsize=fontsize)
         return
 
@@ -509,10 +563,7 @@ def _decay_stat_panel(ax, data_list, colors, labels, display: str, beewidth: flo
             ax.plot(x, data.T, color=color, alpha=0.3, linewidth=0.8)
             ax.plot(x, np.nanmean(data, axis=0), color=color, linewidth=2.0, label=label)
     ax.set_xlim(-0.3, 1.3)
-    format_spines(
-        ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"],
-        xbounds=[0, 1], ybounds=list(ax.get_ylim()),
-    )
+    _format_stat_spines(ax, [0, 1], ybounds, yticks)
     ax.set_xticks([0, 1], labels=xtick_labels, fontsize=fontsize)
 
 
@@ -588,6 +639,15 @@ def _beeswarm_panel(ax, values_list, colors, labels, fontsize, beewidth: float =
     if len(labels) > 2:
         ax.set_xticks(xticks, labels=labels, rotation=45, ha="right", fontsize=fontsize)
     ax.set_xticks(xticks, labels=labels, fontsize=fontsize)
+
+
+# The legend widget machinery moved to ``legends.py`` when figure3's composite figure needed it too.
+# Aliased rather than renamed at the call sites so this module's references stay as they were.
+_LEGEND_LOCS = LEGEND_LOCS
+_LEGEND_KNOBS = LEGEND_KNOBS
+_add_legend_widgets = add_legend_widgets
+_update_legend_widgets = update_legend_widgets
+_apply_legend = apply_legend
 
 
 class PlacefieldSpectraViewer(Viewer):
@@ -1558,7 +1618,7 @@ class SpectrumFigureViewer(Viewer):
         pf_color = "orange"
         ff_color = "black"
         pf_label = "Placefields"
-        ff_label = "Reliable CA1"
+        ff_label = "Full CA1"
 
         # Tilbury-fit overlays (PF-like spectra), placed between PF and CA1 in every panel.
         fit_keys = list(state.get("fit_key", []))
@@ -1672,13 +1732,10 @@ class SpectrumFigureViewer(Viewer):
         ax[0].set_xscale("log")
         ax[0].set_yscale("log")
         ax[0].set_ylim(10**ylim_min, 10**ylim_max)
-        yticks = ax[0].get_yticks()
-        ytick_power = [np.log10(yt) for yt in yticks]
-        ax[0].set_yticks(yticks, labels=ytick_power)
         ax[0].set_ylim(10**ylim_min, 10**ylim_max)
         ax[0].set_xlabel("Shared Dimension")
         ax[0].set_ylabel("Variance")
-        ax[0].legend(loc="upper right", fontsize=self.fontsize, frameon=False, markerfirst=False)
+        ax[0].legend(loc="upper right", fontsize=self.fontsize, frameon=False, markerfirst=False, handlelength=1.0, handletextpad=0.25)
         xlim = ax[0].get_xlim()
         format_spines(
             ax[0],
@@ -2515,6 +2572,21 @@ _FIT_FIGURE_NORMALIZATIONS = ("std", "sum", "max", "none")
 # shown it is drawn in the generalized (blue) color; "both" keeps generalized blue and shrinkage purple.
 _FIT_MODEL_OPTIONS = ("generalized", "shrinkage", "both")
 
+# Matplotlib ``loc`` strings offered for the placement of the fit-figure legend.
+_LEGEND_POSITIONS = (
+    "upper right",
+    "upper left",
+    "lower left",
+    "lower right",
+    "right",
+    "center left",
+    "center right",
+    "lower center",
+    "upper center",
+    "center",
+    "best",
+)
+
 
 def _fit_figure_scale(ref: np.ndarray, method: str) -> float:
     """Scalar to divide a curve group by, from the reference (test-data) curve.
@@ -2555,7 +2627,8 @@ class PlacefieldFitFigureViewer(Viewer):
     plain-Gaussian control (always shown) and the generalized-family fit(s) selected by ``fit_model``
     (generalized, shrinkage, or both). The whole group in a panel is normalized by the test-data
     curve's statistic (``normalize``: std / sum / max / none), so the fits stay overlaid on the data
-    while panels remain comparable under ``sharey``.
+    while panels remain comparable under ``sharey``. Only one panel is labelled and carries the
+    legend, picked by ``legend_axis`` (a flat row-major panel index).
     """
 
     def __init__(
@@ -2566,6 +2639,13 @@ class PlacefieldFitFigureViewer(Viewer):
         neurons: list[int],
         n_rows: int = 2,
         n_cols: int = 3,
+        legend_axis: int = 0,
+        legend_position: str = "upper right",
+        legend_x_offset: float = 0.0,
+        legend_y_offset: float = 0.0,
+        legend_handlelength: float = 2.0,
+        legend_handletextpad: float = 0.8,
+        legend_markerfirst: bool = True,
         normalize: str = "std",
         normalize_independent: bool = False,
         fit_model: str = "both",
@@ -2579,6 +2659,8 @@ class PlacefieldFitFigureViewer(Viewer):
             raise ValueError(f"Unknown normalize {normalize!r}. Options: {list(_FIT_FIGURE_NORMALIZATIONS)}")
         if fit_model not in _FIT_MODEL_OPTIONS:
             raise ValueError(f"Unknown fit_model {fit_model!r}. Options: {list(_FIT_MODEL_OPTIONS)}")
+        if legend_position not in _LEGEND_POSITIONS:
+            raise ValueError(f"Unknown legend_position {legend_position!r}. Options: {list(_LEGEND_POSITIONS)}")
 
         self.results = results
         self.registry = registry
@@ -2594,6 +2676,21 @@ class PlacefieldFitFigureViewer(Viewer):
 
         self.add_integer("n_rows", value=n_rows, min=1, max=8)
         self.add_integer("n_cols", value=n_cols, min=1, max=8)
+        # Flat panel index (row-major, resolved with divmod by n_cols) of the panel that carries the
+        # legend; its upper bound tracks the current grid size.
+        self.add_integer("legend_axis", value=legend_axis, min=0, max=n_rows * n_cols - 1)
+        # Legend layout, passed straight through to ax.legend: placement, the length of the sample
+        # line in each entry, the gap between that sample and its label, and whether the sample is
+        # drawn to the left of the label (False puts it on the right).
+        self.add_selection("legend_position", options=list(_LEGEND_POSITIONS), value=legend_position)
+        # Shift the anchor box the legend is placed against, in axes-fraction units (1.0 = one full
+        # axes width/height), so the legend can sit outside its panel — e.g. in the gap between two
+        # panels. 0 leaves it flush with the axes, as a plain ``loc`` would put it.
+        self.add_float("legend_x_offset", value=legend_x_offset, min=-2.0, max=2.0, step=0.01)
+        self.add_float("legend_y_offset", value=legend_y_offset, min=-2.0, max=2.0, step=0.01)
+        self.add_float("legend_handlelength", value=legend_handlelength, min=0.0, max=6.0, step=0.1)
+        self.add_float("legend_handletextpad", value=legend_handletextpad, min=0.0, max=3.0, step=0.05)
+        self.add_boolean("legend_markerfirst", value=legend_markerfirst)
         # One widget per TilburyFitConfig param axis (see PlacefieldExampleFitViewer).
         self._fit_axes = list(results.param_axes)
         self._tuple_labels = _add_param_axis_widgets(self, results.param_axes)
@@ -2604,7 +2701,13 @@ class PlacefieldFitFigureViewer(Viewer):
         # Which generalized-family fit(s) to overlay (the plain-Gaussian control is always shown).
         self.add_selection("fit_model", options=list(_FIT_MODEL_OPTIONS), value=fit_model)
 
+        self.on_change(["n_rows", "n_cols"], self.update_legend_bounds)
+
     _fit_sel_params = PlacefieldExampleFitViewer._fit_sel_params
+
+    def update_legend_bounds(self, state: dict):
+        """Keep the legend panel index inside the current ``n_rows * n_cols`` grid."""
+        self.update_integer("legend_axis", max=int(state["n_rows"]) * int(state["n_cols"]) - 1)
 
     def _session_fit(self, session_uid: str, fit_params: dict) -> dict:
         """Return the (cached) per-session fit bundle for ``session_uid`` at ``fit_params``."""
@@ -2712,6 +2815,8 @@ class PlacefieldFitFigureViewer(Viewer):
         method = state["normalize"]
         independent = bool(state["normalize_independent"])
         n_show = n_rows * n_cols
+        # Panel that carries the legend, as a flat row-major index into the grid.
+        legend_cell = min(int(state["legend_axis"]), n_show - 1)
         fit_params = self._fit_sel_params(state)
 
         plt.rcParams["font.size"] = self.fontsize
@@ -2754,8 +2859,8 @@ class PlacefieldFitFigureViewer(Viewer):
                 scale = _fit_figure_scale(data, method)
                 data, gen, gauss, shrink = data / scale, gen / scale, gauss / scale, shrink / scale
 
-            first = cell == 0
-            last = cell == n_show - 1
+            # The legend lives on one panel, so only that panel's curves get labelled.
+            first = (r, c) == divmod(legend_cell, n_cols)
             ax.plot(theta, data, "o", color="gray", ms=2.5, alpha=0.5, label="Test data" if first else None)
             ax.plot(theta, gauss, "-", color=_GAUSSIAN_COLOR, lw=1.5, label="Gaussian" if first else None)
             # Overlay the requested generalized-family fit(s). A lone fit is drawn blue (the
@@ -2769,7 +2874,25 @@ class PlacefieldFitFigureViewer(Viewer):
                 ax.plot(theta, shrink, "-", color=shrink_color, lw=1.5, label=shrink_label if first else None)
             # ax.set_title(f"{session_uid}\nroi {roi}  R²={fit['r2_test'][kept_row]:.2f}", fontsize=self.fontsize * 0.8)
             if first:
-                ax.legend(fontsize=self.fontsize - 1, frameon=False, loc="upper right", markerfirst=True)
+                # The anchor box defaults to the axes box (0, 0, 1, 1); offsetting its origin slides
+                # the legend off the panel without moving where ``loc`` pins it within the box.
+                leg = ax.legend(
+                    fontsize=self.fontsize - 1,
+                    frameon=False,
+                    loc=state["legend_position"],
+                    bbox_to_anchor=(float(state["legend_x_offset"]), float(state["legend_y_offset"]), 1.0, 1.0),
+                    markerfirst=bool(state["legend_markerfirst"]),
+                    handlelength=float(state["legend_handlelength"]),
+                    handletextpad=float(state["legend_handletextpad"]),
+                )
+                # Keep the constrained layout from reserving space for an off-panel legend, which
+                # would shrink the panels and break the uniform grid.
+                leg.set_in_layout(False)
+                # A legend spilling past its panel is drawn under any axes created after this one, so
+                # the neighbour's opaque background would clip it. Draw this panel last, over a
+                # transparent patch so raising it does not hide anything underneath.
+                ax.set_zorder(10)
+                ax.patch.set_visible(False)
 
         xbounds = (0, theta[-1] + (theta[1] - theta[0]) / 2)
         xticks = xbounds
@@ -2820,14 +2943,24 @@ class PlacefieldPopulationViewer(Viewer):
     - gs[2]: fraction of neurons where the generalized fit beats the Gaussian, either pooled to one
       per-mouse beeswarm (``fraction_view="pooled"``) or broken down with one beeswarm of per-session
       values per mouse (``fraction_view="by_mouse"``).
-    - gs[-1]: across-mouse power-law exponent beeswarms — the selected ``source_key``
-      spectrum (from ``results_spectra``/``results_cvpca``) plus the :data:`_POP_EIG_KEYS` fit
-      spectra (colors in :data:`_POP_ALPHA_COLORS`) — estimated exactly as in
-      :class:`SpectrumFigureViewer`: the median five-point-derivative local exponent over each
-      session's own peak-curvature-to-noise-floor window (:func:`_second_derivative_window`),
-      computed per session and averaged by mouse, under one :class:`AdaptiveAlphaConfig` (the
-      ``source_*`` widgets). Keys with no negative entry borrow their window from that session's
-      ``ss_cvpca`` row when ``results_spectra`` is given.
+    - gs[-1]: an across-mouse spectrum-decay statistic for the selected ``source_key`` spectrum (from
+      ``results_spectra``/``results_cvpca``) plus the :data:`_POP_EIG_KEYS` fit spectra (colors in
+      :data:`_POP_ALPHA_COLORS`), selected by ``last_axis``:
+
+      - ``"decay_exponent"``: one beeswarm column per curve of the power-law exponent estimated
+        exactly as in :class:`SpectrumFigureViewer` — the median five-point-derivative local exponent
+        over each session's own peak-curvature-to-noise-floor window
+        (:func:`_second_derivative_window`), computed per session and averaged by mouse, under one
+        :class:`AdaptiveAlphaConfig` (the ``source_*`` widgets). Keys with no negative entry borrow
+        their window from that session's ``ss_cvpca`` row when ``results_spectra`` is given.
+      - ``"characteristic_dim"`` / ``"mse"``: the two statistics of
+        :class:`PlacefieldSpectrumMSEViewer`, each curve fit under both :data:`_DECAY_MODELS` (power
+        law and exponential, the two x-positions of the "Fit Type" axis) over the ``fit_zone`` window
+        — the characteristic parameter (``alpha`` / ``M``, y-label "Dimensionality", spanning
+        ``[0, max]`` with ticks every 5 units) or the log-space MSE — laid out by ``display``
+        (``each``/``errorPlot``/``swarm``).
+
+      The panel's legend is styled by the ``legend_*`` widgets (:func:`_add_legend_widgets`).
 
     The example single-neuron fits live in the separate :class:`PlacefieldExampleFitViewer`.
     ``TilburyFitConfig``'s param axes (``activity_parameters_name``) are merged
@@ -2874,7 +3007,23 @@ class PlacefieldPopulationViewer(Viewer):
         # Wilcoxon signed-rank, on the per-mouse averages. Bonferroni-corrected when "both".
         self.add_selection("paired_test", options=["ttest", "wilcoxon"], value="ttest")
 
-        # --- ax[3] population power-law-exponent panel: source_key spectrum + eig fit spectra ---
+        # --- ax[3] population spectrum-decay panel: source_key spectrum + eig fit spectra ---
+        # Which statistic the panel shows: the adaptive median-FPD power-law exponent (one value per
+        # curve, beeswarm), or one of the two decay-law statistics of PlacefieldSpectrumMSEViewer --
+        # the characteristic parameter (power-law ``alpha`` / exponential ``M``) or the log-space MSE
+        # -- each evaluated at both _DECAY_MODELS x-positions.
+        self.add_selection("last_axis", options=["decay_exponent", "characteristic_dim", "mse"], value="decay_exponent")
+        # Decay-law fit window and layout, used only by the "characteristic_dim"/"mse" options (the
+        # exponent option always uses its own adaptive window and a beeswarm). Same semantics as
+        # PlacefieldSpectrumMSEViewer: per-session adaptive window or one fixed [start, end) window,
+        # and "each" per-mouse lines / "errorPlot" mean +/- SE band / "swarm" beeswarm columns.
+        self.add_selection("fit_zone", options=["adaptive", "fixed"], value="adaptive")
+        self.add_integer_range("fixed_range", value=(10, 50), min=1, max=500)
+        self.add_selection("display", options=["each", "errorPlot", "swarm"], value="each")
+        # gs[-1] legend styling, available under every ``last_axis`` option. At the default
+        # ``legend_loc="auto"`` the decay-law panels place a legend at "best" and the exponent beeswarm
+        # shows none (its columns are labelled on the x-axis); any explicit loc draws one either way.
+        _add_legend_widgets(self)
         # source_key options mirror spectrum_figure (StimSpace keys, plus the CVPCA key when given).
         if results_spectra is not None:
             source_options = list(_STIMSPACE_KEYS) + (list(_CVPCA_KEYS) if results_cvpca is not None else [])
@@ -3144,25 +3293,37 @@ class PlacefieldPopulationViewer(Viewer):
             )
             ax3.set_xticks(xticks, labels=[])
 
-        # --- gs[-1]: across-mouse adaptive power-law exponent, source_key spectrum + eig fit spectra ---
-        # Each session's exponent is the median five-point-derivative local exponent over its own
-        # peak-curvature-to-noise-floor window (_second_derivative_window), then averaged by mouse --
-        # the same estimator spectrum_figure uses, under the single "source" AdaptiveAlphaConfig.
+        # --- gs[-1]: across-mouse spectrum decay statistic, source_key spectrum + eig fit spectra ---
+        # Which statistic is set by ``last_axis``. "decay_exponent": each session's exponent is the
+        # median five-point-derivative local exponent over its own peak-curvature-to-noise-floor
+        # window (_second_derivative_window), then averaged by mouse -- the same estimator
+        # spectrum_figure uses, under the single "source" AdaptiveAlphaConfig, drawn as one beeswarm
+        # column per curve. "characteristic_dim"/"mse": the decay-law statistics of
+        # PlacefieldSpectrumMSEViewer -- each curve fit under both _DECAY_MODELS and drawn across the
+        # two model x-positions in the ``display`` layout.
         ax4 = fig.add_subplot(outer[0, -1])
         cfg = self._cfg_from_state(state, "source")
+        fit_zone = state["fit_zone"]
+        fixed_range = tuple(int(v) for v in state["fixed_range"])
 
         # Fixed fallback window source: ss_cvpca, fetched unconditionally (harmless self-fallback
         # when source_key already is that key). Keys that aren't cross-validated have no negative
         # entry to locate a noise floor with, so they borrow that session's ss_cvpca window.
         cvpca = self._spectrum_sessions(state, "ss_cvpca", cfg) if self.results_spectra is not None else None
 
+        def _fallback_rows(session_ids) -> tuple[np.ndarray | None, np.ndarray | None]:
+            """The ss_cvpca (raw, smoothed) rows aligned to ``session_ids``, for window borrowing."""
+            if cvpca is None:
+                return None, None
+            cvpca_raw, cvpca_smooth, _, cvpca_session_ids = cvpca
+            return (
+                _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_raw),
+                _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_smooth),
+            )
+
         def _adaptive_alpha(raw: np.ndarray, smooth: np.ndarray, mouse_names, session_ids) -> np.ndarray:
             """Per-mouse adaptive exponent for one key's per-session raw/smoothed spectrum."""
-            fb_raw, fb_smooth = None, None
-            if cvpca is not None:
-                cvpca_raw, cvpca_smooth, _, cvpca_session_ids = cvpca
-                fb_raw = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_raw)
-                fb_smooth = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_smooth)
+            fb_raw, fb_smooth = _fallback_rows(session_ids)
             return average_by_mouse(
                 _median_fpd_alpha_per_session(
                     raw,
@@ -3176,15 +3337,29 @@ class PlacefieldPopulationViewer(Viewer):
                 mouse_names,
             )
 
-        alpha_values, alpha_colors, alpha_labels = [], [], []
+        def _decay_stats(raw: np.ndarray, smooth: np.ndarray, mouse_names, session_ids) -> dict[str, np.ndarray]:
+            """Per-mouse decay-law statistics for one key, as ``(n_mice, 2)`` arrays.
+
+            The two columns are the power-law and exponential fits (:data:`_DECAY_MODELS`' order);
+            ``"characteristic_dim"`` is that model's parameter (``alpha`` / ``M``) and ``"mse"`` its
+            log-space MSE.
+            """
+            fb_raw, fb_smooth = _fallback_rows(session_ids) if fit_zone == "adaptive" else (None, None)
+            mse_cols, param_cols = [], []
+            for model_key, _ in _DECAY_MODELS:
+                mse_s, param_s = _decay_fit_per_session(raw, smooth, model_key, fit_zone, fixed_range, cfg.adaptive_buffer, fb_raw, fb_smooth)
+                mse_cols.append(average_by_mouse(mse_s, mouse_names))
+                param_cols.append(average_by_mouse(param_s, mouse_names))
+            return {"characteristic_dim": np.stack(param_cols, axis=1), "mse": np.stack(mse_cols, axis=1)}
+
+        # Assemble the curves: the source_key data spectrum, then the eig fit spectra -- "better"
+        # composite (if requested), the selected generalized fit(s), then the gaussian control,
+        # keeping _POP_EIG_KEYS' order. A single-fit selection draws that fit blue and labelled
+        # "Generalized" (matching gs[0]/gs[1]).
+        curves: list[tuple[tuple, str, str]] = []  # (per-session spectra tuple, color, label)
         if self.results_spectra is not None:
-            source_key = state["source_key"]
-            alpha_values.append(_adaptive_alpha(*self._spectrum_sessions(state, source_key, cfg)))
-            alpha_colors.append(_POP_ALPHA_COLORS["source_key"])
-            alpha_labels.append("Data")
-        # Assemble the eig fit spectra: "better" composite (if requested), the selected generalized
-        # fit(s), then the gaussian control -- keeping _POP_EIG_KEYS' order. A single-fit selection
-        # draws that fit blue and labelled "Generalized" (matching gs[0]/gs[1]).
+            spectra = self._spectrum_sessions(state, state["source_key"], cfg)
+            curves.append((spectra, _POP_ALPHA_COLORS["source_key"], "Data"))
         eig_keys = ["eig_better"] if state["include_better"] else []
         if fit_sel == "both":
             eig_keys += ["eig_shrinkage", "eig_tilbury"]
@@ -3194,15 +3369,43 @@ class PlacefieldPopulationViewer(Viewer):
             eig_keys.append("eig_tilbury")
         eig_keys.append("eig_control")
         for key in eig_keys:
-            alpha_values.append(_adaptive_alpha(*self._fit_spectrum_sessions(state, key, cfg)))
             if fit_sel != "both" and key in ("eig_shrinkage", "eig_tilbury"):
-                alpha_colors.append(_GENERALIZED_COLOR)
-                alpha_labels.append("Generalized")
+                color, label = _GENERALIZED_COLOR, "Generalized"
             else:
-                alpha_colors.append(_POP_ALPHA_COLORS[key])
-                alpha_labels.append(_POP_ALPHA_LABELS[key])
-        _beeswarm_panel(ax4, alpha_values, alpha_colors, alpha_labels, self.fontsize, state["beewidth"])
-        ax4.set_ylabel("Decay exponent")
+                color, label = _POP_ALPHA_COLORS[key], _POP_ALPHA_LABELS[key]
+            curves.append((self._fit_spectrum_sessions(state, key, cfg), color, label))
+
+        colors = [color for _, color, _ in curves]
+        labels = [label for _, _, label in curves]
+        last_axis = state["last_axis"]
+        if last_axis == "decay_exponent":
+            alpha_values = [_adaptive_alpha(*spectra) for spectra, _, _ in curves]
+            _beeswarm_panel(ax4, alpha_values, colors, labels, self.fontsize, state["beewidth"])
+            ax4.set_ylabel("Decay exponent")
+            # The beeswarm columns are labelled on the x-axis, so no legend unless one is asked for --
+            # its points carry no labels, hence the proxy handles.
+            handles = [Line2D([], [], color=color, marker="o", markersize=3, linestyle="none") for color in colors]
+            _apply_legend(ax4, state, self.fontsize, handles=handles, labels=labels)
+        else:
+            data_list = [_decay_stats(*spectra)[last_axis] for spectra, _, _ in curves]
+            xtick_labels = [lbl for _, lbl in _DECAY_MODELS]
+            # The characteristic dimension is non-negative: span [0, max] with ticks every 5 units.
+            ybounds, yticks = _zero_to_max_ticks(data_list) if last_axis == "characteristic_dim" else (None, None)
+            _decay_stat_panel(
+                ax4,
+                data_list,
+                colors,
+                labels,
+                state["display"],
+                state["beewidth"],
+                self.fontsize,
+                xtick_labels,
+                ybounds=ybounds,
+                yticks=yticks,
+            )
+            ax4.set_xlabel("Fit Type")
+            ax4.set_ylabel("Dimensionality" if last_axis == "characteristic_dim" else "Log-space MSE")
+            _apply_legend(ax4, state, self.fontsize, auto_loc="best")
         return fig
 
 
@@ -3314,6 +3517,13 @@ def placefield_fit_figure(
     neurons: list[int],
     n_rows: int = 2,
     n_cols: int = 3,
+    legend_axis: int = 0,
+    legend_position: str = "upper right",
+    legend_x_offset: float = 0.0,
+    legend_y_offset: float = 0.0,
+    legend_handlelength: float = 2.0,
+    legend_handletextpad: float = 0.8,
+    legend_markerfirst: bool = True,
     normalize: str = "std",
     normalize_independent: bool = False,
     fit_model: str = "both",
@@ -3347,6 +3557,22 @@ def placefield_fit_figure(
         Must be the same length as ``session_uids`` and aligned to it.
     n_rows, n_cols : int
         Grid shape; the first ``n_rows * n_cols`` list entries are plotted (extra panels hidden).
+    legend_axis : int
+        Flat row-major index of the panel that carries the legend, resolved to a grid position with
+        ``divmod(legend_axis, n_cols)``. Must be in ``[0, n_rows * n_cols - 1]``. Default 0 (top-left).
+    legend_position : str
+        Matplotlib ``loc`` for the legend, one of :data:`_LEGEND_POSITIONS`. Default ``"upper right"``.
+    legend_x_offset, legend_y_offset : float
+        Shift of the legend's anchor box in axes-fraction units (1.0 = one full axes width/height),
+        letting the legend sit outside its panel — e.g. ``legend_x_offset=0.4`` with
+        ``legend_position="upper right"`` parks it in the gap to the right of the panel. The legend is
+        excluded from the constrained layout, so offsetting it never resizes the panels. Default 0.
+    legend_handlelength : float
+        Length of the sample line drawn in each legend entry, in font-size units. Default 2.0.
+    legend_handletextpad : float
+        Gap between a legend entry's sample line and its label, in font-size units. Default 0.8.
+    legend_markerfirst : bool
+        If True (default), the sample line is drawn to the left of its label; False puts it on the right.
     normalize : {"std", "sum", "max", "none"}
         Per-panel, the test-data curve and both fits are divided by this statistic of the test-data
         curve, so the fits stay overlaid on the data while panels share a scale under ``sharey``.
@@ -3385,6 +3611,13 @@ def placefield_fit_figure(
         neurons=neurons,
         n_rows=n_rows,
         n_cols=n_cols,
+        legend_axis=legend_axis,
+        legend_position=legend_position,
+        legend_x_offset=legend_x_offset,
+        legend_y_offset=legend_y_offset,
+        legend_handlelength=legend_handlelength,
+        legend_handletextpad=legend_handletextpad,
+        legend_markerfirst=legend_markerfirst,
         normalize=normalize,
         normalize_independent=normalize_independent,
         fit_model=fit_model,
@@ -3394,6 +3627,14 @@ def placefield_fit_figure(
     )
     viewer.update_integer("n_rows", value=n_rows)
     viewer.update_integer("n_cols", value=n_cols)
+    # Seeding via update_* may not fire on_change, so set the legend bound alongside its value.
+    viewer.update_integer("legend_axis", value=legend_axis, max=n_rows * n_cols - 1)
+    viewer.update_selection("legend_position", value=legend_position)
+    viewer.update_float("legend_x_offset", value=legend_x_offset)
+    viewer.update_float("legend_y_offset", value=legend_y_offset)
+    viewer.update_float("legend_handlelength", value=legend_handlelength)
+    viewer.update_float("legend_handletextpad", value=legend_handletextpad)
+    viewer.update_boolean("legend_markerfirst", value=legend_markerfirst)
     viewer.update_selection("normalize", value=normalize)
     viewer.update_boolean("normalize_independent", value=normalize_independent)
     viewer.update_selection("fit_model", value=fit_model)
@@ -3423,6 +3664,11 @@ def placefield_population(
     generalized_fit: str = "both",
     include_better: bool = True,
     paired_test: str = "ttest",
+    last_axis: str = "decay_exponent",
+    fit_zone: str = "adaptive",
+    fixed_range: tuple[int, int] = (10, 50),
+    display: str = "each",
+    legend: dict | None = None,
     normalize: bool = True,
     source_cfg: AdaptiveAlphaConfig | None = None,
     fontsize: float = 9.0,
@@ -3438,11 +3684,13 @@ def placefield_population(
     generalized (blue) and shrinkage (purple) fits with the across-mouse mean (bold) and a reference
     at ``p = 2``; gs[1] the per-mouse median test R^2 for the shrinkage, generalized and Gaussian
     models (paired, in that order); gs[2] the fraction of neurons where the generalized fit beats the
-    Gaussian, either pooled (one per-mouse beeswarm) or broken down by mouse; gs[-1] the across-mouse
-    power-law exponent for the selected ``source_key`` spectrum and the
+    Gaussian, either pooled (one per-mouse beeswarm) or broken down by mouse; gs[-1] an across-mouse
+    spectrum-decay statistic (``last_axis``) for the selected ``source_key`` spectrum and the
     ``eig_better``/``eig_shrinkage``/``eig_tilbury``/``eig_control`` fit spectra (colors
-    orange/red/purple/blue/black), estimated by the same fixed adaptive median-FPD fit as
-    :func:`spectrum_figure`. Example single-neuron fits are in :func:`placefield_example_fits`.
+    orange/red/purple/blue/black) -- either the power-law exponent from the same fixed adaptive
+    median-FPD fit as :func:`spectrum_figure`, or the characteristic parameter / log-space MSE of the
+    power-law-vs-exponential comparison of :func:`placefield_spectrum_mse`. Example single-neuron fits
+    are in :func:`placefield_example_fits`.
 
     Parameters
     ----------
@@ -3471,15 +3719,41 @@ def placefield_population(
         and shrinkage (purple) fits side by side; a single choice plots only that fit, drawn blue and
         labelled "Generalized".
     include_better : bool
-        Include the per-neuron "better" composite eig spectrum in the gs[-1] exponent panel.
+        Include the per-neuron "better" composite eig spectrum in the gs[-1] decay panel.
     paired_test : {"ttest", "wilcoxon"}
         Two-sided paired test used for the gs[1] fit-vs-Gaussian asterisks (Bonferroni-corrected when
         ``generalized_fit="both"``): paired t-test or Wilcoxon signed-rank, on the per-mouse averages.
+    last_axis : {"decay_exponent", "characteristic_dim", "mse"}
+        Which spectrum-decay statistic gs[-1] shows. ``"decay_exponent"``: the adaptive median-FPD
+        power-law exponent, one beeswarm column per curve. ``"characteristic_dim"``/``"mse"``: the two
+        statistics of :func:`placefield_spectrum_mse` -- every curve fit as a power law (``n^-alpha``)
+        and as an exponential (``exp(-n^2 / 2 M^2)``), drawn across those two x-positions, showing
+        either the characteristic parameter (``alpha`` / ``M``) or the log-space MSE of each fit.
+    fit_zone : {"adaptive", "fixed"}
+        Fit window for the ``"characteristic_dim"``/``"mse"`` options (ignored by
+        ``"decay_exponent"``, which always uses its own adaptive window): ``"adaptive"`` locates each
+        session's own peak-curvature-to-noise-floor window (with the ``ss_cvpca`` fallback for
+        non-cross-validated spectra); ``"fixed"`` fits every session over ``fixed_range``.
+    fixed_range : tuple[int, int]
+        ``(start, end)`` index window used when ``fit_zone="fixed"`` (default ``(10, 50)``).
+    display : {"each", "errorPlot", "swarm"}
+        gs[-1] layout for the ``"characteristic_dim"``/``"mse"`` options: ``"each"`` a faint per-mouse
+        line across the two decay-model x-positions plus a bold across-mouse mean; ``"errorPlot"`` the
+        across-mouse mean +/- SE band; ``"swarm"`` one beeswarm column per (decay model, curve) with a
+        short horizontal mean line (spread set by ``beewidth``).
+    legend : dict or None
+        gs[-1] legend styling, as ``{knob: value}``. ``"loc"`` is a matplotlib placement,
+        ``"auto"`` (the default -- ``"best"`` for the ``"characteristic_dim"``/``"mse"`` options, no
+        legend for ``"decay_exponent"``, whose columns are labelled on the x-axis) or ``"none"`` (never
+        draw one). The rest are :meth:`~matplotlib.axes.Axes.legend` kwargs at their matplotlib
+        defaults -- ``ncols``, ``handlelength``, ``handletextpad``, ``labelspacing``, ``borderpad``,
+        ``borderaxespad``, ``markerfirst``, ``frameon`` -- plus ``fontsize_scale``, which multiplies
+        ``fontsize`` (default 0.8).
     normalize : bool
         If True, normalize each gs[-1] spectrum by its sum (per session) before smoothing.
     source_cfg : AdaptiveAlphaConfig or None
         Fixed adaptive-fit configuration (smoothing, five-point-derivative window, adaptive buffer,
-        minimum window size) shared by every gs[-1] curve. Defaults to
+        minimum window size) shared by every gs[-1] curve, whichever ``last_axis`` is shown. Defaults to
         ``ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]`` when None. The exponent is the median
         five-point-derivative local exponent over each session's own peak-curvature-to-noise-floor
         window, computed per session and averaged by mouse; sessions with fewer than
@@ -3534,6 +3808,12 @@ def placefield_population(
     viewer.update_selection("generalized_fit", value=generalized_fit)
     viewer.update_boolean("include_better", value=include_better)
     viewer.update_selection("paired_test", value=paired_test)
+    viewer.update_selection("last_axis", value=last_axis)
+    viewer.update_selection("fit_zone", value=fit_zone)
+    viewer.update_integer_range("fixed_range", value=tuple(fixed_range))
+    viewer.update_selection("display", value=display)
+    if legend is not None:
+        _update_legend_widgets(viewer, legend)
     if return_syd_viewer:
         return viewer
 
@@ -3694,9 +3974,7 @@ class PlacefieldSpectrumMSEViewer(Viewer):
                 fb_smooth = _align_rows_to_sessions(session_ids, cvpca_session_ids, cvpca_smooth)
             mse_cols, param_cols = [], []
             for model_key in model_keys:
-                mse_s, param_s = _decay_fit_per_session(
-                    raw, smooth, model_key, fit_zone, fixed_range, cfg.adaptive_buffer, fb_raw, fb_smooth
-                )
+                mse_s, param_s = _decay_fit_per_session(raw, smooth, model_key, fit_zone, fixed_range, cfg.adaptive_buffer, fb_raw, fb_smooth)
                 mse_cols.append(average_by_mouse(mse_s, mouse_names))
                 param_cols.append(average_by_mouse(param_s, mouse_names))
             mse_mats.append(np.stack(mse_cols, axis=1))  # (n_mice, 2)

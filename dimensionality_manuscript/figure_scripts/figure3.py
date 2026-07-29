@@ -1,7 +1,11 @@
 import random
 import numpy as np
+import pandas as pd
 import torch
 from matplotlib import pyplot as plt
+from matplotlib.ticker import LogLocator, NullFormatter
+from scipy.stats import chi2, norm
+import statsmodels.formula.api as smf
 from syd import make_viewer, Viewer
 from tqdm import tqdm
 
@@ -20,6 +24,7 @@ from dimensionality_manuscript.scripts.status import status
 from dimensionality_manuscript.subspace_analysis.stimspace import StimSpaceSubspace
 from dimensionality_manuscript import average_by_mouse
 from ..env_order import ENV_SLOT_COLORS, MAX_ENV_SLOTS
+from .legends import add_legend_widgets, update_legend_widgets, apply_legend
 
 
 def _gini(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -927,6 +932,384 @@ def subspace_crossspace(
     return fig
 
 
+def _session_colorbar_inset(axis, first_label, last_label, fontsize: float, bounds: list[float]) -> None:
+    """Draw the small ``coolwarm`` session-number colorbar inset on ``axis``.
+
+    ``first_label``/``last_label`` are written at the left/right ends of the bar, with
+    "session #" centered on it. ``bounds`` is ``[x, y, width, height]`` in axes-fraction
+    coordinates; values outside ``[0, 1]`` place the bar outside the axes (e.g. a negative
+    ``x`` puts it to the left of the panel's x limits).
+    """
+    cmap_data = plt.get_cmap("coolwarm")(np.linspace(0, 1, 255))[np.newaxis, :, :]
+    inset = axis.inset_axes(bounds)
+    inset.imshow(cmap_data, aspect="auto")
+    inset.set_xticks([])
+    inset.set_yticks([])
+    inset.text(0.02, 0.5, f"{first_label}", transform=inset.transAxes, ha="left", va="center", color="white", fontsize=fontsize)
+    inset.text(0.98, 0.5, f"{last_label}", transform=inset.transAxes, ha="right", va="center", color="white", fontsize=fontsize)
+    inset.text(0.5, 0.5, "session #", transform=inset.transAxes, ha="center", va="center", color="black", fontsize=fontsize)
+
+
+class SubspaceCrossspaceExampleViewer(Viewer):
+    """Cross-spectrum viewer pairing one example mouse with the cross-mouse summary.
+
+    ``ax[0]`` shows an example cross matrix, ``ax[1]`` every session of the same mouse
+    (fraction curves color-coded by session order with ``coolwarm``), and ``ax[2]`` the
+    same fraction curves for the whole population (mouse-averaged, or grouped by session
+    number). The example mouse of ``ax[0]`` and ``ax[1]`` is always the same one.
+    """
+
+    def __init__(self, results: ResultsAggregator, figsize: tuple[float, float] = (9.0, 3.0)):
+        self.results = results
+        self.figsize = figsize
+        for key, value in results.param_axes.items():
+            self.add_selection(key, options=value)
+
+        preferred_state = {
+            "smooth_width": None,
+            "activity_parameters_name": "default",
+        }
+        for key, value in preferred_state.items():
+            self.update_selection(key, value=value)
+
+        self.add_selection("mouse", options=list(results.unique_mice))
+        self.add_integer("idx_cross", value=0, min=0, max=1)
+        self.add_integer("num_cross_show", value=25, min=1, max=100)
+        self.add_boolean("plot_energy", value=True)
+        self.add_boolean("weighted", value=False)
+        self.add_selection("curve_mode", options=["average", "by_session"], value="average")
+        self.add_selection("plot_style", options=["each", "errorPlot"], value="each")
+        self.add_boolean("hide_error", value=False)
+        self.add_integer("skip_sessions", value=0, min=0, max=len(results.sessions))
+        self.add_selection("curve_smooth_kind", options=["none", "boxcar", "gaussian", "median"], value="none")
+        self.add_float("curve_smooth_width", value=3.0, min=0.0, max=50.0, step=0.5)
+        self.add_float("fontsize", value=9.0, min=4.0, max=24.0, step=0.5)
+
+        # ax[2] session-number colorbar inset placement, in ax[2] axes-fraction coordinates.
+        # Negative x moves it left of the panel's x limits (into the gap between ax[1] and ax[2]).
+        self.add_float("inset_x", value=0.05, min=-1.0, max=1.0, step=0.01)
+        self.add_float("inset_y", value=0.04, min=-1.0, max=1.0, step=0.01)
+        self.add_float("inset_width", value=0.6, min=0.01, max=1.5, step=0.01)
+        self.add_float("inset_height", value=0.075, min=0.01, max=1.0, step=0.005)
+
+        self.on_change("mouse", self.update_mouse)
+        self.update_mouse(self.state)
+
+    def update_mouse(self, state):
+        """Clamp ``idx_cross`` to the number of sessions the selected mouse has."""
+        n_sess = int(np.sum(self.results.mouse_names == state["mouse"]))
+        self.update_integer("idx_cross", max=max(n_sess - 1, 0))
+
+    def plot(self, state: dict):
+        _sel_state = {k: v for k, v in state.items() if k in self.results.param_axes}
+        _out = self.results.sel(**_sel_state)
+        cross = _out["cross"]
+        energy = cross**2
+
+        # Energy of PF dimensions on full space
+        energy_on_full = np.nansum(energy, axis=2)
+        valid_full_dims = np.isfinite(cross).any(axis=2)
+        energy_on_full = np.where(valid_full_dims, energy_on_full, np.nan)
+        energy_on_full = _smooth_fraction(energy_on_full, state["curve_smooth_kind"], state["curve_smooth_width"])
+
+        # Curve metric: unweighted subspace overlap ||P u_i||² (sum over PF dims of squared
+        # alignment) or the variance-weighted recovery Var(X P u_i)/λ_i. Shared by ax[1]/ax[2].
+        if state["weighted"]:
+            panel_fraction = _weighted_fraction(cross, _out["variance_activity"])
+            panel_ylabel = "Weighted Variance Overlap"
+        else:
+            panel_fraction = energy_on_full
+            panel_ylabel = "Variance Overlap"
+
+        # Average by mouse (ax[2], curve_mode == "average")
+        panel_fraction_avg = average_by_mouse(panel_fraction, self.results.mouse_names)
+
+        # Example mouse (ax[0] and ax[1]); the example session is the idx_cross-th most
+        # diagonally-aligned session of that mouse.
+        mouse_mask = self.results.mouse_names == state["mouse"]
+        mouse_energy = energy[mouse_mask]
+        mouse_fraction = panel_fraction[mouse_mask]
+        n_sess_mouse = mouse_energy.shape[0]
+        big_first_10 = np.mean(np.diagonal(mouse_energy, axis1=1, axis2=2)[:, :10], axis=1)
+        idx_plot = np.argsort(-big_first_10)[min(state["idx_cross"], n_sess_mouse - 1)]
+
+        fontsize = state["fontsize"]
+        fig, ax = plt.subplots(1, 3, figsize=self.figsize, layout="constrained", width_ratios=[1, 1.2, 1.2])
+        ax[2].sharey(ax[1])
+
+        # ---- ax[0]: example cross matrix ----
+        # cross[i, j] = <full PC i, placefield dim j> (rows are full dims), so it is transposed
+        # here to put full dimension on x, matching the x-axis of ax[1]/ax[2].
+        if state["plot_energy"]:
+            imshow_data = mouse_energy[idx_plot][:100, :100]
+            cmap = "gray_r"
+            vmin = 0
+        else:
+            imshow_data = cross[mouse_mask][idx_plot][:100, :100]
+            cmap = "bwr"
+            vmin = -1
+
+        xlims0 = [-0.5, state["num_cross_show"] + 0.5]
+        ylims0 = [state["num_cross_show"] + 0.5, -0.5]
+        xbounds0 = [0, state["num_cross_show"]]
+        ybounds0 = [state["num_cross_show"], 0]
+        extent = [0, 100, 100, 0]
+        ax[0].imshow(imshow_data.T, cmap=cmap, aspect="auto", vmin=vmin, vmax=1, extent=extent)
+        ax[0].set_xlabel("Full Dimension", fontsize=fontsize)
+        ax[0].set_ylabel("Placefield Dimension", fontsize=fontsize)
+        ax[0].set_xlim(xlims0)
+        ax[0].set_ylim(ylims0)
+
+        xvals = np.arange(panel_fraction.shape[1]) + 1
+        xbounds_curves = [1, panel_fraction.shape[1] + 1]
+        xticks = [1, 10, 100, 1000]
+
+        # ---- ax[1]: every session of the example mouse, colored by session order ----
+        mouse_colors = plt.get_cmap("coolwarm")(np.linspace(0, 1, max(n_sess_mouse, 1)))
+        for i in range(n_sess_mouse):
+            ax[1].plot(xvals, mouse_fraction[i], color=mouse_colors[i], linewidth=1.0)
+        ax[1].set_xlabel("Full Dimension", fontsize=fontsize)
+        ax[1].set_ylabel(panel_ylabel, fontsize=fontsize)
+        ax[1].set_xscale("log")
+        ax[1].set_xlim(xbounds_curves)
+
+        # ---- ax[2]: population curves (same rendering options as subspace_crossspace) ----
+        if state["curve_mode"] == "by_session":
+            # Organize each mouse's curves by session order, padding shorter histories with NaN.
+            mouse_curves = [panel_fraction[self.results.mouse_names == mouse] for mouse in self.results.unique_mice]
+            max_n_sessions = max(map(len, mouse_curves), default=0)
+            by_session = np.full((len(mouse_curves), max_n_sessions, panel_fraction.shape[1]), np.nan)
+            for i, curves in enumerate(mouse_curves):
+                by_session[i, : len(curves)] = curves
+
+            support = np.array([np.sum(np.isfinite(by_session[:, j, :]).any(axis=1)) for j in range(max_n_sessions)])
+            kept_js = np.where(support > 1)[0]
+            # Color only over the kept session numbers, so a full coolwarm range is used even
+            # when trailing/sparse session numbers (<=1 mouse) get excluded below.
+            session_colors = plt.get_cmap("coolwarm")(np.linspace(0, 1, max(len(kept_js), 1)))
+
+            # Thin out which kept sessions actually get drawn (always first + last), so dense
+            # session counts don't overplot ax[2]. Colors still index the full kept_js range.
+            n_kept = len(kept_js)
+            step = state["skip_sessions"] + 1
+            if n_kept <= 2 or step <= 1:
+                show_idx = np.arange(n_kept)
+            else:
+                n_points = max(2, int(round((n_kept - 1) / step)) + 1)
+                show_idx = np.unique(np.round(np.linspace(0, n_kept - 1, n_points)).astype(int))
+
+            finite_chunks = []
+            for color_idx in show_idx:
+                session_data = by_session[:, kept_js[color_idx], :]
+                _render_curve_group(
+                    ax[2],
+                    xvals,
+                    session_data,
+                    session_colors[color_idx],
+                    state["plot_style"],
+                    hide_error=state["hide_error"],
+                    linewidth=1.5,
+                )
+                finite_chunks.append(np.nanmean(session_data, axis=0))
+            finite_curve = np.concatenate(finite_chunks) if finite_chunks else np.array([])
+
+            if len(kept_js):
+                inset_bounds = [state["inset_x"], state["inset_y"], state["inset_width"], state["inset_height"]]
+                _session_colorbar_inset(ax[2], kept_js[0], kept_js[-1], fontsize, inset_bounds)
+        else:
+            _render_curve_group(
+                ax[2],
+                xvals,
+                panel_fraction_avg,
+                "k",
+                state["plot_style"],
+                hide_error=state["hide_error"],
+                linewidth=2.0,
+            )
+            mean_curve = np.nanmean(panel_fraction_avg, axis=0)
+            finite_curve = mean_curve[np.isfinite(mean_curve)]
+        ax[2].set_xlabel("Full Dimension", fontsize=fontsize)
+        ax[2].set_xscale("log")
+        ax[2].set_xlim(xbounds_curves)
+
+        # ax[1]/ax[2] share the y-axis, so one limit covers both panels.
+        ymax = 1.0
+        if state["weighted"]:
+            candidates = [1.0]
+            if np.isfinite(mouse_fraction).any():
+                candidates.append(float(np.nanmax(mouse_fraction)))
+            if finite_curve.size:
+                candidates.append(float(finite_curve.max()))
+            ymax = max(candidates)
+        ybounds = [0, ymax]
+        ax[1].set_ylim(ybounds)
+
+        format_spines(
+            ax[0],
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["left", "bottom"],
+            xbounds=xbounds0,
+            ybounds=ybounds0,
+            tick_fontsize=fontsize,
+        )
+        format_spines(
+            ax[1],
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["left", "bottom"],
+            xbounds=xbounds_curves,
+            ybounds=ybounds,
+            xticks=xticks,
+            yticks=[0, round(ymax, 2)],
+            tick_fontsize=fontsize,
+        )
+        # ax[2] borrows ax[1]'s y-axis, so it only gets a bottom spine and no y ticks/labels.
+        # Its ticks are hidden with tick_params rather than set_yticks, which would propagate
+        # through the shared axis and strip ax[1]'s y ticks too.
+        format_spines(
+            ax[2],
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["bottom"],
+            xbounds=xbounds_curves,
+            xticks=xticks,
+            tick_fontsize=fontsize,
+        )
+        ax[2].tick_params(axis="y", which="both", left=False, right=False, labelleft=False)
+        # format_spines uses tick_params, which doesn't reach minor ticks on log x-axes.
+        for axis in (ax[1], ax[2]):
+            axis.tick_params(axis="both", which="both", labelsize=fontsize)
+        return fig
+
+
+def subspace_crossspace_example(
+    results: ResultsAggregator,
+    mouse: str | None = None,
+    idx_cross: int = 0,
+    plot_energy: bool = True,
+    num_cross_show: int = 25,
+    weighted: bool = False,
+    curve_mode: str = "average",
+    plot_style: str = "each",
+    hide_error: bool = False,
+    skip_sessions: int = 0,
+    curve_smooth_kind: str = "none",
+    curve_smooth_width: float = 3.0,
+    fontsize: float = 9.0,
+    inset_x: float = 0.05,
+    inset_y: float = 0.04,
+    inset_width: float = 0.6,
+    inset_height: float = 0.075,
+    figsize: tuple[float, float] = (9.0, 3.0),
+    return_syd_viewer: bool = False,
+    **selections,
+):
+    """
+    Cross-spectrum figure pairing one example mouse with the cross-mouse summary.
+
+    The left panel shows an example placefield-vs-full cross matrix from ``mouse``
+    (chosen by ``idx_cross`` from that mouse's sessions sorted by descending mean top-10
+    diagonal energy), transposed so full dimension runs along x like the other panels. The
+    middle panel shows every session of the same mouse, giving the variance overlap between
+    each full PC and the placefield span, color-coded in session order with ``coolwarm``. The
+    right panel shows the same curves for the whole population, either mouse-averaged or
+    grouped by session number, and shares its y-axis with the middle panel.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        Aggregated subspace results providing ``param_axes``, ``sel``, ``unique_mice``,
+        ``mouse_names`` and ``sessions``.
+    mouse : str, optional
+        Example mouse shown in the left and middle panels. Defaults to the first mouse in
+        ``results.unique_mice``.
+    idx_cross : int
+        Index (into the chosen mouse's sessions, sorted by descending mean top-10 diagonal
+        energy) of the example cross matrix shown in the left panel.
+    plot_energy : bool
+        Show squared cross energy (``gray_r``, from 0) when True, otherwise the signed
+        cross values (``bwr``, from -1) in the left panel.
+    num_cross_show : int
+        Number of cross dimensions to show in the left panel.
+    weighted : bool
+        Curve panels show the variance-weighted recovery ``Var(X P u_i)/λ_i`` when True
+        (down-weights overlap onto low-variance full PCs), otherwise the unweighted
+        subspace overlap ``||P u_i||²``.
+    curve_mode : {"average", "by_session"}
+        Right panel only. ``"average"`` groups all sessions of a mouse into one curve per
+        mouse. ``"by_session"`` instead groups curves by within-mouse session number (first
+        session of each mouse, second of each mouse, ...), one color-coded group per session
+        number (``coolwarm``, early to late); session numbers with data from only one mouse are
+        skipped. Either way, rendering is controlled by ``plot_style``.
+    plot_style : {"each", "errorPlot"}
+        Right panel only. How every curve group is rendered: ``"each"`` draws each underlying
+        curve thin plus a solid mean, ``"errorPlot"`` draws a mean +/- std band instead.
+    hide_error : bool
+        When ``plot_style == "errorPlot"``, suppress the std band in the right panel and show
+        only the mean curve(s). No effect on ``plot_style == "each"``.
+    skip_sessions : int
+        Only used when ``curve_mode == "by_session"``. Thins out which session-number groups are
+        drawn in the right panel: the first and last kept session number are always shown, with
+        the rest spaced as evenly as possible to skip roughly ``skip_sessions`` kept session
+        numbers between each drawn one. ``0`` (default) draws every kept session number. Colors
+        still span the full kept-session range, so gaps don't compress the ``coolwarm`` scale.
+    curve_smooth_kind : {"none", "boxcar", "gaussian", "median"}
+        Smoothing applied to the (unweighted) energy-on-full curves in both curve panels.
+    curve_smooth_width : float
+        Smoothing width in full-dimension units.
+    fontsize : float
+        Font size applied uniformly across every panel: axis labels, tick labels (major and
+        minor, including the log-scale x-axes) and the colorbar-inset session-number labels.
+    inset_x, inset_y, inset_width, inset_height : float
+        Placement of the right panel's session-number colorbar inset (only drawn when
+        ``curve_mode == "by_session"``), in that panel's axes-fraction coordinates. Values
+        outside ``[0, 1]`` put the bar outside the panel; e.g. a negative ``inset_x`` moves it
+        left of the panel's x limits, into the gap between the middle and right panels.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    return_syd_viewer : bool
+        If True, return the Syd viewer with state seeded from the other arguments.
+    **selections
+        Overrides for the parameter-axis selections (e.g. ``smooth_width``,
+        ``activity_parameters_name``). Each key must be a valid ``results.param_axes`` name.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or SubspaceCrossspaceExampleViewer
+        The rendered figure, or the Syd viewer when ``return_syd_viewer`` is True.
+    """
+    viewer = SubspaceCrossspaceExampleViewer(results, figsize=figsize)
+    for key, value in selections.items():
+        if key not in results.param_axes:
+            raise ValueError(f"Unknown selection {key!r}. Options: {list(results.param_axes)}")
+        viewer.update_selection(key, value=value)
+    if mouse is not None:
+        viewer.update_selection("mouse", value=mouse)
+        viewer.update_mouse(viewer.state)
+    viewer.update_integer("idx_cross", value=idx_cross)
+    viewer.update_boolean("plot_energy", value=plot_energy)
+    viewer.update_integer("num_cross_show", value=num_cross_show)
+    viewer.update_boolean("weighted", value=weighted)
+    viewer.update_selection("curve_mode", value=curve_mode)
+    viewer.update_selection("plot_style", value=plot_style)
+    viewer.update_boolean("hide_error", value=hide_error)
+    viewer.update_integer("skip_sessions", value=skip_sessions)
+    viewer.update_selection("curve_smooth_kind", value=curve_smooth_kind)
+    viewer.update_float("curve_smooth_width", value=curve_smooth_width)
+    viewer.update_float("fontsize", value=fontsize)
+    viewer.update_float("inset_x", value=inset_x)
+    viewer.update_float("inset_y", value=inset_y)
+    viewer.update_float("inset_width", value=inset_width)
+    viewer.update_float("inset_height", value=inset_height)
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    plt.show()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Helpers for subspace_familiarity
 # ---------------------------------------------------------------------------
@@ -1425,8 +1808,34 @@ def _ratios_arrays(results: ResultsAggregator, sel_params: dict) -> dict[str, np
     )
 
 
+# The spectrum panel's x axis is cut just past the last dimension still drawn above the y floor:
+# both spectra fall out of view long before the last shared dimension, so autoscaling to the full
+# array width leaves a long empty tail.
+_SPECTRUM_XMAX_PAD = 1.1
+
+
+def _last_visible_dimension(ymin: float, *curve_stacks: np.ndarray) -> int:
+    """Largest 1-based shared dimension at which any per-mouse curve is still above ``ymin``.
+
+    Only the per-mouse curves need checking: their mouse-average can't be above ``ymin`` at a
+    dimension where every mouse is below it.
+    """
+    last = 1
+    for values in curve_stacks:
+        columns = np.where((values > ymin).any(axis=0))[0]
+        if columns.size:
+            last = max(last, int(columns[-1]) + 1)
+    return last
+
+
 def _plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: int = 9) -> None:
-    """Left panel of the ratios figure: mouse-averaged normalized ``sf_cv`` / ``ff`` spectra (log-log)."""
+    """Left panel of the ratios figure: mouse-averaged normalized ``sf_cv`` / ``ff`` spectra (log-log).
+
+    The x axis is pinned to start at exactly 1 (so no minor decade ticks appear below the first
+    shared dimension) and to end ``_SPECTRUM_XMAX_PAD`` past the last dimension still drawn above
+    the y floor, with major ticks on the decades inside that range and no major or minor tick
+    beyond it.
+    """
     sf_cv, ff = arrays["sf_cv"], arrays["ff"]
     ylim_min = -5.5
     ylim_max = -0.8
@@ -1451,19 +1860,25 @@ def _plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: int = 9) 
     ax.set_ylim(*ylim)
     ax.set_xlabel("Shared Dimension")
     ax.set_ylabel("Variance")
-    xlim = ax.get_xlim()
+    # Set before format_spines, which freezes its x_pos fraction into a data coordinate.
+    xmax = _SPECTRUM_XMAX_PAD * _last_visible_dimension(ylim[0], sf_cv, ff)
+    ax.set_xlim(1, xmax)
     format_spines(
         ax,
         x_pos=-0.02,
         y_pos=-0.02,
         spines_visible=["left", "bottom"],
-        xbounds=[1, xlim[1]],
+        xbounds=[1, xmax],
         ybounds=[ylim[0], ylim[1]],
     )
     ax.legend(loc="upper right", fontsize=fontsize, frameon=False)
-    xticks = ax.get_xticks()
-    xticks = xticks[xticks >= 1]
-    ax.set_xticks(xticks)
+    # Ticks are placed explicitly rather than filtered after the fact: matplotlib draws only what
+    # falls inside the view interval, so pinning xlim to [1, xmax] is what keeps the sub-decade
+    # minor ticks from spilling below 1 or past the end of the data.
+    decades = 10.0 ** np.arange(0, np.floor(np.log10(xmax)) + 1)
+    ax.set_xticks(decades, labels=[f"{int(decade)}" for decade in decades])
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10)))
+    ax.xaxis.set_minor_formatter(NullFormatter())
     ax.annotate(
         "",
         xy=(10, 10**yline),
@@ -1554,63 +1969,107 @@ def _plot_ratios_beeswarms(ax1, ax2, arrays: dict[str, np.ndarray], fontsize: in
     ax2.set_xticks(xticks, labels=xticklabels, rotation=45, ha="right")
 
 
-def _plot_ratios_beeswarms_combined(ax, arrays: dict[str, np.ndarray], fontsize: int = 9) -> None:
+# Fractional spine offset used across the composite figure's panels. ax[1]'s segmented x spine is
+# drawn by hand at the same offset (and format_spines' default spine width) so its segments land
+# exactly where a continuous bottom spine would have.
+_COMPOSITE_SPINE_OFFSET = -0.02
+_COMPOSITE_SPINE_LINEWIDTH = 1.0
+
+# Condition order within each beeswarm group, and the array keys holding each group's values.
+_RATIOS_GROUP_LABELS = ["1st 10", "All"]
+_RATIOS_GROUP_KEYS = [
+    ("sf_cv_total_10", "sf_cv_total_iti_10", "sf_cv_total_spont_10"),
+    ("sf_cv_total", "sf_cv_total_iti", "sf_cv_total_spont"),
+]
+
+
+def _ratios_group_positions(within_xspace: float, between_xspace: float) -> np.ndarray:
+    """x positions of every beeswarm, as ``(n_groups, n_conditions)``, built up from 0.
+
+    Consecutive conditions within a group are ``within_xspace`` apart; each group boundary adds a
+    further ``between_xspace`` on top of that step.
+    """
+    positions = []
+    x = 0.0
+    for igroup, keys in enumerate(_RATIOS_GROUP_KEYS):
+        if igroup:
+            x += between_xspace
+        for ikey in range(len(keys)):
+            if ikey:
+                x += within_xspace
+            positions.append(x)
+    return np.array(positions).reshape(len(_RATIOS_GROUP_KEYS), -1)
+
+
+def _plot_ratios_beeswarms_combined(
+    ax,
+    arrays: dict[str, np.ndarray],
+    fontsize: int = 9,
+    within_xspace: float = 0.8,
+    between_xspace: float = 1.6,
+) -> None:
     """Both beeswarm groups (1st 10 dims, all dims) on one axis, for the composite figure.
 
-    x = 0,1,2 is the 1st-10-dims group (Behaving/w ITIs/w Spont), x = 3,4,5 is the all-dims group,
-    same order. Only the group centers (x=1, x=4) get tick labels ("1st 10" / "All") -- the
-    per-color condition labels aren't repeated here since the neighboring familiarity legend
-    already maps these same colors to Behaving/w ITIs/w Spont.
+    Each group holds the three conditions (Behaving/w ITIs/w Spont) ``within_xspace`` apart, and the
+    two groups are pushed a further ``between_xspace`` apart, so the grouping is carried by the
+    spacing itself. The x spine is drawn as one segment per group, spanning only that group's outer
+    swarm *centers* -- the swarm spread and mean lines deliberately spill past both ends, and
+    ``xlim`` pads out from those drawn points rather than from the segments. Only the group centers
+    get tick labels ("1st 10" / "All"), with the tick marks dropped since they would sit under the
+    middle of each segment; the per-color condition labels aren't repeated here since the
+    neighboring familiarity legend already maps these same colors to Behaving/w ITIs/w Spont.
+
+    The swarm spread and mean-line width scale with ``within_xspace`` so that tightening the
+    within-group spacing brings the conditions closer without making them overlap.
     """
-    beewidth = 0.2
     alpha = 0.3
-    line_extent = np.array([-0.25, 0.25])
-    np1 = np.array([1, 1])
     linewidth = 2.0
-    color_behaving = CONDITION_COLORS["behaving"]
-    color_itis = CONDITION_COLORS["itis"]
-    color_spontaneous = CONDITION_COLORS["spontaneous"]
+    beewidth = 0.2 * within_xspace
+    line_extent = np.array([-0.25, 0.25]) * within_xspace
+    np1 = np.array([1, 1])
+    colors = (CONDITION_COLORS["behaving"], CONDITION_COLORS["itis"], CONDITION_COLORS["spontaneous"])
 
-    def _swarm(x, values, color):
-        ax.plot(
-            x + beewidth * beeswarm(values),
-            values,
-            color=color,
-            linestyle="none",
-            linewidth=0.5,
-            marker="o",
-            markersize=3,
-            alpha=alpha,
-        )
+    positions = _ratios_group_positions(within_xspace, between_xspace)
 
-    def _mean_line(x, values, color):
-        ax.plot(x + line_extent, np1 * np.nanmean(values), color=color, linewidth=linewidth)
-
-    groups = {
-        0: ("sf_cv_total_10", "sf_cv_total_iti_10", "sf_cv_total_spont_10"),
-        3: ("sf_cv_total", "sf_cv_total_iti", "sf_cv_total_spont"),
-    }
-    for offset, (behaving_key, itis_key, spont_key) in groups.items():
-        _swarm(offset + 0, arrays[behaving_key], color_behaving)
-        _swarm(offset + 1, arrays[itis_key], color_itis)
-        _swarm(offset + 2, arrays[spont_key], color_spontaneous)
-        _mean_line(offset + 0, arrays[behaving_key], color_behaving)
-        _mean_line(offset + 1, arrays[itis_key], color_itis)
-        _mean_line(offset + 2, arrays[spont_key], color_spontaneous)
+    # Tracked across every drawn artist, since the swarm's spread is data-dependent and the mean
+    # lines stick out past the outermost swarm centers.
+    xdata_min, xdata_max = np.inf, -np.inf
+    for group_positions, group_keys in zip(positions, _RATIOS_GROUP_KEYS):
+        for x, key, color in zip(group_positions, group_keys, colors):
+            values = arrays[key]
+            x_swarm = x + beewidth * beeswarm(values)
+            ax.plot(x_swarm, values, color=color, linestyle="none", linewidth=0.5, marker="o", markersize=3, alpha=alpha)
+            ax.plot(x + line_extent, np1 * np.nanmean(values), color=color, linewidth=linewidth)
+            xdata_min = min(xdata_min, np.nanmin(x_swarm), x + line_extent[0])
+            xdata_max = max(xdata_max, np.nanmax(x_swarm), x + line_extent[1])
 
     ax.set_ylabel("Variance Ratio")
-    xmax = max(groups) + 2
+    # Before format_spines, which freezes the left spine's x_pos fraction into a data coordinate.
+    xpad = 0.05 * (xdata_max - xdata_min)
+    ax.set_xlim(xdata_min - xpad, xdata_max + xpad)
     format_spines(
         ax,
-        x_pos=-0.02,
-        y_pos=-0.02,
-        spines_visible=["left", "bottom"],
-        xbounds=[0, xmax],
+        x_pos=_COMPOSITE_SPINE_OFFSET,
+        y_pos=_COMPOSITE_SPINE_OFFSET,
+        spines_visible=["left"],
         ybounds=[0, 1],
         yticks=[0, 0.5, 1.0],
     )
-    ax.set_xlim(-0.5, xmax + 0.5)
-    ax.set_xticks([1, 4], labels=["1st 10", "All"])
+    ax.set_xticks(positions[:, positions.shape[1] // 2], labels=_RATIOS_GROUP_LABELS)
+    ax.tick_params(axis="x", length=0)
+
+    # Drawn at the y the hidden bottom spine would take once the composite's shared [0, 1] ylim is
+    # applied -- which is outside that ylim, hence clip_on=False.
+    for group_positions in positions:
+        ax.plot(
+            [group_positions[0], group_positions[-1]],
+            [_COMPOSITE_SPINE_OFFSET] * 2,
+            color="k",
+            linewidth=_COMPOSITE_SPINE_LINEWIDTH,
+            solid_capstyle="butt",
+            clip_on=False,
+            zorder=3,
+        )
 
 
 class SubspaceCurvesRatiosViewer(Viewer):
@@ -1709,31 +2168,307 @@ def subspace_curves_ratios(
 # Helpers for complete_spectrum_figure
 # ---------------------------------------------------------------------------
 
-# 1x4 subplots width ratios: ax[0] (spectrum) ~matches the ratios figure's own [1, 0.3, 0.3] split
-# scaled to its default figsize; ax[1] (combined beeswarm, 6 x-positions) is the other two of
-# those three; ax[2] and ax[3] are each a single Variance Ratio panel (no Total Variance).
-_COMPLETE_SPECTRUM_WIDTH_RATIOS = (1.5, 1.2, 1.0, 1.0)
+# Composite subplots width ratios. Every panel but ax[1] is fixed at 1; ax[1] (the combined
+# beeswarm) is the one that has to be retuned whenever its group spacing changes, so its ratio is a
+# live knob.
+def _complete_spectrum_width_ratios(ax1_width_ratio: float, ax23_width_ratio: float, show_slope_panel: bool) -> tuple[float, ...]:
+    """Width ratios for the composite figure's 1xN grid: ``[1, ax1, ax23, ax23]``, plus 1 for ax[4].
+
+    ax[2] and ax[3] share one knob because they're the same kind of panel (a familiarity curve
+    over sessions) and reading them against each other depends on their x axes matching.
+    """
+    return (1.0, ax1_width_ratio, ax23_width_ratio, ax23_width_ratio) + ((1.0,) if show_slope_panel else ())
+
+
+# Legend widget prefix -> the settings its panel helper already draws with, so the widgets start
+# out reproducing the current figure rather than matplotlib's (or _LEGEND_KNOBS') defaults. ``loc``
+# stays "auto" and is supplied per panel as ``auto_loc`` at draw time.
+_COMPLETE_SPECTRUM_LEGEND_DEFAULTS = {
+    "spectrum_legend": dict(fontsize_scale=1.0),
+    "all_legend": dict(fontsize_scale=1.0, handlelength=0.8, handletextpad=0.5),
+    "env_legend": dict(fontsize_scale=1.0, handlelength=0.8, handletextpad=0.5),
+}
+# Placement each panel falls back to at legend_loc="auto", matching its helper's own call.
+_COMPLETE_SPECTRUM_LEGEND_AUTO_LOCS = {"spectrum_legend": "upper right", "all_legend": "upper left", "env_legend": "upper left"}
+
+_ENV_SLOPE_STYLES = ["beeswarm", "all", "errorPlot"]
+
+
+def _env_slope_table(curves_by_env: dict[str, dict], min_sessions: int) -> pd.DataFrame:
+    """Per-mouse learning rate in each env slot: the OLS slope of its Variance Ratio curve.
+
+    One row per (mouse, env slot) that clears ``min_sessions`` finite sessions -- a slope from two
+    points carries no information about a trend, so thin cells are dropped rather than fit. Unlike
+    the curve panel, which truncates its x axis to where more than one mouse still has data, each
+    mouse's slope uses every session it has in that env.
+
+    Parameters
+    ----------
+    curves_by_env : dict
+        ``_familiarity_curves(..., "by_env")`` output: ``{env_label: {"svr": {mouse: 1D array}}}``.
+    min_sessions : int
+        Minimum number of finite sessions a mouse needs in an env slot to contribute a slope.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``mouse``, ``env``, ``env_index``, ``slope``, ``n_sessions``.
+    """
+    rows = []
+    for env_index, (env_label, data) in enumerate(curves_by_env.items()):
+        for mouse, values in data["svr"].items():
+            finite = np.isfinite(values)
+            n_sessions = int(finite.sum())
+            if n_sessions < min_sessions:
+                continue
+            session_index = np.arange(len(values))[finite]
+            slope = float(np.polyfit(session_index, values[finite], 1)[0])
+            rows.append(dict(mouse=mouse, env=env_label, env_index=env_index, slope=slope, n_sessions=n_sessions))
+    return pd.DataFrame(rows, columns=["mouse", "env", "env_index", "slope", "n_sessions"])
+
+
+def _holm(pvalues: np.ndarray) -> np.ndarray:
+    """Holm-Bonferroni step-down adjustment of a family of p-values (order preserved)."""
+    order = np.argsort(pvalues)
+    adjusted = np.empty_like(pvalues, dtype=float)
+    running = 0.0
+    for rank, idx in enumerate(order):
+        running = max(running, (len(pvalues) - rank) * pvalues[idx])
+        adjusted[idx] = min(running, 1.0)
+    return adjusted
+
+
+_SLOPE_MODEL_FORMULAS = {"factor": "slope ~ C(env_index)", "linear": "slope ~ env_index", "null": "slope ~ 1"}
+
+
+def _fit_slope_models(table: pd.DataFrame) -> tuple[dict, bool]:
+    """Fit the three ``slope ~ ... + (1 | mouse)`` models, dropping the random intercept if it collapses.
+
+    When the between-mouse variance is estimated at zero -- which happens whenever the mouse-to-mouse
+    spread is small relative to the residual spread -- the mixed model's Hessian is singular and
+    statsmodels can't invert it for standard errors. At that boundary the mixed model *is* the OLS
+    model, so the whole family is refit with OLS: the likelihoods stay comparable to each other, the
+    LRT degrees of freedom are unchanged, and the contrasts become ordinary Wald tests. The returned
+    flag says which happened, since it's worth knowing that the random intercept bought nothing.
+
+    Returns
+    -------
+    tuple[dict, bool]
+        ``({name: fitted result}, dropped_random_effect)``.
+    """
+    try:
+        fits = {name: smf.mixedlm(f, table, groups=table["mouse"]).fit(reml=False, method="lbfgs") for name, f in _SLOPE_MODEL_FORMULAS.items()}
+        return fits, False
+    except np.linalg.LinAlgError:
+        return {name: smf.ols(f, table).fit() for name, f in _SLOPE_MODEL_FORMULAS.items()}, True
+
+
+def _env_slope_stats(table: pd.DataFrame) -> dict | None:
+    """Mixed-effects tests of whether the per-env learning slopes differ: ``slope ~ env + (1 | mouse)``.
+
+    The random intercept is what makes this the right model rather than a one-way ANOVA: each mouse
+    contributes a slope in several env slots, so its rows aren't independent.
+
+    Three things are reported, because the omnibus alone doesn't answer the ordered question:
+
+    - ``omnibus``: likelihood-ratio test of the env-as-factor model against the intercept-only null
+      (``slope ~ 1 + (1 | mouse)``), on ``n_envs - 1`` df. Answers "do the slopes differ at all".
+    - ``trend``: likelihood-ratio test of env as a *numeric* predictor against the same null, on
+      1 df. This is the directional test for a monotonic env1 -> env2 -> env3 progression: it
+      spends its single df on the ordering rather than spreading it over arbitrary differences,
+      so it has more power than the omnibus for that specific hypothesis, and the sign of its
+      coefficient (``trend_beta``) says which way the progression runs.
+    - ``pairwise``: the three Wald contrasts between env slots from the factor model, with
+      Holm-corrected p-values.
+
+    Both LRTs are fit with ML (``reml=False``); REML likelihoods aren't comparable across models
+    with different fixed effects.
+
+    Returns
+    -------
+    dict or None
+        ``None`` when the design is too thin to fit (fewer than two env slots or two mice with
+        slopes); otherwise the tests above plus per-env ``n_mice``.
+    """
+    envs = sorted(table["env_index"].unique())
+    if len(envs) < 2 or table["mouse"].nunique() < 2:
+        return None
+
+    fits, dropped_random_effect = _fit_slope_models(table)
+    factor, linear, null = fits["factor"], fits["linear"], fits["null"]
+
+    omnibus_lr = 2.0 * (factor.llf - null.llf)
+    trend_lr = 2.0 * (linear.llf - null.llf)
+
+    # Wald contrasts on the factor model's fixed effects. Treatment coding puts env ``envs[0]`` in
+    # the intercept, so its "coefficient" is the zero vector and every pairwise difference is just
+    # the difference of two such vectors.
+    fe = factor.params if dropped_random_effect else factor.fe_params
+    names = list(fe.index)
+    cov = factor.cov_params().loc[names, names].to_numpy()
+
+    def _level_vector(env: int) -> np.ndarray:
+        vector = np.zeros(len(names))
+        if env != envs[0]:
+            vector[names.index(f"C(env_index)[T.{env}]")] = 1.0
+        return vector
+
+    pairwise = []
+    for i, env_a in enumerate(envs):
+        for env_b in envs[i + 1 :]:
+            contrast = _level_vector(env_b) - _level_vector(env_a)
+            difference = float(contrast @ fe.to_numpy())
+            se = float(np.sqrt(contrast @ cov @ contrast))
+            z = difference / se
+            pairwise.append(dict(env_a=env_a, env_b=env_b, difference=difference, se=se, z=z, p=float(2.0 * norm.sf(abs(z)))))
+    for entry, p_holm in zip(pairwise, _holm(np.array([entry["p"] for entry in pairwise]))):
+        entry["p_holm"] = float(p_holm)
+
+    return dict(
+        omnibus_lr=float(omnibus_lr),
+        omnibus_df=len(envs) - 1,
+        omnibus_p=float(chi2.sf(omnibus_lr, len(envs) - 1)),
+        trend_lr=float(trend_lr),
+        trend_df=1,
+        trend_p=float(chi2.sf(trend_lr, 1)),
+        trend_beta=float((linear.params if dropped_random_effect else linear.fe_params)["env_index"]),
+        pairwise=pairwise,
+        n_mice={int(env): int((table["env_index"] == env).sum()) for env in envs},
+        n_total=int(len(table)),
+        dropped_random_effect=dropped_random_effect,
+    )
+
+
+def _format_p(p: float) -> str:
+    """p-value for display: fixed decimals until they'd round to zero, then a bound."""
+    return "p<0.001" if p < 0.001 else f"p={p:.3f}"
+
+
+def _format_env_slope_stats(stats: dict | None, env_labels: list[str]) -> str:
+    """Compact multi-line summary of :func:`_env_slope_stats` for annotating the panel."""
+    if stats is None:
+        return "too few mice for stats"
+    lines = [
+        f"env: LR={stats['omnibus_lr']:.1f} (df {stats['omnibus_df']}), {_format_p(stats['omnibus_p'])}",
+        f"trend: LR={stats['trend_lr']:.1f} (df 1), {_format_p(stats['trend_p'])}",
+    ]
+    for entry in stats["pairwise"]:
+        label_a, label_b = env_labels[entry["env_a"]], env_labels[entry["env_b"]]
+        lines.append(f"{label_a} vs {label_b}: {_format_p(entry['p_holm'])}")
+    if stats["dropped_random_effect"]:
+        lines.append("(mouse variance 0; OLS)")
+    return "\n".join(lines)
+
+
+def _plot_env_slopes(
+    ax,
+    table: pd.DataFrame,
+    env_labels: list[str],
+    style: str,
+    fontsize: int = 9,
+    stats_text: str | None = None,
+) -> None:
+    """Right panel of the composite figure: per-mouse Variance Ratio slope in each env slot.
+
+    ``style`` picks the rendering: ``"beeswarm"`` swarms each env's per-mouse slopes around its
+    tick with a mean line; ``"all"`` instead draws one faint line per mouse across the env slots
+    (so a mouse's own progression is followed) plus the across-mouse mean; ``"errorPlot"`` reduces
+    that to the mean +/- SE band. A dashed zero line marks "no change over sessions", which is the
+    reference the slopes are read against.
+    """
+    if style not in _ENV_SLOPE_STYLES:
+        raise ValueError(f"Unknown style {style!r}. Options: {_ENV_SLOPE_STYLES}")
+
+    env_indices = np.arange(len(env_labels))
+    # Reindexed onto every slot so a mouse missing one env leaves a NaN gap rather than shifting.
+    per_mouse = (
+        table.pivot(index="mouse", columns="env_index", values="slope").reindex(columns=env_indices)
+        if len(table)
+        else pd.DataFrame(np.empty((0, len(env_indices))), columns=env_indices)
+    )
+    values = per_mouse.to_numpy(dtype=float)
+
+    ax.axhline(0.0, color="k", linewidth=0.5, linestyle="--", zorder=0)
+
+    if style == "beeswarm":
+        for env_index in env_indices:
+            slopes = values[:, env_index]
+            slopes = slopes[np.isfinite(slopes)]
+            if not slopes.size:
+                continue
+            color = ENV_SLOT_COLORS[env_index]
+            ax.plot(
+                env_index + 0.15 * beeswarm(slopes),
+                slopes,
+                color=color,
+                linestyle="none",
+                marker="o",
+                markersize=3,
+                alpha=0.4,
+            )
+            ax.plot(env_index + np.array([-0.25, 0.25]), np.full(2, np.nanmean(slopes)), color=color, linewidth=2.0)
+    elif style == "all":
+        for mouse_slopes in values:
+            ax.plot(env_indices, mouse_slopes, color=("k", 0.3), linewidth=0.5, marker="o", markersize=2)
+        ax.plot(env_indices, np.nanmean(values, axis=0), color="k", linewidth=2.0)
+    elif values.size:
+        errorPlot(env_indices, values, axis=0, se=True, ax=ax, color="k", linewidth=2.0, alpha=0.25)
+
+    ax.set_xlabel("Environment")
+    ax.set_ylabel("Slope (ratio / session)")
+    ax.set_xlim(-0.5, len(env_labels) - 0.5)
+    # Pinned rather than left on autoscale, so format_spines' fractional offsets stay put.
+    ylim = ax.get_ylim()
+    ax.set_ylim(ylim)
+    format_spines(
+        ax,
+        x_pos=_COMPOSITE_SPINE_OFFSET,
+        y_pos=_COMPOSITE_SPINE_OFFSET,
+        spines_visible=["left", "bottom"],
+        xbounds=[0, len(env_labels) - 1],
+        ybounds=ylim,
+    )
+    ax.set_xticks(env_indices, labels=env_labels)
+
+    if stats_text is not None:
+        # Upper left: the hypothesis under test is that slopes rise across env slots, so that
+        # corner is the one the data vacates. It will collide if the effect ever runs the other way.
+        ax.text(
+            0.02,
+            0.98,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=fontsize * 0.8,
+            ha="left",
+            va="top",
+            linespacing=1.4,
+        )
 
 
 class CompleteSpectrumViewer(Viewer):
     """Composite figure: ratios spectrum+beeswarm alongside both familiarity Variance Ratio panels.
 
-    A plain 1x4 ``subplots``. ``ax[0]`` is the PF-structure-vs-reliable-CA1 spectrum panel from
+    A plain 1x5 ``subplots``, or 1x4 when ``show_slope_panel`` is off. ``ax[0]`` is the
+    PF-structure-vs-reliable-CA1 spectrum panel from
     :func:`subspace_curves_ratios`. ``ax[1]`` combines that same figure's two cumulative-variance-
-    ratio beeswarm groups onto one axis (1st 10 dims at x=0-2, all dims at x=3-5, same
-    Behaving/w ITIs/w Spont color order in each); only the group centers (x=1, x=4) get tick labels
-    ("1st 10" / "All") -- the per-color condition labels aren't repeated here since the
-    neighboring familiarity legend (``ax[2]``, in ``plot_mode="all"``) already maps these same
-    colors to Behaving/w ITIs/w Spont. ``ax[2]`` is the whole-session familiarity Variance Ratio
+    ratio beeswarm groups onto one axis (1st 10 dims, then all dims, same Behaving/w ITIs/w Spont
+    color order in each), separated by spacing rather than by labels: conditions sit
+    ``within_xspace`` apart and the groups a further ``between_xspace`` apart, with a segmented x
+    spine drawing one bracket per group. Only the group centers get tick labels ("1st 10" / "All")
+    -- the per-color condition labels aren't repeated here since the neighboring familiarity legend
+    (``ax[2]``, in ``plot_mode="all"``) already maps these same colors to Behaving/w ITIs/w Spont.
+    ``ax[2]`` is the whole-session familiarity Variance Ratio
     panel from :func:`subspace_familiarity` (``plot_mode="all"``; Total Variance omitted). ``ax[3]``
     is the per-env-experience-slot familiarity Variance Ratio panel (``plot_mode="by_env"``; Total
-    Variance omitted). ``ax[1]``, ``ax[2]`` and ``ax[3]`` share one y-axis, fixed to ``[0, 1]`` and
+    Variance omitted). ``ax[4]`` collapses each of ``ax[3]``'s curves to its slope, one point per
+    mouse per env slot, and tests them with ``slope ~ env + (1 | mouse)`` -- so it lives on a slope
+    scale and keeps its own y-axis. ``ax[1]``, ``ax[2]`` and ``ax[3]`` share one y-axis, fixed to ``[0, 1]`` and
     labeled "Shared Variance Ratio" once, on the beeswarm panel; the other two hide their y
     spine/ticks/label. All four panels also share one set of ``StimSpaceSpectraConfig`` param-axis
     selections, since all three source figures read from the same aggregated results.
     """
 
-    def __init__(self, results: ResultsAggregator, figsize: tuple[float, float] = (14.0, 3.0)):
+    def __init__(self, results: ResultsAggregator, figsize: tuple[float, float] = (17.0, 3.0)):
         self.results = results
         self.figsize = figsize
         self._tuple_labels = _register_stimspace_selections(self, results)
@@ -1747,6 +2482,29 @@ class CompleteSpectrumViewer(Viewer):
         self.add_boolean("full_within_env", value=False)
         self.add_selection("style_by_env", options=["errorPlot", "all"], value="errorPlot")
 
+        # gs[1]: beeswarm group layout. The two spacings are in the panel's own x units and are
+        # built up from 0, so only their ratio matters for the look -- widening between_xspace pulls
+        # the groups apart, shrinking within_xspace tightens each group (and its swarms with it).
+        self.add_float("within_xspace", value=0.8, min=0.1, max=3.0, step=0.05)
+        self.add_float("between_xspace", value=1.6, min=0.0, max=6.0, step=0.05)
+        self.add_float("ax1_width_ratio", value=1.2, min=0.2, max=4.0, step=0.05)
+        self.add_float("ax23_width_ratio", value=1.0, min=0.2, max=4.0, step=0.05)
+
+        # gs[4]: per-env slopes of gs[3]'s curves, dropped entirely when show_slope_panel is off.
+        # min_slope_sessions floors at 3 -- two points always fit a slope exactly, so they'd
+        # contribute a value carrying no evidence of a trend.
+        self.add_boolean("show_slope_panel", value=True)
+        self.add_selection("slope_style", options=_ENV_SLOPE_STYLES, value="beeswarm")
+        self.add_integer("min_slope_sessions", value=4, min=3, max=20)
+        self.add_boolean("show_slope_stats", value=True)
+
+        # One independent legend control set per panel that draws a legend. Each is seeded to the
+        # placement and spacing its panel helper already used, so the knobs start as a no-op: the
+        # "auto" loc defers to the helper's own placement (see the auto_loc passes in plot).
+        for prefix, defaults in _COMPLETE_SPECTRUM_LEGEND_DEFAULTS.items():
+            add_legend_widgets(self, prefix=prefix)
+            update_legend_widgets(self, defaults, prefix=prefix)
+
         self.add_float("fontsize", value=9.0, min=4.0, max=24.0, step=0.5)
 
     def encode_param(self, name: str, value):
@@ -1759,30 +2517,68 @@ class CompleteSpectrumViewer(Viewer):
         """Params to forward to ``results.sel``, decoding tuple labels back to tuples."""
         return _stimspace_sel_params(self.results, self._tuple_labels, state)
 
+    def _by_env_curves(self, state: dict) -> dict:
+        """``mode="by_env"`` curves for the current state, shared by ax[3] and the ax[4] slopes."""
+        return _familiarity_curves(
+            self.results,
+            self._sel_params(state),
+            "by_env",
+            env_full_scope=state["env_full_scope"],
+            full_within_env=state["full_within_env"],
+        )
+
+    def slope_table_and_stats(self, state: dict | None = None) -> tuple[pd.DataFrame, dict | None]:
+        """The ax[4] per-mouse slope table and its mixed-effects tests, for reporting numbers.
+
+        The panel itself only has room for the headline p-values; this returns everything behind
+        them (see :func:`_env_slope_stats`) for the current viewer state.
+        """
+        state = self.state if state is None else state
+        table = _env_slope_table(self._by_env_curves(state), state["min_slope_sessions"])
+        return table, _env_slope_stats(table)
+
     def plot(self, state: dict):
         sel_params = self._sel_params(state)
         fontsize = state["fontsize"]
         plt.rcParams["font.size"] = fontsize
 
-        fig, ax = plt.subplots(1, 4, figsize=self.figsize, layout="constrained", width_ratios=_COMPLETE_SPECTRUM_WIDTH_RATIOS)
+        show_slope_panel = state["show_slope_panel"]
+        width_ratios = _complete_spectrum_width_ratios(state["ax1_width_ratio"], state["ax23_width_ratio"], show_slope_panel)
+        fig, ax = plt.subplots(1, len(width_ratios), figsize=self.figsize, layout="constrained", width_ratios=width_ratios)
+
+        def _legend(axis, prefix: str) -> None:
+            """Restyle a panel's already-drawn legend under its own ``{prefix}_*`` widgets."""
+            apply_legend(axis, state, fontsize, prefix=prefix, auto_loc=_COMPLETE_SPECTRUM_LEGEND_AUTO_LOCS[prefix])
 
         ratios_arrays = _ratios_arrays(self.results, sel_params)
         _plot_ratios_spectrum(ax[0], ratios_arrays, fontsize)
-        _plot_ratios_beeswarms_combined(ax[1], ratios_arrays, fontsize)
+        _legend(ax[0], "spectrum_legend")
+        _plot_ratios_beeswarms_combined(
+            ax[1],
+            ratios_arrays,
+            fontsize,
+            within_xspace=state["within_xspace"],
+            between_xspace=state["between_xspace"],
+        )
 
         ax[2].sharey(ax[1])
         curves_all = _familiarity_curves(self.results, sel_params, "all", within_condition=state["within_condition"])
         _render_familiarity_ratio_panel(ax[2], curves_all, "all", state["style_all"], fontsize)
+        _legend(ax[2], "all_legend")
 
         ax[3].sharey(ax[1])
-        curves_by_env = _familiarity_curves(
-            self.results,
-            sel_params,
-            "by_env",
-            env_full_scope=state["env_full_scope"],
-            full_within_env=state["full_within_env"],
-        )
+        curves_by_env = self._by_env_curves(state)
         _render_familiarity_ratio_panel(ax[3], curves_by_env, "by_env", state["style_by_env"], fontsize)
+        _legend(ax[3], "env_legend")
+
+        # ax[4] summarizes ax[3]: one slope per mouse per env slot, so it keeps its own y axis.
+        if show_slope_panel:
+            slope_table = _env_slope_table(curves_by_env, state["min_slope_sessions"])
+            env_labels = list(curves_by_env)
+            stats_text = None
+            if state["show_slope_stats"]:
+                stats_text = _format_env_slope_stats(_env_slope_stats(slope_table), env_labels)
+            _plot_env_slopes(ax[4], slope_table, env_labels, state["slope_style"], fontsize, stats_text)
 
         # ax[1]-ax[3] share one y-axis: fixed [0, 1] range, spine/ticks/label shown once (on the
         # beeswarm panel), the other two hidden. Setting ylim on any one member of a sharey group
@@ -1795,6 +2591,14 @@ class CompleteSpectrumViewer(Viewer):
             a.spines["left"].set_visible(False)
             a.tick_params(axis="y", left=False, labelleft=False)
 
+        # Each panel's helper already ran format_spines, which bakes its y_pos fraction into a data
+        # coordinate using the ylim at that moment -- and both of those ylims differed from the final
+        # (0, 1). Re-pin the bottom spines here, where the fraction and the data coordinate coincide,
+        # so every panel's x spine lines up: ax[0]'s continuous spine, ax[1]'s hand-drawn segments
+        # and these two all sit at the same fractional offset.
+        for a in (ax[2], ax[3]):
+            a.spines["bottom"].set_position(("data", _COMPOSITE_SPINE_OFFSET))
+
         return fig
 
 
@@ -1805,23 +2609,37 @@ def complete_spectrum_figure(
     env_full_scope: str = "within_env",
     full_within_env: bool = False,
     style_by_env: str = "errorPlot",
+    within_xspace: float = 0.8,
+    between_xspace: float = 1.6,
+    ax1_width_ratio: float = 1.2,
+    ax23_width_ratio: float = 1.0,
+    show_slope_panel: bool = True,
+    slope_style: str = "beeswarm",
+    min_slope_sessions: int = 4,
+    show_slope_stats: bool = True,
+    spectrum_legend: dict | None = None,
+    all_legend: dict | None = None,
+    env_legend: dict | None = None,
     fontsize: float = 9.0,
-    figsize: tuple[float, float] = (14.0, 3.0),
+    figsize: tuple[float, float] = (17.0, 3.0),
     return_syd_viewer: bool = False,
     **selections,
 ):
     """
     Composite figure combining the ratios spectrum+beeswarm with both familiarity Variance Ratio panels.
 
-    A plain 1x4 ``subplots``: ``ax[0]`` is the PF-structure-vs-reliable-CA1 spectrum panel (as in
+    A plain 1x5 ``subplots`` (1x4 when ``show_slope_panel`` is False): ``ax[0]`` is the PF-structure-vs-reliable-CA1 spectrum panel (as in
     :func:`subspace_curves_ratios`); ``ax[1]`` combines that figure's two cumulative-variance-ratio
-    beeswarm groups onto one axis (1st 10 dims at x=0-2, all dims at x=3-5), with tick labels only
-    at the group centers ("1st 10" / "All") -- the Behaving/w ITIs/w Spont color coding is explained
+    beeswarm groups onto one axis (1st 10 dims, then all dims), spaced apart and bracketed by a
+    segmented x spine, with tick labels only at the group centers ("1st 10" / "All") -- the
+    Behaving/w ITIs/w Spont color coding is explained
     by ``ax[2]``'s legend instead of being repeated here; ``ax[2]`` is the whole-session familiarity
     Variance Ratio panel (as in :func:`subspace_familiarity` with ``plot_mode="all"``, Total
     Variance omitted); ``ax[3]`` is the per-env-experience-slot familiarity Variance Ratio panel
-    (``plot_mode="by_env"``, Total Variance omitted). ``ax[1]``, ``ax[2]`` and ``ax[3]`` share one
-    y-axis fixed to ``[0, 1]``, labeled "Shared Variance Ratio" once on the beeswarm panel.
+    (``plot_mode="by_env"``, Total Variance omitted); ``ax[4]`` summarizes ``ax[3]`` as one slope
+    per mouse per env slot, tested with ``slope ~ env + (1 | mouse)``. ``ax[1]``, ``ax[2]`` and
+    ``ax[3]`` share one y-axis fixed to ``[0, 1]``, labeled "Shared Variance Ratio" once on the
+    beeswarm panel; ``ax[4]`` is on a slope scale and keeps its own.
 
     Parameters
     ----------
@@ -1844,6 +2662,36 @@ def complete_spectrum_figure(
         even though the Total Variance panel itself is omitted.)
     style_by_env : {"errorPlot", "all"}
         Rendering style for ``ax[3]`` (per-env familiarity panel), same options as ``style_all``.
+    within_xspace : float
+        Only affects ``ax[1]``. Spacing (in that panel's x units) between the three conditions of a
+        beeswarm group. The swarm spread and mean-line width scale with it, so shrinking it tightens
+        a group without overlapping its conditions.
+    between_xspace : float
+        Only affects ``ax[1]``. Extra spacing added at the group boundary, on top of the
+        ``within_xspace`` step, separating the "1st 10" group from the "All" group.
+    ax1_width_ratio : float
+        Width of ``ax[1]`` relative to ``ax[0]`` and ``ax[4]``, which are fixed at 1.
+    ax23_width_ratio : float
+        Width of ``ax[2]`` and ``ax[3]`` on that same scale. They share one knob because they're
+        the same kind of panel and are meant to be read against each other.
+    show_slope_panel : bool
+        Include ``ax[4]`` (per-env slopes). When False the figure is the 1x4 grid of the four
+        panels above and none of the ``slope_*`` arguments apply.
+    slope_style : {"beeswarm", "all", "errorPlot"}
+        Only affects ``ax[4]``. ``"beeswarm"`` swarms the per-mouse slopes at each env tick with a
+        mean line; ``"all"`` draws one faint line per mouse across the env slots plus the mean;
+        ``"errorPlot"`` shows only the mean +/- SE band.
+    min_slope_sessions : int
+        Only affects ``ax[4]``. Minimum finite sessions a mouse needs in an env slot to contribute
+        a slope there (and so to enter the mixed-effects model).
+    show_slope_stats : bool
+        Only affects ``ax[4]``. Annotate the panel with the omnibus, trend and pairwise p-values.
+    spectrum_legend, all_legend, env_legend : dict or None
+        Legend styling for ``ax[0]``, ``ax[2]`` and ``ax[3]`` respectively, as ``{knob: value}``.
+        ``"loc"`` is a matplotlib placement, ``"auto"`` (the panel's own default placement) or
+        ``"none"`` (draw no legend); the rest are :meth:`~matplotlib.axes.Axes.legend` kwargs --
+        see :data:`~dimensionality_manuscript.figure_scripts.legends.LEGEND_KNOBS`. Only the keys
+        given are overridden.
     fontsize : float
         Font size (points) shared by every panel: axis labels, tick labels, legends and inline
         annotations, via ``plt.rcParams["font.size"]`` plus explicit ``fontsize=`` passes.
@@ -1873,6 +2721,17 @@ def complete_spectrum_figure(
     viewer.update_selection("env_full_scope", value=env_full_scope)
     viewer.update_boolean("full_within_env", value=full_within_env)
     viewer.update_selection("style_by_env", value=style_by_env)
+    viewer.update_float("within_xspace", value=within_xspace)
+    viewer.update_float("between_xspace", value=between_xspace)
+    viewer.update_float("ax1_width_ratio", value=ax1_width_ratio)
+    viewer.update_float("ax23_width_ratio", value=ax23_width_ratio)
+    viewer.update_boolean("show_slope_panel", value=show_slope_panel)
+    viewer.update_selection("slope_style", value=slope_style)
+    viewer.update_integer("min_slope_sessions", value=min_slope_sessions)
+    viewer.update_boolean("show_slope_stats", value=show_slope_stats)
+    for prefix, options in dict(spectrum_legend=spectrum_legend, all_legend=all_legend, env_legend=env_legend).items():
+        if options is not None:
+            update_legend_widgets(viewer, options, prefix=prefix)
     viewer.update_float("fontsize", value=fontsize)
     if return_syd_viewer:
         return viewer
