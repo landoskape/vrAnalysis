@@ -10,30 +10,55 @@ Replicates the measure_cvpca.py workflow using the new pipeline architecture.
 import argparse
 import json
 from pathlib import Path
-from dimensionality_manuscript.configs.placefield_structure import PlaceFieldStructureConfig
 from vrAnalysis.sessions import B2Session
 from dimensionality_manuscript.registry import RegistryPaths
-from dimensionality_manuscript import (
+from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASSES
+from dimensionality_manuscript.pipeline import (
     AnalysisPlan,
     AnalysisConfigBase,
-    BehaviorSpeedEnvConfig,
-    CVPCAConfig,
-    RegressionConfig,
-    VectorGainRankConfig,
-    RegressionDimensionalitySweepConfig,
-    SubspaceConfig,
-    StimSpaceConfig,
-    StimSpaceSpectraConfig,
-    PopulationConfig,
-    ExpMaxConfig,
-    LocPredConfig,
-    PFPredQualityConfig,
-    RRRToExternalLatentsConfig,
-    TilburyFitConfig,
     ResultsStore,
 )
 
 REGISTRY_PATHS = RegistryPaths()
+
+#: CLI names kept for backwards compatibility that differ from the config ``display_name``.
+ANALYSIS_NAME_ALIASES: dict[str, str] = {
+    "locpred": "locprediction",
+    "pf_structure": "placefield_structure",
+}
+
+#: Analyses run when ``--analyses`` is not given. Deliberately excludes the simulation
+#: sweeps and ``locpred_crossval``, which are driven separately rather than across the
+#: full session list. Any name in ``ANALYSIS_CONFIG_CLASSES`` can still be requested
+#: explicitly.
+DEFAULT_ANALYSES: tuple[str, ...] = (
+    "population",
+    "regression",
+    "regression_pf_residual",
+    "vector_gain_rank",
+    "regression_dim_sweep",
+    "cvpca",
+    "subspace",
+    "stimspace",
+    "stimspace_spectra",
+    "expmax",
+    "locpred",
+    "pfpred_quality",
+    "cross_validated_placefields",
+    "placefield_prediction",
+    "pf_structure",
+    "rrr_to_external_latents",
+    "tilbury_fit",
+    "behavior_speed_env",
+)
+
+
+def _analysis_name_mapping() -> dict[str, type[AnalysisConfigBase]]:
+    """Every config by ``display_name``, plus the legacy CLI aliases."""
+    mapping = dict(ANALYSIS_CONFIG_CLASSES)
+    for alias, display_name in ANALYSIS_NAME_ALIASES.items():
+        mapping[alias] = ANALYSIS_CONFIG_CLASSES[display_name]
+    return mapping
 
 
 def build_analysis_configs(
@@ -51,30 +76,14 @@ def build_analysis_configs(
         Applied per config class; classes that don't have the specified fields
         are skipped with a warning.
     """
-    _mapping: dict[str, type[AnalysisConfigBase]] = {
-        "population": PopulationConfig,
-        "regression": RegressionConfig,
-        "vector_gain_rank": VectorGainRankConfig,
-        "regression_dim_sweep": RegressionDimensionalitySweepConfig,
-        "cvpca": CVPCAConfig,
-        "subspace": SubspaceConfig,
-        "stimspace": StimSpaceConfig,
-        "stimspace_spectra": StimSpaceSpectraConfig,
-        "expmax": ExpMaxConfig,
-        "locpred": LocPredConfig,
-        "pfpred_quality": PFPredQualityConfig,
-        "pf_structure": PlaceFieldStructureConfig,
-        "rrr_to_external_latents": RRRToExternalLatentsConfig,
-        "tilbury_fit": TilburyFitConfig,
-        "behavior_speed_env": BehaviorSpeedEnvConfig,
-    }
+    _mapping = _analysis_name_mapping()
     if include is None:
-        include = list(_mapping.keys())
+        include = list(DEFAULT_ANALYSES)
 
     configs = []
     for key in include:
         if key not in _mapping:
-            raise ValueError(f"Unknown analysis config key {key!r}. Available: {', '.join(_mapping.keys())}")
+            raise ValueError(f"Unknown analysis config key {key!r}. Available: {', '.join(sorted(_mapping))}")
         cls = _mapping[key]
         if param_filters:
             try:

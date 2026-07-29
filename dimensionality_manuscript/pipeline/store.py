@@ -16,6 +16,8 @@ from freezedry import freezedry
 from vrAnalysis.files import repo_path
 from ..registry import RegistryPaths
 
+from .base import KEY_SCHEME
+
 if TYPE_CHECKING:
     from .base import AnalysisConfigBase
 
@@ -57,6 +59,24 @@ _ERROR_COLUMNS = (
     ("traceback", "TEXT"),
     ("failed_at", "TIMESTAMP"),
 )
+_META_SCHEMA = "CREATE TABLE IF NOT EXISTS store_meta (\n    name TEXT PRIMARY KEY,\n    value TEXT\n)"
+
+_KEY_SCHEME_ERROR = """\
+Results store predates the namespaced analysis_key scheme.
+
+Analysis keys used to be a hash of the config's dataclass fields only, which
+meant two config classes with the same fields produced the same key and
+silently overwrote each other's results. Keys are now namespaced by
+display_name, so every stored analysis_key and result_uid must be rewritten.
+
+Until this store is migrated, every stored result looks missing and a pipeline
+run would recompute all of them from scratch.
+
+    python -m dimensionality_manuscript.scripts.migrate_namespace_keys           # preview
+    python -m dimensionality_manuscript.scripts.migrate_namespace_keys --apply
+
+Store: {db_path}"""
+
 _ERROR_COLUMN_NAMES = tuple(name for name, _ in _ERROR_COLUMNS)
 _ERROR_SCHEMA = "CREATE TABLE IF NOT EXISTS errors (\n    {}\n)".format(",\n    ".join(f"{name} {sqltype}" for name, sqltype in _ERROR_COLUMNS))
 _ERROR_INSERT_SQL = "INSERT OR REPLACE INTO errors ({}) VALUES ({})".format(
@@ -89,46 +109,9 @@ BASE_STORE_PATH = RegistryPaths.pipeline_v2_db_path
 
 def _analysis_config_classes() -> dict[str, type[AnalysisConfigBase]]:
     """Map ``analysis_type`` (config ``display_name``) to config class."""
-    from ..configs import (
-        BehaviorSpeedEnvConfig,
-        CVPCAConfig,
-        ExpMaxConfig,
-        LocPredConfig,
-        LocPredCrossVal,
-        PFPredQualityConfig,
-        PlaceFieldStructureConfig,
-        PopulationConfig,
-        RegressionConfig,
-        StimSpaceConfig,
-        StimSpaceSpectraConfig,
-        SubspaceConfig,
-        TilburyFitConfig,
-        StimFullSweepConfig,
-        ThresholdedGPSweepConfig,
-        SmoothGPSweepConfig,
-        TilburySweepConfig,
-    )
+    from ..configs import ANALYSIS_CONFIG_CLASSES
 
-    classes = (
-        BehaviorSpeedEnvConfig,
-        CVPCAConfig,
-        ExpMaxConfig,
-        LocPredConfig,
-        LocPredCrossVal,
-        PFPredQualityConfig,
-        PlaceFieldStructureConfig,
-        PopulationConfig,
-        RegressionConfig,
-        StimSpaceConfig,
-        StimSpaceSpectraConfig,
-        SubspaceConfig,
-        TilburyFitConfig,
-        StimFullSweepConfig,
-        ThresholdedGPSweepConfig,
-        SmoothGPSweepConfig,
-        TilburySweepConfig,
-    )
-    return {cls.display_name: cls for cls in classes}
+    return dict(ANALYSIS_CONFIG_CLASSES)
 
 
 @dataclass(frozen=True)
@@ -143,6 +126,27 @@ class InvalidatePlan:
     analysis_type: str | None = None
     schema_version: str | None = None
     config_variation_count: int = 0
+
+
+@dataclass(frozen=True)
+class StalePrunePlan:
+    """Plans for removing stored results absent from the current param grids.
+
+    One :class:`InvalidatePlan` per ``analysis_type`` with stale keys, plus a
+    record of everything deliberately left alone.
+    """
+
+    plans: tuple[InvalidatePlan, ...] = ()
+    stale_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    live_key_counts: dict[str, int] = field(default_factory=dict)
+    unknown_types: dict[str, int] = field(default_factory=dict)
+    """``analysis_type`` -> row count for types absent from the config registry.
+
+    Never planned for deletion: an analysis that was genuinely retired looks
+    exactly like one whose class is missing from the registry by mistake, and
+    only one of those is recoverable.
+    """
+    skipped_types: dict[str, str] = field(default_factory=dict)
 
 
 class ResultsStore:
@@ -170,6 +174,22 @@ class ResultsStore:
         with self._connect() as conn:
             conn.execute(_SCHEMA)
             conn.execute(_ERROR_SCHEMA)
+            conn.execute(_META_SCHEMA)
+            self._check_key_scheme(conn)
+
+    def _check_key_scheme(self, conn) -> None:
+        """Refuse to open a populated store whose keys predate ``KEY_SCHEME``.
+
+        A store with no results is stamped with the current scheme, so new
+        stores are correct by construction.
+        """
+        row = conn.execute("SELECT value FROM store_meta WHERE name='key_scheme'").fetchone()
+        if row is not None and row[0] == KEY_SCHEME:
+            return
+        populated = conn.execute("SELECT 1 FROM results LIMIT 1").fetchone() is not None
+        if populated:
+            raise RuntimeError(_KEY_SCHEME_ERROR.format(db_path=self.db_path))
+        conn.execute("INSERT OR REPLACE INTO store_meta (name, value) VALUES ('key_scheme', ?)", (KEY_SCHEME,))
 
     @property
     def _blob_dir(self) -> Path:
@@ -588,6 +608,81 @@ class ResultsStore:
             analysis_type=analysis_type,
             schema_version=schema_version,
             config_variation_count=len(configs),
+        )
+
+    def plan_prune_stale(self, *, analysis_types: list[str] | None = None) -> StalePrunePlan:
+        """Plan deletion of stored keys that no current param grid produces.
+
+        A stored ``analysis_key`` is stale when the config class named by its
+        ``analysis_type`` no longer generates it — because the schema version
+        moved on, or the parameter left the grid. Both the results and errors
+        tables are considered.
+
+        Rows whose ``analysis_type`` is not in the config registry are reported
+        but never deleted. See :attr:`StalePrunePlan.unknown_types`.
+
+        Parameters
+        ----------
+        analysis_types : list of str, optional
+            Restrict the sweep to these types. None = every type in the store.
+
+        Returns
+        -------
+        StalePrunePlan
+        """
+        from collections import defaultdict
+
+        config_classes = _analysis_config_classes()
+        stored: dict[str, set[str]] = defaultdict(set)
+        row_counts: dict[str, int] = defaultdict(int)
+        with self._connect() as conn:
+            for table in ("results", "errors"):
+                for analysis_type, analysis_key, count in conn.execute(
+                    f"SELECT analysis_type, analysis_key, COUNT(*) FROM {table} GROUP BY analysis_type, analysis_key"
+                ):
+                    stored[analysis_type or ""].add(analysis_key)
+                    row_counts[analysis_type or ""] += count
+
+        plans: list[InvalidatePlan] = []
+        stale_keys: dict[str, tuple[str, ...]] = {}
+        live_key_counts: dict[str, int] = {}
+        unknown_types: dict[str, int] = {}
+        skipped_types: dict[str, str] = {}
+
+        for analysis_type in sorted(stored):
+            if analysis_types is not None and analysis_type not in analysis_types:
+                continue
+            config_cls = config_classes.get(analysis_type)
+            if config_cls is None:
+                unknown_types[analysis_type] = row_counts[analysis_type]
+                continue
+            live = {cfg.key() for cfg in config_cls.generate_variations()}
+            if not live:
+                # Would mark every stored row stale; refuse rather than wipe the type.
+                skipped_types[analysis_type] = f"{config_cls.__name__}.generate_variations() produced no configs"
+                continue
+            live_key_counts[analysis_type] = len(live)
+            stale = tuple(sorted(stored[analysis_type] - live))
+            if not stale:
+                continue
+            stale_keys[analysis_type] = stale
+            placeholders = ",".join("?" for _ in stale)
+            plans.append(
+                InvalidatePlan(
+                    where=f"analysis_type=? AND analysis_key IN ({placeholders})",
+                    params=(analysis_type, *stale),
+                    mode="equality",
+                    analysis_keys=stale,
+                    analysis_type=analysis_type,
+                )
+            )
+
+        return StalePrunePlan(
+            plans=tuple(plans),
+            stale_keys=stale_keys,
+            live_key_counts=live_key_counts,
+            unknown_types=unknown_types,
+            skipped_types=skipped_types,
         )
 
     def _execute_invalidate_plan(self, plan: InvalidatePlan) -> int:

@@ -17,6 +17,41 @@ if TYPE_CHECKING:
     from ..configs.data_config import DataConfig
 
 
+#: Identifier for the current ``key()`` scheme, stamped into ``ResultsStore``'s
+#: ``store_meta`` table. Bumping this requires a migration script.
+KEY_SCHEME = "namespaced_v1"
+
+#: Separator between the namespace and the field hash in :func:`namespaced_key`.
+KEY_NAMESPACE_SEP = ":"
+
+
+def namespaced_key(display_name: str, legacy_key: str) -> str:
+    """Combine a config's ``display_name`` with its field hash.
+
+    Keeping the namespace *outside* the field hash means the result is a pure
+    function of ``(display_name, legacy_key)`` — both of which ``ResultsStore``
+    already records as the ``analysis_type`` and ``analysis_key`` columns. The
+    migration can therefore rekey every stored row, including rows belonging to
+    configs that no longer exist in the codebase.
+
+    Parameters
+    ----------
+    display_name : str
+        The config class's ``display_name``.
+    legacy_key : str
+        The un-namespaced hash from :meth:`AnalysisConfigBase.legacy_key`.
+
+    Returns
+    -------
+    str
+        SHA256 hex digest (16 chars).
+    """
+    if KEY_NAMESPACE_SEP in display_name:
+        raise ValueError(f"display_name must not contain {KEY_NAMESPACE_SEP!r}: {display_name!r}")
+    combined = f"{display_name}{KEY_NAMESPACE_SEP}{legacy_key}"
+    return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class AnalysisConfigBase:
     """Abstract frozen dataclass for analysis configurations.
@@ -59,10 +94,24 @@ class AnalysisConfigBase:
 
         return get_data_config(self.data_config_name)
 
-    def key(self) -> str:
-        """SHA256 of serialized config, truncated to 16 chars."""
+    def legacy_key(self) -> str:
+        """Pre-namespacing key: SHA256 of the serialized fields alone.
+
+        ``display_name`` is a ClassVar, so it is absent from ``asdict`` and two
+        different config classes sharing a field signature and defaults hash to
+        the same value. Retained only so the migration can map stored keys onto
+        the namespaced scheme; use :meth:`key` everywhere else.
+        """
         serialized = json.dumps(asdict(self), sort_keys=True, default=str)
         return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
+    def key(self) -> str:
+        """Content-addressed key, namespaced by ``display_name``.
+
+        Namespacing makes the key unique across config classes, so it alone
+        identifies a result — no separate ``analysis_type`` check required.
+        """
+        return namespaced_key(self.display_name, self.legacy_key())
 
     def summary(self) -> str:
         """Human-readable summary string."""

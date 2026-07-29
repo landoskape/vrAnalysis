@@ -664,6 +664,7 @@ SUBSPACE_NAMES: tuple[SubspaceName] = (
 
 ACTIVITY_PARAMETERS_REGISTRY: dict[str, ActivityParameters] = {
     "default": ActivityParameters(),
+    "std": ActivityParameters(center=False, scale=True, scale_type="std", presplit=True),
     "raw": ActivityParameters(center=False, scale=False, scale_type="none"),
     "preserved": ActivityParameters(center=False, scale=True, scale_type="preserve"),
 }
@@ -936,9 +937,7 @@ def get_model(
             speed_basis=True, predictive_reward=True, split_train=False, predict_latents=False, fit_intercept=True
         ),
         "fullregressor_predreward": dict(speed_basis=True, predictive_reward=True, split_train=True, predict_latents=True, fit_intercept=True),
-        "fullregressor_leak_predreward": dict(
-            speed_basis=True, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=True
-        ),
+        "fullregressor_leak_predreward": dict(speed_basis=True, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=True),
         "fullregressor_decoder_only_1dspeed_predreward": dict(
             speed_basis=False, predictive_reward=True, split_train=False, predict_latents=False, fit_intercept=True
         ),
