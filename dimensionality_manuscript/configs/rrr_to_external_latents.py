@@ -53,7 +53,8 @@ VALID_RRR_VARIANCE: list[Union[float, str]] = [1.0, 0.95, "match"]
 # the pos/speed/reward breakdown is comparable across them.
 #
 # The second pair is the predictive-reward variant (causally clean reward regressors: predictive-only
-# expectation basis, no omission response), matching SWEPT_PREDREWARD_MODEL_NAMES in configs/regression.py.
+# expectation basis, no omission response), matching the predictive-reward entries
+# in KEY_FIGURE_MODELS in configs/regression.py.
 VALID_MODEL_EXT_INT_PAIRS: list[tuple[ModelName, ModelName]] = [
     ("fullregressor_decoder_only_1dspeed", "fullregressor_1dspeed"),
     ("fullregressor_decoder_only_1dspeed_predreward", "fullregressor_1dspeed_predreward"),

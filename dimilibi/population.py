@@ -247,6 +247,7 @@ class Population:
             ='percentile' -> will scale the data by a percentile of each neuron's values across timepoints.
             When using 'percentile', the scale parameter must be a numeric value (0-100) representing the percentile.
             ='max' -> will scale the data by the maximum value of each neuron across timepoints.
+            ='std' -> will scale the data by the standard deviation of each neuron across timepoints.
 
         Returns
         -------
@@ -429,6 +430,7 @@ class Population:
             ='percentile' -> will scale the data by a percentile of each neuron's values across timepoints.
             When using 'percentile', the scale parameter must be a numeric value (0-100) representing the percentile.
             ='max' -> will scale the data by the maximum value of each neuron across timepoints.
+            ='std' -> will scale the data by the standard deviation of each neuron across timepoints.
         prefiltered : bool
             If True, assumes that provided data is already filtered by idx_samples. Defaults to True.
 
@@ -455,6 +457,9 @@ class Population:
                 elif scale_type == "max":
                     max_val = data.max(dim=1, keepdim=True)[0]
                     max_val[max_val == 0] = 1
+                elif scale_type == "std":
+                    std = data.std(dim=1, keepdim=True)
+                    std[std == 0] = 1
                 else:
                     # Validate boolean usage for non-percentile scaling
                     if not isinstance(scale, bool):
@@ -498,6 +503,19 @@ class Population:
                     max_val = data.max(dim=1, keepdim=True)[0]
                     max_val[max_val == 0] = 1
                     data = data / max_val
+            elif scale_type == "std":
+                # Validate boolean usage for std scaling
+                if not isinstance(scale, bool):
+                    raise ValueError(f"When scale_type='std', scale must be a boolean, " f"got {type(scale).__name__}")
+
+                # Compute std per neuron across timepoints if not pre-computed
+                if pre_split:
+                    # Use pre-computed std value
+                    data = data / std
+                else:
+                    std = data.std(dim=1, keepdim=True)
+                    std[std == 0] = 1
+                    data = data / std
             else:
                 # Validate boolean usage for non-percentile scaling
                 if not isinstance(scale, bool):
@@ -509,7 +527,7 @@ class Population:
                     std[std == 0] = 1
 
                 # normalize source and target appropriately
-                if scale_type is None or scale_type == "std":
+                if scale_type is None:
                     data = data / std
                 elif scale_type == "sqrt":
                     data = data / torch.sqrt(std)

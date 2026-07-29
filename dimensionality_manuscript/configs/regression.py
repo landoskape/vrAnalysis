@@ -16,7 +16,7 @@ from collections import defaultdict
 import numpy as np
 from dimilibi import measure_r2, mse
 from vrAnalysis.sessions import B2Session, SpksTypes
-from vrAnalysis.processors.placefields import get_placefield_prediction
+from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction
 from ..registry import (
     MODEL_NAMES,
     ModelName,
@@ -33,35 +33,22 @@ from ..regression_models.models import (
 )
 from ..pipeline.base import AnalysisConfigBase
 
-VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
+VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved", "std"]
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 
-# Models plotted in the main R2 figure (figure 2). The dimensionality sweep
-# below runs only over these. Placefield vector-gain models are excluded here
-# because their rank sweep is handled by VectorGainRankConfig.
-FIGURE_MODEL_NAMES: list[ModelName] = [
+# Models used in the key regression figures and their associated analyses.
+KEY_FIGURE_MODELS: list[ModelName] = [
     "external_placefield_1d",
-    "rbfpos_decoder_only",
-    "pos_speed_decoder_only_1dspeed",
-    "fullregressor_decoder_only_1dspeed",
     "internal_placefield_1d",
-    "rbfpos",
-    "pos_speed_1dspeed",
-    "fullregressor_1dspeed",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
     "rrr",
-]
-
-# Predictive-reward variants actually swept by the pipeline. All twelve are registered in
-# MODEL_NAMES and can be built with get_model / scored by hand, but sweeping every one of
-# them would quadruple the fullregressor cost for variants we aren't reporting.
-SWEPT_PREDREWARD_MODEL_NAMES: tuple[ModelName, ...] = (
+    "rrr_no_intercept",
     "fullregressor_decoder_only_1dspeed_predreward",
     "fullregressor_1dspeed_predreward",
-)
-
-SWEPT_MODEL_NAMES: list[ModelName] = [name for name in MODEL_NAMES if "_predreward" not in name or name in SWEPT_PREDREWARD_MODEL_NAMES]
+    "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+    "fullregressor_1dspeed_predreward_no_intercept",
+]
 
 
 def _log_int_values(start: int, stop: int, num: int = 25) -> np.ndarray:
@@ -104,7 +91,7 @@ class RegressionConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "model_name": list(SWEPT_MODEL_NAMES),
+            "model_name": list(KEY_FIGURE_MODELS),
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
             # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
         }
@@ -142,6 +129,186 @@ class RegressionConfig(AnalysisConfigBase):
             method=self.method,
         )
         return score
+
+
+def _placefield_weighted_residual_rms(
+    residual: np.ndarray,
+    placefield_prediction: np.ndarray,
+    placefield_peak: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-ROI residual RMS inside and outside a soft place field.
+
+    The place-field prediction is converted to a membership in ``[0, 1]`` by
+    dividing each ROI by the peak of its all-data place-field map. Within-field
+    weights are proportional to that membership; outside-field weights are
+    proportional to one minus the membership. Each set of temporal weights is
+    normalized independently before calculating RMS.
+    """
+    residual = np.asarray(residual, dtype=float)
+    placefield_prediction = np.asarray(placefield_prediction, dtype=float)
+    placefield_peak = np.asarray(placefield_peak, dtype=float)
+    if residual.ndim != 2:
+        raise ValueError(f"residual must have shape (rois, frames), got {residual.shape}")
+    if placefield_prediction.shape != residual.shape:
+        raise ValueError("placefield_prediction must match residual shape " f"{residual.shape}, got {placefield_prediction.shape}")
+    if placefield_peak.shape != (residual.shape[0],):
+        raise ValueError(f"placefield_peak must have shape ({residual.shape[0]},), got {placefield_peak.shape}")
+
+    valid_peak = np.isfinite(placefield_peak) & (placefield_peak > 0)
+    valid = np.isfinite(residual) & np.isfinite(placefield_prediction) & valid_peak[:, None]
+    membership = np.divide(
+        np.clip(placefield_prediction, 0, None),
+        placefield_peak[:, None],
+        out=np.full_like(placefield_prediction, np.nan),
+        where=valid_peak[:, None],
+    )
+    membership = np.clip(membership, 0, 1)
+
+    squared_error = np.where(valid, residual**2, 0)
+    within_weight = np.where(valid, membership, 0)
+    outside_weight = np.where(valid, 1 - membership, 0)
+    within_total = np.sum(within_weight, axis=1)
+    outside_total = np.sum(outside_weight, axis=1)
+
+    within_mse = np.divide(
+        np.sum(within_weight * squared_error, axis=1),
+        within_total,
+        out=np.full(residual.shape[0], np.nan),
+        where=within_total > 0,
+    )
+    outside_mse = np.divide(
+        np.sum(outside_weight * squared_error, axis=1),
+        outside_total,
+        out=np.full(residual.shape[0], np.nan),
+        where=outside_total > 0,
+    )
+    return np.sqrt(within_mse), np.sqrt(outside_mse)
+
+
+def _finite_mean(values: np.ndarray) -> float:
+    """Mean of finite values, or NaN when no finite values exist."""
+    finite = np.asarray(values)[np.isfinite(values)]
+    return float(np.mean(finite)) if finite.size else np.nan
+
+
+@dataclass(frozen=True)
+class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
+    """Compare held-out model residuals within and outside each target ROI's place field.
+
+    The parameter grid deliberately mirrors :class:`RegressionConfig`: every
+    regression result therefore has a corresponding residual-localization job.
+    A common, non-cross-validated place field is estimated from the target
+    population's full split in the same activity units used by the model.
+    """
+
+    schema_version: str = "v1"
+    data_config_name: str = "default"
+    model_name: ModelName = "external_placefield_1d"
+    spks_type: SpksTypes = "sigrebase"
+    method: str = "preferred"
+    activity_parameters_name: str = "default"
+
+    num_placefield_bins: int = 100
+    placefield_smooth_width: float | None = None
+    display_name: ClassVar[str] = "regression_pf_residual"
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {
+            "model_name": list(KEY_FIGURE_MODELS),
+            "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
+        }
+
+    def validate(self):
+        if self.model_name not in MODEL_NAMES:
+            raise ValueError(f"Unknown model_name {self.model_name!r}. " f"Available: {', '.join(MODEL_NAMES)}")
+        if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
+            raise ValueError(
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: " f"{', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
+            )
+        if self.num_placefield_bins < 1:
+            raise ValueError("num_placefield_bins must be at least 1")
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"{self.model_name}",
+            f"spks={self.spks_type}",
+            f"method={self.method}",
+        ]
+        if self.activity_parameters_name != "default":
+            parts.append(f"ap={self.activity_parameters_name}")
+        parts.append(self.schema_version)
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        """Fit the cached-best model and localize its held-out residual RMS."""
+        if np.unique(session.env_length).size != 1:
+            raise ValueError("All trials must have the same environment length!")
+
+        model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
+        hyperparameters = model.get_best_hyperparameters(
+            session,
+            spks_type=self.spks_type,
+            method=self.method,
+        )[0]
+        report = model.process(
+            session,
+            self.spks_type,
+            train_split="train",
+            test_split="test",
+            hyperparameters=hyperparameters,
+        )
+
+        # Estimate a common target-neuron PF from every population time split.
+        # get_session_data applies the exact activity scaling used by this model.
+        _, target_full, frame_behavior_full = model.get_session_data(session, self.spks_type, "full")
+        dist_edges = np.linspace(0, session.env_length[0], self.num_placefield_bins + 1)
+        placefield = get_placefield(
+            target_full.T.numpy(),
+            frame_behavior_full,
+            dist_edges=dist_edges,
+            speed_threshold=None,
+            average=True,
+            smooth_width=self.placefield_smooth_width,
+            zero_to_nan=True,
+        )
+
+        # Evaluate PF membership on the same held-out frames as the model report,
+        # including any model-specific removal of frames with invalid predictions.
+        _, _, frame_behavior_test = model.get_session_data(session, self.spks_type, "test")
+        pf_prediction = get_placefield_prediction(placefield, frame_behavior_test)[0].T
+        if report.extras.get("predictions_were_filtered", False):
+            pf_prediction = pf_prediction[:, report.extras["idx_valid_predictions"]]
+
+        target = np.asarray(report.target_data)
+        prediction = np.asarray(report.predicted_data)
+        if pf_prediction.shape != target.shape or prediction.shape != target.shape:
+            raise ValueError(
+                "Held-out target, model prediction, and PF prediction are misaligned: "
+                f"target={target.shape}, prediction={prediction.shape}, pf={pf_prediction.shape}"
+            )
+
+        finite_pf = np.isfinite(placefield.placefield)
+        placefield_peak = np.max(
+            np.where(finite_pf, placefield.placefield, -np.inf),
+            axis=(0, 1),
+        )
+        placefield_peak[~np.any(finite_pf, axis=(0, 1))] = np.nan
+        within_rms, outside_rms = _placefield_weighted_residual_rms(
+            target - prediction,
+            pf_prediction,
+            placefield_peak,
+        )
+        difference = outside_rms - within_rms
+        return {
+            "within_pf_rms": within_rms,
+            "outside_pf_rms": outside_rms,
+            "outside_minus_within_pf_rms": difference,
+            "mean_within_pf_rms": _finite_mean(within_rms),
+            "mean_outside_pf_rms": _finite_mean(outside_rms),
+            "mean_outside_minus_within_pf_rms": _finite_mean(difference),
+        }
 
 
 @dataclass(frozen=True)
@@ -300,7 +467,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     Parameters
     ----------
     model_name : ModelName
-        Name of the regression model (must be in ``FIGURE_MODEL_NAMES``).
+        Name of the regression model (must be in ``KEY_FIGURE_MODELS``).
     spks_type : SpksTypes
         Spike type to use for the population.
     method : str
@@ -322,14 +489,12 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "model_name": list(FIGURE_MODEL_NAMES) + list(SWEPT_PREDREWARD_MODEL_NAMES),
+            "model_name": list(KEY_FIGURE_MODELS),
         }
 
     def validate(self):
-        if self.model_name not in (FIGURE_MODEL_NAMES + list(SWEPT_PREDREWARD_MODEL_NAMES)):
-            raise ValueError(
-                f"Unknown model_name {self.model_name!r}. Available: {', '.join(FIGURE_MODEL_NAMES + list(SWEPT_PREDREWARD_MODEL_NAMES))}"
-            )
+        if self.model_name not in KEY_FIGURE_MODELS:
+            raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(KEY_FIGURE_MODELS)}")
 
     def summary(self) -> str:
         parts = [
