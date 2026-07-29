@@ -1,10 +1,14 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from .behavior_speed_env import BehaviorSpeedEnvConfig
 from .cvpca import CVPCAConfig
 from .data_config import DataConfig, get_data_config, list_data_configs
 from .pfpred_quality import PFPredQualityConfig
-from .placefield_structure import PlaceFieldStructureConfig
+from .placefield_structure import CrossValidatedPlacefieldsConfig, PlacefieldPredictionConfig, PlaceFieldStructureConfig
 from .population import PopulationConfig
-from .regression import RegressionConfig, VectorGainRankConfig, RegressionDimensionalitySweepConfig
+from .regression import RegressionConfig, RegressionPlacefieldResidualConfig, VectorGainRankConfig, RegressionDimensionalitySweepConfig
 from .rrr_to_external_latents import RRRToExternalLatentsConfig
 from .subspace import SubspaceConfig
 from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig
@@ -20,14 +24,65 @@ from .simulation_sweep import (
     TilburySweepConfig,
 )
 
+if TYPE_CHECKING:
+    from ..pipeline.base import AnalysisConfigBase
+
+#: Every analysis config class in the package. Single source of truth — ``ResultsStore``
+#: and ``scripts.run`` both derive their lookups from this instead of hand-written lists.
+ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
+    BehaviorSpeedEnvConfig,
+    CVPCAConfig,
+    CrossValidatedPlacefieldsConfig,
+    ExpMaxConfig,
+    LocPredConfig,
+    LocPredCrossVal,
+    PFPredQualityConfig,
+    PlaceFieldStructureConfig,
+    PlacefieldPredictionConfig,
+    PopulationConfig,
+    RRRToExternalLatentsConfig,
+    RegressionConfig,
+    RegressionPlacefieldResidualConfig,
+    RegressionDimensionalitySweepConfig,
+    SmoothGPSweepConfig,
+    StimFullSweepConfig,
+    StimSpaceConfig,
+    StimSpaceSpectraConfig,
+    SubspaceConfig,
+    ThresholdedGPSweepConfig,
+    TilburyFitConfig,
+    TilburySweepConfig,
+    VectorGainRankConfig,
+)
+
+
+def _build_registry() -> dict[str, type["AnalysisConfigBase"]]:
+    """Map ``display_name`` to config class, rejecting duplicate names."""
+    registry: dict[str, type["AnalysisConfigBase"]] = {}
+    for cls in ANALYSIS_CONFIG_CLASS_LIST:
+        existing = registry.get(cls.display_name)
+        if existing is not None:
+            raise ValueError(f"Duplicate display_name {cls.display_name!r}: {existing.__name__} and {cls.__name__}")
+        registry[cls.display_name] = cls
+    return registry
+
+
+#: ``display_name`` -> config class, for every analysis config in the package.
+ANALYSIS_CONFIG_CLASSES: dict[str, type["AnalysisConfigBase"]] = _build_registry()
+
 __all__ = [
+    "ANALYSIS_CONFIG_CLASSES",
+    "ANALYSIS_CONFIG_CLASS_LIST",
     "BehaviorSpeedEnvConfig",
     "CVPCAConfig",
     "DataConfig",
     "PFPredQualityConfig",
+    "CrossValidatedPlacefieldsConfig",
+    "PlacefieldPredictionConfig",
     "PlaceFieldStructureConfig",
     "PopulationConfig",
     "RegressionConfig",
+    "RegressionPlacefieldResidualConfig",
     "RRRToExternalLatentsConfig",
     "VectorGainRankConfig",
     "RegressionDimensionalitySweepConfig",
