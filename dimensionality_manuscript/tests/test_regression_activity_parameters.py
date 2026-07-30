@@ -82,6 +82,7 @@ def test_regression_grids_use_only_key_figure_models_and_include_std():
     assert residual_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
     assert regression_grid["activity_parameters_name"] == ["default", "preserved", "std"]
     assert dimensionality_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
+    assert dimensionality_grid["activity_parameters_name"] == ["default", "preserved", "std"]
 
 
 def test_rrr_external_latent_pairs_are_derived_from_key_figure_models():

@@ -44,8 +44,7 @@ from ..pipeline.base import AnalysisConfigBase
 from .regression import KEY_FIGURE_MODELS
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
-VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
-VALID_RRR_VARIANCE: list[Union[float, str]] = [1.0, 0.95, "match"]
+VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved", "std"]
 
 # The (external, internal) model pairs this analysis knows how to run. The first element supplies
 # the true (behavior-derived) basis; it has predict_latents=False and so exposes only
@@ -62,6 +61,7 @@ VALID_MODEL_EXT_INT_PAIRS: list[tuple[ModelName, ModelName]] = [
     for external_name in KEY_FIGURE_MODELS
     if external_name.startswith("fullregressor_decoder_only_")
     and (internal_name := external_name.replace("_decoder_only", "", 1)) in KEY_FIGURE_MODELS
+    and "no_intercept" not in external_name
 ]
 DEFAULT_MODEL_EXT_INT_PAIR: tuple[ModelName, ModelName] = VALID_MODEL_EXT_INT_PAIRS[0]
 
@@ -310,7 +310,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         Whether to z-score latents before regression.
     """
 
-    schema_version: str = "v7"
+    schema_version: str = "v8"
     # v5: hard-code external_model_name to the decoder-only regressor and add
     # num_pos_params/num_speed_params/num_reward_params to the output.
     # v6: take the true basis from the external (decoder-only) model and the predicted basis
@@ -322,6 +322,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
     # constant, so the predictive-reward regressors can be analyzed too; the pos/speed/reward
     # column counts are now derived from each model's own regressor flags rather than assuming
     # the symmetric-expectation, 1d-speed structure.
+    # v8: because regression models changed so we need to rerun it!
 
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
@@ -338,7 +339,7 @@ class RRRToExternalLatentsConfig(AnalysisConfigBase):
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
             "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
-            "rrr_variance": list(VALID_RRR_VARIANCE),
+            # "rrr_variance": list(VALID_RRR_VARIANCE), # only ever used 0.95
             "normalize": [True, False],
             "model_ext_int_pair": list(VALID_MODEL_EXT_INT_PAIRS),
         }

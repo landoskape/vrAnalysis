@@ -461,8 +461,8 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     resolution rather than a fixed low-pass filter.
 
     Results are flat ``{sweep}_{values,dim,mse,r2}`` arrays, where ``dim`` is the
-    nominal regressor dimensionality for the swept configuration. Always uses the
-    ``"default"`` activity parameters.
+    nominal regressor dimensionality for the swept configuration. The activity
+    preprocessing preset is swept over ``VALID_ACTIVITY_PARAMETERS``.
 
     Parameters
     ----------
@@ -472,16 +472,20 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         Spike type to use for the population.
     method : str
         Hyperparameter selection method used to fix the baseline hyperparameters.
+    activity_parameters_name : str
+        Named activity preprocessing preset.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     # v2: scale smooth_width/basis_width to bin spacing during the num_bins/num_basis
     # sweep instead of holding it fixed, so resolution doesn't plateau from oversmoothing.
+    # v3: because upstream regression models changed and we need to rerun the sweep with new params.
 
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "best"
+    activity_parameters_name: str = "default"
 
     SMOOTH_SCALE: ClassVar[float] = 0.5
     display_name: ClassVar[str] = "regression_dim_sweep"
@@ -490,11 +494,17 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(KEY_FIGURE_MODELS),
+            "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
         }
 
     def validate(self):
         if self.model_name not in KEY_FIGURE_MODELS:
             raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(KEY_FIGURE_MODELS)}")
+        if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
+            raise ValueError(
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. "
+                f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
+            )
 
     def summary(self) -> str:
         parts = [
@@ -502,13 +512,15 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
             f"{self.model_name}",
             f"spks={self.spks_type}",
             f"method={self.method}",
-            self.schema_version,
         ]
+        if self.activity_parameters_name != "default":
+            parts.append(f"ap={self.activity_parameters_name}")
+        parts.append(self.schema_version)
         return "_".join(parts)
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
         """Run the dimensionality sweep appropriate for this model."""
-        model = get_model(self.model_name, registry, activity_parameters="default")
+        model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
         num_env = len(session.environments)
         base_hp = model.get_best_hyperparameters(session, spks_type=self.spks_type, method=self.method)[0]
 
