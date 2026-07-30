@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Protocol
 
 import numpy as np
 from scipy.stats import gaussian_kde, ttest_rel, wilcoxon
@@ -13,6 +13,7 @@ from dimilibi.helpers import fit_powerlaw_decay, fit_powerlaw_derivatives
 from dimensionality_manuscript import ResultsAggregator, average_by_mouse
 from dimensionality_manuscript.registry import PopulationRegistry
 from dimensionality_manuscript.configs.tilbury_fit import TilburyFitConfig, _eval_tilbury, _eval_gaussian, _SPLITS
+from dimensionality_manuscript.env_order import ENV_SLOT_COLORS, MAX_ENV_SLOTS
 from .legends import LEGEND_LOCS, LEGEND_KNOBS, add_legend_widgets, update_legend_widgets, apply_legend
 
 # Selectable spectrum keys and which aggregator each one comes from. StimSpace keys resolve
@@ -610,7 +611,18 @@ def _significance_stars(p: float) -> str:
     return "ns"
 
 
-def _beeswarm_panel(ax, values_list, colors, labels, fontsize, beewidth: float = 0.2, each_alpha: float = 0.3, yscale: str = "linear") -> None:
+def _beeswarm_panel(
+    ax,
+    values_list,
+    colors,
+    labels,
+    fontsize,
+    beewidth: float = 0.2,
+    each_alpha: float = 0.3,
+    yscale: str = "linear",
+    markersize: float = 3.0,
+    mean_linewidth: float = 2.0,
+) -> None:
     """Per-mouse beeswarm (points + bold mean line) at integer x-positions ``0, 1, ...``."""
     line_extent = np.array([-0.25, 0.25])
     for x, (vals, color) in enumerate(zip(values_list, colors)):
@@ -619,8 +631,8 @@ def _beeswarm_panel(ax, values_list, colors, labels, fontsize, beewidth: float =
         finite = np.isfinite(vals)
         if finite.any():
             offsets[finite] = beeswarm(vals[finite])
-        ax.plot(x + beewidth * offsets, vals, color=color, linestyle="none", marker="o", markersize=3, alpha=each_alpha)
-        ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=2.0)
+        ax.plot(x + beewidth * offsets, vals, color=color, linestyle="none", marker="o", markersize=markersize, alpha=each_alpha)
+        ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=mean_linewidth)
     ax.set_xlim(-0.5, len(labels) - 0.5)
     ax.set_yscale(yscale)
     ymin = 0 if yscale == "linear" else 1
@@ -639,6 +651,53 @@ def _beeswarm_panel(ax, values_list, colors, labels, fontsize, beewidth: float =
     if len(labels) > 2:
         ax.set_xticks(xticks, labels=labels, rotation=45, ha="right", fontsize=fontsize)
     ax.set_xticks(xticks, labels=labels, fontsize=fontsize)
+
+
+def _horizontal_beeswarm_panel(
+    ax,
+    values_list,
+    colors,
+    beewidth: float = 0.15,
+    each_alpha: float = 0.6,
+    markersize: float = 3.0,
+    mean_linewidth: float = 2.0,
+) -> None:
+    """Draw several horizontal swarms around one shared, unlabeled y-position.
+
+    The x-coordinate is the statistic itself. Swarm offsets are computed in log space because
+    this helper is used below a log-rank spectrum axis. When groups contain the same number of
+    mice, later groups reuse the PF offsets so corresponding CA1/PF points are y-aligned; otherwise
+    the group gets its own centered offsets. Group identity is intentionally left to the spectrum
+    legend in the shared panel above.
+    """
+    mean_extent = np.array([-0.22, 0.22])
+    reference_offsets = None
+    for vals, color in zip(values_list, colors):
+        vals = np.asarray(vals, dtype=float)
+        finite = np.isfinite(vals) & (vals > 0)
+        offsets = np.zeros_like(vals)
+        if reference_offsets is not None and len(reference_offsets) == len(vals):
+            offsets = reference_offsets.copy()
+        elif finite.any():
+            offsets[finite] = beeswarm(np.log10(vals[finite]))
+        if reference_offsets is None:
+            reference_offsets = offsets.copy()
+        ax.plot(
+            vals,
+            beewidth * offsets,
+            color=color,
+            linestyle="none",
+            marker="o",
+            markersize=markersize,
+            alpha=each_alpha,
+        )
+        if finite.any():
+            mean = np.nanmean(vals[finite])
+            ax.plot([mean, mean], mean_extent, color=color, linewidth=mean_linewidth)
+
+    ax.set_ylim(-0.5, 0.5)
+    ax.set_yticks([])
+    ax.tick_params(axis="y", left=False, right=False, labelleft=False)
 
 
 # The legend widget machinery moved to ``legends.py`` when figure3's composite figure needed it too.
@@ -1281,9 +1340,23 @@ class AdaptiveAlphaConfig:
     """Minimum finite local-exponent count inside the window; below this the fit is NaN."""
 
 
-# Fixed per-side adaptive-fit configs for spectrum_figure: "placefields" governs source_key (and the
-# fit_key Tilbury overlays); "full" governs full_source_key. Values are placeholders matching the
-# viewer's former shared-widget defaults -- fill in real publication values here.
+@dataclass(frozen=True)
+class SpectrumSmoothingConfig:
+    """The smoothing settings needed by a spectrum-only panel."""
+
+    smooth_method: str
+    smooth_width: float
+
+
+class SpectrumSmoothing(Protocol):
+    """Structural type shared by smoothing-only and adaptive-alpha settings."""
+
+    smooth_method: str
+    smooth_width: float
+
+
+# Fixed per-side adaptive-fit configs for spectrum_alpha_figure: "placefields" governs source_key
+# (and the fit_key Tilbury overlays); "full" governs full_source_key.
 ADAPTIVE_ALPHA_CONFIG_REGISTRY: dict[str, AdaptiveAlphaConfig] = {
     "placefields": AdaptiveAlphaConfig(
         smooth_method="gaussian",
@@ -1310,23 +1383,19 @@ def get_adaptive_alpha_config(name: str) -> AdaptiveAlphaConfig:
 
 
 class SpectrumFigureViewer(Viewer):
-    """Placefield-vs-full spectrum figure: spectra, power-law exponent, participation ratio.
+    """Placefield-vs-full spectrum figure: spectra and participation-ratio dimensionality.
 
-    Three panels comparing one placefield (PF) spectrum against the full/functional (FF) spectrum:
+    Two vertically stacked panels comparing one placefield (PF) spectrum against the
+    full/functional (FF) spectrum:
 
     - ax[0]: the selected PF ``source_key`` spectrum (one of the four curve options) and the FF
       spectrum, both log-space pre-smoothed and drawn log-log (faint per-mouse lines + bold
       mouse-average). The FF curve source is set by ``full_source_key``: ``"SVD"`` is the ``ff`` key
       from the StimSpaceSpectra aggregator, ``"SVCA"`` is the subspace ``variance_activity`` key
       (``svca_subspace``, ``smooth_width=None``).
-    - ax[1]: the power-law exponent per mouse for PF (x=0) and FF (x=1), estimated by the adaptive
-      median five-point-derivative fit over each session's own peak-curvature-to-noise-floor window
-      (see :func:`_second_derivative_window`) -- no shared fit window, hence no ax[0] shading. PF
-      uses ``source_cfg``, FF uses ``full_cfg`` (see :class:`AdaptiveAlphaConfig`). Keys that are not
-      cross-validated (no negative entries in their raw spectrum) borrow their window boundaries from
-      ``ss_cvpca`` (PF side, and the ``fit_key`` Tilbury overlays) / ``svca`` (FF side), while still
-      estimating the slope from their own spectrum -- see :func:`_median_fpd_alpha_session`.
-    - ax[2]: the signed participation ratio per mouse for PF (x=0) and FF (x=1).
+    - ax[1]: the signed participation ratio per mouse on the same log-scaled dimension axis as
+      ax[0]. PF and FF points share one unlabeled categorical y-position; their colors are identified
+      by ax[0]'s legend.
 
     Smoothing, param-axis widgets, tuple-label encoding, and the log10 y-floor behave as in
     :class:`PlacefieldSpectraViewer`.
@@ -1338,22 +1407,32 @@ class SpectrumFigureViewer(Viewer):
         results_cvpca: ResultsAggregator | None = None,
         results_subspace: ResultsAggregator | None = None,
         results_fit: ResultsAggregator | None = None,
-        source_cfg: AdaptiveAlphaConfig | None = None,
-        full_cfg: AdaptiveAlphaConfig | None = None,
+        source_smooth_method: str = "gaussian",
+        source_smooth_width: float = 3.0,
+        full_smooth_method: str = "gaussian",
+        full_smooth_width: float = 20.0,
         ylim_min: float = -5.5,
         ylim_max: float = 0.0,
         fontsize: float = 9.0,
-        figsize: tuple[float, float] = (6.5, 3.0),
+        figsize: tuple[float, float] = (3.25, 3.25),
+        height_ratios: tuple[float, float] = (1.0, 0.22),
+        pf_color: str = "orange",
+        ff_color: str = "black",
+        pf_label: str = "Placefields",
+        ff_label: str = "Full CA1",
     ):
         self.results = results
         self.results_cvpca = results_cvpca
         self.results_subspace = results_subspace
         self.results_fit = results_fit
-        self.source_cfg = source_cfg if source_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]
-        self.full_cfg = full_cfg if full_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["full"]
         self._agg = {"stimspace": results, "cvpca": results_cvpca}
         self.fontsize = fontsize
         self.figsize = figsize
+        self.height_ratios = height_ratios
+        self.pf_color = pf_color
+        self.ff_color = ff_color
+        self.pf_label = pf_label
+        self.ff_label = ff_label
 
         pf_options = list(_STIMSPACE_KEYS)
         if results_cvpca is not None:
@@ -1413,17 +1492,24 @@ class SpectrumFigureViewer(Viewer):
         self.add_float("ylim_max", value=ylim_max, min=-8.0, max=12.0, step=0.1)
         self.add_float("beewidth", value=0.15, min=0.0, max=1.0, step=0.01)
         self.add_boolean("normalize", value=True)
-        self.add_selection("yscale", options=["linear", "log"], value="log")
         self.add_float("each_line_alpha", value=0.3, min=0.0, max=1.0, step=0.01)
+        self.add_float("point_alpha", value=0.6, min=0.0, max=1.0, step=0.01)
+        self.add_float("markersize", value=3.0, min=0.5, max=12.0, step=0.5)
+        self.add_float("mean_linewidth", value=2.0, min=0.25, max=6.0, step=0.25)
 
-        # One widget per AdaptiveAlphaConfig field, per side (source_cfg / full_cfg), so both fixed
-        # adaptive-fit configs are fully controllable from the viewer instead of only at construction.
-        for prefix, cfg in (("source", self.source_cfg), ("full", self.full_cfg)):
-            self.add_selection(f"{prefix}_smooth_method", options=["none", "boxcar", "gaussian"], value=cfg.smooth_method)
-            self.add_float(f"{prefix}_smooth_width", value=cfg.smooth_width, min=0.0, max=50.0, step=0.5)
-            self.add_integer(f"{prefix}_fpd_window_size", value=cfg.fpd_window_size, min=1, max=50)
-            self.add_integer(f"{prefix}_adaptive_buffer", value=cfg.adaptive_buffer, min=0, max=50)
-            self.add_integer(f"{prefix}_minimum_window_size", value=cfg.minimum_window_size, min=1, max=500)
+        # Independent spectrum smoothing; there are deliberately no adaptive-alpha controls here.
+        self.add_selection(
+            "source_smooth_method",
+            options=["none", "boxcar", "gaussian"],
+            value=source_smooth_method,
+        )
+        self.add_float("source_smooth_width", value=source_smooth_width, min=0.0, max=50.0, step=0.5)
+        self.add_selection(
+            "full_smooth_method",
+            options=["none", "boxcar", "gaussian"],
+            value=full_smooth_method,
+        )
+        self.add_float("full_smooth_width", value=full_smooth_width, min=0.0, max=50.0, step=0.5)
 
     encode_param = PlacefieldSpectraViewer.encode_param
     _sel_params = PlacefieldSpectraViewer._sel_params
@@ -1445,18 +1531,25 @@ class SpectrumFigureViewer(Viewer):
             params[name] = value
         return params
 
+    def _smoothing_from_state(self, state: dict, prefix: str) -> SpectrumSmoothingConfig:
+        """Return only the smoothing state needed by this viewer."""
+        return SpectrumSmoothingConfig(
+            smooth_method=state[f"{prefix}_smooth_method"],
+            smooth_width=state[f"{prefix}_smooth_width"],
+        )
+
     @staticmethod
     def _cfg_from_state(state: dict, prefix: str) -> AdaptiveAlphaConfig:
-        """Build an :class:`AdaptiveAlphaConfig` from the ``{prefix}_*`` widgets in ``state``."""
+        """Build the shared adaptive-alpha configuration used by the alpha-based viewers."""
         return AdaptiveAlphaConfig(
             smooth_method=state[f"{prefix}_smooth_method"],
             smooth_width=state[f"{prefix}_smooth_width"],
-            fpd_window_size=state[f"{prefix}_fpd_window_size"],
-            adaptive_buffer=state[f"{prefix}_adaptive_buffer"],
-            minimum_window_size=state[f"{prefix}_minimum_window_size"],
+            fpd_window_size=int(state[f"{prefix}_fpd_window_size"]),
+            adaptive_buffer=int(state[f"{prefix}_adaptive_buffer"]),
+            minimum_window_size=int(state[f"{prefix}_minimum_window_size"]),
         )
 
-    def _spectrum(self, state: dict, key: str, cfg: AdaptiveAlphaConfig) -> np.ndarray:
+    def _spectrum(self, state: dict, key: str, cfg: SpectrumSmoothing) -> np.ndarray:
         """Mouse-averaged ``(mice, dims)`` spectrum for ``key``, normalized per ``state``, smoothed per ``cfg``."""
         source = SOURCE_OF_KEY[key]
         agg = self._agg[source]
@@ -1466,7 +1559,12 @@ class SpectrumFigureViewer(Viewer):
             spec = spec / np.nansum(spec, axis=1)[:, None]
         return _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
 
-    def _spectrum_sessions(self, state: dict, key: str, cfg: AdaptiveAlphaConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
+    def _spectrum_sessions(
+        self,
+        state: dict,
+        key: str,
+        cfg: SpectrumSmoothing,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         """Per-session raw and smoothed ``(sessions, dims)`` spectrum for ``key``, with mouse/session ids.
 
         Normalize is applied per session (row) instead of after mouse-averaging, so the adaptive
@@ -1485,7 +1583,11 @@ class SpectrumFigureViewer(Viewer):
         smoothed = _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
         return spec, smoothed, agg.mouse_names, agg.session_ids
 
-    def _svca_spectrum_sessions(self, state: dict, cfg: AdaptiveAlphaConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, list] | None:
+    def _svca_spectrum_sessions(
+        self,
+        state: dict,
+        cfg: SpectrumSmoothing,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list] | None:
         """Per-session raw+smoothed SVCA subspace ``variance_activity`` spectrum.
 
         This is both the ``full_source_key="SVCA"`` spectrum and the fixed FF-side window-fallback
@@ -1504,13 +1606,17 @@ class SpectrumFigureViewer(Viewer):
         smoothed = _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
         return spec, smoothed, self.results_subspace.mouse_names, self.results_subspace.session_ids
 
-    def _ff_spectrum_sessions(self, state: dict, cfg: AdaptiveAlphaConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
+    def _ff_spectrum_sessions(
+        self,
+        state: dict,
+        cfg: SpectrumSmoothing,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         """Per-session raw+smoothed "Reliable CA1" spectrum, per ``state['full_source_key']`` (see :meth:`_ff_spectrum`)."""
         if state.get("full_source_key", "SVD") != "SVCA":
             return self._spectrum_sessions(state, _FF_KEY, cfg)
         return self._svca_spectrum_sessions(state, cfg)
 
-    def _ff_spectrum(self, state: dict, cfg: AdaptiveAlphaConfig) -> np.ndarray:
+    def _ff_spectrum(self, state: dict, cfg: SpectrumSmoothing) -> np.ndarray:
         """Mouse-averaged ``(mice, dims)`` "Reliable CA1" spectrum, per ``state['full_source_key']``.
 
         ``"SVD"`` uses the StimSpaceSpectra ``ff`` key (via :meth:`_spectrum`). ``"SVCA"`` uses the
@@ -1563,7 +1669,12 @@ class SpectrumFigureViewer(Viewer):
             ]
         )
 
-    def _fit_spectrum(self, state: dict, key: str, cfg: AdaptiveAlphaConfig) -> np.ndarray:
+    def _fit_spectrum(
+        self,
+        state: dict,
+        key: str,
+        cfg: SpectrumSmoothing,
+    ) -> np.ndarray:
         """Mouse-averaged ``(mice, dims)`` Tilbury-fit eigenvalue spectrum for ``key``.
 
         Normalize/log-space smoothing (matching every other spectrum) are applied after averaging
@@ -1575,7 +1686,12 @@ class SpectrumFigureViewer(Viewer):
             spec = spec / np.nansum(spec, axis=1)[:, None]
         return _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
 
-    def _fit_spectrum_sessions(self, state: dict, key: str, cfg: AdaptiveAlphaConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
+    def _fit_spectrum_sessions(
+        self,
+        state: dict,
+        key: str,
+        cfg: SpectrumSmoothing,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         """Per-session raw+smoothed Tilbury-fit eigenvalue spectrum for ``key``, with mouse/session ids.
 
         Normalize is applied per session rather than after mouse-averaging (see
@@ -1607,22 +1723,22 @@ class SpectrumFigureViewer(Viewer):
     def plot(self, state: dict):
         pf_key = state["source_key"]
         do_posthoc_scaling = pf_key == "ss_cvpca"
-        source_cfg = self._cfg_from_state(state, "source")
-        full_cfg = self._cfg_from_state(state, "full")
+        source_smoothing = self._smoothing_from_state(state, "source")
+        full_smoothing = self._smoothing_from_state(state, "full")
         each_alpha = state["each_line_alpha"]
         ylim_min = state["ylim_min"]
         ylim_max = state["ylim_max"]
 
-        pf_spec = self._spectrum(state, pf_key, source_cfg)
-        ff_spec = self._ff_spectrum(state, full_cfg)
-        pf_color = "orange"
-        ff_color = "black"
-        pf_label = "Placefields"
-        ff_label = "Full CA1"
+        pf_spec = self._spectrum(state, pf_key, source_smoothing)
+        ff_spec = self._ff_spectrum(state, full_smoothing)
+        pf_color = self.pf_color
+        ff_color = self.ff_color
+        pf_label = self.pf_label
+        ff_label = self.ff_label
 
         # Tilbury-fit overlays (PF-like spectra), placed between PF and CA1 in every panel.
         fit_keys = list(state.get("fit_key", []))
-        fit_specs = {k: self._fit_spectrum(state, k, source_cfg) for k in fit_keys}
+        fit_specs = {k: self._fit_spectrum(state, k, source_smoothing) for k in fit_keys}
 
         # ss_cvpca uses covariance across neurons (denominator N - 1), whereas ss_cv
         # uses covariance across positions (denominator P - 1). The required N/P counts
@@ -1631,29 +1747,171 @@ class SpectrumFigureViewer(Viewer):
         # to the ss_cv convention in _eig_to_ss_scale and must not receive this factor.
         if do_posthoc_scaling:
             num_dim_for_scaling = 5
-            pf_spec_reference = self._spectrum(state, "ss_cv", source_cfg)
+            pf_spec_reference = self._spectrum(state, "ss_cv", source_smoothing)
             ratio = pf_spec_reference[:, :num_dim_for_scaling] / pf_spec[:, :num_dim_for_scaling]
             scaling = np.nanmedian(ratio, axis=1)
             pf_spec *= scaling[:, np.newaxis]
 
-        # Adaptive fit: the median five-point-derivative exponent over each session's own
-        # peak-curvature-to-noise-floor window (not the mouse-averaged spectrum used for ax[0]/ax[2]
-        # above) -- see _second_derivative_window / _median_fpd_alpha_session. Keys that aren't
-        # cross-validated (no negative in their raw row) borrow their window from ss_cvpca (PF side
-        # and fit_key overlays) / svca (FF side), aligned onto the target's own sessions since the
-        # fallback source can live in a different ResultsAggregator.
+        pf_pr = _signed_participation_ratio(pf_spec)
+        ff_pr = _signed_participation_ratio(ff_spec)
+        fit_pr = {k: _signed_participation_ratio(fit_specs[k]) for k in fit_keys}
+
+        plt.rcParams["font.size"] = self.fontsize
+        fig, ax = plt.subplots(
+            2,
+            1,
+            figsize=self.figsize,
+            layout="constrained",
+            sharex=True,
+            height_ratios=self.height_ratios,
+        )
+
+        # --- ax[0]: PF and FF spectra (faint per-mouse + bold average) ---
+        # No fixed fit-window shading: the adaptive window is per-session, not a shared [start, end).
+        for spec, label, color in (
+            (pf_spec, pf_label, pf_color),
+            (ff_spec, ff_label, ff_color),
+        ):
+            spec_positive = np.where(spec > 0, spec, np.nan)
+            ax[0].plot(_xvals(spec), spec_positive.T, color=color, alpha=each_alpha, linewidth=1.0)
+            ax[0].plot(_xvals(spec), np.nanmean(spec_positive, axis=0), color=color, label=label, linewidth=2.0)
+
+        # --- ax[0] extra overlays: Tilbury-fit eig spectra (fixed rel/frac-active threshold) ---
+        for key in fit_keys:
+            spec = fit_specs[key]
+            spec_positive = np.where(spec > 0, spec, np.nan)
+            color = _FIT_KEY_COLORS.get(key, "gray")
+            ax[0].plot(_xvals(spec), spec_positive.T, color=color, alpha=each_alpha, linewidth=1.0)
+            ax[0].plot(_xvals(spec), np.nanmean(spec_positive, axis=0), color=color, label=_FIT_KEY_LABELS.get(key, key), linewidth=2.0)
+        if fit_keys and not self._rel_fa_matches_fit(state):
+            ax[0].set_title("REL-FA Not MATCHED!", fontsize=self.fontsize, color="red")
+
+        ax[0].set_xscale("log")
+        ax[0].set_yscale("log")
+        ax[0].set_ylim(10**ylim_min, 10**ylim_max)
+        ax[0].set_ylabel("Variance")
+        ax[0].legend(loc="upper right", fontsize=self.fontsize, frameon=False, markerfirst=False, handlelength=1.0, handletextpad=0.25)
+
+        # Participation-ratio groups share one categorical row and the spectrum's x-axis.
+        beeswarm_colors = [pf_color] + [_FIT_KEY_COLORS.get(k, "gray") for k in fit_keys] + [ff_color]
+        pr_values = [pf_pr] + [fit_pr[k] for k in fit_keys] + [ff_pr]
+
+        _horizontal_beeswarm_panel(
+            ax[1],
+            pr_values,
+            beeswarm_colors,
+            beewidth=state["beewidth"],
+            each_alpha=state["point_alpha"],
+            markersize=state["markersize"],
+            mean_linewidth=state["mean_linewidth"],
+        )
+        ax[1].set_xlabel("Shared Dimension")
+
+        xlim = ax[0].get_xlim()
+        ax[0].set_xlim(1, xlim[1])
+        format_spines(
+            ax[0],
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["left", "bottom"],
+            xbounds=[1, xlim[1]],
+            ybounds=[10**ylim_min, 10**ylim_max],
+        )
+        format_spines(
+            ax[1],
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["bottom"],
+            xbounds=[1, xlim[1]],
+        )
+        return fig
+
+
+class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
+    """Spectrum comparison with the original adaptive decay-exponent panel.
+
+    ax[0] retains the selectable PF and full-CA1 spectra from
+    :class:`SpectrumFigureViewer`. ax[1] shows the per-mouse adaptive median-FPD decay exponent for
+    those spectra (and any selected Tilbury-fit overlays). There is no participation-ratio panel.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        results_cvpca: ResultsAggregator | None = None,
+        results_subspace: ResultsAggregator | None = None,
+        results_fit: ResultsAggregator | None = None,
+        source_cfg: AdaptiveAlphaConfig | None = None,
+        full_cfg: AdaptiveAlphaConfig | None = None,
+        ylim_min: float = -5.5,
+        ylim_max: float = 0.0,
+        fontsize: float = 9.0,
+        figsize: tuple[float, float] = (5.0, 3.0),
+        width_ratios: tuple[float, float] = (1.0, 0.5),
+        pf_color: str = "orange",
+        ff_color: str = "black",
+        pf_label: str = "Placefields",
+        ff_label: str = "Full CA1",
+    ):
+        self.source_cfg = source_cfg if source_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]
+        self.full_cfg = full_cfg if full_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["full"]
+        super().__init__(
+            results,
+            results_cvpca=results_cvpca,
+            results_subspace=results_subspace,
+            results_fit=results_fit,
+            source_smooth_method=self.source_cfg.smooth_method,
+            source_smooth_width=self.source_cfg.smooth_width,
+            full_smooth_method=self.full_cfg.smooth_method,
+            full_smooth_width=self.full_cfg.smooth_width,
+            ylim_min=ylim_min,
+            ylim_max=ylim_max,
+            fontsize=fontsize,
+            figsize=figsize,
+            pf_color=pf_color,
+            ff_color=ff_color,
+            pf_label=pf_label,
+            ff_label=ff_label,
+        )
+        self.width_ratios = width_ratios
+
+        # Restore every adaptive-fit control used by the former spectrum_figure alpha panel.
+        for prefix, cfg in (("source", self.source_cfg), ("full", self.full_cfg)):
+            self.add_integer(f"{prefix}_fpd_window_size", value=cfg.fpd_window_size, min=1, max=50)
+            self.add_integer(f"{prefix}_adaptive_buffer", value=cfg.adaptive_buffer, min=0, max=50)
+            self.add_integer(f"{prefix}_minimum_window_size", value=cfg.minimum_window_size, min=1, max=500)
+
+    def plot(self, state: dict):
+        pf_key = state["source_key"]
+        source_cfg = self._cfg_from_state(state, "source")
+        full_cfg = self._cfg_from_state(state, "full")
+        each_alpha = state["each_line_alpha"]
+        ylim_min = state["ylim_min"]
+        ylim_max = state["ylim_max"]
+
+        pf_spec = self._spectrum(state, pf_key, source_cfg)
+        ff_spec = self._ff_spectrum(state, full_cfg)
+        fit_keys = list(state.get("fit_key", []))
+        fit_specs = {key: self._fit_spectrum(state, key, source_cfg) for key in fit_keys}
+
+        # ss_cvpca uses covariance across neurons (denominator N - 1), whereas ss_cv uses
+        # covariance across positions (denominator P - 1). Match the original post-hoc scaling.
+        if pf_key == "ss_cvpca":
+            num_dim_for_scaling = 5
+            pf_reference = self._spectrum(state, "ss_cv", source_cfg)
+            ratio = pf_reference[:, :num_dim_for_scaling] / pf_spec[:, :num_dim_for_scaling]
+            pf_spec *= np.nanmedian(ratio, axis=1)[:, np.newaxis]
+
+        # Estimate alpha per session using each session's own peak-curvature-to-noise-floor window,
+        # then average the estimates by mouse. Non-cross-validated PF/fit spectra borrow window
+        # boundaries from ss_cvpca; the FF side borrows them from SVCA when available.
         pf_raw, pf_smooth, pf_mouse_names, pf_session_ids = self._spectrum_sessions(state, pf_key, source_cfg)
         ff_raw, ff_smooth, ff_mouse_names, ff_session_ids = self._ff_spectrum_sessions(state, full_cfg)
-
-        # Fixed fallback window sources: ss_cvpca (PF side + fit_key overlays) and svca (FF side),
-        # fetched unconditionally regardless of the current selection (harmless self-fallback when
-        # pf_key/full_source_key already is that key).
         cvpca_raw, cvpca_smooth, _, cvpca_session_ids = self._spectrum_sessions(state, "ss_cvpca", source_cfg)
         svca = self._svca_spectrum_sessions(state, full_cfg)
 
         pf_fb_raw = _align_rows_to_sessions(pf_session_ids, cvpca_session_ids, cvpca_raw)
         pf_fb_smooth = _align_rows_to_sessions(pf_session_ids, cvpca_session_ids, cvpca_smooth)
-
         ff_fb_raw, ff_fb_smooth = None, None
         if svca is not None:
             svca_raw, svca_smooth, _, svca_session_ids = svca
@@ -1685,57 +1943,62 @@ class SpectrumFigureViewer(Viewer):
             ff_mouse_names,
         )
         fit_alpha = {}
-        for k in fit_keys:
-            fk_raw, fk_smooth, fk_mouse_names, fk_session_ids = self._fit_spectrum_sessions(state, k, source_cfg)
-            fk_fb_raw = _align_rows_to_sessions(fk_session_ids, cvpca_session_ids, cvpca_raw)
-            fk_fb_smooth = _align_rows_to_sessions(fk_session_ids, cvpca_session_ids, cvpca_smooth)
-            fit_alpha[k] = average_by_mouse(
+        for key in fit_keys:
+            fit_raw, fit_smooth, fit_mouse_names, fit_session_ids = self._fit_spectrum_sessions(state, key, source_cfg)
+            fit_fb_raw = _align_rows_to_sessions(fit_session_ids, cvpca_session_ids, cvpca_raw)
+            fit_fb_smooth = _align_rows_to_sessions(fit_session_ids, cvpca_session_ids, cvpca_smooth)
+            fit_alpha[key] = average_by_mouse(
                 _median_fpd_alpha_per_session(
-                    fk_raw,
-                    fk_smooth,
+                    fit_raw,
+                    fit_smooth,
                     source_cfg.fpd_window_size,
                     source_cfg.adaptive_buffer,
                     source_cfg.minimum_window_size,
-                    fk_fb_raw,
-                    fk_fb_smooth,
+                    fit_fb_raw,
+                    fit_fb_smooth,
                 ),
-                fk_mouse_names,
+                fit_mouse_names,
             )
 
-        pf_pr = _signed_participation_ratio(pf_spec)
-        ff_pr = _signed_participation_ratio(ff_spec)
-        fit_pr = {k: _signed_participation_ratio(fit_specs[k]) for k in fit_keys}
-
         plt.rcParams["font.size"] = self.fontsize
-        fig, ax = plt.subplots(1, 3, figsize=self.figsize, layout="constrained", width_ratios=[1.0, 0.5, 0.5])
+        fig, ax = plt.subplots(1, 2, figsize=self.figsize, layout="constrained", width_ratios=self.width_ratios)
 
-        # --- ax[0]: PF and FF spectra (faint per-mouse + bold average) ---
-        # No fixed fit-window shading: the adaptive window is per-session, not a shared [start, end).
         for spec, label, color in (
-            (pf_spec, pf_label, pf_color),
-            (ff_spec, ff_label, ff_color),
+            (pf_spec, self.pf_label, self.pf_color),
+            (ff_spec, self.ff_label, self.ff_color),
         ):
             spec_positive = np.where(spec > 0, spec, np.nan)
             ax[0].plot(_xvals(spec), spec_positive.T, color=color, alpha=each_alpha, linewidth=1.0)
             ax[0].plot(_xvals(spec), np.nanmean(spec_positive, axis=0), color=color, label=label, linewidth=2.0)
 
-        # --- ax[0] extra overlays: Tilbury-fit eig spectra (fixed rel/frac-active threshold) ---
         for key in fit_keys:
             spec = fit_specs[key]
             spec_positive = np.where(spec > 0, spec, np.nan)
             color = _FIT_KEY_COLORS.get(key, "gray")
             ax[0].plot(_xvals(spec), spec_positive.T, color=color, alpha=each_alpha, linewidth=1.0)
-            ax[0].plot(_xvals(spec), np.nanmean(spec_positive, axis=0), color=color, label=_FIT_KEY_LABELS.get(key, key), linewidth=2.0)
+            ax[0].plot(
+                _xvals(spec),
+                np.nanmean(spec_positive, axis=0),
+                color=color,
+                label=_FIT_KEY_LABELS.get(key, key),
+                linewidth=2.0,
+            )
         if fit_keys and not self._rel_fa_matches_fit(state):
             ax[0].set_title("REL-FA Not MATCHED!", fontsize=self.fontsize, color="red")
 
         ax[0].set_xscale("log")
         ax[0].set_yscale("log")
         ax[0].set_ylim(10**ylim_min, 10**ylim_max)
-        ax[0].set_ylim(10**ylim_min, 10**ylim_max)
         ax[0].set_xlabel("Shared Dimension")
         ax[0].set_ylabel("Variance")
-        ax[0].legend(loc="upper right", fontsize=self.fontsize, frameon=False, markerfirst=False, handlelength=1.0, handletextpad=0.25)
+        ax[0].legend(
+            loc="upper right",
+            fontsize=self.fontsize,
+            frameon=False,
+            markerfirst=False,
+            handlelength=1.0,
+            handletextpad=0.25,
+        )
         xlim = ax[0].get_xlim()
         format_spines(
             ax[0],
@@ -1746,19 +2009,21 @@ class SpectrumFigureViewer(Viewer):
             ybounds=[10**ylim_min, 10**ylim_max],
         )
 
-        # Beeswarm groups: PF (x=0), each selected fit overlay, then CA1 last (x=1..n+1).
-        beeswarm_colors = [pf_color] + [_FIT_KEY_COLORS.get(k, "gray") for k in fit_keys] + [ff_color]
-        beeswarm_labels = ["PF"] + [_FIT_KEY_LABELS.get(k, k) for k in fit_keys] + ["CA1"]
-        alpha_values = [pf_alpha] + [fit_alpha[k] for k in fit_keys] + [ff_alpha]
-        pr_values = [pf_pr] + [fit_pr[k] for k in fit_keys] + [ff_pr]
-
-        # --- ax[1]: per-mouse power-law exponent, PF / fits / CA1 ---
-        _beeswarm_panel(ax[1], alpha_values, beeswarm_colors, beeswarm_labels, self.fontsize, state["beewidth"])
-        ax[1].set_ylabel(f"Decay exponent")
-
-        # --- ax[2]: signed participation ratio, PF / fits / CA1 ---
-        _beeswarm_panel(ax[2], pr_values, beeswarm_colors, beeswarm_labels, self.fontsize, state["beewidth"], yscale=state["yscale"])
-        ax[2].set_ylabel("Dimensionality")
+        colors = [self.pf_color] + [_FIT_KEY_COLORS.get(key, "gray") for key in fit_keys] + [self.ff_color]
+        labels = ["PF"] + [_FIT_KEY_LABELS.get(key, key) for key in fit_keys] + ["CA1"]
+        alpha_values = [pf_alpha] + [fit_alpha[key] for key in fit_keys] + [ff_alpha]
+        _beeswarm_panel(
+            ax[1],
+            alpha_values,
+            colors,
+            labels,
+            self.fontsize,
+            beewidth=state["beewidth"],
+            each_alpha=state["point_alpha"],
+            markersize=state["markersize"],
+            mean_linewidth=state["mean_linewidth"],
+        )
+        ax[1].set_ylabel("Decay exponent")
         return fig
 
 
@@ -2114,23 +2379,32 @@ def spectrum_figure(
     ylim_max: float = 0.0,
     beewidth: float = 0.15,
     normalize: bool = True,
-    source_cfg: AdaptiveAlphaConfig | None = None,
-    full_cfg: AdaptiveAlphaConfig | None = None,
+    source_smooth_method: str = "gaussian",
+    source_smooth_width: float = 3.0,
+    full_smooth_method: str = "gaussian",
+    full_smooth_width: float = 20.0,
     fontsize: float = 9.0,
-    yscale: str = "log",
-    figsize: tuple[float, float] = (6.5, 3.0),
+    figsize: tuple[float, float] = (3.25, 3.25),
+    height_ratios: tuple[float, float] = (1.0, 0.22),
+    each_line_alpha: float = 0.3,
+    point_alpha: float = 0.6,
+    markersize: float = 3.0,
+    mean_linewidth: float = 2.0,
+    pf_color: str = "orange",
+    ff_color: str = "black",
+    pf_label: str = "Placefields",
+    ff_label: str = "Full CA1",
     save_path=None,
     return_syd_viewer: bool = False,
     **selections,
 ):
     """
-    Placefield-vs-full spectrum figure: spectra, power-law exponent, participation ratio.
+    Placefield-vs-full spectrum figure: spectra and participation-ratio dimensionality.
 
-    Three panels: ax[0] the selected PF ``source_key`` spectrum and the FF (``ff``) spectrum on
-    log-log axes (faint per-mouse + bold mouse-average, both log-space pre-smoothed); ax[1] the
-    per-mouse power-law exponent for PF (x=0) and FF (x=1) via the fixed adaptive median-FPD fit
-    (see :func:`_second_derivative_window`); ax[2] the per-mouse signed participation ratio for PF
-    and FF.
+    Two rows share a log-scaled dimension axis. ax[0] shows the selected PF ``source_key`` spectrum
+    and FF spectrum (faint per-mouse + bold mouse-average, both log-space pre-smoothed). ax[1]
+    shows their per-mouse signed participation ratios as horizontal swarms centered on the same
+    unlabeled y-position; colors are identified by ax[0]'s legend.
 
     Parameters
     ----------
@@ -2169,30 +2443,31 @@ def spectrum_figure(
     ylim_max : float
         Upper y-limit of the spectrum panel in log10 units; the applied ceiling is ``10 ** ylim_max``.
     beewidth : float
-        Width of the beeswarm points in ax[1] and ax[2], in x-axis units.
+        Vertical spread of the participation-ratio swarms around ax[1]'s shared y-position.
     normalize : bool
         If True, normalize each spectrum by its sum (does not affect the participation ratio).
-    source_cfg : AdaptiveAlphaConfig or None
-        Fixed adaptive-fit configuration (smoothing, five-point-derivative window, adaptive buffer,
-        minimum window size) for the PF (``source_key``) side, and for any ``fit_key`` overlays.
-        Defaults to ``ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]`` when None. The exponent is the
-        median five-point-derivative local exponent over each session's own peak-curvature-to-
-        noise-floor window (see :func:`_second_derivative_window`), computed per session and
-        averaged by mouse; sessions with fewer than ``source_cfg.minimum_window_size`` finite
-        local-exponent values in that window are NaN. If a session's ``source_key`` (or ``fit_key``)
-        row has no negative entry (not cross-validated), the window is instead located on that
-        session's ``ss_cvpca`` row, while the exponent itself is still estimated from the requested
-        key's own spectrum.
-    full_cfg : AdaptiveAlphaConfig or None
-        Fixed adaptive-fit configuration for the FF (``full_source_key``) side, analogous to
-        ``source_cfg``. Defaults to ``ADAPTIVE_ALPHA_CONFIG_REGISTRY["full"]`` when None. The window
-        fallback source is ``svca`` (the subspace ``variance_activity`` key) instead of ``ss_cvpca``.
+    source_smooth_method, full_smooth_method : {"none", "boxcar", "gaussian"}
+        Independent log-space smoothing methods for the PF and full-CA1 spectra.
+    source_smooth_width, full_smooth_width : float
+        Corresponding smoothing widths in rank units.
     fontsize : float
         Base font size applied via ``plt.rcParams``.
-    yscale : {"linear", "log"}
-        y-axis scale for the participation-ratio panel (ax[2]).
     figsize : tuple[float, float]
         Figure size in inches.
+    height_ratios : tuple[float, float]
+        Relative heights of the spectrum and participation-ratio rows.
+    each_line_alpha : float
+        Alpha of individual-mouse spectrum lines in ax[0].
+    point_alpha : float
+        Alpha of individual-mouse participation-ratio points in ax[1].
+    markersize : float
+        Participation-ratio marker size in points.
+    mean_linewidth : float
+        Width of the vertical mean markers in ax[1].
+    pf_color, ff_color : str
+        Colors shared by each spectrum and its participation-ratio points.
+    pf_label, ff_label : str
+        Legend labels for the PF and FF spectra.
     save_path : str or pathlib.Path or None
         If given (and ``return_syd_viewer`` is False), save the rendered figure here.
     return_syd_viewer : bool
@@ -2224,12 +2499,19 @@ def spectrum_figure(
         results_cvpca=results_cvpca,
         results_subspace=results_subspace,
         results_fit=results_fit,
-        source_cfg=source_cfg,
-        full_cfg=full_cfg,
+        source_smooth_method=source_smooth_method,
+        source_smooth_width=source_smooth_width,
+        full_smooth_method=full_smooth_method,
+        full_smooth_width=full_smooth_width,
         ylim_min=ylim_min,
         ylim_max=ylim_max,
         fontsize=fontsize,
         figsize=figsize,
+        height_ratios=height_ratios,
+        pf_color=pf_color,
+        ff_color=ff_color,
+        pf_label=pf_label,
+        ff_label=ff_label,
     )
     viewer.update_selection("source_key", value=source_key)
     viewer.update_selection("full_source_key", value=full_source_key)
@@ -2252,7 +2534,860 @@ def spectrum_figure(
     viewer.update_float("ylim_max", value=ylim_max)
     viewer.update_boolean("normalize", value=normalize)
     viewer.update_float("beewidth", value=beewidth)
+    viewer.update_float("each_line_alpha", value=each_line_alpha)
+    viewer.update_float("point_alpha", value=point_alpha)
+    viewer.update_float("markersize", value=markersize)
+    viewer.update_float("mean_linewidth", value=mean_linewidth)
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    if save_path is not None:
+        save_figure(fig, save_path)
+    plt.show()
+    return fig
+
+
+def spectrum_alpha_figure(
+    results: ResultsAggregator,
+    results_cvpca: ResultsAggregator | None = None,
+    results_subspace: ResultsAggregator | None = None,
+    results_fit: ResultsAggregator | None = None,
+    source_key: str = "ss_cv",
+    full_source_key: str = "SVD",
+    fit_key: str | list[str] = (),
+    ylim_min: float = -5.5,
+    ylim_max: float = 0.0,
+    beewidth: float = 0.15,
+    normalize: bool = True,
+    source_cfg: AdaptiveAlphaConfig | None = None,
+    full_cfg: AdaptiveAlphaConfig | None = None,
+    fontsize: float = 9.0,
+    figsize: tuple[float, float] = (5.0, 3.0),
+    width_ratios: tuple[float, float] = (1.0, 0.5),
+    each_line_alpha: float = 0.3,
+    point_alpha: float = 0.3,
+    markersize: float = 3.0,
+    mean_linewidth: float = 2.0,
+    pf_color: str = "orange",
+    ff_color: str = "black",
+    pf_label: str = "Placefields",
+    ff_label: str = "Full CA1",
+    save_path=None,
+    return_syd_viewer: bool = False,
+    **selections,
+):
+    """Plot PF/full-CA1 spectra and their adaptive power-law decay exponents.
+
+    This restores the spectra and adaptive-alpha portions of the former
+    :func:`spectrum_figure` layout as a two-column figure. ax[0] contains the selectable spectra;
+    ax[1] contains per-mouse adaptive median-FPD decay-exponent swarms. There is no participation-
+    ratio panel.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        Aggregated StimSpaceSpectra results, source of the ``ss_*`` and ``ff`` keys.
+    results_cvpca : ResultsAggregator or None
+        Aggregated CVPCAConfig results. Required for ``source_key="reg_covariances_fixed"``.
+    results_subspace : ResultsAggregator or None
+        Aggregated SubspaceConfig results. Required for ``full_source_key="SVCA"`` and otherwise
+        used, when available, as the full-CA1 adaptive-window fallback.
+    results_fit : ResultsAggregator or None
+        Aggregated TilburyFitConfig results, required when ``fit_key`` is non-empty.
+    source_key : str
+        PF spectrum shown in ax[0] and summarized in ax[1].
+    full_source_key : {"SVD", "SVCA"}
+        Full-CA1 spectrum source.
+    fit_key : str or list of str
+        Optional Tilbury-fit spectrum overlays, also summarized in ax[1].
+    ylim_min, ylim_max : float
+        Spectrum y-limits in log10 units.
+    beewidth : float
+        Horizontal spread of each decay-exponent swarm around its categorical x-position.
+    normalize : bool
+        Whether to normalize each spectrum by its sum.
+    source_cfg, full_cfg : AdaptiveAlphaConfig or None
+        Independent smoothing and adaptive median-FPD settings for the PF and full-CA1 sides.
+    fontsize : float
+        Base font size.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    width_ratios : tuple[float, float]
+        Relative widths of the spectrum and decay-exponent panels.
+    each_line_alpha : float
+        Alpha of individual-mouse spectrum lines.
+    point_alpha : float
+        Alpha of individual-mouse decay-exponent points.
+    markersize : float
+        Decay-exponent marker size in points.
+    mean_linewidth : float
+        Width of the mean markers in the decay-exponent panel.
+    pf_color, ff_color : str
+        Colors shared by each spectrum and its decay-exponent points.
+    pf_label, ff_label : str
+        Legend labels for the PF and full-CA1 spectra.
+    save_path : str or pathlib.Path or None
+        If given (and ``return_syd_viewer`` is False), save the rendered figure here.
+    return_syd_viewer : bool
+        If True, return the configured :class:`SpectrumAlphaFigureViewer`.
+    **selections
+        Parameter-axis selection overrides, keyed by raw ``param_axes`` name.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or SpectrumAlphaFigureViewer
+        The rendered figure, or its configured Syd viewer.
+    """
+    pf_options = list(_STIMSPACE_KEYS) + (list(_CVPCA_KEYS) if results_cvpca is not None else [])
+    if source_key not in pf_options:
+        raise ValueError(f"Unknown PF source_key {source_key!r}. Options: {pf_options}")
+    full_options = ["SVD"] + (["SVCA"] if results_subspace is not None else [])
+    if full_source_key not in full_options:
+        raise ValueError(f"Unknown full_source_key {full_source_key!r}. Options: {full_options}")
+    fit_keys = [fit_key] if isinstance(fit_key, str) else list(fit_key)
+    if fit_keys and results_fit is None:
+        raise ValueError("fit_key requires results_fit to be provided.")
+    for key in fit_keys:
+        if key not in _FIT_KEYS:
+            raise ValueError(f"Unknown fit_key {key!r}. Options: {_FIT_KEYS}")
+
+    viewer = SpectrumAlphaFigureViewer(
+        results,
+        results_cvpca=results_cvpca,
+        results_subspace=results_subspace,
+        results_fit=results_fit,
+        source_cfg=source_cfg,
+        full_cfg=full_cfg,
+        ylim_min=ylim_min,
+        ylim_max=ylim_max,
+        fontsize=fontsize,
+        figsize=figsize,
+        width_ratios=width_ratios,
+        pf_color=pf_color,
+        ff_color=ff_color,
+        pf_label=pf_label,
+        ff_label=ff_label,
+    )
+    viewer.update_selection("source_key", value=source_key)
+    viewer.update_selection("full_source_key", value=full_source_key)
+    if results_fit is not None:
+        viewer.update_multiple_selection("fit_key", value=fit_keys)
+
+    valid_selections = set()
+    for agg in viewer._agg.values():
+        if agg is not None:
+            valid_selections.update(agg.param_axes)
+    if results_fit is not None:
+        valid_selections.update(results_fit.param_axes)
+    for key, value in selections.items():
+        if key not in valid_selections:
+            raise ValueError(f"Unknown selection {key!r}. Options: {sorted(valid_selections)}")
+        viewer.update_selection(key, value=viewer.encode_param(key, value))
+
+    viewer.update_float("ylim_min", value=ylim_min)
+    viewer.update_float("ylim_max", value=ylim_max)
+    viewer.update_boolean("normalize", value=normalize)
+    viewer.update_float("beewidth", value=beewidth)
+    viewer.update_float("each_line_alpha", value=each_line_alpha)
+    viewer.update_float("point_alpha", value=point_alpha)
+    viewer.update_float("markersize", value=markersize)
+    viewer.update_float("mean_linewidth", value=mean_linewidth)
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    if save_path is not None:
+        save_figure(fig, save_path)
+    plt.show()
+    return fig
+
+
+class DimensionalityFamiliarityViewer(Viewer):
+    """Participation-ratio dimensionality or adaptive decay exponent over session number.
+
+    This is the familiarity analogue of :class:`SpectrumFigureViewer`: one selected placefield
+    spectrum and one selected Full-CA1 spectrum are reduced to either a signed participation ratio
+    or adaptive median-FPD decay exponent for every session. Sessions are then sorted
+    chronologically within mouse and the two sources are reindexed onto the union of their session
+    IDs, so missing coverage leaves a NaN gap instead of shifting a curve to the wrong session
+    number.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        results_cvpca: ResultsAggregator | None = None,
+        results_subspace: ResultsAggregator | None = None,
+        source_cfg: AdaptiveAlphaConfig | None = None,
+        full_cfg: AdaptiveAlphaConfig | None = None,
+        fontsize: float = 9.0,
+        figsize: tuple[float, float] = (3.5, 2.5),
+        pf_color: str = "orange",
+        ff_color: str = "black",
+        pf_label: str = "Placefields",
+        ff_label: str = "Full CA1",
+    ):
+        self.results = results
+        self.results_cvpca = results_cvpca
+        self.results_subspace = results_subspace
+        self.source_cfg = source_cfg if source_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]
+        self.full_cfg = full_cfg if full_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["full"]
+        self._agg = {"stimspace": results, "cvpca": results_cvpca}
+        self.fontsize = fontsize
+        self.figsize = figsize
+        self.pf_color = pf_color
+        self.ff_color = ff_color
+        self.pf_label = pf_label
+        self.ff_label = ff_label
+
+        pf_options = list(_STIMSPACE_KEYS)
+        if results_cvpca is not None:
+            pf_options += list(_CVPCA_KEYS)
+        self.add_selection("source_key", options=pf_options, value="ss_cv")
+
+        full_options = ["SVD"] + (["SVCA"] if results_subspace is not None else [])
+        self.add_selection("full_source_key", options=full_options, value="SVD")
+
+        # Match SpectrumFigureViewer's shared data-selection widgets. The subspace-only
+        # ``subspace_name``/``smooth_width`` axes stay fixed for SVCA; a shared
+        # ``activity_parameters_name`` selection is forwarded below.
+        merged_axes: dict[str, list] = {}
+        for agg in self._agg.values():
+            if agg is None:
+                continue
+            for name, options in agg.param_axes.items():
+                existing = merged_axes.setdefault(name, [])
+                existing.extend(option for option in options if option not in existing)
+
+        self._tuple_labels: dict[str, dict[str, tuple]] = {}
+        for name, options in merged_axes.items():
+            if any(isinstance(option, tuple) for option in options):
+                label_map = {_tuple_label(option): option for option in options}
+                self._tuple_labels[name] = label_map
+                widget_options = list(label_map)
+            else:
+                widget_options = options
+            self.add_selection(name, options=widget_options)
+            if name in _PREFERRED_DEFAULTS:
+                default = self.encode_param(name, _PREFERRED_DEFAULTS[name])
+                if default in widget_options:
+                    self.update_selection(name, value=default)
+
+        self.add_selection("metric", options=["participation_ratio", "alpha"], value="participation_ratio")
+        self.add_selection("display", options=["each", "errorPlot"], value="errorPlot")
+        self.add_boolean("log_y", value=False)
+
+        # Independent PF/Full-CA1 adaptive-fit controls, matching SpectrumAlphaFigureViewer.
+        # These are inert while metric="participation_ratio".
+        for prefix, cfg in (("source", self.source_cfg), ("full", self.full_cfg)):
+            self.add_selection(f"{prefix}_smooth_method", options=["none", "boxcar", "gaussian"], value=cfg.smooth_method)
+            self.add_float(f"{prefix}_smooth_width", value=cfg.smooth_width, min=0.0, max=50.0, step=0.5)
+            self.add_integer(f"{prefix}_fpd_window_size", value=cfg.fpd_window_size, min=1, max=50)
+            self.add_integer(f"{prefix}_adaptive_buffer", value=cfg.adaptive_buffer, min=0, max=50)
+            self.add_integer(f"{prefix}_minimum_window_size", value=cfg.minimum_window_size, min=1, max=500)
+
+    encode_param = PlacefieldSpectraViewer.encode_param
+    _sel_params = PlacefieldSpectraViewer._sel_params
+
+    def _cfg_from_state(self, state: dict, prefix: str) -> AdaptiveAlphaConfig:
+        """Build one side's adaptive-alpha configuration from its Syd controls."""
+        return AdaptiveAlphaConfig(
+            smooth_method=state[f"{prefix}_smooth_method"],
+            smooth_width=state[f"{prefix}_smooth_width"],
+            fpd_window_size=int(state[f"{prefix}_fpd_window_size"]),
+            adaptive_buffer=int(state[f"{prefix}_adaptive_buffer"]),
+            minimum_window_size=int(state[f"{prefix}_minimum_window_size"]),
+        )
+
+    def _spectrum_sessions(self, state: dict, key: str) -> tuple[np.ndarray, ResultsAggregator]:
+        """Return the selected PF spectrum as ``(sessions, dimensions)`` and its aggregator."""
+        source = SOURCE_OF_KEY[key]
+        agg = self._agg[source]
+        spec = agg.sel(keys=[key], avg_by_mouse=False, **self._sel_params(state, source))[key]
+        return np.atleast_2d(np.asarray(spec, dtype=float)), agg
+
+    def _full_spectrum_sessions(self, state: dict) -> tuple[np.ndarray, ResultsAggregator]:
+        """Return the selected Full-CA1 spectrum and the aggregator supplying its session rows."""
+        if state["full_source_key"] == "SVD":
+            return self._spectrum_sessions(state, _FF_KEY)
+
+        params = {"subspace_name": "svca_subspace", "smooth_width": None}
+        if "activity_parameters_name" in state:
+            params["activity_parameters_name"] = state["activity_parameters_name"]
+        spec = self.results_subspace.sel(keys=["variance_activity"], avg_by_mouse=False, **params)["variance_activity"]
+        return np.atleast_2d(np.asarray(spec, dtype=float)), self.results_subspace
+
+    def _alpha_per_session(
+        self,
+        state: dict,
+        pf_raw: np.ndarray,
+        pf_agg: ResultsAggregator,
+        ff_raw: np.ndarray,
+        ff_agg: ResultsAggregator,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Adaptive median-FPD alpha per PF/Full-CA1 session, with standard fallbacks.
+
+        The selected PF spectrum borrows window boundaries from ``ss_cvpca`` whenever its own
+        spectrum has no negative crossover. The Full-CA1 spectrum analogously borrows from SVCA
+        when a subspace aggregator is available. In both cases the local exponent itself is still
+        estimated from the selected spectrum; the fallback supplies only the adaptive window.
+        """
+        source_cfg = self._cfg_from_state(state, "source")
+        full_cfg = self._cfg_from_state(state, "full")
+        pf_smooth = _smooth_spectrum(pf_raw, source_cfg.smooth_method, source_cfg.smooth_width)
+        ff_smooth = _smooth_spectrum(ff_raw, full_cfg.smooth_method, full_cfg.smooth_width)
+
+        cvpca_raw, cvpca_agg = self._spectrum_sessions(state, "ss_cvpca")
+        cvpca_smooth = _smooth_spectrum(cvpca_raw, source_cfg.smooth_method, source_cfg.smooth_width)
+        pf_fb_raw = _align_rows_to_sessions(pf_agg.session_ids, cvpca_agg.session_ids, cvpca_raw)
+        pf_fb_smooth = _align_rows_to_sessions(pf_agg.session_ids, cvpca_agg.session_ids, cvpca_smooth)
+
+        ff_fb_raw, ff_fb_smooth = None, None
+        if self.results_subspace is not None:
+            params = {"subspace_name": "svca_subspace", "smooth_width": None}
+            if "activity_parameters_name" in state:
+                params["activity_parameters_name"] = state["activity_parameters_name"]
+            svca_raw = self.results_subspace.sel(keys=["variance_activity"], avg_by_mouse=False, **params)["variance_activity"]
+            svca_raw = np.atleast_2d(np.asarray(svca_raw, dtype=float))
+            svca_smooth = _smooth_spectrum(svca_raw, full_cfg.smooth_method, full_cfg.smooth_width)
+            ff_fb_raw = _align_rows_to_sessions(ff_agg.session_ids, self.results_subspace.session_ids, svca_raw)
+            ff_fb_smooth = _align_rows_to_sessions(ff_agg.session_ids, self.results_subspace.session_ids, svca_smooth)
+
+        pf_alpha = _median_fpd_alpha_per_session(
+            pf_raw,
+            pf_smooth,
+            source_cfg.fpd_window_size,
+            source_cfg.adaptive_buffer,
+            source_cfg.minimum_window_size,
+            pf_fb_raw,
+            pf_fb_smooth,
+        )
+        ff_alpha = _median_fpd_alpha_per_session(
+            ff_raw,
+            ff_smooth,
+            full_cfg.fpd_window_size,
+            full_cfg.adaptive_buffer,
+            full_cfg.minimum_window_size,
+            ff_fb_raw,
+            ff_fb_smooth,
+        )
+        return pf_alpha, ff_alpha
+
+    @staticmethod
+    def _aligned_mouse_curves(
+        pf_values: np.ndarray,
+        pf_agg: ResultsAggregator,
+        ff_values: np.ndarray,
+        ff_agg: ResultsAggregator,
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        """Align two session-level value arrays to the same chronological slots within each mouse."""
+        session_meta: dict[str, tuple[str, object]] = {}
+        mouse_order: list[str] = []
+        for agg in (pf_agg, ff_agg):
+            for session_id, mouse, session in zip(agg.session_ids, agg.mouse_names, agg.sessions):
+                mouse = str(mouse)
+                session_meta.setdefault(session_id, (mouse, session.date))
+                if mouse not in mouse_order:
+                    mouse_order.append(mouse)
+
+        pf_by_session = dict(zip(pf_agg.session_ids, pf_values))
+        ff_by_session = dict(zip(ff_agg.session_ids, ff_values))
+        pf_curves: dict[str, np.ndarray] = {}
+        ff_curves: dict[str, np.ndarray] = {}
+        for mouse in mouse_order:
+            session_ids = [session_id for session_id, (name, _) in session_meta.items() if name == mouse]
+            session_ids.sort(key=lambda session_id: (str(session_meta[session_id][1]), str(session_id)))
+            pf_curve = np.array([pf_by_session.get(session_id, np.nan) for session_id in session_ids], dtype=float)
+            ff_curve = np.array([ff_by_session.get(session_id, np.nan) for session_id in session_ids], dtype=float)
+            if np.any(np.isfinite(pf_curve)) or np.any(np.isfinite(ff_curve)):
+                pf_curves[mouse] = pf_curve
+                ff_curves[mouse] = ff_curve
+        return pf_curves, ff_curves
+
+    @staticmethod
+    def _pad_curves(curves: dict[str, np.ndarray]) -> np.ndarray:
+        """NaN-pad ragged per-mouse curves to ``(mice, max_sessions)``."""
+        max_sessions = max((len(curve) for curve in curves.values()), default=0)
+        stack = np.full((len(curves), max_sessions), np.nan)
+        for row, curve in enumerate(curves.values()):
+            stack[row, : len(curve)] = curve
+        return stack
+
+    @classmethod
+    def _draw_curves(
+        cls,
+        ax,
+        curves: dict[str, np.ndarray],
+        color: str,
+        label: str,
+        display: str,
+    ) -> int:
+        """Draw individual+mean or mean+SE curves, returning the number of x slots shown."""
+        stack = cls._pad_curves(curves)
+        if not stack.size:
+            return 0
+
+        # Log axes cannot show non-positive participation ratios or alpha estimates. Treat them as
+        # missing for both display modes so the two modes have identical support.
+        if ax.get_yscale() == "log":
+            stack[stack <= 0] = np.nan
+
+        support = np.sum(np.isfinite(stack), axis=0)
+        # Match the manuscript's other familiarity panels: a population summary is only drawn
+        # where at least two mice contribute. Individual traces still retain their full extent.
+        summary_columns = np.where(support >= 2)[0]
+
+        if display == "each":
+            for curve in stack:
+                ax.plot(np.arange(curve.size), curve, color=(color, 0.3), linewidth=0.5)
+            if summary_columns.size:
+                ax.plot(
+                    summary_columns,
+                    np.nanmean(stack[:, summary_columns], axis=0),
+                    color=color,
+                    linewidth=2.0,
+                    label=label,
+                )
+            return stack.shape[1]
+
+        if summary_columns.size:
+            errorPlot(
+                summary_columns,
+                stack[:, summary_columns],
+                axis=0,
+                se=True,
+                ax=ax,
+                color=color,
+                linewidth=2.0,
+                alpha=0.25,
+                label=label,
+            )
+            return int(summary_columns[-1]) + 1
+        return 0
+
+    def plot(self, state: dict):
+        pf_spec, pf_agg = self._spectrum_sessions(state, state["source_key"])
+        ff_spec, ff_agg = self._full_spectrum_sessions(state)
+        if state["metric"] == "alpha":
+            pf_values, ff_values = self._alpha_per_session(state, pf_spec, pf_agg, ff_spec, ff_agg)
+            ylabel = "Decay exponent"
+        else:
+            pf_values = _signed_participation_ratio(pf_spec)
+            ff_values = _signed_participation_ratio(ff_spec)
+            ylabel = "Dimensionality"
+        pf_curves, ff_curves = self._aligned_mouse_curves(pf_values, pf_agg, ff_values, ff_agg)
+
+        plt.rcParams["font.size"] = self.fontsize
+        fig, ax = plt.subplots(1, 1, figsize=self.figsize, layout="constrained")
+        if state["log_y"]:
+            ax.set_yscale("log")
+
+        extents = [
+            self._draw_curves(ax, pf_curves, self.pf_color, self.pf_label, state["display"]),
+            self._draw_curves(ax, ff_curves, self.ff_color, self.ff_label, state["display"]),
+        ]
+        xmax = max(max(extents) - 1, 1)
+        ax.set_xlim(-0.2, xmax + 0.2)
+        ax.set_xlabel("Session #")
+        ax.set_ylabel(ylabel)
+        ax.legend(loc="best", fontsize=self.fontsize, frameon=False)
+
+        ylim = ax.get_ylim()
+        format_spines(
+            ax,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["left", "bottom"],
+            xbounds=[0, xmax],
+            ybounds=ylim,
+        )
+        return fig
+
+
+def dimensionality_familiarity(
+    results: ResultsAggregator,
+    results_cvpca: ResultsAggregator | None = None,
+    results_subspace: ResultsAggregator | None = None,
+    source_key: str = "ss_cv",
+    full_source_key: str = "SVD",
+    metric: str = "participation_ratio",
+    display: str = "errorPlot",
+    log_y: bool = False,
+    source_cfg: AdaptiveAlphaConfig | None = None,
+    full_cfg: AdaptiveAlphaConfig | None = None,
+    fontsize: float = 9.0,
+    figsize: tuple[float, float] = (3.5, 2.5),
+    pf_color: str = "orange",
+    ff_color: str = "black",
+    pf_label: str = "Placefields",
+    ff_label: str = "Full CA1",
+    save_path=None,
+    return_syd_viewer: bool = False,
+    **selections,
+):
+    """Plot placefield and Full-CA1 dimensionality or decay exponent over session number.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        Aggregated StimSpaceSpectra results, supplying the ``ss_*``/``sf_*`` PF spectra and the
+        SVD Full-CA1 ``ff`` spectrum.
+    results_cvpca : ResultsAggregator or None
+        Aggregated CVPCAConfig results. When provided, ``reg_covariances_fixed`` is added to the
+        selectable PF ``source_key`` options, matching :func:`spectrum_figure`.
+    results_subspace : ResultsAggregator or None
+        Aggregated SubspaceConfig results. When provided, ``"SVCA"`` is added to the selectable
+        ``full_source_key`` options and reads ``variance_activity`` at
+        ``subspace_name="svca_subspace"`` and ``smooth_width=None``.
+    source_key : str
+        Placefield spectrum key, with the same options as :func:`spectrum_figure`.
+    full_source_key : {"SVD", "SVCA"}
+        Full-CA1 spectrum source, with the same availability rules as :func:`spectrum_figure`.
+    metric : {"participation_ratio", "alpha"}
+        Per-session spectrum summary. ``"participation_ratio"`` uses the signed whole-spectrum
+        participation ratio. ``"alpha"`` uses the adaptive median-FPD decay exponent: PF window
+        boundaries fall back to ``ss_cvpca`` and Full-CA1 boundaries fall back to SVCA when the
+        selected spectrum has no negative crossover.
+    display : {"each", "errorPlot"}
+        ``"each"`` draws every mouse as a faint line plus the across-mouse mean.
+        ``"errorPlot"`` draws the mean +/- SE band. Population summaries require at least two
+        mice at a session number.
+    log_y : bool
+        Use a logarithmic y-axis.
+    source_cfg, full_cfg : AdaptiveAlphaConfig or None
+        Independent adaptive-alpha configurations for the PF and Full-CA1 curves. Each seeds its
+        own Syd smoothing, FPD-window, buffer, and minimum-window-size controls. These settings are
+        ignored for ``metric="participation_ratio"``.
+    fontsize : float
+        Base font size.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    pf_color, ff_color : str
+        Colors of the placefield and Full-CA1 curves.
+    pf_label, ff_label : str
+        Legend labels of the placefield and Full-CA1 curves.
+    save_path : str or pathlib.Path or None
+        If given (and ``return_syd_viewer`` is False), save the rendered figure here.
+    return_syd_viewer : bool
+        If True, return the Syd viewer with state seeded from the other arguments.
+    **selections
+        Overrides for the parameter-axis selections, keyed by raw ``param_axes`` name.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or DimensionalityFamiliarityViewer
+        The rendered figure, or the Syd viewer when ``return_syd_viewer`` is True.
+    """
+    pf_options = list(_STIMSPACE_KEYS) + (list(_CVPCA_KEYS) if results_cvpca is not None else [])
+    if source_key not in pf_options:
+        raise ValueError(f"Unknown PF source_key {source_key!r}. Options: {pf_options}")
+    full_options = ["SVD"] + (["SVCA"] if results_subspace is not None else [])
+    if full_source_key not in full_options:
+        raise ValueError(f"Unknown full_source_key {full_source_key!r}. Options: {full_options}")
+    if metric not in ("participation_ratio", "alpha"):
+        raise ValueError(f"Unknown metric {metric!r}. Options: ['participation_ratio', 'alpha']")
+    if display not in ("each", "errorPlot"):
+        raise ValueError(f"Unknown display {display!r}. Options: ['each', 'errorPlot']")
+
+    viewer = DimensionalityFamiliarityViewer(
+        results,
+        results_cvpca=results_cvpca,
+        results_subspace=results_subspace,
+        source_cfg=source_cfg,
+        full_cfg=full_cfg,
+        fontsize=fontsize,
+        figsize=figsize,
+        pf_color=pf_color,
+        ff_color=ff_color,
+        pf_label=pf_label,
+        ff_label=ff_label,
+    )
+    viewer.update_selection("source_key", value=source_key)
+    viewer.update_selection("full_source_key", value=full_source_key)
+
+    valid_selections = set()
+    for agg in viewer._agg.values():
+        if agg is not None:
+            valid_selections.update(agg.param_axes)
+    for key, value in selections.items():
+        if key not in valid_selections:
+            raise ValueError(f"Unknown selection {key!r}. Options: {sorted(valid_selections)}")
+        viewer.update_selection(key, value=viewer.encode_param(key, value))
+
+    viewer.update_selection("metric", value=metric)
+    viewer.update_selection("display", value=display)
+    viewer.update_boolean("log_y", value=log_y)
+    if return_syd_viewer:
+        return viewer
+
+    fig = viewer.plot(viewer.state)
+    if save_path is not None:
+        save_figure(fig, save_path)
+    plt.show()
+    return fig
+
+
+_PER_ENV_PF_KEYS = ["ss_cv", "ss_direct", "ss_cvpca", "sf_cv", "sf_direct"]
+_PER_ENV_PF_RESULT_KEYS = {
+    "ss_cv": "ss_cv_env",
+    "ss_direct": "ss_direct_env",
+    "ss_cvpca": "ss_cvpca_env",
+}
+_PER_ENV_FULL_SCOPES = ["full1", "fullall"]
+
+
+class SpectrumDimFamiliarityViewer(Viewer):
+    """Per-environment participation-ratio dimensionality over familiarity.
+
+    Every environment is represented by its experience-order slot and is reindexed to session
+    number within that environment for each mouse. PF and Full spectra are shown on separate axes.
+    ``full_scope`` is shared by every estimator that has environment-only and all-session func-side
+    variants: ``"full1"`` uses environment-only activity, while ``"fullall"`` uses the stored
+    environment-vs-all-session cross-spectrum.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        fontsize: float = 9.0,
+        figsize: tuple[float, float] = (6.0, 2.5),
+        pf_label: str = "PF",
+        full_label: str = "Full",
+    ):
+        self.results = results
+        self.fontsize = fontsize
+        self.figsize = figsize
+        self.pf_label = pf_label
+        self.full_label = full_label
+
+        self.add_selection("source_key", options=_PER_ENV_PF_KEYS, value="ss_cvpca")
+        self.add_selection("full_scope", options=_PER_ENV_FULL_SCOPES, value="full1")
+        self.add_selection("display", options=["each", "errorPlot"], value="errorPlot")
+        self.add_selection("yscale", options=["linear", "log"], value="linear")
+        self.add_boolean("sharey", value=False)
+
+        self._tuple_labels: dict[str, dict[str, tuple]] = {}
+        for name, options in results.param_axes.items():
+            if any(isinstance(option, tuple) for option in options):
+                label_map = {_tuple_label(option): option for option in options}
+                self._tuple_labels[name] = label_map
+                widget_options = list(label_map)
+            else:
+                widget_options = options
+            self.add_selection(name, options=widget_options)
+            if name in _PREFERRED_DEFAULTS:
+                default = self.encode_param(name, _PREFERRED_DEFAULTS[name])
+                if default in widget_options:
+                    self.update_selection(name, value=default)
+
+    def encode_param(self, name: str, value):
+        """Map raw tuple-valued aggregator parameters to widget-safe labels."""
+        if name in self._tuple_labels and isinstance(value, tuple):
+            return _tuple_label(value)
+        return value
+
+    def _sel_params(self, state: dict) -> dict:
+        """Return only aggregator parameter selections, decoding tuple-valued axes."""
+        params = {}
+        for name in self.results.param_axes:
+            if name not in state:
+                continue
+            value = state[name]
+            if name in self._tuple_labels:
+                value = self._tuple_labels[name][value]
+            params[name] = value
+        return params
+
+    @staticmethod
+    def _result_keys(source_key: str, full_scope: str) -> tuple[str, str]:
+        """Map viewer choices to the two stored per-environment spectrum keys."""
+        if source_key in ("sf_cv", "sf_direct"):
+            pf_key = f"{source_key}_env_{full_scope}"
+        else:
+            pf_key = _PER_ENV_PF_RESULT_KEYS[source_key]
+        full_key = "ff_env_full1" if full_scope == "full1" else "ff_env_full1_fullall"
+        return pf_key, full_key
+
+    @staticmethod
+    def _participation_ratio(spec: np.ndarray) -> np.ndarray:
+        """Signed participation ratio over the final (spectrum-rank) axis."""
+        spec = np.asarray(spec, dtype=float)
+        s1 = np.nansum(spec, axis=-1)
+        s2 = np.nansum(spec**2, axis=-1)
+        valid = np.isfinite(spec).any(axis=-1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(valid & (s2 > 0), s1**2 / s2, np.nan)
+
+    def _curves(self, values: np.ndarray) -> dict[int, dict[str, np.ndarray]]:
+        """Reindex ``(sessions, env_slots)`` values by within-environment session number."""
+        curves: dict[int, dict[str, np.ndarray]] = {}
+        for slot in range(MAX_ENV_SLOTS):
+            per_mouse: dict[str, np.ndarray] = {}
+            for mouse in self.results.unique_mice:
+                rows = np.where(self.results.mouse_names == mouse)[0]
+                dates = np.array([self.results.sessions[row].date for row in rows])
+                rows = rows[np.argsort(dates)]
+                curve = np.asarray(values[rows, slot], dtype=float)
+                curve = curve[np.isfinite(curve)]
+                if curve.size:
+                    per_mouse[str(mouse)] = curve
+            curves[slot] = per_mouse
+        return curves
+
+    @staticmethod
+    def _pad_curves(curves: dict[str, np.ndarray]) -> np.ndarray:
+        """NaN-pad ragged per-mouse curves to a common session axis."""
+        max_sessions = max((len(curve) for curve in curves.values()), default=0)
+        stack = np.full((len(curves), max_sessions), np.nan)
+        for row, curve in enumerate(curves.values()):
+            stack[row, : len(curve)] = curve
+        return stack
+
+    def _draw_axis(self, ax, curves: dict[int, dict[str, np.ndarray]], display: str) -> int:
+        """Draw every environment slot on one axis and return the longest x extent."""
+        max_length = 0
+        for slot, per_mouse in curves.items():
+            stack = self._pad_curves(per_mouse)
+            if not stack.size:
+                continue
+            if ax.get_yscale() == "log":
+                stack[stack <= 0] = np.nan
+
+            color = ENV_SLOT_COLORS[slot % len(ENV_SLOT_COLORS)]
+            support = np.sum(np.isfinite(stack), axis=0)
+            summary_columns = np.where(support >= 2)[0]
+            label = f"Env #{slot + 1}"
+
+            if display == "each":
+                for curve in stack:
+                    ax.plot(np.arange(1, curve.size + 1), curve, color=(color, 0.3), linewidth=0.5)
+                if summary_columns.size:
+                    ax.plot(
+                        summary_columns + 1,
+                        np.nanmean(stack[:, summary_columns], axis=0),
+                        color=color,
+                        linewidth=2.0,
+                        label=label,
+                    )
+                max_length = max(max_length, stack.shape[1])
+            elif summary_columns.size:
+                errorPlot(
+                    summary_columns + 1,
+                    stack[:, summary_columns],
+                    axis=0,
+                    se=True,
+                    ax=ax,
+                    color=color,
+                    linewidth=2.0,
+                    alpha=0.25,
+                    label=label,
+                )
+                max_length = max(max_length, int(summary_columns[-1]) + 1)
+        return max_length
+
+    def plot(self, state: dict):
+        pf_key, full_key = self._result_keys(state["source_key"], state["full_scope"])
+        out = self.results.sel(
+            keys=[pf_key, full_key],
+            squeeze_ones=False,
+            avg_by_mouse=False,
+            **self._sel_params(state),
+        )
+        pf_values = self._participation_ratio(out[pf_key])
+        full_values = self._participation_ratio(out[full_key])
+        pf_curves = self._curves(pf_values)
+        full_curves = self._curves(full_values)
+
+        plt.rcParams["font.size"] = self.fontsize
+        fig, ax = plt.subplots(1, 2, figsize=self.figsize, layout="constrained", sharey=state["sharey"])
+        for axis in ax:
+            axis.set_yscale(state["yscale"])
+
+        extents = [
+            self._draw_axis(ax[0], pf_curves, state["display"]),
+            self._draw_axis(ax[1], full_curves, state["display"]),
+        ]
+        xmax = max(max(extents), 1)
+        for axis, title in zip(ax, (self.pf_label, self.full_label)):
+            axis.set_xlim(0.8, xmax + 0.2)
+            axis.set_xlabel("Env session #")
+            axis.set_ylabel("Dimensionality")
+            axis.set_title(title)
+            ylim = axis.get_ylim()
+            format_spines(
+                axis,
+                x_pos=-0.02,
+                y_pos=-0.02,
+                spines_visible=["left", "bottom"],
+                xbounds=[1, xmax],
+                ybounds=ylim,
+            )
+        ax[0].legend(
+            loc="best",
+            fontsize=self.fontsize,
+            frameon=False,
+            title="Environment",
+            handlelength=0.8,
+            handletextpad=0.5,
+        )
+        return fig
+
+
+def spectrum_dim_familiarity(
+    results: ResultsAggregator,
+    source_key: str = "ss_cvpca",
+    full_scope: str = "full1",
+    display: str = "errorPlot",
+    yscale: str = "linear",
+    sharey: bool = False,
+    fontsize: float = 9.0,
+    figsize: tuple[float, float] = (6.0, 2.5),
+    pf_label: str = "PF",
+    full_label: str = "Full",
+    save_path=None,
+    return_syd_viewer: bool = False,
+    **selections,
+):
+    """Plot per-environment PF and Full participation-ratio dimensionality over familiarity.
+
+    Each mouse's environments are aligned by experience-order slot and each slot is plotted against
+    session number within that environment. PF dimensionality is drawn in ``ax[0]`` and Full
+    dimensionality in ``ax[1]``, using the same environment colors as the manuscript's other
+    familiarity figures.
+
+    ``source_key`` may be ``ss_cv``, ``ss_direct``, ``ss_cvpca``, ``sf_cv``, or ``sf_direct``.
+    ``full_scope="full1"`` uses environment-only functional activity for every applicable PF/Full
+    estimator. ``"fullall"`` uses the corresponding environment-vs-all-session functional
+    cross-spectrum. The SS estimators have no functional side, so ``full_scope`` changes only their
+    paired Full curve. ``sharey=True`` gives the PF and Full panels one shared y-axis.
+    """
+    if source_key not in _PER_ENV_PF_KEYS:
+        raise ValueError(f"Unknown source_key {source_key!r}. Options: {_PER_ENV_PF_KEYS}")
+    if full_scope not in _PER_ENV_FULL_SCOPES:
+        raise ValueError(f"Unknown full_scope {full_scope!r}. Options: {_PER_ENV_FULL_SCOPES}")
+    if display not in ("each", "errorPlot"):
+        raise ValueError(f"Unknown display {display!r}. Options: ['each', 'errorPlot']")
+    if yscale not in ("linear", "log"):
+        raise ValueError(f"Unknown yscale {yscale!r}. Options: ['linear', 'log']")
+
+    viewer = SpectrumDimFamiliarityViewer(
+        results,
+        fontsize=fontsize,
+        figsize=figsize,
+        pf_label=pf_label,
+        full_label=full_label,
+    )
+    viewer.update_selection("source_key", value=source_key)
+    viewer.update_selection("full_scope", value=full_scope)
+    viewer.update_selection("display", value=display)
     viewer.update_selection("yscale", value=yscale)
+    viewer.update_boolean("sharey", value=sharey)
+    for key, value in selections.items():
+        if key not in results.param_axes:
+            raise ValueError(f"Unknown selection {key!r}. Options: {sorted(results.param_axes)}")
+        viewer.update_selection(key, value=viewer.encode_param(key, value))
+
     if return_syd_viewer:
         return viewer
 
