@@ -40,6 +40,9 @@ class Subspace(NamedTuple):
 class SubspaceModel(ABC):
     """Base class for subspace models with common data loading and processing methods."""
 
+    score_schema_version: Optional[str] = None
+    """Optional version token for invalidating this model's score cache."""
+
     def __init__(
         self,
         registry: "PopulationRegistry",
@@ -429,6 +432,8 @@ class SubspaceModel(ABC):
             hyperparameters_hash,
             model_params_hash,
         ]
+        if self.score_schema_version is not None:
+            cache_params.append(self.score_schema_version)
         return "_".join(cache_params)
 
     def _compute_and_cache_score(
@@ -472,7 +477,13 @@ class SubspaceModel(ABC):
             metrics = load(cache_path)
         else:
             subspace = self.fit(session, spks_type=spks_type, split=train_split, hyperparameters=hyperparameters)
-            variance = self.score(session, subspace, spks_type=spks_type, split=test_split)
+            variance = self.score(
+                session,
+                subspace,
+                spks_type=spks_type,
+                split=test_split,
+                hyperparameters=hyperparameters,
+            )
             evaluation_score = self.evaluate(variance)
             metrics = {"evaluation_score": float(evaluation_score)}
             for key, val in variance.items():
