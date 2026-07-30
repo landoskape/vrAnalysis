@@ -25,7 +25,6 @@ from ..pipeline.base import AnalysisConfigBase
 
 VALID_SUBSPACE_NAMES: list[SubspaceName] = [
     "covcov_subspace",
-    "covcov_crossvalidated_subspace",
     "svca_subspace",
 ]
 
@@ -47,7 +46,7 @@ class SubspaceConfig(AnalysisConfigBase):
         Gaussian smoothing width for place fields. None means no smoothing.
     """
 
-    schema_version: str = "v6"
+    schema_version: str = "v7"
     data_config_name: str = "even"
 
     subspace_name: SubspaceName = "covcov_subspace"

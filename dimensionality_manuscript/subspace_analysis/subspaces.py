@@ -1,4 +1,7 @@
 from typing import TYPE_CHECKING
+from collections.abc import Callable
+
+import numpy as np
 import torch
 
 
@@ -25,13 +28,91 @@ def _assert_finite(tensor: torch.Tensor, name: str, session: "B2Session") -> Non
 
 
 from vrAnalysis.sessions import B2Session, SpksTypes
-from vrAnalysis.processors.placefields import get_placefield
+from vrAnalysis.processors.placefields import get_placefield, Placefield
 from dimilibi import PCA, SVCA
 from .base import SubspaceModel, Subspace, _eigvalsh_numpy
+from ..env_order import load_env_order, MAX_ENV_SLOTS
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 
 if TYPE_CHECKING:
     from ..registry import SplitName
+
+
+_VARIANCE_KEYS = (
+    "variance_activity",
+    "variance_placefields",
+    "variance_placefield_placefield",
+)
+
+
+def _paired_placefield_matrices(
+    placefield_source: Placefield,
+    placefield_target: Placefield,
+    num_source_neurons: int,
+    num_target_neurons: int,
+    nan_safe: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flatten aligned source/target place fields and remove their shared NaN columns."""
+    source = torch.tensor(placefield_source.flattened()).reshape(-1, num_source_neurons).T.contiguous()
+    target = torch.tensor(placefield_target.flattened()).reshape(-1, num_target_neurons).T.contiguous()
+    idx_nan_samples = torch.any(torch.isnan(source), dim=0) | torch.any(torch.isnan(target), dim=0)
+
+    if nan_safe and torch.any(idx_nan_samples):
+        num_nan = torch.sum(idx_nan_samples).item()
+        total = len(idx_nan_samples)
+        raise ValueError(f"{num_nan} / {total} samples have NaN values in placefield data!")
+    if not nan_safe:
+        idx_valid = ~idx_nan_samples
+        source = source[:, idx_valid]
+        target = target[:, idx_valid]
+    return source, target
+
+
+def _environment_slot_scores(
+    session: B2Session,
+    global_scores: dict[str, torch.Tensor],
+    environments: np.ndarray,
+    score_environment: Callable[[int], dict[str, torch.Tensor]],
+) -> dict[str, torch.Tensor | np.ndarray]:
+    """Pack per-environment score vectors onto the mouse's experience-order slot axis."""
+    mouse_order = load_env_order().get(session.mouse_name)
+    env_slot_ids = np.full(MAX_ENV_SLOTS, np.nan)
+    if mouse_order is not None:
+        env_slot_ids[: min(len(mouse_order), MAX_ENV_SLOTS)] = mouse_order[:MAX_ENV_SLOTS]
+
+    output: dict[str, torch.Tensor | np.ndarray] = {
+        f"{key}_env": torch.full(
+            (MAX_ENV_SLOTS, value.numel()),
+            torch.nan,
+            dtype=value.dtype,
+            device=value.device,
+        )
+        for key, value in global_scores.items()
+        if key in _VARIANCE_KEYS
+    }
+
+    if mouse_order is not None:
+        for env in np.unique(environments):
+            env = int(env)
+            if env < 0 or env not in mouse_order:
+                continue
+            slot = mouse_order.index(env)
+            if slot >= MAX_ENV_SLOTS:
+                continue
+            for key, value in score_environment(env).items():
+                env_key = f"{key}_env"
+                if env_key not in output:
+                    continue
+                expected = output[env_key].shape[1]
+                if value.numel() != expected:
+                    raise ValueError(
+                        f"Environment {env} returned {value.numel()} values for {key}; "
+                        f"expected {expected} from the global score."
+                    )
+                output[env_key][slot] = value
+
+    output["env_slot_ids"] = env_slot_ids
+    return output
 
 
 class PCASubspace(SubspaceModel):
@@ -123,6 +204,8 @@ class PCASubspace(SubspaceModel):
 
 
 class SVCASubspace(SubspaceModel):
+    score_schema_version = "env-v1"
+
     def fit(
         self,
         session: B2Session,
@@ -157,26 +240,15 @@ class SVCASubspace(SubspaceModel):
             use_fast_sampling=True,
             session=session,
         )
-        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T.contiguous()
-        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T.contiguous()
-
-        # Check for NaNs and filter if needed
-        # Note: We need to filter both source and target together to keep them aligned
-        # Check for NaNs in either placefield
-        idx_nan_samples = torch.any(torch.isnan(placefield_source_extended), dim=0) | torch.any(torch.isnan(placefield_target_extended), dim=0)
-
-        if nan_safe:
-            if torch.any(idx_nan_samples):
-                num_nan = torch.sum(idx_nan_samples).item()
-                total = len(idx_nan_samples)
-                raise ValueError(f"{num_nan} / {total} samples have NaN values in placefield data!")
-            if torch.any(torch.isnan(train_source)) or torch.any(torch.isnan(train_target)):
-                raise ValueError("NaN values in train_source or train_target!")
-        else:
-            # Filter out NaN samples from all data
-            idx_valid = ~idx_nan_samples
-            placefield_source_extended = placefield_source_extended[:, idx_valid]
-            placefield_target_extended = placefield_target_extended[:, idx_valid]
+        placefield_source_extended, placefield_target_extended = _paired_placefield_matrices(
+            placefield_source,
+            placefield_target,
+            num_source_neurons,
+            num_target_neurons,
+            nan_safe,
+        )
+        if nan_safe and (torch.any(torch.isnan(train_source)) or torch.any(torch.isnan(train_target))):
+            raise ValueError("NaN values in train_source or train_target!")
 
         num_components = self._compute_num_components(
             self.max_components,
@@ -232,32 +304,60 @@ class SVCASubspace(SubspaceModel):
             use_fast_sampling=True,
             session=session,
         )
-        placefield_source_extended = torch.tensor(placefield_source.placefield).reshape(-1, num_source_neurons).T.contiguous()
-        placefield_target_extended = torch.tensor(placefield_target.placefield).reshape(-1, num_target_neurons).T.contiguous()
-
-        idx_nan_samples = torch.any(torch.isnan(placefield_source_extended), dim=0) | torch.any(torch.isnan(placefield_target_extended), dim=0)
-
-        if nan_safe:
-            if torch.any(idx_nan_samples):
-                num_nan = torch.sum(idx_nan_samples).item()
-                total = len(idx_nan_samples)
-                raise ValueError(f"{num_nan} / {total} samples have NaN values in placefield data!")
-            if torch.any(torch.isnan(test_source)) or torch.any(torch.isnan(test_target)):
-                raise ValueError("NaN values in test_source or test_target!")
-        else:
-            idx_valid = ~idx_nan_samples
-            placefield_source_extended = placefield_source_extended[:, idx_valid]
-            placefield_target_extended = placefield_target_extended[:, idx_valid]
-
-        variance_activity = subspace.subspace_activity.score(test_source, test_target)[0]
-        variance_placefields = subspace.subspace_placefields.score(test_source, test_target)[0]
-        variance_placefield_placefield = subspace.subspace_placefields.score(placefield_source_extended, placefield_target_extended)[0]
-
-        return dict(
-            variance_activity=variance_activity,
-            variance_placefields=variance_placefields,
-            variance_placefield_placefield=variance_placefield_placefield,
+        placefield_source_extended, placefield_target_extended = _paired_placefield_matrices(
+            placefield_source,
+            placefield_target,
+            num_source_neurons,
+            num_target_neurons,
+            nan_safe,
         )
+        if nan_safe and (torch.any(torch.isnan(test_source)) or torch.any(torch.isnan(test_target))):
+            raise ValueError("NaN values in test_source or test_target!")
+
+        result = {
+            "variance_activity": subspace.subspace_activity.score(test_source, test_target)[0],
+            "variance_placefields": subspace.subspace_placefields.score(test_source, test_target)[0],
+            "variance_placefield_placefield": subspace.subspace_placefields.score(
+                placefield_source_extended,
+                placefield_target_extended,
+            )[0],
+        }
+
+        def score_environment(env: int) -> dict[str, torch.Tensor]:
+            env_result: dict[str, torch.Tensor] = {}
+            idx_env = torch.as_tensor(np.asarray(frame_behavior_test.environment) == env)
+            if int(idx_env.sum()) >= 2:
+                source_env = test_source[:, idx_env]
+                target_env = test_target[:, idx_env]
+                env_result["variance_activity"] = subspace.subspace_activity.score(source_env, target_env)[0]
+                env_result["variance_placefields"] = subspace.subspace_placefields.score(source_env, target_env)[0]
+
+            pf_source_env = placefield_source.filter_by_environment(env)
+            pf_target_env = placefield_target.filter_by_environment(env)
+            if len(pf_source_env) and len(pf_target_env):
+                source_pf_env, target_pf_env = _paired_placefield_matrices(
+                    pf_source_env,
+                    pf_target_env,
+                    num_source_neurons,
+                    num_target_neurons,
+                    nan_safe,
+                )
+                if source_pf_env.shape[1] >= 2:
+                    env_result["variance_placefield_placefield"] = subspace.subspace_placefields.score(
+                        source_pf_env,
+                        target_pf_env,
+                    )[0]
+            return env_result
+
+        result.update(
+            _environment_slot_scores(
+                session,
+                result,
+                np.asarray(frame_behavior_test.environment),
+                score_environment,
+            )
+        )
+        return result
 
     def _get_model_name(self) -> str:
         """Get the name of the model."""
@@ -270,6 +370,8 @@ class SVCASubspace(SubspaceModel):
 
 
 class CovCovSubspace(SubspaceModel):
+    score_schema_version = "env-v1"
+
     def fit(
         self,
         session: B2Session,
@@ -319,8 +421,6 @@ class CovCovSubspace(SubspaceModel):
     ):
         test_data, frame_behavior_test, num_neurons = self.get_session_data(session, spks_type, split, use_cell_split=False)
 
-        test_data_cov = _cov_or_gram(test_data, self.centered)
-
         # Also measure covariance of test placefield data for a placefield-placefield comparison as a control
         dist_edges = self._get_placefield_dist_edges(session, hyperparameters)
         placefield = get_placefield(
@@ -336,8 +436,6 @@ class CovCovSubspace(SubspaceModel):
 
         # Check for NaNs and filter if needed
         placefield_extended, _ = self._check_and_filter_nans(placefield_extended, test_data, nan_safe=nan_safe)
-        placefield_cov = _cov_or_gram(placefield_extended, self.centered)
-
         # We're looking for train_cov^{1/2} @ test_cov @ train_cov^{1/2}
         # We can use the eigenvalues of the inner block:
         # train_eval^{1/2} @ train_evecs.T @ test_cov @ train_evecs @ train_eval^{1/2}
@@ -347,23 +445,64 @@ class CovCovSubspace(SubspaceModel):
         train_evecs_placefields = subspace.subspace_placefields.get_components()
         train_eval_placefields_root = torch.diag(torch.sqrt(subspace.subspace_placefields.get_eigenvalues()))
 
-        inner_block_activity = train_eval_activity_root @ train_evecs_activity.T @ test_data_cov @ train_evecs_activity @ train_eval_activity_root
-        inner_block_placefields = (
-            train_eval_placefields_root @ train_evecs_placefields.T @ test_data_cov @ train_evecs_placefields @ train_eval_placefields_root
-        )
-        inner_block_pfpf = (
-            train_eval_placefields_root @ train_evecs_placefields.T @ placefield_cov @ train_evecs_placefields @ train_eval_placefields_root
-        )
+        def score_activity(data: torch.Tensor) -> dict[str, torch.Tensor]:
+            data_cov = _cov_or_gram(data, self.centered)
+            inner_block_activity = (
+                train_eval_activity_root @ train_evecs_activity.T @ data_cov @ train_evecs_activity @ train_eval_activity_root
+            )
+            inner_block_placefields = (
+                train_eval_placefields_root
+                @ train_evecs_placefields.T
+                @ data_cov
+                @ train_evecs_placefields
+                @ train_eval_placefields_root
+            )
+            return {
+                "variance_activity": torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_activity)), 0.0)),
+                "variance_placefields": torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_placefields)), 0.0)),
+            }
 
-        variance_activity = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_activity)), 0.0))
-        variance_placefields = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_placefields)), 0.0))
-        variance_placefield_placefield = torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_pfpf)), 0.0))
+        def score_placefield(placefield_data: torch.Tensor) -> torch.Tensor:
+            placefield_cov = _cov_or_gram(placefield_data, self.centered)
+            inner_block_pfpf = (
+                train_eval_placefields_root
+                @ train_evecs_placefields.T
+                @ placefield_cov
+                @ train_evecs_placefields
+                @ train_eval_placefields_root
+            )
+            return torch.sqrt(torch.clamp_min(torch.flipud(_eigvalsh_numpy(inner_block_pfpf)), 0.0))
 
-        return dict(
-            variance_activity=variance_activity,
-            variance_placefields=variance_placefields,
-            variance_placefield_placefield=variance_placefield_placefield,
+        result = score_activity(test_data)
+        result["variance_placefield_placefield"] = score_placefield(placefield_extended)
+
+        def score_environment(env: int) -> dict[str, torch.Tensor]:
+            env_result: dict[str, torch.Tensor] = {}
+            idx_env = torch.as_tensor(np.asarray(frame_behavior_test.environment) == env)
+            if int(idx_env.sum()) >= 2:
+                env_result.update(score_activity(test_data[:, idx_env]))
+
+            placefield_env = placefield.filter_by_environment(env)
+            if len(placefield_env):
+                placefield_env_extended = torch.tensor(placefield_env.flattened()).T.contiguous()
+                placefield_env_extended, _ = self._check_and_filter_nans(
+                    placefield_env_extended,
+                    test_data[:, idx_env],
+                    nan_safe=nan_safe,
+                )
+                if placefield_env_extended.shape[1] >= 2:
+                    env_result["variance_placefield_placefield"] = score_placefield(placefield_env_extended)
+            return env_result
+
+        result.update(
+            _environment_slot_scores(
+                session,
+                result,
+                np.asarray(frame_behavior_test.environment),
+                score_environment,
+            )
         )
+        return result
 
     def _get_model_name(self) -> str:
         """Get the name of the model."""
