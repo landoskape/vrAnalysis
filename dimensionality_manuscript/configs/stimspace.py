@@ -12,7 +12,7 @@ import torch
 from dimilibi import make_time_splits
 from dimilibi.helpers import vector_correlation
 
-from vrAnalysis.processors.placefields import get_placefield, FrameBehavior, Placefield
+from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, FrameBehavior, Placefield
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.helpers import reliability_loo, stable_hash
@@ -149,6 +149,33 @@ def _direct_svd(A: torch.Tensor, B: torch.Tensor, n_components: int | None = Non
     return torch.from_numpy(np.linalg.svd(cross, full_matrices=False, compute_uv=False).copy())
 
 
+@dataclass(frozen=True)
+class _ResidualFold:
+    """One held-out fold after subtracting a PF prediction fit on the complementary folds."""
+
+    vr: torch.Tensor
+    """Residual VR activity, containing only frames with a valid PF prediction (N, T_vr)."""
+
+    func: torch.Tensor
+    """Residual func activity (N, T_func): ``vr`` followed by unchanged ITI frames when requested."""
+
+    frame_behavior: FrameBehavior
+    """Frame behavior aligned row-for-column with ``vr``."""
+
+
+def _concat_frame_behavior(parts: list[FrameBehavior]) -> FrameBehavior:
+    """Concatenate disjoint fold behaviors while preserving their original full-session indices."""
+    return FrameBehavior(
+        position=np.concatenate([part.position for part in parts]),
+        speed=np.concatenate([part.speed for part in parts]),
+        environment=np.concatenate([part.environment for part in parts]),
+        trial=np.concatenate([part.trial for part in parts]),
+        reward_delivery=np.concatenate([part.reward_delivery for part in parts]),
+        reward_omitted=np.concatenate([part.reward_omitted for part in parts]),
+        idx=np.concatenate([part.idx for part in parts]),
+    )
+
+
 def _pf_position_filter(placefields: list[Placefield]) -> tuple[np.ndarray, np.ndarray]:
     """Intersect valid environments and position bins across all Placefield folds.
 
@@ -257,11 +284,13 @@ def _select_rois(
 class StimSpaceSpectraConfig(AnalysisConfigBase):
     """SS / SF / FF cross-covariance spectra from 4 independent session draws.
 
-    Computes six spectral estimators using the 4 equal time-splits:
+    Computes seven spectral estimators using the 4 equal time-splits:
     - ss_cv, sf_cv   : cross-validated singular values (4 combinations of 3 draws)
     - ss_cvpca       : cvPCA-style spectrum (neuron-centered, single-fold spatial basis,
                        two disjoint test folds), matching CVPCA(on_stimuli=True)
     - ss_direct, sf_direct, ff : direct singular values (all 6 draw pairs)
+    - ffres          : direct singular values of held-out residual activity (all 6 draw pairs);
+                       for each pair, its PF prediction is fit jointly on the other two folds
 
     Parameters
     ----------
@@ -278,7 +307,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         VR-only frames.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     data_config_name: str = "even"
     activity_parameters_name: str = "raw"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
@@ -316,6 +345,78 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             self.schema_version,
         ]
         return "_".join(parts)
+
+    @staticmethod
+    def _residualize_fold(
+        activity: torch.Tensor,
+        func_fold: torch.Tensor,
+        frame_behavior: FrameBehavior,
+        placefield: Placefield,
+    ) -> _ResidualFold:
+        """Subtract an out-of-fold PF prediction from one held-out activity fold.
+
+        VR frames without a valid prediction (an unseen environment/bin in the two training folds)
+        are excluded rather than retained with their PF variance intact. When ``include_iti`` is
+        active, the func fold's appended ITI frames have no PF prediction and are retained unchanged.
+        """
+        eligible = np.isin(frame_behavior.environment, placefield.environment)
+        eligible_idx = np.flatnonzero(eligible)
+        if eligible_idx.size:
+            eligible_fb = frame_behavior.filter(eligible)
+            prediction, extras = get_placefield_prediction(placefield, eligible_fb)
+            valid_within_eligible = np.asarray(extras["idx_valid"], dtype=bool)
+            valid_idx = eligible_idx[valid_within_eligible]
+            prediction = prediction[valid_within_eligible]
+        else:
+            valid_idx = np.array([], dtype=int)
+            prediction = np.empty((0, activity.shape[0]), dtype=float)
+
+        prediction_t = torch.as_tensor(prediction.T, dtype=activity.dtype, device=activity.device)
+        residual_vr = activity[:, valid_idx] - prediction_t
+        residual_fb = frame_behavior.filter(valid_idx)
+
+        # _build_func_folds always leaves the original VR fold first and appends ITI columns.
+        iti = func_fold[:, activity.shape[1] :]
+        residual_func = torch.cat([residual_vr, iti], dim=1)
+        return _ResidualFold(vr=residual_vr, func=residual_func, frame_behavior=residual_fb)
+
+    def _build_residual_pairs(
+        self,
+        session: B2Session,
+        dist_edges: np.ndarray,
+        smooth_width: float | None,
+        activities: list[torch.Tensor],
+        fb_splits: list[FrameBehavior],
+        func_folds: list[torch.Tensor],
+        pairs: list[tuple[int, int]],
+    ) -> dict[tuple[int, int], tuple[_ResidualFold, _ResidualFold]]:
+        """Build leakage-free residual folds for every direct-SVD test pair.
+
+        For test folds ``(i, j)``, one PF map is estimated from the concatenated activity and
+        behavior of the complementary folds. That same independent map is subtracted from both
+        held-out folds before their residual cross-spectrum is measured.
+        """
+        residual_pairs: dict[tuple[int, int], tuple[_ResidualFold, _ResidualFold]] = {}
+        all_folds = set(range(len(activities)))
+        for i, j in pairs:
+            train_folds = sorted(all_folds - {i, j})
+            train_activity = torch.cat([activities[k] for k in train_folds], dim=1)
+            train_fb = _concat_frame_behavior([fb_splits[k] for k in train_folds])
+            train_pf = get_placefield(
+                train_activity.T.numpy(),
+                train_fb,
+                dist_edges,
+                average=True,
+                smooth_width=smooth_width,
+                zero_to_nan=True,
+                use_fast_sampling=True,
+                session=session,
+            )
+            residual_pairs[(i, j)] = (
+                self._residualize_fold(activities[i], func_folds[i], fb_splits[i], train_pf),
+                self._residualize_fold(activities[j], func_folds[j], fb_splits[j], train_pf),
+            )
+        return residual_pairs
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
         population, frame_behavior = registry.get_population(session, spks_type=self.spks_type)
@@ -392,12 +493,33 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
 
         combos3 = list(itertools.combinations(range(4), 3))  # 4 combos for CV estimators
         pairs = list(itertools.combinations(range(4), 2))  # 6 pairs for direct estimators
+        residual_pairs = self._build_residual_pairs(
+            session,
+            dist_edges,
+            smooth_train,
+            activities,
+            fb_splits,
+            func_folds,
+            pairs,
+        )
+        min_residual_samples = min(
+            fold.func.shape[1]
+            for folds in residual_pairs.values()
+            for fold in folds
+        )
+        if min_residual_samples < 2:
+            raise ValueError("Fewer than two valid samples remain in a residual activity fold.")
+        g_residual_pairs = {
+            pair: (_to_g(fold_i.func), _to_g(fold_j.func))
+            for pair, (fold_i, fold_j) in residual_pairs.items()
+        }
 
         # Randomized SVD n_components is capped at min(T_i, T_j) for each pair's cross matrix.
         # Time splits can differ by a sample or two, so cap by the smallest split up front to
         # keep every ff entry the same length (otherwise torch.stack fails below).
         min_samples = min(g.shape[1] for g in g_data)
         ff_components = min(n_neurons, min_samples)
+        ffres_components = min(n_neurons, min_residual_samples)
 
         ss_cv_terms = [_cvsvd(sm_train[i], sm_test[j], sm_test[k]) for i, j, k in combos3]
         ss_cvpca_terms = [_cvpca_svd(raw_train[i], raw_test[j], raw_test[k]) for i, j, k in combos3]
@@ -405,6 +527,10 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         ss_dir_terms = [_direct_svd(sm_test[i], sm_test[j]) for i, j in pairs]
         sf_dir_terms = [_direct_svd(sm_test[i], g_data[j]) for i, j in pairs]
         ff_terms = [_direct_svd(g_data[i], g_data[j], ff_components) for i, j in pairs]
+        ffres_terms = [
+            _direct_svd(g_residual_pairs[pair][0], g_residual_pairs[pair][1], ffres_components)
+            for pair in pairs
+        ]
 
         ss_cv = torch.mean(torch.stack(ss_cv_terms), dim=0)
         ss_cvpca = torch.mean(torch.stack(ss_cvpca_terms), dim=0)
@@ -412,6 +538,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         ss_dir = torch.mean(torch.stack(ss_dir_terms), dim=0)
         sf_dir = torch.mean(torch.stack(sf_dir_terms), dim=0)
         ff = torch.mean(torch.stack(ff_terms), dim=0)
+        ffres = torch.mean(torch.stack(ffres_terms), dim=0)
 
         result = {
             "ss_cv": ss_cv.cpu().numpy(),
@@ -420,6 +547,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "ss_direct": ss_dir.cpu().numpy(),
             "sf_direct": sf_dir.cpu().numpy(),
             "ff": ff.cpu().numpy(),
+            "ffres": ffres.cpu().numpy(),
             "added_frames": added_frames,
             "original_frames": original_frames,
         }
@@ -440,6 +568,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
                 activities,
                 fb_splits,
                 g_data,
+                residual_pairs,
                 valid_envs,
                 combos3,
                 pairs,
@@ -464,11 +593,12 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         activities: list[torch.Tensor],
         fb_splits: list[FrameBehavior],
         g_data: list[torch.Tensor],
+        residual_pairs: dict[tuple[int, int], tuple[_ResidualFold, _ResidualFold]],
         valid_envs: np.ndarray,
         combos3: list[tuple[int, int, int]],
         pairs: list[tuple[int, int]],
     ) -> dict:
-        """Per-environment SS / SF / FF spectra, keyed by experience-order slot.
+        """Per-environment SS / SF / FF / FF-residual spectra, keyed by experience-order slot.
 
         For each shared environment the place-field (stim) side comes from that single
         environment, and the func (full) side is built two ways: ``full1`` = frames from
@@ -491,6 +621,8 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "sf_direct_env_fullall",
             "ff_env_full1",
             "ff_env_full1_fullall",
+            "ffres_env_full1",
+            "ffres_env_full1_fullall",
         ]
         per_env: dict[str, dict[int, np.ndarray]] = {k: {} for k in keys}
 
@@ -564,6 +696,52 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             ff_1_e = torch.mean(torch.stack([_direct_svd(g_f1[i], g_f1[j], ff_comp_1) for i, j in pairs]), dim=0)
             ff_1_all_e = torch.mean(torch.stack([_direct_svd(g_f1[i], g_fall[j], ff_comp_mix) for i, j in pairs]), dim=0)
 
+            # Pair-specific residual spectra. Each pair was residualized using a PF map fit on
+            # exactly the other two folds, so both the env-only and all-env func sides remain
+            # independent of their PF estimate. Invalid-prediction VR frames were already dropped;
+            # leave these result slots empty only if that leaves a degenerate residual fold.
+            residual_counts = []
+            residual_inputs = {}
+            for pair, (res_i, res_j) in residual_pairs.items():
+                idx_env_i = res_i.frame_behavior.environment == env
+                idx_env_j = res_j.frame_behavior.environment == env
+                r1_i = res_i.vr[sub][:, idx_env_i]
+                r1_j = res_j.vr[sub][:, idx_env_j]
+                rall_i = res_i.func[sub]
+                rall_j = res_j.func[sub]
+                residual_inputs[pair] = (r1_i, r1_j, rall_i, rall_j)
+                residual_counts.extend([r1_i.shape[1], r1_j.shape[1], rall_i.shape[1], rall_j.shape[1]])
+
+            ffres_1_e = None
+            ffres_1_all_e = None
+            if residual_counts and min(residual_counts) >= 2:
+                g_residual_inputs = {
+                    pair: tuple(_to_g(value) for value in values)
+                    for pair, values in residual_inputs.items()
+                }
+                min_res_1 = min(values[idx].shape[1] for values in g_residual_inputs.values() for idx in (0, 1))
+                min_res_all = min(values[idx].shape[1] for values in g_residual_inputs.values() for idx in (2, 3))
+                ffres_comp_1 = min(n_e, min_res_1)
+                ffres_comp_mix = min(n_e, min_res_1, min_res_all)
+                ffres_1_e = torch.mean(
+                    torch.stack(
+                        [
+                            _direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][1], ffres_comp_1)
+                            for pair in pairs
+                        ]
+                    ),
+                    dim=0,
+                )
+                ffres_1_all_e = torch.mean(
+                    torch.stack(
+                        [
+                            _direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][3], ffres_comp_mix)
+                            for pair in pairs
+                        ]
+                    ),
+                    dim=0,
+                )
+
             per_env["ss_cv_env"][slot] = ss_cv_e.cpu().numpy()
             per_env["ss_cvpca_env"][slot] = ss_cvpca_e.cpu().numpy()
             per_env["ss_direct_env"][slot] = ss_dir_e.cpu().numpy()
@@ -573,6 +751,9 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             per_env["sf_direct_env_fullall"][slot] = sf_dir_all_e.cpu().numpy()
             per_env["ff_env_full1"][slot] = ff_1_e.cpu().numpy()
             per_env["ff_env_full1_fullall"][slot] = ff_1_all_e.cpu().numpy()
+            if ffres_1_e is not None:
+                per_env["ffres_env_full1"][slot] = ffres_1_e.cpu().numpy()
+                per_env["ffres_env_full1_fullall"][slot] = ffres_1_all_e.cpu().numpy()
 
         out: dict = {}
         for key, slot_map in per_env.items():
