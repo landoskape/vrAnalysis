@@ -502,8 +502,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
             raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(KEY_FIGURE_MODELS)}")
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
             raise ValueError(
-                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. "
-                f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. " f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
             )
 
     def summary(self) -> str:
