@@ -41,6 +41,7 @@ from ..registry import ACTIVITY_PARAMETERS_NAMES, ModelName, PopulationRegistry,
 from ..regression_models.hyperparameters import FullRegressorHyperparameters
 from ..regression_models.models import FullRegressorModel
 from ..pipeline.base import AnalysisConfigBase
+from .regression import KEY_FIGURE_MODELS
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 VALID_ACTIVITY_PARAMETERS: list[str] = ["default", "preserved"]
@@ -52,12 +53,15 @@ VALID_RRR_VARIANCE: list[Union[float, str]] = [1.0, 0.95, "match"]
 # to expose "basis_functions_predicted". Both members of a pair share their regressor structure so
 # the pos/speed/reward breakdown is comparable across them.
 #
-# The second pair is the predictive-reward variant (causally clean reward regressors: predictive-only
-# expectation basis, no omission response), matching the predictive-reward entries
-# in KEY_FIGURE_MODELS in configs/regression.py.
+# Derive the compatible external/internal pairs from the canonical key-figure list so this
+# analysis cannot silently retain models that the regression pipeline no longer sweeps.
+# A decoder-only full regressor supplies the behavior-derived basis; its matching internal
+# model is the same name without ``_decoder_only``.
 VALID_MODEL_EXT_INT_PAIRS: list[tuple[ModelName, ModelName]] = [
-    ("fullregressor_decoder_only_1dspeed", "fullregressor_1dspeed"),
-    ("fullregressor_decoder_only_1dspeed_predreward", "fullregressor_1dspeed_predreward"),
+    (external_name, internal_name)
+    for external_name in KEY_FIGURE_MODELS
+    if external_name.startswith("fullregressor_decoder_only_")
+    and (internal_name := external_name.replace("_decoder_only", "", 1)) in KEY_FIGURE_MODELS
 ]
 DEFAULT_MODEL_EXT_INT_PAIR: tuple[ModelName, ModelName] = VALID_MODEL_EXT_INT_PAIRS[0]
 

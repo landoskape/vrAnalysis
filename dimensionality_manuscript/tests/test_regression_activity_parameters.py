@@ -10,7 +10,9 @@ from dimensionality_manuscript.configs.regression import (
     VALID_ACTIVITY_PARAMETERS,
     RegressionConfig,
     RegressionDimensionalitySweepConfig,
+    RegressionPlacefieldResidualConfig,
 )
+from dimensionality_manuscript.configs.rrr_to_external_latents import VALID_MODEL_EXT_INT_PAIRS
 from dimensionality_manuscript.registry import get_activity_parameters, get_model
 
 
@@ -74,7 +76,23 @@ def test_regression_grids_use_only_key_figure_models_and_include_std():
     assert "std" in VALID_ACTIVITY_PARAMETERS
 
     regression_grid = RegressionConfig._param_grid()
+    residual_grid = RegressionPlacefieldResidualConfig._param_grid()
     dimensionality_grid = RegressionDimensionalitySweepConfig._param_grid()
     assert regression_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
+    assert residual_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
     assert regression_grid["activity_parameters_name"] == ["default", "preserved", "std"]
     assert dimensionality_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
+
+
+def test_rrr_external_latent_pairs_are_derived_from_key_figure_models():
+    assert VALID_MODEL_EXT_INT_PAIRS == [
+        (
+            "fullregressor_decoder_only_1dspeed_predreward",
+            "fullregressor_1dspeed_predreward",
+        ),
+        (
+            "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+            "fullregressor_1dspeed_predreward_no_intercept",
+        ),
+    ]
+    assert all(model_name in KEY_FIGURE_MODELS for pair in VALID_MODEL_EXT_INT_PAIRS for model_name in pair)
