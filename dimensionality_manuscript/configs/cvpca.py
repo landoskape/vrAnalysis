@@ -60,7 +60,7 @@ class CVPCAConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "activity_parameters_name": ["raw", "default"],
+            "activity_parameters_name": ["raw", "default", "std"],
             "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
             # "use_spatial_eigenvectors": [False, True],
         }

@@ -66,7 +66,7 @@ class SubspaceConfig(AnalysisConfigBase):
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
             "smooth_width": [5.0, None],
-            "activity_parameters_name": ["raw", "default"],
+            "activity_parameters_name": ["raw", "default", "std"],
             "subspace_name": list(VALID_SUBSPACE_NAMES),
         }
 

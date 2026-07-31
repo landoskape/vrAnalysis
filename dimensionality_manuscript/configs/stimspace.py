@@ -60,7 +60,7 @@ class StimSpaceConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             # "spks_type": list(VALID_SPKS_TYPES), # now only use sigrebase! oasis is bad bad bad
-            "activity_parameters_name": ["raw", "default"],
+            "activity_parameters_name": ["raw", "default", "std"],
             # "reliability_fraction_active_thresholds": [(None, None), (0.2, 0.05)],  # Why didn't I think of this before?
             "smooth_width": [None, 5.0],
         }
@@ -325,7 +325,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "activity_parameters_name": ["raw", "default"],
+            "activity_parameters_name": ["raw", "default", "std"],
             "smooth_widths": [(None, None), (5.0, 5.0), (5.0, None)],
             "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
             "include_iti": [False, True],
@@ -502,17 +502,10 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             func_folds,
             pairs,
         )
-        min_residual_samples = min(
-            fold.func.shape[1]
-            for folds in residual_pairs.values()
-            for fold in folds
-        )
+        min_residual_samples = min(fold.func.shape[1] for folds in residual_pairs.values() for fold in folds)
         if min_residual_samples < 2:
             raise ValueError("Fewer than two valid samples remain in a residual activity fold.")
-        g_residual_pairs = {
-            pair: (_to_g(fold_i.func), _to_g(fold_j.func))
-            for pair, (fold_i, fold_j) in residual_pairs.items()
-        }
+        g_residual_pairs = {pair: (_to_g(fold_i.func), _to_g(fold_j.func)) for pair, (fold_i, fold_j) in residual_pairs.items()}
 
         # Randomized SVD n_components is capped at min(T_i, T_j) for each pair's cross matrix.
         # Time splits can differ by a sample or two, so cap by the smallest split up front to
@@ -527,10 +520,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         ss_dir_terms = [_direct_svd(sm_test[i], sm_test[j]) for i, j in pairs]
         sf_dir_terms = [_direct_svd(sm_test[i], g_data[j]) for i, j in pairs]
         ff_terms = [_direct_svd(g_data[i], g_data[j], ff_components) for i, j in pairs]
-        ffres_terms = [
-            _direct_svd(g_residual_pairs[pair][0], g_residual_pairs[pair][1], ffres_components)
-            for pair in pairs
-        ]
+        ffres_terms = [_direct_svd(g_residual_pairs[pair][0], g_residual_pairs[pair][1], ffres_components) for pair in pairs]
 
         ss_cv = torch.mean(torch.stack(ss_cv_terms), dim=0)
         ss_cvpca = torch.mean(torch.stack(ss_cvpca_terms), dim=0)
@@ -715,30 +705,17 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             ffres_1_e = None
             ffres_1_all_e = None
             if residual_counts and min(residual_counts) >= 2:
-                g_residual_inputs = {
-                    pair: tuple(_to_g(value) for value in values)
-                    for pair, values in residual_inputs.items()
-                }
+                g_residual_inputs = {pair: tuple(_to_g(value) for value in values) for pair, values in residual_inputs.items()}
                 min_res_1 = min(values[idx].shape[1] for values in g_residual_inputs.values() for idx in (0, 1))
                 min_res_all = min(values[idx].shape[1] for values in g_residual_inputs.values() for idx in (2, 3))
                 ffres_comp_1 = min(n_e, min_res_1)
                 ffres_comp_mix = min(n_e, min_res_1, min_res_all)
                 ffres_1_e = torch.mean(
-                    torch.stack(
-                        [
-                            _direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][1], ffres_comp_1)
-                            for pair in pairs
-                        ]
-                    ),
+                    torch.stack([_direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][1], ffres_comp_1) for pair in pairs]),
                     dim=0,
                 )
                 ffres_1_all_e = torch.mean(
-                    torch.stack(
-                        [
-                            _direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][3], ffres_comp_mix)
-                            for pair in pairs
-                        ]
-                    ),
+                    torch.stack([_direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][3], ffres_comp_mix) for pair in pairs]),
                     dim=0,
                 )
 
