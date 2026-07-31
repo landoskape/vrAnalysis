@@ -79,7 +79,7 @@ class RegressionConfig(AnalysisConfigBase):
         Hyperparameter optimization method.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v3"
     # v3: recompute with numerically improved placefield code
 
     data_config_name: str = "default"
@@ -219,7 +219,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     population's full split in the same activity units used by the model.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
