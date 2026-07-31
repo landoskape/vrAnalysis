@@ -79,7 +79,7 @@ class RegressionConfig(AnalysisConfigBase):
         Hyperparameter optimization method.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     # v3: recompute with numerically improved placefield code
 
     data_config_name: str = "default"
@@ -193,6 +193,22 @@ def _finite_mean(values: np.ndarray) -> float:
     return float(np.mean(finite)) if finite.size else np.nan
 
 
+def _reliability_loo_finite_bins(spkmap: np.ndarray) -> np.ndarray:
+    """Compute reliability after removing invalid spatial bins per ROI.
+
+    ``reliability_loo`` uses ordinary means, so a NaN in any trial propagates
+    through that ROI's score.  Occupancy-related NaNs can differ between ROIs;
+    filter bins independently for each ROI before evaluating reliability.
+    """
+    spkmap = np.asarray(spkmap, dtype=float)
+    reliability = np.full(spkmap.shape[0], np.nan)
+    for roi in range(spkmap.shape[0]):
+        finite_bins = np.all(np.isfinite(spkmap[roi]), axis=0)
+        if np.sum(finite_bins) >= 2:
+            reliability[roi] = reliability_loo(spkmap[roi : roi + 1, :, finite_bins])[0]
+    return reliability
+
+
 @dataclass(frozen=True)
 class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     """Compare held-out model residuals within and outside each target ROI's place field.
@@ -301,7 +317,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
             pf_env = placefield_trials.filter_by_environment(environment)
             spkmap = np.transpose(pf_env.placefield, (2, 0, 1))
             if spkmap.shape[1] >= 2:
-                reliability[env_idx] = reliability_loo(spkmap)
+                reliability[env_idx] = _reliability_loo_finite_bins(spkmap)
             fraction_active[env_idx] = FractionActive.compute(
                 spkmap,
                 activity_axis=2,
