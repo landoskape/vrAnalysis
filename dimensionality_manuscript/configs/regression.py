@@ -15,6 +15,8 @@ from collections import defaultdict
 
 import numpy as np
 from dimilibi import measure_r2, mse
+from vrAnalysis.helpers import reliability_loo
+from vrAnalysis.metrics import FractionActive
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction
 from ..registry import (
@@ -201,7 +203,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     population's full split in the same activity units used by the model.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v3"
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
@@ -210,6 +212,8 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
 
     num_placefield_bins: int = 100
     placefield_smooth_width: float | None = None
+    reliability_threshold: float = 0.3
+    fraction_active_threshold: float = 0.1
     display_name: ClassVar[str] = "regression_pf_residual"
 
     @staticmethod
@@ -228,6 +232,10 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
             )
         if self.num_placefield_bins < 1:
             raise ValueError("num_placefield_bins must be at least 1")
+        if not -1 <= self.reliability_threshold <= 1:
+            raise ValueError("reliability_threshold must be between -1 and 1")
+        if not 0 <= self.fraction_active_threshold <= 1:
+            raise ValueError("fraction_active_threshold must be between 0 and 1")
 
     def summary(self) -> str:
         parts = [
@@ -238,6 +246,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
         ]
         if self.activity_parameters_name != "default":
             parts.append(f"ap={self.activity_parameters_name}")
+        parts.extend([f"rel={self.reliability_threshold:g}", f"fa={self.fraction_active_threshold:g}"])
         parts.append(self.schema_version)
         return "_".join(parts)
 
@@ -274,6 +283,36 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
             zero_to_nan=True,
         )
 
+        # Trial-resolved maps provide per-environment quality values in the same
+        # target-ROI order and activity units as the residual arrays below.
+        placefield_trials = get_placefield(
+            target_full.T.numpy(),
+            frame_behavior_full,
+            dist_edges=dist_edges,
+            speed_threshold=None,
+            average=False,
+            smooth_width=self.placefield_smooth_width,
+            zero_to_nan=True,
+        )
+        environments = np.sort(np.unique(placefield_trials.environment)).astype(int)
+        reliability = np.full((len(environments), target_full.shape[0]), np.nan)
+        fraction_active = np.full_like(reliability, np.nan)
+        for env_idx, environment in enumerate(environments):
+            pf_env = placefield_trials.filter_by_environment(environment)
+            spkmap = np.transpose(pf_env.placefield, (2, 0, 1))
+            if spkmap.shape[1] >= 2:
+                reliability[env_idx] = reliability_loo(spkmap)
+            fraction_active[env_idx] = FractionActive.compute(
+                spkmap,
+                activity_axis=2,
+                fraction_axis=1,
+                activity_method="rms",
+                fraction_method="participation",
+            )
+        quality_filtered_roi_mask = np.any(np.isfinite(reliability) & (reliability >= self.reliability_threshold), axis=0) & np.any(
+            np.isfinite(fraction_active) & (fraction_active >= self.fraction_active_threshold), axis=0
+        )
+
         # Evaluate PF membership on the same held-out frames as the model report,
         # including any model-specific removal of frames with invalid predictions.
         _, _, frame_behavior_test = model.get_session_data(session, self.spks_type, "test")
@@ -300,14 +339,53 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
             pf_prediction,
             placefield_peak,
         )
+        # One total held-out variance per ROI provides the scale needed to compare
+        # residual magnitudes across sessions. Using ddof=0 matches the SSE / SST
+        # normalization in R²: RMS / sqrt(variance) is sqrt(SSE / SST) when the
+        # same frames and weights are used.
+        variance_pf = np.var(target, axis=1)
+        target_std = np.sqrt(variance_pf)
+        normalized_within_rms = np.divide(
+            within_rms,
+            target_std,
+            out=np.full_like(within_rms, np.nan),
+            where=np.isfinite(target_std) & (target_std > 0),
+        )
+        normalized_outside_rms = np.divide(
+            outside_rms,
+            target_std,
+            out=np.full_like(outside_rms, np.nan),
+            where=np.isfinite(target_std) & (target_std > 0),
+        )
         difference = outside_rms - within_rms
+        normalized_difference = normalized_outside_rms - normalized_within_rms
         return {
             "within_pf_rms": within_rms,
             "outside_pf_rms": outside_rms,
+            "variance_pf": variance_pf,
+            "normalized_within_pf_rms": normalized_within_rms,
+            "normalized_outside_pf_rms": normalized_outside_rms,
             "outside_minus_within_pf_rms": difference,
+            "normalized_outside_minus_within_pf_rms": normalized_difference,
+            "reliability": reliability,
+            "fraction_active": fraction_active,
+            "quality_environments": environments,
+            "quality_filtered_roi_mask": quality_filtered_roi_mask,
+            "num_quality_filtered_rois": int(np.sum(quality_filtered_roi_mask)),
             "mean_within_pf_rms": _finite_mean(within_rms),
             "mean_outside_pf_rms": _finite_mean(outside_rms),
+            "mean_variance_pf": _finite_mean(variance_pf),
+            "mean_normalized_within_pf_rms": _finite_mean(normalized_within_rms),
+            "mean_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms),
             "mean_outside_minus_within_pf_rms": _finite_mean(difference),
+            "mean_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference),
+            "mean_quality_filtered_within_pf_rms": _finite_mean(within_rms[quality_filtered_roi_mask]),
+            "mean_quality_filtered_outside_pf_rms": _finite_mean(outside_rms[quality_filtered_roi_mask]),
+            "mean_quality_filtered_variance_pf": _finite_mean(variance_pf[quality_filtered_roi_mask]),
+            "mean_quality_filtered_normalized_within_pf_rms": _finite_mean(normalized_within_rms[quality_filtered_roi_mask]),
+            "mean_quality_filtered_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms[quality_filtered_roi_mask]),
+            "mean_quality_filtered_outside_minus_within_pf_rms": _finite_mean(difference[quality_filtered_roi_mask]),
+            "mean_quality_filtered_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference[quality_filtered_roi_mask]),
         }
 
 
