@@ -193,22 +193,6 @@ def _finite_mean(values: np.ndarray) -> float:
     return float(np.mean(finite)) if finite.size else np.nan
 
 
-def _reliability_loo_finite_bins(spkmap: np.ndarray) -> np.ndarray:
-    """Compute reliability after removing invalid spatial bins per ROI.
-
-    ``reliability_loo`` uses ordinary means, so a NaN in any trial propagates
-    through that ROI's score.  Occupancy-related NaNs can differ between ROIs;
-    filter bins independently for each ROI before evaluating reliability.
-    """
-    spkmap = np.asarray(spkmap, dtype=float)
-    reliability = np.full(spkmap.shape[0], np.nan)
-    for roi in range(spkmap.shape[0]):
-        finite_bins = np.all(np.isfinite(spkmap[roi]), axis=0)
-        if np.sum(finite_bins) >= 2:
-            reliability[roi] = reliability_loo(spkmap[roi : roi + 1, :, finite_bins])[0]
-    return reliability
-
-
 @dataclass(frozen=True)
 class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     """Compare held-out model residuals within and outside each target ROI's place field.
@@ -219,7 +203,11 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     population's full split in the same activity units used by the model.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
+    # v5: compute the ROI quality filter the same way cvpca / stimspace_spectra do
+    # (fast behavioral sampling, unvisited bins at zero instead of NaN). v4 required
+    # every bin to be occupied on every trial, which left zero quality ROIs in most
+    # sessions.
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
@@ -300,15 +288,19 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
         )
 
         # Trial-resolved maps provide per-environment quality values in the same
-        # target-ROI order and activity units as the residual arrays below.
+        # target-ROI order and activity units as the residual arrays below. This
+        # mirrors the ROI-quality filters in cvpca / stimspace_spectra: behavioral
+        # fast sampling, and unvisited bins left at zero rather than converted to
+        # NaN, so the reliability / fraction-active thresholds select comparable
+        # neurons across all three analyses.
         placefield_trials = get_placefield(
             target_full.T.numpy(),
             frame_behavior_full,
             dist_edges=dist_edges,
             speed_threshold=None,
             average=False,
-            smooth_width=self.placefield_smooth_width,
-            zero_to_nan=True,
+            use_fast_sampling=True,
+            session=session,
         )
         environments = np.sort(np.unique(placefield_trials.environment)).astype(int)
         reliability = np.full((len(environments), target_full.shape[0]), np.nan)
@@ -316,8 +308,10 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
         for env_idx, environment in enumerate(environments):
             pf_env = placefield_trials.filter_by_environment(environment)
             spkmap = np.transpose(pf_env.placefield, (2, 0, 1))
+            # reliability_loo divides by (num_trials - 1); a single-trial environment
+            # contributes no reliability and is left NaN (never passes the threshold).
             if spkmap.shape[1] >= 2:
-                reliability[env_idx] = _reliability_loo_finite_bins(spkmap)
+                reliability[env_idx] = reliability_loo(spkmap)
             fraction_active[env_idx] = FractionActive.compute(
                 spkmap,
                 activity_axis=2,
@@ -325,8 +319,9 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
                 activity_method="rms",
                 fraction_method="participation",
             )
-        quality_filtered_roi_mask = np.any(np.isfinite(reliability) & (reliability >= self.reliability_threshold), axis=0) & np.any(
-            np.isfinite(fraction_active) & (fraction_active >= self.fraction_active_threshold), axis=0
+        # Keep a neuron reliable/active in *any* environment (NaN never passes).
+        quality_filtered_roi_mask = np.any(reliability > self.reliability_threshold, axis=0) & np.any(
+            fraction_active > self.fraction_active_threshold, axis=0
         )
 
         # Evaluate PF membership on the same held-out frames as the model report,
