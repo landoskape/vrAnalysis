@@ -182,10 +182,7 @@ def _environment_slot_scores(
                     continue
                 expected = output[env_key].shape[1]
                 if value.numel() != expected:
-                    raise ValueError(
-                        f"Environment {env} returned {value.numel()} values for {key}; "
-                        f"expected {expected} from the global score."
-                    )
+                    raise ValueError(f"Environment {env} returned {value.numel()} values for {key}; " f"expected {expected} from the global score.")
                 output[env_key][slot] = value
 
     output["env_slot_ids"] = env_slot_ids
