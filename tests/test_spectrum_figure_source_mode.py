@@ -1,0 +1,129 @@
+"""Focused tests for SpectrumFigureViewer's per-environment source mode."""
+
+import numpy as np
+import pytest
+
+from dimensionality_manuscript.figure_scripts.figure4._alpha_config import SpectrumSmoothingConfig
+from dimensionality_manuscript.figure_scripts.figure4._spectrum_math import _signed_participation_ratio
+from dimensionality_manuscript.figure_scripts.figure4.spectrum_figure import SpectrumFigureViewer
+
+
+class _FakeAggregator:
+    def __init__(self, arrays, mouse_names):
+        self._arrays = arrays
+        self.param_axes = {}
+        self.mouse_names = np.asarray(mouse_names)
+        self.session_ids = [f"session-{i}" for i in range(len(mouse_names))]
+
+    def sel(self, *, keys, **_kwargs):
+        return {key: self._arrays[key] for key in keys}
+
+
+def _viewer(arrays, mouse_names, *, subspace_arrays=None, subspace_mouse_names=None):
+    viewer = object.__new__(SpectrumFigureViewer)
+    viewer.results = _FakeAggregator(arrays, mouse_names)
+    viewer.results_subspace = (
+        _FakeAggregator(subspace_arrays, subspace_mouse_names)
+        if subspace_arrays is not None
+        else None
+    )
+    viewer._tuple_labels = {}
+    return viewer
+
+
+def _state(**overrides):
+    return {
+        "source_mode": "avg_env",
+        "normalize": False,
+        "clip_negative": False,
+        **overrides,
+    }
+
+
+def test_avg_env_averages_environment_then_session_within_mouse_before_pr():
+    per_env = np.array(
+        [
+            [[8.0, 4.0, 2.0], [4.0, 2.0, np.nan]],
+            [[2.0, 1.0, 0.5], [np.nan, np.nan, np.nan]],
+            [[10.0, 5.0, 2.0], [6.0, 3.0, 2.0]],
+        ]
+    )
+    viewer = _viewer({"ss_cv_env": per_env}, ["mouse-a", "mouse-a", "mouse-b"])
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    spectra = viewer._avg_env_spectrum(_state(), "ss_cv", cfg)
+
+    expected = np.array([[4.0, 2.0, 1.25], [8.0, 4.0, 2.0]])
+    np.testing.assert_allclose(spectra, expected)
+    np.testing.assert_allclose(_signed_participation_ratio(spectra), _signed_participation_ratio(expected))
+
+
+def test_avg_env_clips_each_environment_before_averaging():
+    per_env = np.array([[[6.0, 3.0, -1.0], [2.0, 1.0, 0.5]]])
+    viewer = _viewer({"ss_cv_env": per_env}, ["mouse-a"])
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    spectra = viewer._avg_env_spectrum(_state(clip_negative=True), "ss_cv", cfg)
+
+    np.testing.assert_allclose(spectra, [[4.0, 2.0, 0.5]])
+
+
+def test_avg_env_supports_svca_placefield_environment_spectra():
+    per_env = np.array(
+        [
+            [[8.0, 4.0, 2.0], [4.0, 2.0, np.nan]],
+            [[2.0, 1.0, 0.5], [np.nan, np.nan, np.nan]],
+            [[10.0, 5.0, 2.0], [6.0, 3.0, 2.0]],
+        ]
+    )
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={"variance_placefield_placefield_env": per_env},
+        subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
+    )
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    spectra = viewer._avg_env_spectrum(_state(), "SVCA", cfg)
+
+    expected = np.array([[4.0, 2.0, 1.25], [8.0, 4.0, 2.0]])
+    np.testing.assert_allclose(spectra, expected)
+
+
+def test_avg_env_svca_session_path_uses_subspace_session_metadata():
+    per_env = np.array([[[6.0, 3.0, -1.0], [2.0, 1.0, 0.5]]])
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={"variance_placefield_placefield_env": per_env},
+        subspace_mouse_names=["svca-mouse"],
+    )
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    raw, smoothed, mouse_names, session_ids = viewer._spectrum_sessions(
+        _state(clip_negative=True),
+        "SVCA",
+        cfg,
+    )
+
+    np.testing.assert_allclose(raw, [[4.0, 2.0, 0.5]])
+    np.testing.assert_allclose(smoothed, raw)
+    np.testing.assert_array_equal(mouse_names, ["svca-mouse"])
+    assert session_ids == ["session-0"]
+
+
+def test_avg_env_rejects_source_without_per_environment_results():
+    viewer = _viewer({}, ["mouse-a"])
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    with pytest.raises(ValueError, match="no independently computed per-environment spectrum"):
+        viewer._avg_env_spectrum(_state(), "reg_covariances_fixed", cfg)
+
+
+def test_avg_env_does_not_change_full_source_spectrum():
+    viewer = _viewer({"ff": np.array([[9.0, 3.0, 1.0]])}, ["mouse-a"])
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    spectra = viewer._ff_spectrum({**_state(), "full_source_key": "SVD"}, cfg)
+
+    np.testing.assert_allclose(spectra, [[9.0, 3.0, 1.0]])

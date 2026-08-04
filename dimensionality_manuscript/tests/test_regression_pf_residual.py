@@ -64,3 +64,11 @@ def test_placefield_residual_grid_mirrors_regression_grid():
         for cfg in RegressionPlacefieldResidualConfig.generate_variations()
     }
     assert residual == regression
+
+
+def test_placefield_residual_quality_thresholds_are_fixed_defaults_not_grid_axes():
+    config = RegressionPlacefieldResidualConfig()
+    assert config.reliability_threshold == pytest.approx(0.3)
+    assert config.fraction_active_threshold == pytest.approx(0.1)
+    assert "reliability_threshold" not in config._param_grid()
+    assert "fraction_active_threshold" not in config._param_grid()
