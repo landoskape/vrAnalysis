@@ -30,7 +30,7 @@ LEGEND_LOCS = (
 # name, at their matplotlib defaults (except ``frameon``, off throughout these figures).
 LEGEND_KNOBS = {
     "ncols": ("integer", 1, 1, 6, None),
-    "fontsize_scale": ("float", 0.8, 0.2, 2.0, 0.05),
+    "fontsize_scale": ("float", 1.0, 0.2, 2.0, 0.05),
     "handlelength": ("float", 2.0, 0.0, 6.0, 0.1),
     "handletextpad": ("float", 0.8, 0.0, 4.0, 0.1),
     "labelspacing": ("float", 0.5, 0.0, 3.0, 0.05),
@@ -38,6 +38,7 @@ LEGEND_KNOBS = {
     "borderaxespad": ("float", 0.5, 0.0, 3.0, 0.05),
     "markerfirst": ("boolean", True, None, None, None),
     "frameon": ("boolean", False, None, None, None),
+    "visible": ("boolean", True, None, None, None),
 }
 
 
@@ -62,20 +63,13 @@ def update_legend_widgets(viewer: Viewer, options: dict, prefix: str = "legend")
 
     Keys are ``"loc"`` or any :data:`LEGEND_KNOBS` name; unknown keys raise.
     """
+    casts = {"integer": int, "float": float, "boolean": bool}
     for knob, value in options.items():
-        name = f"{prefix}_{knob}"
-        if knob == "loc":
-            viewer.update_selection(name, value=value)
-            continue
-        if knob not in LEGEND_KNOBS:
+        if knob != "loc" and knob not in LEGEND_KNOBS:
             raise ValueError(f"Unknown legend option {knob!r}. Options: {['loc'] + list(LEGEND_KNOBS)}")
-        kind = LEGEND_KNOBS[knob][0]
-        if kind == "integer":
-            viewer.update_integer(name, value=int(value))
-        elif kind == "float":
-            viewer.update_float(name, value=float(value))
-        else:
-            viewer.update_boolean(name, value=bool(value))
+        cast = casts.get(LEGEND_KNOBS[knob][0]) if knob != "loc" else None
+        # set_parameter_value is type-agnostic, so one call covers every widget kind.
+        viewer.set_parameter_value(f"{prefix}_{knob}", cast(value) if cast else value)
 
 
 def apply_legend(ax, state: dict, fontsize: float, prefix: str = "legend", handles=None, labels=None, auto_loc: str | None = None) -> None:
@@ -88,6 +82,12 @@ def apply_legend(ax, state: dict, fontsize: float, prefix: str = "legend", handl
     Calling this on a panel that already drew its own legend restyles it: matplotlib replaces the
     previous legend, and the "don't draw one" cases clear it.
     """
+    if state["legend_visible"] is False:
+        existing = ax.get_legend()
+        if existing is not None:
+            existing.remove()
+        return
+
     loc = state[f"{prefix}_loc"]
     if loc == "auto":
         loc = auto_loc
@@ -99,6 +99,8 @@ def apply_legend(ax, state: dict, fontsize: float, prefix: str = "legend", handl
     kwargs = {knob: state[f"{prefix}_{knob}"] for knob in LEGEND_KNOBS if knob != "fontsize_scale"}
     kwargs["loc"] = loc
     kwargs["fontsize"] = fontsize * state[f"{prefix}_fontsize_scale"]
+    if "visible" in kwargs:
+        kwargs.pop("visible")  # matplotlib doesn't accept a visible kwarg, but we use it to hide the legend
     if handles is not None:
         ax.legend(handles, labels, **kwargs)
     else:
