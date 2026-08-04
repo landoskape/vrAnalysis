@@ -397,6 +397,13 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
             "mean_quality_filtered_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms[quality_filtered_roi_mask]),
             "mean_quality_filtered_outside_minus_within_pf_rms": _finite_mean(difference[quality_filtered_roi_mask]),
             "mean_quality_filtered_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference[quality_filtered_roi_mask]),
+            "mean_notquality_filtered_within_pf_rms": _finite_mean(within_rms[~quality_filtered_roi_mask]),
+            "mean_notquality_filtered_outside_pf_rms": _finite_mean(outside_rms[~quality_filtered_roi_mask]),
+            "mean_notquality_filtered_variance_pf": _finite_mean(variance_pf[~quality_filtered_roi_mask]),
+            "mean_notquality_filtered_normalized_within_pf_rms": _finite_mean(normalized_within_rms[~quality_filtered_roi_mask]),
+            "mean_notquality_filtered_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms[~quality_filtered_roi_mask]),
+            "mean_notquality_filtered_outside_minus_within_pf_rms": _finite_mean(difference[~quality_filtered_roi_mask]),
+            "mean_notquality_filtered_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference[~quality_filtered_roi_mask]),
         }
 
 
