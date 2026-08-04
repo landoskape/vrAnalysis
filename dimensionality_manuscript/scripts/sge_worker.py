@@ -19,11 +19,11 @@ import os
 import traceback
 from pathlib import Path
 
+from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASS_LIST
 from dimensionality_manuscript.pipeline import JobQueue, ResultsStore
 from dimensionality_manuscript.pipeline.plan import _execute_job, Job
 from dimensionality_manuscript.registry import PopulationRegistry, RegistryPaths
 from dimensionality_manuscript.scripts.run import (
-    build_analysis_configs,
     collect_sessions,
     collect_sessions_from_file,
 )
@@ -69,7 +69,9 @@ def run_worker(
         sessions = collect_sessions()
 
     sessions_by_id = {s.session_uid: s for s in sessions}
-    configs_by_key = {c.key(): c for c in build_analysis_configs()}
+    configs_by_key = {
+        c.key(): c for cls in ANALYSIS_CONFIG_CLASS_LIST for c in cls.generate_variations()
+    }
 
     registries: dict[str, PopulationRegistry] = {}
 
