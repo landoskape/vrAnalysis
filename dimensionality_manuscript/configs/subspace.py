@@ -46,7 +46,7 @@ class SubspaceConfig(AnalysisConfigBase):
         Gaussian smoothing width for place fields. None means no smoothing.
     """
 
-    schema_version: str = "v8"
+    schema_version: str = "v9"
     data_config_name: str = "even"
 
     subspace_name: SubspaceName = "covcov_subspace"

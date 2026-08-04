@@ -44,6 +44,7 @@ _VARIANCE_KEYS = (
     "variance_placefields",
     "variance_placefield_placefield",
     "variance_activity_residual",
+    "variance_placefield_prediction",
 )
 
 
@@ -92,6 +93,8 @@ def _residualize_activity(
     -------
     residuals : tuple of torch.Tensor
         Residual activity per group, restricted to frames with a valid prediction.
+    predictions : tuple of torch.Tensor
+        Predicted activity per group (num_neurons, num_valid_frames), same frames as ``residuals``.
     valid_idx : np.ndarray
         Indices (into the original frames) of the retained columns.
     """
@@ -115,11 +118,11 @@ def _residualize_activity(
     if valid_idx.size < 2:
         raise ValueError(f"Only {valid_idx.size} held-out frames have a valid place field prediction.")
 
-    residuals = tuple(
-        activity[:, valid_idx] - torch.as_tensor(prediction[valid].T, dtype=activity.dtype, device=activity.device)
-        for activity, prediction in zip(activities, predictions)
+    prediction_tensors = tuple(
+        torch.as_tensor(prediction[valid].T, dtype=activity.dtype, device=activity.device) for activity, prediction in zip(activities, predictions)
     )
-    return residuals, valid_idx
+    residuals = tuple(activity[:, valid_idx] - prediction for activity, prediction in zip(activities, prediction_tensors))
+    return residuals, prediction_tensors, valid_idx
 
 
 def _paired_placefield_matrices(
@@ -278,7 +281,7 @@ class PCASubspace(SubspaceModel):
 
 
 class SVCASubspace(SubspaceModel):
-    score_schema_version = "residual-v1"
+    score_schema_version = "residual-v2"
 
     def fit(
         self,
@@ -391,7 +394,7 @@ class SVCASubspace(SubspaceModel):
         # Residual activity: the train-split place field maps (fit on data disjoint from this
         # split) predict the position-tuned component of the held-out activity, so the residual
         # shared variance is what the SVCA dimensions capture beyond place coding.
-        (residual_source, residual_target), residual_idx = _residualize_activity(
+        (residual_source, residual_target), (prediction_source, prediction_target), residual_idx = _residualize_activity(
             (test_source, test_target),
             frame_behavior_test,
             (subspace.extras["placefield_source"], subspace.extras["placefield_target"]),
@@ -406,6 +409,7 @@ class SVCASubspace(SubspaceModel):
                 placefield_target_extended,
             )[0],
             "variance_activity_residual": subspace.subspace_activity.score(residual_source, residual_target)[0],
+            "variance_placefield_prediction": subspace.subspace_placefields.score(prediction_source, prediction_target)[0],
         }
 
         def score_environment(env: int) -> dict[str, torch.Tensor]:
@@ -422,6 +426,10 @@ class SVCASubspace(SubspaceModel):
                 env_result["variance_activity_residual"] = subspace.subspace_activity.score(
                     residual_source[:, idx_env_residual],
                     residual_target[:, idx_env_residual],
+                )[0]
+                env_result["variance_placefield_prediction"] = subspace.subspace_placefields.score(
+                    prediction_source[:, idx_env_residual],
+                    prediction_target[:, idx_env_residual],
                 )[0]
 
             pf_source_env = placefield_source.filter_by_environment(env)
@@ -462,7 +470,7 @@ class SVCASubspace(SubspaceModel):
 
 
 class CovCovSubspace(SubspaceModel):
-    score_schema_version = "residual-v1"
+    score_schema_version = "residual-v2"
 
     def fit(
         self,
@@ -554,7 +562,7 @@ class CovCovSubspace(SubspaceModel):
         # Residual activity: the train-split place field map (fit on data disjoint from this split)
         # predicts the position-tuned component of the held-out activity, so the residual score is
         # the covariance the activity subspace captures beyond place coding.
-        (residual_data,), residual_idx = _residualize_activity(
+        (residual_data,), (prediction_data,), residual_idx = _residualize_activity(
             (test_data,),
             frame_behavior_test,
             (subspace.extras["placefield"],),
@@ -564,6 +572,7 @@ class CovCovSubspace(SubspaceModel):
         result = score_activity(test_data)
         result["variance_placefield_placefield"] = score_placefield(placefield_extended)
         result["variance_activity_residual"] = score_in_subspace(residual_data, train_evecs_activity, train_eval_activity_root)
+        result["variance_placefield_prediction"] = score_placefield(prediction_data)
 
         def score_environment(env: int) -> dict[str, torch.Tensor]:
             env_result: dict[str, torch.Tensor] = {}
@@ -578,6 +587,7 @@ class CovCovSubspace(SubspaceModel):
                     train_evecs_activity,
                     train_eval_activity_root,
                 )
+                env_result["variance_placefield_prediction"] = score_placefield(prediction_data[:, idx_env_residual])
 
             placefield_env = placefield.filter_by_environment(env)
             if len(placefield_env):
