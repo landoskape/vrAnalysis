@@ -9,7 +9,7 @@ from typing import ClassVar, Optional
 import numpy as np
 import torch
 
-from dimilibi import make_time_splits
+from dimilibi import make_time_splits, PCA
 from dimilibi.helpers import vector_correlation
 
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, FrameBehavior, Placefield
@@ -859,3 +859,217 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             iti_cols = iti_abs[iti_fold]
             func_folds.append(torch.cat([fold, scaled_full[:, iti_cols]], dim=1))
         return func_folds
+
+
+def _pca_cross(pca_a: "PCA", pca_b: "PCA", keep_components: int) -> np.ndarray:
+    """Cross-projection of two PCA component bases, truncated to ``keep_components`` each."""
+    components_a = pca_a.get_components()[:, :keep_components]
+    components_b = pca_b.get_components()[:, :keep_components]
+    return (components_a.T @ components_b).cpu().numpy()
+
+
+def _residual_activity(
+    activity: torch.Tensor,
+    frame_behavior: FrameBehavior,
+    placefield: Placefield,
+) -> Optional[torch.Tensor]:
+    """Activity with its (in-sample) place field prediction subtracted.
+
+    Same prediction/masking mechanics as ``StimSpaceSpectraConfig._residualize_fold``: frames
+    whose position bin has no prediction (unvisited / NaN'd out by ``zero_to_nan=True``) are
+    dropped via ``idx_valid``. Returns ``None`` if fewer than two valid frames remain.
+    """
+    prediction, extras = get_placefield_prediction(placefield, frame_behavior)
+    idx_valid = np.asarray(extras["idx_valid"], dtype=bool)
+    if idx_valid.sum() < 2:
+        return None
+    prediction_t = torch.as_tensor(prediction[idx_valid].T, dtype=activity.dtype, device=activity.device)
+    return activity[:, idx_valid] - prediction_t
+
+
+@dataclass(frozen=True)
+class StimSpaceEnvPCAConfig(AnalysisConfigBase):
+    """Per-environment PCA of place fields and of full VR activity, plus their unfiltered (all-env) fits.
+
+    For every environment the mouse experienced, fits a ``dimilibi`` ``PCA`` (matching
+    ``CovCovSubspace``: uncentered gram matrix by default) on that environment's place field
+    matrix, and another on that environment's full activity -- both restricted to the ``full``
+    time split's VR-running frames, so ITI and spontaneous-window frames are excluded exactly as
+    ``_select_rois`` already excludes them for reliability/fraction-active screening. Neuron
+    selection and place field computation otherwise match ``StimSpaceSpectraConfig`` exactly.
+
+    Also fits the same pair (placefield, full activity) once over all environments combined
+    (unfiltered), the same way ``CovCovSubspace`` fits its subspaces.
+
+    For each of the per-env pairs, and for the unfiltered pair, additionally measures the cross
+    projection of the placefield PCA components onto the full-activity PCA components (see
+    ``SubspaceConfig.process`` in ``subspace.py``), truncated to ``keep_components`` before the
+    cross so its size doesn't depend on the neuron count.
+
+    Also fits PCA on the residual activity left after subtracting each placefield's own (in-sample)
+    prediction -- same prediction/``idx_valid`` masking as ``StimSpaceSpectraConfig._residualize_fold``
+    -- both unfiltered and per-env, with the matching cross projection against the placefield PCA.
+
+    Results are packed onto the mouse's experience-order slot axis (see ``env_order``): fixed
+    ``MAX_ENV_SLOTS``-length lists of ``PCA`` objects / cross arrays (or ``None`` where the mouse
+    never experienced that many distinct environments, or an environment was dropped for having
+    too few neurons/frames/bins).
+    """
+
+    schema_version: str = "v1"
+    data_config_name: str = "even"
+    activity_parameters_name: str = "raw"
+    reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
+    num_bins: int = 100
+    smooth_width: Optional[float] = None
+    spks_type: SpksTypes = "sigrebase"
+    centered: bool = False
+    display_name: ClassVar[str] = "stimspace_env_pca"
+
+    _result_handling = {
+        "pca_placefield": "skip",
+        "pca_full": "skip",
+        "pca_full_res": "skip",
+        "pca_placefield_env": "skip",
+        "pca_full_env": "skip",
+        "cross_env": "skip",
+        "pca_full_res_env": "skip",
+        "cross_res_env": "skip",
+    }
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {
+            "activity_parameters_name": ["raw", "default", "std"],
+            "smooth_width": [5.0, None],
+            "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
+        }
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"spks={self.spks_type}",
+            f"ap={self.activity_parameters_name}",
+            f"rel={self.reliability_fraction_active_thresholds[0]}",
+            f"frac={self.reliability_fraction_active_thresholds[1]}",
+            f"bins={self.num_bins}",
+            f"smooth={self.smooth_width}",
+            self.schema_version,
+        ]
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        keep_components = 1000
+        population, frame_behavior = registry.get_population(session, spks_type=self.spks_type)
+        dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
+        ap = get_activity_parameters(self.activity_parameters_name)
+
+        neuron_data_full = population.data[population.idx_neurons]  # (N_all, T_total)
+
+        rel_thresh, frac_thresh = self.reliability_fraction_active_thresholds
+        idx_keep = _select_rois(
+            session,
+            registry,
+            population,
+            frame_behavior,
+            neuron_data_full,
+            dist_edges,
+            rel_thresh,
+            frac_thresh,
+        )
+        neuron_data = neuron_data_full[idx_keep]
+
+        # "full" split, VR-only frames -- excludes ITI / spontaneous windows, same as _select_rois.
+        full_split = registry.time_split["full"]
+        full_data = population.apply_split(
+            neuron_data,
+            full_split,
+            prefiltered=False,
+            scale=ap.scale,
+            scale_type=ap.scale_type,
+            pre_split=ap.presplit,
+        )
+        full_fb = frame_behavior.filter(population.get_split_times(full_split, within_idx_samples=False))
+
+        placefield = get_placefield(
+            full_data.T.numpy(),
+            full_fb,
+            dist_edges,
+            average=True,
+            smooth_width=self.smooth_width,
+            zero_to_nan=True,
+            use_fast_sampling=True,
+            session=session,
+        )
+        environments = np.asarray(full_fb.environment)
+
+        # Unfiltered (all environments combined), matching CovCovSubspace.fit exactly.
+        placefield_extended = torch.tensor(placefield.flattened()).T.contiguous()
+        valid_bins = ~torch.any(torch.isnan(placefield_extended), dim=0)
+        placefield_extended = placefield_extended[:, valid_bins]
+        pca_placefield = PCA(center=self.centered).fit(placefield_extended)
+        pca_full = PCA(center=self.centered).fit(full_data)
+        cross = _pca_cross(pca_placefield, pca_full, keep_components)
+
+        residual_full = _residual_activity(full_data, full_fb, placefield)
+        pca_full_res = PCA(center=self.centered).fit(residual_full) if residual_full is not None else None
+        cross_res = _pca_cross(pca_placefield, pca_full_res, keep_components) if pca_full_res is not None else None
+
+        order = load_env_order()
+        mouse_order = order.get(session.mouse_name)
+        env_slot_ids = np.full(MAX_ENV_SLOTS, np.nan)
+        if mouse_order is not None:
+            env_slot_ids[: len(mouse_order)] = mouse_order
+
+        pca_placefield_env: list[Optional[PCA]] = [None] * MAX_ENV_SLOTS
+        pca_full_env: list[Optional[PCA]] = [None] * MAX_ENV_SLOTS
+        cross_env: list[Optional[np.ndarray]] = [None] * MAX_ENV_SLOTS
+        pca_full_res_env: list[Optional[PCA]] = [None] * MAX_ENV_SLOTS
+        cross_res_env: list[Optional[np.ndarray]] = [None] * MAX_ENV_SLOTS
+
+        if mouse_order is not None:
+            for env in np.unique(environments):
+                env = int(env)
+                if env < 0 or env not in mouse_order:
+                    continue
+                slot = mouse_order.index(env)
+                if slot >= MAX_ENV_SLOTS:
+                    continue
+
+                placefield_env = placefield.filter_by_environment(env)
+                if len(placefield_env) == 0:
+                    continue
+                placefield_env_extended = torch.tensor(placefield_env.flattened()).T.contiguous()
+                valid_bins_e = ~torch.any(torch.isnan(placefield_env_extended), dim=0)
+                placefield_env_extended = placefield_env_extended[:, valid_bins_e]
+                if placefield_env_extended.shape[1] < 2:
+                    continue
+
+                idx_env = environments == env
+                if int(idx_env.sum()) < 2:
+                    continue
+                full_data_env = full_data[:, idx_env]
+                full_fb_env = full_fb.filter(idx_env)
+
+                pca_placefield_env[slot] = PCA(center=self.centered).fit(placefield_env_extended)
+                pca_full_env[slot] = PCA(center=self.centered).fit(full_data_env)
+                cross_env[slot] = _pca_cross(pca_placefield_env[slot], pca_full_env[slot], keep_components)
+
+                residual_env = _residual_activity(full_data_env, full_fb_env, placefield_env)
+                if residual_env is not None:
+                    pca_full_res_env[slot] = PCA(center=self.centered).fit(residual_env)
+                    cross_res_env[slot] = _pca_cross(pca_placefield_env[slot], pca_full_res_env[slot], keep_components)
+
+        return {
+            "pca_placefield": pca_placefield,
+            "pca_full": pca_full,
+            "cross": cross,
+            "pca_full_res": pca_full_res,
+            "cross_res": cross_res,
+            "pca_placefield_env": pca_placefield_env,
+            "pca_full_env": pca_full_env,
+            "cross_env": cross_env,
+            "pca_full_res_env": pca_full_res_env,
+            "cross_res_env": cross_res_env,
+            "env_slot_ids": env_slot_ids,
+        }
