@@ -14,10 +14,10 @@ import os
 import sys
 from pathlib import Path
 
+from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASS_LIST
 from dimensionality_manuscript.pipeline import JobQueue
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript.scripts.run import (
-    build_analysis_configs,
     collect_sessions,
     collect_sessions_from_file,
 )
@@ -33,7 +33,9 @@ def smoke_test(n: int, db_path: Path, sessions_file: Path | None) -> int:
         sessions = collect_sessions()
 
     sessions_by_id = {s.session_uid: s for s in sessions}
-    configs_by_key = {c.key(): c for c in build_analysis_configs()}
+    configs_by_key = {
+        c.key(): c for cls in ANALYSIS_CONFIG_CLASS_LIST for c in cls.generate_variations()
+    }
 
     print(f"Sessions loaded: {len(sessions_by_id)}")
     print(f"Analysis configs: {len(configs_by_key)}")

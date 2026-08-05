@@ -50,6 +50,7 @@ DEFAULT_ANALYSES: tuple[str, ...] = (
     "rrr_to_external_latents",
     "tilbury_fit",
     "behavior_speed_env",
+    "stimspace_env_pca",
 )
 
 

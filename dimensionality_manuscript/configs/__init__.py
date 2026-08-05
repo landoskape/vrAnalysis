@@ -11,7 +11,7 @@ from .population import PopulationConfig
 from .regression import RegressionConfig, RegressionPlacefieldResidualConfig, VectorGainRankConfig, RegressionDimensionalitySweepConfig
 from .rrr_to_external_latents import RRRToExternalLatentsConfig
 from .subspace import SubspaceConfig
-from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig, StimSpaceEnvPCAConfig
+from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig, StimSpaceEnvPCAConfig, StimspaceSVCAConfig
 from .expmax import ExpMaxConfig
 from .locprediction import LocPredConfig, LocPredCrossVal
 from .tilbury_fit import TilburyFitConfig
@@ -49,6 +49,7 @@ ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
     StimSpaceConfig,
     StimSpaceEnvPCAConfig,
     StimSpaceSpectraConfig,
+    StimspaceSVCAConfig,
     SubspaceConfig,
     ThresholdedGPSweepConfig,
     TilburyFitConfig,
@@ -91,6 +92,7 @@ __all__ = [
     "StimSpaceConfig",
     "StimSpaceEnvPCAConfig",
     "StimSpaceSpectraConfig",
+    "StimspaceSVCAConfig",
     "ExpMaxConfig",
     "LocPredConfig",
     "LocPredCrossVal",

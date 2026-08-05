@@ -17,6 +17,7 @@ import argparse
 
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import ResultsStore
+from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASS_LIST
 from dimensionality_manuscript.scripts.run import build_analysis_configs
 
 REGISTRY_PATHS = RegistryPaths()
@@ -34,7 +35,10 @@ def backfill_summary(analyses: list[str] | None = None, dry_run: bool = False) -
     """
     db_path = REGISTRY_PATHS.pipeline_v2_db_path
     store = ResultsStore(db_path)
-    configs = build_analysis_configs(include=analyses)
+    if analyses is None:
+        configs = [c for cls in ANALYSIS_CONFIG_CLASS_LIST for c in cls.generate_variations()]
+    else:
+        configs = build_analysis_configs(include=analyses)
 
     n_changed_results = 0
     n_changed_errors = 0

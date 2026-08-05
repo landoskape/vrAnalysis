@@ -9,7 +9,7 @@ from typing import ClassVar, Optional
 import numpy as np
 import torch
 
-from dimilibi import make_time_splits, PCA
+from dimilibi import make_time_splits, PCA, SVCA
 from dimilibi.helpers import vector_correlation
 
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, FrameBehavior, Placefield
@@ -21,6 +21,7 @@ from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry, get_activity_parameters, Population
 from ..regression_models.hyperparameters import PlaceFieldHyperparameters
 from ..env_order import load_env_order, MAX_ENV_SLOTS
+from ..subspace_analysis.subspaces import _paired_placefield_matrices, _residualize_activity
 from .regression import VALID_SPKS_TYPES
 
 
@@ -1073,3 +1074,385 @@ class StimSpaceEnvPCAConfig(AnalysisConfigBase):
             "cross_res_env": cross_res_env,
             "env_slot_ids": env_slot_ids,
         }
+
+
+# ---------------------------------------------------------------------------
+# Helpers for StimspaceSVCAConfig
+# ---------------------------------------------------------------------------
+
+
+def _svca_score(
+    source_train: torch.Tensor,
+    target_train: torch.Tensor,
+    source_test: torch.Tensor,
+    target_test: torch.Tensor,
+    centered: bool,
+    num_components: int,
+) -> torch.Tensor:
+    """Fit SVCA on one fold, score its shared-variance spectrum on another."""
+    model = SVCA(centered=centered, num_components=num_components).fit(source_train, target_train)
+    return model.score(source_test, target_test)[0]
+
+
+def _svca_fold_metrics(
+    sources: list[torch.Tensor],
+    targets: list[torch.Tensor],
+    fbs: list[FrameBehavior],
+    pf_source_train: list[Placefield],
+    pf_target_train: list[Placefield],
+    pf_source_test: list[Placefield],
+    pf_target_test: list[Placefield],
+    n_source: int,
+    n_target: int,
+    centered: bool,
+    max_components: int,
+) -> dict[str, torch.Tensor]:
+    """Cross-validated SVCA spectra (``ff``/``sf``/``ss``/``ff_res``/``ss_pred``) over fold combinations.
+
+    ``sources``/``targets``/``fbs``/``pf_*`` are one entry per fold (4 folds for the global spectra,
+    fewer for a per-environment call whenever a fold has too few environment frames -- callers must
+    drop degenerate folds themselves since fold combinatorics need at least 2 (3 for ``ff_res``)
+    folds to be meaningful.
+
+    - ``ff``, ``sf``, ``ss`` : every fold pair, fold ``i`` fit / fold ``j`` scored, averaged.
+    - ``ff_res`` : every fold triple ``(i, j, k)``; fold ``i``'s place field predicts folds ``j``
+      and ``k`` (both held out of the place field fit), residual SVCA fit on ``j``, scored on ``k``.
+    - ``ss_pred`` : every fold pair; each fold's own (in-sample) place field prediction is used for
+      both the fit and score side, so no third fold is needed.
+    """
+    num_folds = len(sources)
+    pairs = list(itertools.combinations(range(num_folds), 2))
+    combos3 = list(itertools.combinations(range(num_folds), 3))
+
+    pf_pair_train = [
+        _paired_placefield_matrices(pf_source_train[k], pf_target_train[k], n_source, n_target, nan_safe=False) for k in range(num_folds)
+    ]
+    pf_pair_test = [_paired_placefield_matrices(pf_source_test[k], pf_target_test[k], n_source, n_target, nan_safe=False) for k in range(num_folds)]
+
+    min_T = min(s.shape[1] for s in sources)
+    min_bins_train = min(p[0].shape[1] for p in pf_pair_train)
+    min_bins_test = min(p[0].shape[1] for p in pf_pair_test)
+
+    ff_components = min(max_components, n_source, n_target, min_T)
+    ff = torch.mean(torch.stack([_svca_score(sources[i], targets[i], sources[j], targets[j], centered, ff_components) for i, j in pairs]), dim=0)
+
+    sf_components = min(max_components, n_source, n_target, min_bins_train, min_T)
+    sf = torch.mean(
+        torch.stack([_svca_score(pf_pair_train[i][0], pf_pair_train[i][1], sources[j], targets[j], centered, sf_components) for i, j in pairs]),
+        dim=0,
+    )
+
+    ss_components = min(max_components, n_source, n_target, min_bins_train, min_bins_test)
+    ss = torch.mean(
+        torch.stack(
+            [_svca_score(pf_pair_train[i][0], pf_pair_train[i][1], pf_pair_test[j][0], pf_pair_test[j][1], centered, ss_components) for i, j in pairs]
+        ),
+        dim=0,
+    )
+
+    residual_terms = []
+    for i, j, k in combos3:
+        (res_source_j, res_target_j), _, _ = _residualize_activity((sources[j], targets[j]), fbs[j], (pf_source_train[i], pf_target_train[i]))
+        (res_source_k, res_target_k), _, _ = _residualize_activity((sources[k], targets[k]), fbs[k], (pf_source_train[i], pf_target_train[i]))
+        residual_terms.append((res_source_j, res_target_j, res_source_k, res_target_k))
+    min_res_T = min(min(t.shape[1] for t in term) for term in residual_terms)
+    ffres_components = min(max_components, n_source, n_target, min_res_T)
+    ff_res = torch.mean(torch.stack([_svca_score(rsj, rtj, rsk, rtk, centered, ffres_components) for rsj, rtj, rsk, rtk in residual_terms]), dim=0)
+
+    prediction_by_fold = {}
+    for k in range(num_folds):
+        _, (pred_source_k, pred_target_k), _ = _residualize_activity((sources[k], targets[k]), fbs[k], (pf_source_train[k], pf_target_train[k]))
+        prediction_by_fold[k] = (pred_source_k, pred_target_k)
+    min_pred_T = min(p[0].shape[1] for p in prediction_by_fold.values())
+    sspred_components = min(max_components, n_source, n_target, min_pred_T)
+    ss_pred = torch.mean(
+        torch.stack(
+            [
+                _svca_score(
+                    prediction_by_fold[i][0],
+                    prediction_by_fold[i][1],
+                    prediction_by_fold[j][0],
+                    prediction_by_fold[j][1],
+                    centered,
+                    sspred_components,
+                )
+                for i, j in pairs
+            ]
+        ),
+        dim=0,
+    )
+
+    return dict(ff=ff, sf=sf, ss=ss, ff_res=ff_res, ss_pred=ss_pred)
+
+
+@dataclass(frozen=True)
+class StimspaceSVCAConfig(AnalysisConfigBase):
+    """Fold cross-validated SVCA (source/target neuron split) shared-variance spectra.
+
+    Reimplements the SVCA analysis previously done via ``SVCASubspace`` (see
+    ``subspace_analysis/subspaces.py``) as free functions over the same 4-fold time-split
+    combinatorics used by :class:`StimSpaceSpectraConfig`, so every quantity is fit and scored on
+    genuinely disjoint data instead of reslicing the output of one globally-fit subspace:
+
+    - ``ff``      : SVCA fit on one fold's raw activity, scored on another fold's raw activity.
+                    All 4-choose-2 fold pairs, averaged.
+    - ``sf``      : SVCA fit on one fold's place field map, scored on another fold's raw activity.
+                    All 4-choose-2 fold pairs, averaged.
+    - ``ss``      : SVCA fit on one fold's place field map, scored on another fold's place field map.
+                    All 4-choose-2 fold pairs, averaged.
+    - ``ff_res``  : SVCA fit on one fold's residual activity (place field prediction from a third,
+                    disjoint fold subtracted), scored on another fold's residual activity (same place
+                    field). All 4-choose-3 fold triples, averaged.
+    - ``ss_pred`` : SVCA fit on one fold's own (in-sample) place field prediction, scored on another
+                    fold's own place field prediction. All 4-choose-2 fold pairs, averaged.
+
+    Each has a per-environment counterpart (``*_env``) computed the same way restricted to that
+    environment's frames, packed onto the mouse's experience-order slot axis (see ``env_order``).
+    """
+
+    schema_version: str = "v1"
+    data_config_name: str = "even"
+    activity_parameters_name: str = "raw"
+    reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
+    num_bins: int = 100
+    smooth_widths: tuple[Optional[float], Optional[float]] = (None, None)
+    spks_type: SpksTypes = "sigrebase"
+    centered: bool = True
+    max_components: int = 300
+    display_name: ClassVar[str] = "stimspace_svca"
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {
+            "activity_parameters_name": ["raw", "default", "std"],
+            "smooth_widths": [(None, None), (5.0, 5.0), (5.0, None)],
+            "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
+        }
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"spks={self.spks_type}",
+            f"ap={self.activity_parameters_name}",
+            f"rel={self.reliability_fraction_active_thresholds[0]}",
+            f"frac={self.reliability_fraction_active_thresholds[1]}",
+            f"bins={self.num_bins}",
+            f"strain={self.smooth_widths[0]}",
+            f"stest={self.smooth_widths[1]}",
+            f"centered={self.centered}",
+            self.schema_version,
+        ]
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        population, frame_behavior = registry.get_population(session, spks_type=self.spks_type)
+        dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
+        ap = get_activity_parameters(self.activity_parameters_name)
+        smooth_train, smooth_test = self.smooth_widths
+
+        neuron_data_full = population.data[population.idx_neurons]
+        rel_thresh, frac_thresh = self.reliability_fraction_active_thresholds
+        idx_keep = _select_rois(
+            session,
+            registry,
+            population,
+            frame_behavior,
+            neuron_data_full,
+            dist_edges,
+            rel_thresh,
+            frac_thresh,
+        )
+        source_idx = population.cell_split_indices[0].numpy()
+        target_idx = population.cell_split_indices[1].numpy()
+        source_keep = idx_keep[source_idx]
+        target_keep = idx_keep[target_idx]
+        n_source = int(source_keep.sum())
+        n_target = int(target_keep.sum())
+        if n_source < 2 or n_target < 2:
+            raise ValueError(f"Too few reliable source/target neurons ({n_source}/{n_target}) for session {session.session_name}.")
+
+        pop_kwargs = dict(scale=ap.scale, scale_type=ap.scale_type, pre_split=ap.presplit)
+
+        sources, targets, fbs = [], [], []
+        pf_source_train, pf_target_train, pf_source_test, pf_target_test = [], [], [], []
+        for time_idx in range(4):
+            source_data, target_data = population.get_split_data(time_idx, **pop_kwargs)
+            source_data = source_data[source_keep]
+            target_data = target_data[target_keep]
+            fb = frame_behavior.filter(population.get_split_times(time_idx, within_idx_samples=False))
+
+            sources.append(source_data)
+            targets.append(target_data)
+            fbs.append(fb)
+
+            pf_kwargs = dict(dist_edges=dist_edges, average=True, zero_to_nan=True, use_fast_sampling=True, session=session)
+            pf_source_train.append(get_placefield(source_data.T.numpy(), fb, smooth_width=smooth_train, **pf_kwargs))
+            pf_target_train.append(get_placefield(target_data.T.numpy(), fb, smooth_width=smooth_train, **pf_kwargs))
+            pf_source_test.append(get_placefield(source_data.T.numpy(), fb, smooth_width=smooth_test, **pf_kwargs))
+            pf_target_test.append(get_placefield(target_data.T.numpy(), fb, smooth_width=smooth_test, **pf_kwargs))
+
+        metrics = _svca_fold_metrics(
+            sources,
+            targets,
+            fbs,
+            pf_source_train,
+            pf_target_train,
+            pf_source_test,
+            pf_target_test,
+            n_source,
+            n_target,
+            self.centered,
+            self.max_components,
+        )
+        result = {key: value.cpu().numpy() for key, value in metrics.items()}
+
+        result.update(
+            self._per_env_svca(
+                session,
+                registry,
+                population,
+                frame_behavior,
+                dist_edges,
+                neuron_data_full,
+                idx_keep,
+                rel_thresh,
+                frac_thresh,
+                sources,
+                targets,
+                fbs,
+                pf_source_train,
+                pf_target_train,
+                pf_source_test,
+                pf_target_test,
+                source_idx,
+                target_idx,
+            )
+        )
+        return result
+
+    def _per_env_svca(
+        self,
+        session: B2Session,
+        registry: PopulationRegistry,
+        population: Population,
+        frame_behavior: FrameBehavior,
+        dist_edges: np.ndarray,
+        neuron_data_full: np.ndarray,
+        idx_keep: np.ndarray,
+        rel_thresh: float | None,
+        frac_thresh: float | None,
+        sources: list[torch.Tensor],
+        targets: list[torch.Tensor],
+        fbs: list[FrameBehavior],
+        pf_source_train: list[Placefield],
+        pf_target_train: list[Placefield],
+        pf_source_test: list[Placefield],
+        pf_target_test: list[Placefield],
+        source_idx: np.ndarray,
+        target_idx: np.ndarray,
+    ) -> dict:
+        """Per-environment ``ff``/``sf``/``ss``/``ff_res``/``ss_pred``, keyed by experience-order slot.
+
+        Same fold combinatorics as the global spectra, restricted to one environment's frames at a
+        time; a fold contributes only if it has at least 2 frames (and, for the place-field sides,
+        at least 2 valid bins) in that environment, and an environment is skipped entirely for a
+        given metric if fewer than 2 (``ff_res``: 3) folds qualify.
+        """
+        order = load_env_order()
+        mouse_order = order.get(session.mouse_name)
+        env_slot_ids = np.full(MAX_ENV_SLOTS, np.nan)
+        if mouse_order is not None:
+            env_slot_ids[: len(mouse_order)] = mouse_order
+
+        keys = ["ff_env", "sf_env", "ss_env", "ff_res_env", "ss_pred_env"]
+        per_env: dict[str, dict[int, np.ndarray]] = {k: {} for k in keys}
+
+        if mouse_order is None:
+            out: dict = {key: np.full((MAX_ENV_SLOTS, 1), np.nan) for key in keys}
+            out["env_slot_ids"] = env_slot_ids
+            return out
+
+        environments = np.unique(np.concatenate([np.asarray(fb.environment) for fb in fbs]))
+        for env in environments:
+            env = int(env)
+            if env < 0 or env not in mouse_order:
+                continue
+            slot = mouse_order.index(env)
+            if slot >= MAX_ENV_SLOTS:
+                continue
+
+            idx_keep_e = _select_rois(
+                session,
+                registry,
+                population,
+                frame_behavior,
+                neuron_data_full,
+                dist_edges,
+                rel_thresh,
+                frac_thresh,
+                filter_by_env=env,
+            )
+            source_keep_e = idx_keep_e[source_idx]
+            target_keep_e = idx_keep_e[target_idx]
+            n_source_e = int(source_keep_e.sum())
+            n_target_e = int(target_keep_e.sum())
+            if n_source_e < 2 or n_target_e < 2:
+                continue
+
+            fold_idx = []
+            sources_e, targets_e, fbs_e = [], [], []
+            pf_source_train_e, pf_target_train_e, pf_source_test_e, pf_target_test_e = [], [], [], []
+            for k in range(len(sources)):
+                idx_env_k = np.asarray(fbs[k].environment) == env
+                if int(idx_env_k.sum()) < 2:
+                    continue
+                pf_st = pf_source_train[k].filter_by_environment(env)
+                pf_tt = pf_target_train[k].filter_by_environment(env)
+                pf_ss = pf_source_test[k].filter_by_environment(env)
+                pf_ts = pf_target_test[k].filter_by_environment(env)
+                if len(pf_st) == 0 or len(pf_tt) == 0 or len(pf_ss) == 0 or len(pf_ts) == 0:
+                    continue
+
+                fold_idx.append(k)
+                sources_e.append(sources[k][:, idx_env_k][source_keep_e])
+                targets_e.append(targets[k][:, idx_env_k][target_keep_e])
+                fbs_e.append(fbs[k].filter(idx_env_k))
+                pf_source_train_e.append(pf_st)
+                pf_target_train_e.append(pf_tt)
+                pf_source_test_e.append(pf_ss)
+                pf_target_test_e.append(pf_ts)
+
+            if len(fold_idx) < 3:
+                # ff_res needs 3 folds; fewer than that also makes ff/sf/ss/ss_pred combinatorics
+                # too thin to be worth reporting for this environment.
+                continue
+
+            try:
+                metrics_e = _svca_fold_metrics(
+                    sources_e,
+                    targets_e,
+                    fbs_e,
+                    pf_source_train_e,
+                    pf_target_train_e,
+                    pf_source_test_e,
+                    pf_target_test_e,
+                    n_source_e,
+                    n_target_e,
+                    self.centered,
+                    self.max_components,
+                )
+            except ValueError:
+                continue
+
+            for key, value in metrics_e.items():
+                per_env[f"{key}_env"][slot] = value.cpu().numpy()
+
+        out: dict = {}
+        for key, slot_map in per_env.items():
+            max_len = max((v.shape[0] for v in slot_map.values()), default=1)
+            arr = np.full((MAX_ENV_SLOTS, max_len), np.nan)
+            for slot, v in slot_map.items():
+                arr[slot, : v.shape[0]] = v
+            out[key] = arr
+        out["env_slot_ids"] = env_slot_ids
+        return out

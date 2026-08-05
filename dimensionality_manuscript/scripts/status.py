@@ -38,6 +38,7 @@ from collections import Counter, defaultdict
 import pandas as pd
 from dimensionality_manuscript.registry import RegistryPaths
 from dimensionality_manuscript import ResultsStore
+from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASS_LIST
 from dimensionality_manuscript.pipeline.base import AnalysisConfigBase
 from dimensionality_manuscript.scripts.run import build_analysis_configs
 from dimensionality_manuscript.scripts.run_simulations import _MAPPING as _SWEEP_MAPPING
@@ -62,11 +63,12 @@ def _analysis_display_names(analyses: list[str] | None) -> list[str] | None:
 def _current_configs() -> list[AnalysisConfigBase]:
     """All current configs across both pipelines.
 
-    Unions the main analysis registry (``run.build_analysis_configs``) with the
-    simulation-sweep registry (``run_simulations._MAPPING``); the sweep configs
-    are a separate pipeline and would otherwise look unregistered.
+    Unions every registered analysis config class (``ANALYSIS_CONFIG_CLASS_LIST``,
+    not just ``run.DEFAULT_ANALYSES``) with the simulation-sweep registry
+    (``run_simulations._MAPPING``); the sweep configs are a separate pipeline
+    and would otherwise look unregistered.
     """
-    configs = list(build_analysis_configs())
+    configs = [c for cls in ANALYSIS_CONFIG_CLASS_LIST for c in cls.generate_variations()]
     for cls in _SWEEP_MAPPING.values():
         configs.extend(cls.generate_variations())
     return configs
