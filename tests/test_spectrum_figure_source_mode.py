@@ -6,6 +6,7 @@ import pytest
 from dimensionality_manuscript.figure_scripts.figure4._alpha_config import SpectrumSmoothingConfig
 from dimensionality_manuscript.figure_scripts.figure4._spectrum_math import _signed_participation_ratio
 from dimensionality_manuscript.figure_scripts.figure4.spectrum_figure import SpectrumFigureViewer
+from dimensionality_manuscript import average_by_mouse
 
 
 class _FakeAggregator:
@@ -15,8 +16,11 @@ class _FakeAggregator:
         self.mouse_names = np.asarray(mouse_names)
         self.session_ids = [f"session-{i}" for i in range(len(mouse_names))]
 
-    def sel(self, *, keys, **_kwargs):
-        return {key: self._arrays[key] for key in keys}
+    def sel(self, *, keys, avg_by_mouse=False, **_kwargs):
+        selected = {key: self._arrays[key] for key in keys}
+        if avg_by_mouse:
+            return {key: average_by_mouse(value, self.mouse_names) for key, value in selected.items()}
+        return selected
 
 
 def _viewer(arrays, mouse_names, *, subspace_arrays=None, subspace_mouse_names=None):
@@ -27,6 +31,7 @@ def _viewer(arrays, mouse_names, *, subspace_arrays=None, subspace_mouse_names=N
         if subspace_arrays is not None
         else None
     )
+    viewer._agg = {"stimspace": viewer.results, "cvpca": None}
     viewer._tuple_labels = {}
     return viewer
 
@@ -88,6 +93,60 @@ def test_avg_env_supports_svca_placefield_environment_spectra():
 
     expected = np.array([[4.0, 2.0, 1.25], [8.0, 4.0, 2.0]])
     np.testing.assert_allclose(spectra, expected)
+
+
+def test_all_supports_svca_placefield_prediction_spectra():
+    prediction = np.array(
+        [
+            [8.0, 4.0, 2.0],
+            [2.0, 1.0, 0.5],
+            [10.0, 5.0, 2.0],
+        ]
+    )
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={"variance_placefield_prediction": prediction},
+        subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
+    )
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    spectra = viewer._spectrum(_state(source_mode="all"), "SVCA_PRED", cfg)
+    raw, smoothed, mouse_names, _ = viewer._spectrum_sessions(
+        _state(source_mode="all"),
+        "SVCA_PRED",
+        cfg,
+    )
+
+    np.testing.assert_allclose(spectra, [[5.0, 2.5, 1.25], [10.0, 5.0, 2.0]])
+    np.testing.assert_allclose(raw, prediction)
+    np.testing.assert_allclose(smoothed, prediction)
+    np.testing.assert_array_equal(mouse_names, ["mouse-a", "mouse-a", "mouse-b"])
+
+
+def test_avg_env_supports_svca_placefield_prediction_spectra():
+    per_env = np.array(
+        [
+            [[8.0, 4.0, 2.0], [4.0, 2.0, np.nan]],
+            [[2.0, 1.0, 0.5], [np.nan, np.nan, np.nan]],
+            [[10.0, 5.0, 2.0], [6.0, 3.0, 2.0]],
+        ]
+    )
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={"variance_placefield_prediction_env": per_env},
+        subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
+    )
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    spectra = viewer._avg_env_spectrum(_state(), "SVCA_PRED", cfg)
+    raw, smoothed, mouse_names, _ = viewer._spectrum_sessions(_state(), "SVCA_PRED", cfg)
+
+    np.testing.assert_allclose(spectra, [[4.0, 2.0, 1.25], [8.0, 4.0, 2.0]])
+    np.testing.assert_allclose(raw, [[6.0, 3.0, 2.0], [2.0, 1.0, 0.5], [8.0, 4.0, 2.0]])
+    np.testing.assert_allclose(smoothed, raw)
+    np.testing.assert_array_equal(mouse_names, ["mouse-a", "mouse-a", "mouse-b"])
 
 
 def test_avg_env_svca_session_path_uses_subspace_session_metadata():
