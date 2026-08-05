@@ -29,9 +29,10 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.colors import Colormap
 from matplotlib.figure import Figure
-from matplotlib.patches import Circle, FancyArrow, FancyBboxPatch
+from matplotlib.patches import Circle, FancyArrow, FancyBboxPatch, Wedge
 from syd import Viewer
 from vrAnalysis.helpers.plotting import format_spines
+from dimensionality_manuscript.figure_scripts.panels import FigureViewer
 
 
 def _get_covariance_ellipse(covariance: np.ndarray, n_std: float = 2.0) -> Tuple[np.ndarray, np.ndarray]:
@@ -1391,7 +1392,7 @@ FLOW_VARIANTS: dict[str, FlowVariant] = {
                     FlowNode(_FULL_J, "full", role="pair"),
                     FlowNode("x-cov\nsvd", "process", role="process"),
                     FlowNode("PF Shared\nSpectrum", "pf", role="spectrum"),
-                    FlowNode("sum of x-val'd\nspectral mass", "process", role="outcome"),
+                    FlowNode("spectral mass", "process", role="outcome"),
                 ),
                 connectors=("dot", "arrow", "arrow", "arrow"),
             ),
@@ -1402,7 +1403,7 @@ FLOW_VARIANTS: dict[str, FlowVariant] = {
                     FlowNode(_FULL_J, "full", role="pair"),
                     FlowNode("svd", "process", role="process"),
                     FlowNode("full CA1\nspectrum", "full", role="spectrum"),
-                    FlowNode("sum of x-val'd\nspectral mass", "process", role="outcome"),
+                    FlowNode("spectral mass", "process", role="outcome"),
                 ),
                 connectors=("dot", "arrow", "arrow", "arrow"),
             ),
@@ -2218,3 +2219,186 @@ def flow_schematic(
     fig = viewer.plot(viewer.state)
     plt.show()
     return fig
+
+
+# Figure 3 hard-codes these colors for PF structure and reliable/full CA1 respectively. They are
+# intentionally not Syd parameters, so this schematic matches that manuscript palette.
+PF_VARIANCE_COLOR = "darkorange"
+FULL_VARIANCE_COLOR = "black"
+
+
+def _segmented_disc(
+    ax: Axes,
+    *,
+    center: tuple[float, float],
+    radius: float,
+    core_radius: float,
+    num_wedges_pf: int,
+    num_wedges_rest: int,
+    wedge_gap: float,
+    start_angle: float,
+    edge_linewidth: float,
+) -> None:
+    """Draw an orange PF annulus around a filled, segmented full-CA1 core."""
+
+    def _add_wedges(count: int, outer_radius: float, width: float, color: str) -> None:
+        if count <= 0 or outer_radius <= 0 or width <= 0:
+            return
+        wedge_span = 2 * np.pi / count
+        visible_gap = min(wedge_gap, 0.98 * wedge_span)
+        cursor = start_angle
+        for _ in range(count):
+            theta2 = cursor - visible_gap / 2
+            theta1 = cursor - wedge_span + visible_gap / 2
+            ax.add_patch(
+                Wedge(
+                    center,
+                    outer_radius,
+                    np.degrees(theta1),
+                    np.degrees(theta2),
+                    width=width,
+                    facecolor=color,
+                    edgecolor="white",
+                    linewidth=edge_linewidth,
+                )
+            )
+            cursor -= wedge_span
+
+    _add_wedges(num_wedges_pf, radius, radius - core_radius, PF_VARIANCE_COLOR)
+    _add_wedges(num_wedges_rest, core_radius, core_radius, FULL_VARIANCE_COLOR)
+
+
+def _variance_circle_layout(state) -> tuple[tuple[float, float], tuple[float, float], float]:
+    """Back-calculate balanced circle centers and their maximum radius in figure inches.
+
+    The drawing axes uses the requested figure dimensions as its data limits, so one data unit
+    is one physical inch. Each circle is centered in one horizontal half. The maximum radius is
+    whichever is tighter: half of a panel's width or half of the height below the title band.
+    """
+
+    fig_width = state["fig_width"]
+    fig_height = state["fig_height"]
+    drawing_height = fig_height * (1 - state["title_band"])
+    centers = ((fig_width / 4, drawing_height / 2), (3 * fig_width / 4, drawing_height / 2))
+    fit_radius = min(fig_width / 4, drawing_height / 2)
+    return centers[0], centers[1], fit_radius * state["circle_scale"]
+
+
+class VarianceWedgesViewer(FigureViewer):
+    """Novel/familiar PF-annulus schematic with physically balanced sizing.
+
+    Every circle owns exactly half the canvas width. The axes is calibrated in figure inches,
+    and :func:`_variance_circle_layout` back-calculates the largest radius that fits both the
+    half-panel width and the height remaining below the title band. ``residual_variance_*`` is
+    represented directly by the black core's area and ``pf_variance_*`` by the orange annulus's
+    area. One shared scale converts variance to physical area across both conditions, so equal
+    residual values always produce equal black-core radii. Colors match Figure 3's fixed
+    ``darkorange``/``black`` palette.
+
+    Wedge counts only control segmentation. ``wedge_gap`` and ``start_angle`` are in radians;
+    title positions are fractions of the complete figure. There is deliberately no center text,
+    middle-column annotation, or legend.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_wedges_pf_novel: int = 16,
+        num_wedges_pf_familiar: int = 7,
+        num_wedges_rest_novel: int = 40,
+        num_wedges_rest_familiar: int = 36,
+        pf_variance_novel: float = 0.10,
+        pf_variance_familiar: float = 0.55,
+        residual_variance_novel: float = 0.35,
+        residual_variance_familiar: float = 0.35,
+        wedge_gap: float = 0.008,
+        novel_title_text: str = "Novel",
+        familiar_title_text: str = "Familiar",
+        novel_title_x: float = 0.25,
+        novel_title_y: float = 0.96,
+        familiar_title_x: float = 0.75,
+        familiar_title_y: float = 0.96,
+        title_fontsize: float = 12.0,
+        start_angle: float = np.pi / 2,
+        edge_linewidth: float = 0.35,
+        fig_width: float = 4.5,
+        fig_height: float = 2.4,
+        title_band: float = 0.16,
+        circle_scale: float = 0.94,
+    ):
+        for name, value in (
+            ("num_wedges_pf_novel", num_wedges_pf_novel),
+            ("num_wedges_pf_familiar", num_wedges_pf_familiar),
+            ("num_wedges_rest_novel", num_wedges_rest_novel),
+            ("num_wedges_rest_familiar", num_wedges_rest_familiar),
+        ):
+            self.add_integer(name, value=value, min=1, max=200)
+
+        for name, value in (
+            ("pf_variance_novel", pf_variance_novel),
+            ("pf_variance_familiar", pf_variance_familiar),
+            ("residual_variance_novel", residual_variance_novel),
+            ("residual_variance_familiar", residual_variance_familiar),
+        ):
+            self.add_float(name, value=value, min=0.0, max=10.0, step=0.005)
+
+        self.add_float("wedge_gap", value=wedge_gap, min=0.0, max=0.25, step=0.001)
+        self.add_text("novel_title_text", value=novel_title_text)
+        self.add_text("familiar_title_text", value=familiar_title_text)
+        for name, value in (
+            ("novel_title_x", novel_title_x),
+            ("novel_title_y", novel_title_y),
+            ("familiar_title_x", familiar_title_x),
+            ("familiar_title_y", familiar_title_y),
+        ):
+            self.add_float(name, value=value, min=0.0, max=1.0, step=0.01)
+
+        self.add_float("title_fontsize", value=title_fontsize, min=2.0, max=36.0, step=0.5)
+        self.add_float("start_angle", value=start_angle, min=-2 * np.pi, max=2 * np.pi, step=0.01)
+        self.add_float("edge_linewidth", value=edge_linewidth, min=0.0, max=5.0, step=0.05)
+        self.add_float("fig_width", value=fig_width, min=1.0, max=12.0, step=0.1)
+        self.add_float("fig_height", value=fig_height, min=1.0, max=8.0, step=0.1)
+        self.add_float("title_band", value=title_band, min=0.0, max=0.5, step=0.01)
+        self.add_float("circle_scale", value=circle_scale, min=0.05, max=1.0, step=0.01)
+
+    def plot(self, state):
+        fig = self.new_figure(figsize=(state["fig_width"], state["fig_height"]))
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_xlim(0, state["fig_width"])
+        ax.set_ylim(0, state["fig_height"])
+        ax.set_aspect("equal", adjustable="box")
+        ax.axis("off")
+
+        novel_center, familiar_center, fit_radius = _variance_circle_layout(state)
+        totals = {
+            period: state[f"pf_variance_{period}"] + state[f"residual_variance_{period}"]
+            for period in ("novel", "familiar")
+        }
+        max_total = max(totals.values())
+        if max_total > 0:
+            radius_per_sqrt_variance = fit_radius / np.sqrt(max_total)
+            for period, center in (("novel", novel_center), ("familiar", familiar_center)):
+                radius = radius_per_sqrt_variance * np.sqrt(totals[period])
+                core_radius = radius_per_sqrt_variance * np.sqrt(state[f"residual_variance_{period}"])
+                _segmented_disc(
+                    ax,
+                    center=center,
+                    radius=radius,
+                    core_radius=core_radius,
+                    num_wedges_pf=state[f"num_wedges_pf_{period}"],
+                    num_wedges_rest=state[f"num_wedges_rest_{period}"],
+                    wedge_gap=state["wedge_gap"],
+                    start_angle=state["start_angle"],
+                    edge_linewidth=state["edge_linewidth"],
+                )
+
+        for period in ("novel", "familiar"):
+            fig.text(
+                state[f"{period}_title_x"],
+                state[f"{period}_title_y"],
+                state[f"{period}_title_text"],
+                ha="center",
+                va="top",
+                fontsize=state["title_fontsize"],
+            )
+        return fig
