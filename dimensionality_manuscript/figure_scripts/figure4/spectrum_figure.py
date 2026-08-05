@@ -4,6 +4,7 @@ import numpy as np
 
 from vrAnalysis.helpers.plotting import format_spines
 from dimensionality_manuscript import ResultsAggregator, average_by_mouse
+from dimensionality_manuscript.figure_scripts.legends import add_legend_widgets, apply_legend, update_legend_widgets
 
 from ._alpha_config import AdaptiveAlphaConfig, SpectrumSmoothing, SpectrumSmoothingConfig, ADAPTIVE_ALPHA_CONFIG_REGISTRY
 from ._param_axes import (
@@ -35,6 +36,59 @@ from ._spectrum_math import (
 from ._stats import _beeswarm_panel, _horizontal_beeswarm_panel
 from ..panels import FigureViewer
 
+SPECTRUM_LEGEND_DEFAULTS = {
+    "handlelength": 1.0,
+    "handletextpad": 0.25,
+    "markerfirst": False,
+}
+
+# Selectable placefield-side spectra stored by SubspaceConfig.  Keep the viewer-facing names
+# separate from the result keys because both variants share the same SVCA fitting pipeline but
+# score different held-out representations.
+SVCA_PF_KEYS = {
+    "SVCA": "variance_placefield_placefield",
+    "SVCA_PRED": "variance_placefield_prediction",
+}
+
+
+def draw_reliable_spectrum_annotation(
+    ax,
+    xy: tuple[float, float],
+    y_spacing: float,
+    definition_x_offset: float,
+    fontsize: float,
+    *,
+    top_label: str = r"$ROIs_A$",
+    bottom_label: str = r"$ROIs_B$",
+    definition_label: str = "reliable spectrum",
+    color: str = "black",
+):
+    """Draw the compact ``ROI_A times ROI_B`` reliable-spectrum annotation.
+
+    Positions are in axes-fraction coordinates. ``xy`` is the upper-left position of the
+    first row, ``y_spacing`` separates the three stacked rows, and
+    ``definition_x_offset`` moves the explanatory text rightward from that first column.
+
+    Returns
+    -------
+    tuple[matplotlib.text.Text, ...]
+        The four text artists, useful to callers that want further local styling.
+    """
+    x, y = xy
+    text_kwargs = {
+        "transform": ax.transAxes,
+        "fontsize": fontsize,
+        "color": color,
+        "ha": "left",
+        "va": "top",
+    }
+    middle_y = y - y_spacing
+    return (
+        ax.text(x, y, top_label, **text_kwargs),
+        ax.text(x, y - 2 * y_spacing, bottom_label, **text_kwargs),
+        ax.text(x + definition_x_offset, middle_y, rf"$\times$ = {definition_label}", **text_kwargs),
+    )
+
 
 class SpectrumFigureViewer(FigureViewer):
     """Placefield-vs-full spectrum figure: spectra and participation-ratio dimensionality.
@@ -42,7 +96,7 @@ class SpectrumFigureViewer(FigureViewer):
     Two vertically stacked panels comparing one placefield (PF) spectrum against the full/functional
     (FF) spectrum:
 
-    - ax[0]: the selected PF ``source_key`` spectrum (StimSpace, CVPCA, or optional SVCA) and the FF
+    - ax[0]: the selected PF ``source_key`` spectrum (StimSpace, CVPCA, or optional SVCA variants) and the FF
       spectrum, both log-space pre-smoothed and drawn log-log (faint per-mouse lines + bold
       mouse-average). The FF curve source is set by ``full_source_key``: ``"SVD"`` and ``"SVD_RES"``
       are the ``ff`` and ``ffres`` keys from the StimSpaceSpectra aggregator; ``"SVCA"`` and
@@ -64,7 +118,8 @@ class SpectrumFigureViewer(FigureViewer):
         ``source_key`` is that CVPCA key; if None only StimSpace PF keys are selectable.
     results_subspace : ResultsAggregator or None
         Aggregated SubspaceConfig results. Supplies ``variance_placefield_placefield`` for
-        ``source_key="SVCA"``, plus ``variance_activity``/``variance_activity_residual`` for
+        ``source_key="SVCA"`` and ``variance_placefield_prediction`` for
+        ``source_key="SVCA_PRED"``, plus ``variance_activity``/``variance_activity_residual`` for
         ``full_source_key="SVCA"``/``"SVCA_RES"``; all use ``subspace_name="svca_subspace"`` and
         ``smooth_width=None``.
     results_fit : ResultsAggregator or None
@@ -72,16 +127,16 @@ class SpectrumFigureViewer(FigureViewer):
         selected by ``fit_key``. Required for those overlays; if None ``fit_key`` must be empty.
     source_key : str
         Which PF spectrum to show in ax[0]. One of ``ss_cv``/``ss_direct``/``ss_cvpca`` (from
-        ``results``), ``reg_covariances_fixed`` (from ``results_cvpca``), or ``SVCA`` (from
-        ``results_subspace``).
+        ``results``), ``reg_covariances_fixed`` (from ``results_cvpca``), or ``SVCA``/``SVCA_PRED``
+        (from ``results_subspace``).
     source_mode : {"all", "avg_env"}
         ``"all"`` preserves the overall-spectrum behavior. ``"avg_env"`` reads the independently
         computed per-environment ``source_key`` spectra, averages the available environment slots
         within each session, then averages sessions within mouse before measuring dimensionality.
         ``full_source_key`` and Tilbury-fit overlays retain their existing whole-session behavior.
         This mode supports StimSpace and SVCA PF sources; CVPCAConfig PF sources have no stored
-        per-environment equivalent. SVCA reads ``variance_placefield_placefield_env`` from
-        ``results_subspace``.
+        per-environment equivalent. ``SVCA`` reads ``variance_placefield_placefield_env`` and
+        ``SVCA_PRED`` reads ``variance_placefield_prediction_env`` from ``results_subspace``.
     full_source_key : {"SVD", "SVD_RES", "SVCA", "SVCA_RES"}
         Source of the FF ("Reliable CA1 Spectrum") curve. ``"SVD"``/``"SVD_RES"`` use the
         StimSpaceSpectra ``ff``/``ffres`` keys; ``"SVCA"``/``"SVCA_RES"`` use the subspace
@@ -118,6 +173,18 @@ class SpectrumFigureViewer(FigureViewer):
         Width of the vertical mean markers in ax[1].
     fontsize : float
         Font size for every text element (labels, ticks, legend, title).
+    show_annotation : bool
+        Whether ax[0] shows the ``ROI_A times ROI_B = reliable spectrum`` annotation.
+    annotation_x, annotation_y : float
+        Axes-fraction coordinates of the annotation's upper-left corner.
+    annotation_y_spacing : float
+        Axes-fraction vertical spacing between ``ROI_A``, the multiplication sign, and ``ROI_B``.
+    annotation_definition_x_offset : float
+        Axes-fraction horizontal offset from the stacked labels to ``times = reliable spectrum``.
+    legend_options : dict or None
+        Initial legend settings forwarded to
+        :mod:`~dimensionality_manuscript.figure_scripts.legends`. These seed the Syd
+        ``legend_*`` controls; unspecified settings preserve this panel's prior legend style.
     figsize : tuple[float, float]
         Figure size in inches.
     height_ratios : tuple[float, float]
@@ -158,6 +225,12 @@ class SpectrumFigureViewer(FigureViewer):
         markersize: float = 3.0,
         mean_linewidth: float = 2.0,
         fontsize: float = 9.0,
+        show_annotation: bool = True,
+        annotation_x: float = 0.43,
+        annotation_y: float = 0.92,
+        annotation_y_spacing: float = 0.08,
+        annotation_definition_x_offset: float = 0.08,
+        legend_options: dict | None = None,
         figsize: tuple[float, float] = (3.25, 3.25),
         height_ratios: tuple[float, float] = (1.0, 0.22),
         pf_color: str = "purple",
@@ -170,7 +243,7 @@ class SpectrumFigureViewer(FigureViewer):
         if results_cvpca is not None:
             pf_options += list(CVPCA_KEYS)
         if results_subspace is not None:
-            pf_options.append("SVCA")
+            pf_options.extend(SVCA_PF_KEYS)
         if source_key not in pf_options:
             raise ValueError(f"Unknown PF source_key {source_key!r}. Options: {pf_options}")
 
@@ -233,6 +306,19 @@ class SpectrumFigureViewer(FigureViewer):
         self.add_float("point_alpha", value=point_alpha, min=0.0, max=1.0, step=0.01)
         self.add_float("markersize", value=markersize, min=0.5, max=12.0, step=0.5)
         self.add_float("mean_linewidth", value=mean_linewidth, min=0.25, max=6.0, step=0.25)
+        self.add_boolean("show_annotation", value=show_annotation)
+        self.add_float("annotation_x", value=annotation_x, min=-1.0, max=2.0, step=0.01)
+        self.add_float("annotation_y", value=annotation_y, min=-1.0, max=2.0, step=0.01)
+        self.add_float("annotation_y_spacing", value=annotation_y_spacing, min=0.0, max=0.5, step=0.005)
+        self.add_float(
+            "annotation_definition_x_offset",
+            value=annotation_definition_x_offset,
+            min=-1.0,
+            max=2.0,
+            step=0.01,
+        )
+        add_legend_widgets(self)
+        update_legend_widgets(self, {**SPECTRUM_LEGEND_DEFAULTS, **(legend_options or {})})
 
         # Independent spectrum smoothing; there are deliberately no adaptive-alpha controls here.
         self.add_selection("source_smooth_method", options=["none", "boxcar", "gaussian"], value=source_smooth_method)
@@ -289,8 +375,8 @@ class SpectrumFigureViewer(FigureViewer):
         """Mouse-averaged ``(mice, dims)`` spectrum for ``key``, normalized per ``state``, smoothed per ``cfg``."""
         if apply_source_mode and state.get("source_mode", "all") == "avg_env":
             return self._avg_env_spectrum(state, key, cfg)
-        if key == "SVCA":
-            return self._svca_placefield_spectrum(state, cfg)
+        if key in SVCA_PF_KEYS:
+            return self._svca_placefield_spectrum(state, key, cfg)
         source = SOURCE_OF_KEY[key]
         agg = self._agg[source]
         params = sel_params(state, self._tuple_labels, agg.param_axes)
@@ -335,12 +421,12 @@ class SpectrumFigureViewer(FigureViewer):
             spec = _clip_at_first_negative(spec)
         return self._average_env_slots(spec)
 
-    def _avg_env_svca_placefield_sessions(self, state: dict) -> np.ndarray:
+    def _avg_env_svca_placefield_sessions(self, state: dict, source_key: str) -> np.ndarray:
         """Per-session SVCA placefield spectrum after averaging environment slots."""
         params = {"subspace_name": "svca_subspace", "smooth_width": None}
         if "activity_parameters_name" in state:
             params["activity_parameters_name"] = state["activity_parameters_name"]
-        key = "variance_placefield_placefield_env"
+        key = f"{SVCA_PF_KEYS[source_key]}_env"
         spec = self.results_subspace.sel(
             keys=[key],
             squeeze_ones=False,
@@ -354,8 +440,8 @@ class SpectrumFigureViewer(FigureViewer):
 
     def _avg_env_spectrum(self, state: dict, key: str, cfg: SpectrumSmoothing) -> np.ndarray:
         """Environment-then-mouse averaged PF spectrum for ``source_mode='avg_env'``."""
-        if key == "SVCA":
-            session_spec = self._avg_env_svca_placefield_sessions(state)
+        if key in SVCA_PF_KEYS:
+            session_spec = self._avg_env_svca_placefield_sessions(state, key)
             mouse_names = self.results_subspace.mouse_names
         else:
             if SOURCE_OF_KEY.get(key) != "stimspace":
@@ -385,8 +471,8 @@ class SpectrumFigureViewer(FigureViewer):
         exponent fit itself uses the smoothed one (matching every other alpha method).
         """
         if apply_source_mode and state.get("source_mode", "all") == "avg_env":
-            if key == "SVCA":
-                spec = self._avg_env_svca_placefield_sessions(state)
+            if key in SVCA_PF_KEYS:
+                spec = self._avg_env_svca_placefield_sessions(state, key)
                 agg = self.results_subspace
             else:
                 if SOURCE_OF_KEY.get(key) != "stimspace":
@@ -397,8 +483,8 @@ class SpectrumFigureViewer(FigureViewer):
                 spec = spec / np.nansum(spec, axis=1)[:, None]
             smoothed = _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
             return spec, smoothed, agg.mouse_names, agg.session_ids
-        if key == "SVCA":
-            return self._svca_placefield_spectrum_sessions(state, cfg)
+        if key in SVCA_PF_KEYS:
+            return self._svca_placefield_spectrum_sessions(state, key, cfg)
         source = SOURCE_OF_KEY[key]
         agg = self._agg[source]
         params = sel_params(state, self._tuple_labels, agg.param_axes)
@@ -411,12 +497,12 @@ class SpectrumFigureViewer(FigureViewer):
         smoothed = _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
         return spec, smoothed, agg.mouse_names, agg.session_ids
 
-    def _svca_placefield_spectrum(self, state: dict, cfg: SpectrumSmoothing) -> np.ndarray:
+    def _svca_placefield_spectrum(self, state: dict, source_key: str, cfg: SpectrumSmoothing) -> np.ndarray:
         """Mouse-averaged SVCA placefield spectrum from the subspace results."""
         params = {"subspace_name": "svca_subspace", "smooth_width": None}
         if "activity_parameters_name" in state:
             params["activity_parameters_name"] = state["activity_parameters_name"]
-        key = "variance_placefield_placefield"
+        key = SVCA_PF_KEYS[source_key]
         if state.get("clip_negative", False):
             spec = self.results_subspace.sel(keys=[key], avg_by_mouse=False, **params)[key]
             spec = _clip_at_first_negative(np.atleast_2d(np.asarray(spec, dtype=float)))
@@ -431,13 +517,14 @@ class SpectrumFigureViewer(FigureViewer):
     def _svca_placefield_spectrum_sessions(
         self,
         state: dict,
+        source_key: str,
         cfg: SpectrumSmoothing,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         """Per-session raw and smoothed SVCA placefield spectrum from the subspace results."""
         params = {"subspace_name": "svca_subspace", "smooth_width": None}
         if "activity_parameters_name" in state:
             params["activity_parameters_name"] = state["activity_parameters_name"]
-        key = "variance_placefield_placefield"
+        key = SVCA_PF_KEYS[source_key]
         spec = self.results_subspace.sel(keys=[key], avg_by_mouse=False, **params)[key]
         spec = np.atleast_2d(np.asarray(spec, dtype=float))
         if state.get("clip_negative", False):
@@ -672,7 +759,7 @@ class SpectrumFigureViewer(FigureViewer):
         pf_pr, ff_pr, fit_pr = self._pf_pr, self._ff_pr, self._fit_pr
 
         if "_RES" in state["full_source_key"]:
-            ff_label = "Residual CA1"
+            ff_label = "Residuals"
 
         fig, ax = self.new_subplots(
             2,
@@ -707,7 +794,15 @@ class SpectrumFigureViewer(FigureViewer):
         ax[0].set_yscale("log")
         ax[0].set_ylim(10**ylim_min, 10**ylim_max)
         ax[0].set_ylabel("Variance", fontsize=fontsize)
-        ax[0].legend(loc="upper right", fontsize=fontsize, frameon=False, markerfirst=False, handlelength=1.0, handletextpad=0.25)
+        apply_legend(ax[0], state, fontsize, auto_loc="upper right")
+        if state["show_annotation"]:
+            draw_reliable_spectrum_annotation(
+                ax[0],
+                (state["annotation_x"], state["annotation_y"]),
+                state["annotation_y_spacing"],
+                state["annotation_definition_x_offset"],
+                fontsize,
+            )
 
         # Participation-ratio groups share one categorical row and the spectrum's x-axis.
         beeswarm_colors = [pf_color] + [FIT_KEY_COLORS.get(k, "gray") for k in fit_keys] + [ff_color]
@@ -722,7 +817,7 @@ class SpectrumFigureViewer(FigureViewer):
             markersize=state["markersize"],
             mean_linewidth=state["mean_linewidth"],
         )
-        ax[1].set_xlabel("Dimension(ality)", fontsize=fontsize)
+        ax[1].set_xlabel("Dimension", fontsize=fontsize)
 
         xlim = ax[0].get_xlim()
         ax[0].set_xlim(1, xlim[1])
@@ -977,14 +1072,15 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
         ax[0].set_ylim(10**ylim_min, 10**ylim_max)
         ax[0].set_xlabel("Shared Dimension", fontsize=fontsize)
         ax[0].set_ylabel("Variance", fontsize=fontsize)
-        ax[0].legend(
-            loc="upper right",
-            fontsize=fontsize,
-            frameon=False,
-            markerfirst=False,
-            handlelength=1.0,
-            handletextpad=0.25,
-        )
+        apply_legend(ax[0], state, fontsize, auto_loc="upper right")
+        if state["show_annotation"]:
+            draw_reliable_spectrum_annotation(
+                ax[0],
+                (state["annotation_x"], state["annotation_y"]),
+                state["annotation_y_spacing"],
+                state["annotation_definition_x_offset"],
+                fontsize,
+            )
         xlim = ax[0].get_xlim()
         format_spines(
             ax[0],

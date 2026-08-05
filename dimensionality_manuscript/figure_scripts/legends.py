@@ -82,7 +82,7 @@ def apply_legend(ax, state: dict, fontsize: float, prefix: str = "legend", handl
     Calling this on a panel that already drew its own legend restyles it: matplotlib replaces the
     previous legend, and the "don't draw one" cases clear it.
     """
-    if state["legend_visible"] is False:
+    if state[f"{prefix}_visible"] is False:
         existing = ax.get_legend()
         if existing is not None:
             existing.remove()

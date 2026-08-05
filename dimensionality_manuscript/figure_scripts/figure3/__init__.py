@@ -22,6 +22,7 @@ from ._ratios import ratios_arrays
 from ._selection import ACTIVITY_SELECTION_DEFAULTS, STIMSPACE_SELECTION_DEFAULTS, tuple_label
 from ._slopes import ENV_SLOPE_STYLES, env_slope_stats, env_slope_table
 from .complete_spectrum import CompleteSpectrumViewer
+from .concise_spectrum import ConciseSpectrumViewer
 from .crossspace import CROSS_METRIC_COLORS, SubspaceCrossspaceViewer
 from .crossspace_example import SubspaceCrossspaceExampleViewer
 from .crossspace_per_mouse import SubspaceCrossPerMouseViewer
@@ -34,6 +35,7 @@ __all__ = [
     "CONDITION_COLORS",
     "CROSS_METRIC_COLORS",
     "CompleteSpectrumViewer",
+    "ConciseSpectrumViewer",
     "DISTRIBUTION_METRICS",
     "ENV_FULL_SCOPES",
     "ENV_SLOPE_STYLES",

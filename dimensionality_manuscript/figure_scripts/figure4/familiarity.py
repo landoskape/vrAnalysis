@@ -93,6 +93,10 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         ``"all"`` uses the overall PF and Full spectra. ``"avg_env"`` averages both selected
         per-environment spectra across available environment slots within each session.
         ``"by_env"`` plots each environment slot separately.
+    by_env_layout : {"row", "col"}
+        Arrange the two ``plot_mode="by_env"`` panels side by side (``"row"``) or vertically
+        (``"col"``). The vertical layout places Full/Residual CA1 above the placefields and
+        shares their x-axis, showing its spine, ticks, and label only on the bottom panel.
     session_alignment : {"within_env", "overall"}
         Per-environment x values: densified within-environment session number or the mouse's
         overall chronological session number.
@@ -134,6 +138,14 @@ class DimensionalityFamiliarityViewer(FigureViewer):
     pf_text_x, pf_text_y, ff_text_x, ff_text_y : float
         Independent axes-fraction positions for the Placefields and Full/Residual CA1 panel text
         in ``plot_mode="by_env"``.
+    legend_panel : {"top", "bottom"}
+        Panel that owns the legend in the vertical ``plot_mode="by_env"`` layout. Ignored for
+        the row layout, where the legend remains on the first (placefields) panel.
+    legend_anchor_x, legend_anchor_y : float
+        Axes-fraction offsets for the legend's anchor box in the vertical by-environment layout.
+        ``(0, 0)`` retains the normal position. A negative y offset pushes a top-panel legend
+        down; a positive y offset pushes a bottom-panel legend up. A nonzero offset makes the
+        legend an overlay, so constrained layout does not move either panel to accommodate it.
     legend_options : dict or None
         Legend knobs forwarded to :mod:`~dimensionality_manuscript.figure_scripts.legends`
         (``{"loc": ..., "ncols": ...}``); ``{"loc": "none"}`` hides it.
@@ -155,6 +167,7 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         full_key: str = "SVD",
         full_scope: str = "full1",
         plot_mode: str = "all",
+        by_env_layout: str = "row",
         session_alignment: str = "within_env",
         metric: str = "participation_ratio",
         k_method: str = "hardcode",
@@ -175,6 +188,9 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         pf_text_y: float = 0.9,
         ff_text_x: float = 0.05,
         ff_text_y: float = 0.9,
+        legend_panel: str = "top",
+        legend_anchor_x: float = 0.0,
+        legend_anchor_y: float = 0.0,
         legend_options: dict | None = None,
         **param_defaults,
     ):
@@ -204,6 +220,7 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         self.add_selection("full_key", options=_full_key_options(results, results_subspace), value=full_key)
         self.add_selection("full_scope", options=["full1", "fullall"], value=full_scope)
         self.add_selection("plot_mode", options=["all", "avg_env", "by_env"], value=plot_mode)
+        self.add_selection("by_env_layout", options=["row", "col"], value=by_env_layout)
         self.add_selection("session_alignment", options=_PER_ENV_SESSION_ALIGNMENTS, value=session_alignment)
         self.add_boolean("sharey", value=sharey)
         self.add_boolean("clip_negative", value=clip_negative)
@@ -231,6 +248,9 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         self.add_float("pf_text_y", value=pf_text_y, min=0.0, max=1.0, step=0.01)
         self.add_float("ff_text_x", value=ff_text_x, min=0.0, max=1.0, step=0.01)
         self.add_float("ff_text_y", value=ff_text_y, min=0.0, max=1.0, step=0.01)
+        self.add_selection("legend_panel", options=["top", "bottom"], value=legend_panel)
+        self.add_float("legend_anchor_x", value=legend_anchor_x, min=-2.0, max=2.0, step=0.01)
+        self.add_float("legend_anchor_y", value=legend_anchor_y, min=-2.0, max=2.0, step=0.01)
         add_legend_widgets(self)
         update_legend_widgets(self, legend_options or {})
 
@@ -738,15 +758,25 @@ class DimensionalityFamiliarityViewer(FigureViewer):
 
     def _plot_by_env(self, state: dict, fontsize: float):
         """Draw the two-panel ``plot_mode="by_env"`` view."""
-        fig, axes = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", sharey=state["sharey"])
+        column_layout = state["by_env_layout"] == "col"
+        nrows, ncols = (2, 1) if column_layout else (1, 2)
+        fig, axes = self.new_subplots(
+            nrows,
+            ncols,
+            figsize=self.figsize,
+            layout="constrained",
+            sharex=column_layout,
+            sharey=state["sharey"],
+        )
         if state["log_y"]:
             for axis in axes:
                 axis.set_yscale("log")
         extents = []
-        panel_specs = (
-            (axes[0], self._pf_curves, self.pf_label, state["pf_text_x"], state["pf_text_y"]),
-            (axes[1], self._ff_curves, self._full_label(state), state["ff_text_x"], state["ff_text_y"]),
-        )
+        pf_spec = (self._pf_curves, self.pf_label, state["pf_text_x"], state["pf_text_y"])
+        ff_spec = (self._ff_curves, self._full_label(state), state["ff_text_x"], state["ff_text_y"])
+        ordered_specs = (ff_spec, pf_spec) if column_layout else (pf_spec, ff_spec)
+        panel_specs = tuple((axis, *spec) for axis, spec in zip(axes, ordered_specs))
+        xlabel = "Env session #" if state["session_alignment"] == "within_env" else "Overall session #"
         for axis, curves, text, text_x, text_y in panel_specs:
             extent = 0
             for slot, per_mouse in curves.items():
@@ -771,7 +801,7 @@ class DimensionalityFamiliarityViewer(FigureViewer):
                 fontsize=fontsize,
             )
             axis.set_ylabel(self._ylabel, fontsize=fontsize)
-            axis.set_xlabel("Env session #" if state["session_alignment"] == "within_env" else "Overall session #", fontsize=fontsize)
+            axis.set_xlabel(xlabel, fontsize=fontsize)
         # Both axes must be fully drawn before either is formatted: with sharey, formatting one
         # while the other is empty positions its offset spine against stale (empty-axis) limits.
         xmax = max(max(extents) - 1, 1)
@@ -781,15 +811,27 @@ class DimensionalityFamiliarityViewer(FigureViewer):
                 axis.set_ylim(bottom=1)
             xticks = axis.get_xticks()
             xticks = np.unique(np.append(xticks[(xticks >= 0) & (xticks <= axis.get_xlim()[1])], 0.0))
-            spines_visible = ["bottom"]
-            if ia == 0 or not state["sharey"]:
+            is_shared_x_top = column_layout and ia == 0
+            spines_visible = [] if is_shared_x_top else ["bottom"]
+            if column_layout or ia == 0 or not state["sharey"]:
                 spines_visible.append("left")
             style_model_axis(axis, fontsize=fontsize, xbounds=[0, xmax], ybounds=axis.get_ylim(), xticks=xticks, spines_visible=spines_visible)
-            if ia == 1 and state["sharey"]:
+            if is_shared_x_top:
+                axis.set_xlabel("")
+                axis.xaxis.set_visible(False)
+            if not column_layout and ia == 1 and state["sharey"]:
                 axis.yaxis.set_visible(False)
-        apply_legend(axes[0], state, fontsize, auto_loc="best")
-        legend = axes[0].get_legend()
+        legend_axis = axes[1] if column_layout and state["legend_panel"] == "bottom" else axes[0]
+        apply_legend(legend_axis, state, fontsize, auto_loc="best")
+        legend = legend_axis.get_legend()
         if legend is not None:
+            if column_layout:
+                legend.set_bbox_to_anchor(
+                    (state["legend_anchor_x"], state["legend_anchor_y"], 1.0, 1.0),
+                    transform=legend_axis.transAxes,
+                )
+                if state["legend_anchor_x"] != 0.0 or state["legend_anchor_y"] != 0.0:
+                    legend.set_in_layout(False)
             legend.set_title("Env #")
             legend.get_title().set_fontsize(fontsize * state["legend_fontsize_scale"])
         return fig

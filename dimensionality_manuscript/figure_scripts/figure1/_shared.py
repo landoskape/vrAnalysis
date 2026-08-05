@@ -317,7 +317,7 @@ def draw_example_roi_panel(
     else:
         raise ValueError(f"Invalid style: {style!r}")
     ax.plot([0, axmax], [0, axmax], color="0.6", linestyle="--", linewidth=0.75, zorder=5)
-    ax.set_xlabel("Data", fontsize=fontsize, labelpad=-8)
+    ax.set_xlabel("Observed Activity", fontsize=fontsize, labelpad=-8)
     ax.set_ylabel(ylabel, fontsize=fontsize, labelpad=-8)
     style_axis(
         ax,

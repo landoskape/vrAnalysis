@@ -41,8 +41,8 @@ class VREnvironmentSchematic(FigureViewer):
     One row per environment: four panels showing what the mouse sees standing at the entrance of
     each room, and below them a track arrow with the reward zone marked. Arrow and zone take the
     environment's experience-slot color, the same palette the ``by_env`` panels of figure 3 use.
-    The whole thing is drawn into a single axes in units of one panel height, with the figure
-    sized so that unit is exactly ``panel_height_in`` inches -- so every gap, arrow, and swatch
+    The whole thing is drawn into a single axes in units of one panel height. Those relative
+    units are converted to inches from the requested ``figsize``, so every gap, arrow, and swatch
     keeps its proportion under any scaling.
 
     Parameters split into two groups. The render parameters (see
@@ -78,9 +78,18 @@ class VREnvironmentSchematic(FigureViewer):
         Color-management exposure in stops -- brightness only, shading untouched.
     samples : int
         EEVEE render samples.
-    panel_height_in : float
-        Inches per layout unit, i.e. the height of one rendered panel. This is the *only* knob in
-        absolute units; see the Notes.
+    figsize : tuple of float
+        Requested ``(width, height)`` in inches. See ``force_width`` for whether the height is a
+        hard bound or is derived from the width.
+    force_width : bool
+        If True, the requested width determines inches per layout unit and the figure height is
+        adjusted to preserve the schematic's aspect ratio. If False, both requested dimensions
+        are hard bounds and the more constraining one determines the scale; unused space is
+        centered along the other dimension.
+    panel_height_in : float or None
+        Deprecated compatibility input for older notebooks. When supplied without ``figsize``,
+        it is converted once to an equivalent initial figure size and is not exposed as a Syd
+        control.
     room_gap, env_gap, arrow_gap : float
         Gaps between panels in a row, between environment rows, and between a row's panels and its
         track arrow. In panel-height units.
@@ -109,9 +118,8 @@ class VREnvironmentSchematic(FigureViewer):
 
     Notes
     -----
-    **There is no figsize knob** -- the figure size is *derived* from the layout, which is built
-    in abstract units where 1 unit is one panel height. Writing ``n_rooms`` for the rooms per
-    environment (4) and ``n_envs`` for the number of rows::
+    The layout is built in abstract units where 1 unit is one panel height. Writing ``n_rooms``
+    for the rooms per environment (4) and ``n_envs`` for the number of rows::
 
         track_w   = n_rooms * panel_aspect + (n_rooms - 1) * room_gap
         row_pitch = 1 + arrow_gap + track_height + env_gap
@@ -120,28 +128,21 @@ class VREnvironmentSchematic(FigureViewer):
         height_units = n_envs * row_pitch - env_gap + 2 * margin
                        + (env_gap + track_height + legend_yoffset if show_legend else 0)
 
-        figsize = (width_units * panel_height_in, height_units * panel_height_in)
-
     So width responds to ``panel_aspect``, ``room_gap`` and ``margin``; height responds to
     ``arrow_gap``, ``track_height``, ``env_gap``, ``margin``, ``show_legend`` and
-    ``legend_yoffset``; and ``panel_height_in`` scales both together. Because the axes box aspect
-    is then exactly the data aspect, ``set_aspect("equal")`` adds no padding and one data unit
-    lands on exactly ``panel_height_in`` inches in *both* directions.
+    ``legend_yoffset``. The inches-per-unit scale is then either::
+
+        fig_width / width_units                                  # force_width=True
+        min(fig_width / width_units, fig_height / height_units)  # force_width=False
+
+    With ``force_width=True``, the actual height is ``height_units * scale``. With False, the
+    requested figure size is retained and the schematic is centered in whichever dimension has
+    spare room. The axes box always has the data aspect, so one data unit occupies the same
+    physical size in both directions.
 
     Two things do not scale, because they are specified in points rather than layout units:
-    ``fontsize`` and ``panel_border``. Doubling ``panel_height_in`` leaves the legend text at the
-    same physical size, so it reads as relatively smaller.
-
-    To target a figure width, back-solve ``panel_height_in`` from ``width_units`` rather than
-    guessing. For a 7-inch column at default gaps::
-
-        width_units = 4 * 1.6 + 3 * 0.05 + 2 * 0.06                       # 6.67
-        VREnvironmentSchematic(panel_height_in=7.0 / width_units)         # 1.0495 -> 1.049
-
-    Syd rounds every float parameter to its slider step, so the width lands within one step of the
-    target rather than exactly on it -- ``panel_height_in`` has ``step=0.001``, giving 6.997 in
-    instead of 7.000. That is well under a printer's tolerance; if a figure must be exact to the
-    pixel, scale it at the LaTeX or Illustrator stage instead of fighting the slider.
+    ``fontsize`` and ``panel_border``. Doubling ``figsize`` leaves the legend text at the same
+    physical size, so it reads as relatively smaller.
     """
 
     def __init__(
@@ -158,7 +159,9 @@ class VREnvironmentSchematic(FigureViewer):
         light_scale: float | None = None,
         exposure: float | None = None,
         samples: int | None = None,
-        panel_height_in: float = 0.85,
+        figsize: tuple[float, float] | None = None,
+        force_width: bool = False,
+        panel_height_in: float | None = None,
         room_gap: float = 0.05,
         env_gap: float = 0.34,
         arrow_gap: float = 0.14,
@@ -195,9 +198,6 @@ class VREnvironmentSchematic(FigureViewer):
         self.add_integer("samples", value=camera("samples", samples), min=4, max=128)
 
         # --- layout parameters (immediate redraw) ---
-        # Finer step than the 0.01 default: this one is multiplied by ~6.7 layout units to get the
-        # figure width, so 0.01 increments are ~0.07 in jumps in the saved figure.
-        self.add_float("panel_height_in", value=panel_height_in, min=0.3, max=3.0, step=0.001)
         self.add_float("room_gap", value=room_gap, min=0.0, max=0.6)
         self.add_float("env_gap", value=env_gap, min=0.0, max=1.5)
         self.add_float("arrow_gap", value=arrow_gap, min=0.0, max=1.0)
@@ -211,6 +211,23 @@ class VREnvironmentSchematic(FigureViewer):
         self.add_float("legend_yoffset", value=legend_yoffset, min=-0.5, max=1.5)
         self.add_boolean("show_scalebar", value=show_scalebar)
         self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
+
+        # ``num_rooms`` is four for every supported Blender VR environment. Set the expected
+        # value before rendering so a legacy panel-height scale can be converted to figsize;
+        # refresh_data verifies the count returned by Blender and replaces it with the observed
+        # value below.
+        self.num_rooms = 4
+        if figsize is not None and panel_height_in is not None:
+            raise ValueError("Specify figsize or panel_height_in, not both")
+        if figsize is None:
+            scale = 0.85 if panel_height_in is None else panel_height_in
+            metrics = self.layout_metrics(self.state)
+            figsize = (metrics["width"] * scale, metrics["height"] * scale)
+
+        # Figure dimensions are Syd controls; all other layout values remain relative units.
+        self.add_float("fig_width", value=figsize[0], min=0.5, max=20.0, step=0.01)
+        self.add_float("fig_height", value=figsize[1], min=0.5, max=20.0, step=0.01)
+        self.add_boolean("force_width", value=force_width)
 
         self.on_change(list(VR_RENDER_PARAMS), self.refresh_data)
         self.refresh_data(self.state)
@@ -270,6 +287,49 @@ class VREnvironmentSchematic(FigureViewer):
             "arrow_ys": arrow_ys,
             "legend_y": legend_y,
             "y_bottom": y_bottom,
+        }
+
+    def fitted_figure_layout(
+        self,
+        state,
+        *,
+        figsize: tuple[float, float] | None = None,
+        force_width: bool | None = None,
+    ) -> dict[str, float | tuple[float, float] | tuple[float, float, float, float]]:
+        """Convert relative layout units to inches and an aspect-correct axes rectangle.
+
+        Parameters default to the corresponding Syd controls, but callers composing this panel
+        into another figure may provide their own bounding box and policy. ``axes_bounds`` is in
+        Matplotlib figure fractions.
+        """
+        metrics = self.layout_metrics(state)
+        requested = (state["fig_width"], state["fig_height"]) if figsize is None else figsize
+        use_width_only = state["force_width"] if force_width is None else force_width
+        fig_width, fig_height = (float(requested[0]), float(requested[1]))
+        if fig_width <= 0 or fig_height <= 0:
+            raise ValueError(f"figsize dimensions must be positive, got {requested!r}")
+
+        width_scale = fig_width / metrics["width"]
+        if use_width_only:
+            unit_in = width_scale
+            actual_figsize = (fig_width, metrics["height"] * unit_in)
+            axes_bounds = (0.0, 0.0, 1.0, 1.0)
+        else:
+            height_scale = fig_height / metrics["height"]
+            unit_in = min(width_scale, height_scale)
+            content_width = metrics["width"] * unit_in
+            content_height = metrics["height"] * unit_in
+            actual_figsize = (fig_width, fig_height)
+            axes_width = content_width / fig_width
+            axes_height = content_height / fig_height
+            axes_bounds = ((1.0 - axes_width) / 2, (1.0 - axes_height) / 2, axes_width, axes_height)
+
+        return {
+            "figsize": actual_figsize,
+            "axes_bounds": axes_bounds,
+            "unit_in": unit_in,
+            "content_width_in": metrics["width"] * unit_in,
+            "content_height_in": metrics["height"] * unit_in,
         }
 
     def draw(self, state, ax):
@@ -378,11 +438,9 @@ class VREnvironmentSchematic(FigureViewer):
         ax.set_aspect("equal")
 
     def plot(self, state):
-        metrics = self.layout_metrics(state)
-        scale = state["panel_height_in"]
-        fig = self.new_figure(figsize=(metrics["width"] * scale, metrics["height"] * scale))
-        # A single axes filling the whole figure, no ticks, no spines.
-        self.draw(state, fig.add_axes([0.0, 0.0, 1.0, 1.0]))
+        fitted = self.fitted_figure_layout(state)
+        fig = self.new_figure(figsize=fitted["figsize"])
+        self.draw(state, fig.add_axes(fitted["axes_bounds"]))
         return fig
 
 
@@ -407,13 +465,16 @@ def vr_schematic_and_speed(
     the keywords you want, or tune them interactively first and pass them here.
 
     Sizing is driven entirely by ``fig_width`` and ``fig_height``. The schematic has a fixed
-    aspect ratio (:meth:`VREnvironmentSchematic.layout_metrics`), so given the shared axes width
-    (``fig_width * (right_margin - left_margin)``) its height is fully determined; that height
-    becomes the top row's share of ``fig_height``, and the speed panel takes what's left. Both
+    aspect ratio (:meth:`VREnvironmentSchematic.layout_metrics`), so its shared
+    :meth:`VREnvironmentSchematic.fitted_figure_layout` calculation is run in width-forced mode:
+    given the shared axes width (``fig_width * (right_margin - left_margin)``), its height is
+    fully determined. That height becomes the top row's share of ``fig_height``, and the speed
+    panel takes what's left. Both
     axes share ``left_margin``/``right_margin`` so their plotted x-range spans identical
     figure-fraction width -- necessary for x-alignment, since the schematic has no y-axis gutter
-    of its own but the speed panel needs one for its ticks and label. The schematic's own
-    ``panel_height_in`` is ignored here: it is solved for from ``fig_width`` instead.
+    of its own but the speed panel needs one for its ticks and label. The schematic's standalone
+    ``fig_width``, ``fig_height``, and ``force_width`` controls are intentionally ignored because
+    this composed figure owns the outer canvas.
 
     Parameters
     ----------
@@ -443,9 +504,15 @@ def vr_schematic_and_speed(
 
     metrics = schematic.layout_metrics(schem_state)
     axes_width_frac = right_margin - left_margin
-    # panel_height_in that would make the schematic's own width equal to the shared axes width.
-    panel_height_in = (axes_width_frac * fig_width) / metrics["width"]
-    schem_height_in = metrics["height"] * panel_height_in
+    # The combined panel must fill the shared x extent for its track to align with the speed
+    # axis. Reuse the standalone sizing engine in width-forced mode instead of duplicating its
+    # relative-units-to-inches conversion here.
+    fitted = schematic.fitted_figure_layout(
+        schem_state,
+        figsize=(axes_width_frac * fig_width, fig_height),
+        force_width=True,
+    )
+    schem_height_in = fitted["content_height_in"]
     schem_height_frac = schem_height_in / fig_height
 
     avail_frac = 1.0 - top_margin - bottom_margin - panel_gap

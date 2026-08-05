@@ -40,6 +40,9 @@ _ECDF_POINTS = 201
 #: the panels to be put on one shared axis instead of two nearly-identical ones.
 _SHARE_Y_TOLERANCE = 0.15
 
+_TEXT_HORIZONTAL_ALIGNMENTS = ("left", "center", "right")
+_TEXT_VERTICAL_ALIGNMENTS = ("top", "center", "bottom", "baseline")
+
 
 class R2Familiarity(FigureViewer):
     """R² as a function of familiarity: one ROI, one mouse, the population, the slots.
@@ -95,6 +98,12 @@ class R2Familiarity(FigureViewer):
         How ``ax[0]`` draws the frames.
     example_alpha : float
         Opacity of ``ax[0]``'s point cloud. Ignored by ``"density"``.
+    include_example_r2 : bool
+        Annotate ``ax[0]`` with the R² of the selected ROI's displayed activity and prediction.
+    example_r2_xy : tuple[float, float]
+        Annotation position in ``ax[0]`` axes-fraction coordinates.
+    example_r2_ha, example_r2_va : str
+        Horizontal and vertical alignment of the R² annotation.
     env_mode : {"pooled", "best", "slot"}
         Which environments contribute to ``ax[1]`` and ``ax[2]``. ``ax[0]`` always uses every
         environment and ``ax[3]`` always splits by slot, so neither is affected.
@@ -156,6 +165,10 @@ class R2Familiarity(FigureViewer):
         roi: int = 0,
         example_style: str = "points",
         example_alpha: float = 0.1,
+        include_example_r2: bool = False,
+        example_r2_xy: tuple[float, float] = (0.05, 0.95),
+        example_r2_ha: str = "left",
+        example_r2_va: str = "top",
         env_mode: str = "best",
         env_slot: int = 0,
         panel_mode: str = "r2_rel",
@@ -213,9 +226,7 @@ class R2Familiarity(FigureViewer):
         }
         # ax[0]'s session picker works in printable labels rather than aggregator rows.
         self._example_rows_by_mouse = {
-            name: {
-                results.sessions[row].session_print(): int(row) for row in rows if results.sessions[row].session_uid in self._example_store_rows
-            }
+            name: {results.sessions[row].session_print(): int(row) for row in rows if results.sessions[row].session_uid in self._example_store_rows}
             for name, rows in self._rows_by_mouse.items()
         }
 
@@ -242,6 +253,11 @@ class R2Familiarity(FigureViewer):
         self.add_integer("roi", value=roi, min=0, max=max(roi, 0))
         self.add_selection("example_style", value=example_style, options=["points", "density"])
         self.add_float("example_alpha", value=example_alpha, min=0.01, max=1.0, step=0.01)
+        self.add_boolean("include_example_r2", value=include_example_r2)
+        self.add_float("example_r2_x", value=example_r2_xy[0], min=0.0, max=1.0, step=0.01)
+        self.add_float("example_r2_y", value=example_r2_xy[1], min=0.0, max=1.0, step=0.01)
+        self.add_selection("example_r2_ha", value=example_r2_ha, options=_TEXT_HORIZONTAL_ALIGNMENTS)
+        self.add_selection("example_r2_va", value=example_r2_va, options=_TEXT_VERTICAL_ALIGNMENTS)
 
         # --- ax[2]: population curves ---
         add_session_curve_widgets(
@@ -275,7 +291,18 @@ class R2Familiarity(FigureViewer):
         self.on_change("mouse", self.update_example_session)
         self.on_change("example_session", self.update_roi_bounds)
         self.on_change(
-            ["mouse", "env_mode", "env_slot", "panel_mode", "r2_range", "r2_bins", "prct_points", "prct_bandwidth", "summary_stat", "summary_percentile"],
+            [
+                "mouse",
+                "env_mode",
+                "env_slot",
+                "panel_mode",
+                "r2_range",
+                "r2_bins",
+                "prct_points",
+                "prct_bandwidth",
+                "summary_stat",
+                "summary_percentile",
+            ],
             self.refresh_data,
         )
         self.update_slot_bounds(self.state)
@@ -620,6 +647,18 @@ class R2Familiarity(FigureViewer):
             fontsize=fontsize,
             ylabel="PF Prediction",
         )
+        if state["include_example_r2"]:
+            ss_total = np.sum((example_data - np.mean(example_data)) ** 2)
+            example_r2 = 1.0 - np.sum((example_data - example_prediction) ** 2) / ss_total if ss_total > 0 else np.nan
+            ax[0].text(
+                state["example_r2_x"],
+                state["example_r2_y"],
+                rf"$R^2={example_r2:.2f}$",
+                transform=ax[0].transAxes,
+                ha=state["example_r2_ha"],
+                va=state["example_r2_va"],
+                fontsize=fontsize,
+            )
 
         # ---- ax[1]: every session of the example mouse, colored by session number ----
         num_sessions = len(self.mouse_curves)

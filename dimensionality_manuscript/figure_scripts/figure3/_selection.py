@@ -43,7 +43,10 @@ def tuple_label(value: tuple) -> str:
 
 
 def add_stimspace_selection_widgets(
-    viewer: Viewer, results: ResultsAggregator, defaults: dict | None = None
+    viewer: Viewer,
+    results: ResultsAggregator,
+    defaults: dict | None = None,
+    skip: tuple[str, ...] = (),
 ) -> tuple[tuple[str, ...], dict[str, dict[str, tuple]]]:
     """Add one selection widget per ``StimSpaceSpectraConfig`` param axis except ``include_iti``.
 
@@ -59,6 +62,8 @@ def add_stimspace_selection_widgets(
     defaults : dict or None
         Starting values overriding :data:`STIMSPACE_SELECTION_DEFAULTS`. Tuple axes accept either
         a native tuple or an already-encoded label.
+    skip : tuple[str, ...]
+        Additional parameter axes to keep fixed rather than exposing as widgets.
 
     Returns
     -------
@@ -70,10 +75,10 @@ def add_stimspace_selection_widgets(
     tuple_axes = [
         axis
         for axis, options in results.param_axes.items()
-        if axis not in SKIP_AXES and any(isinstance(option, tuple) for option in options)
+        if axis not in (*SKIP_AXES, *skip) and any(isinstance(option, tuple) for option in options)
     ]
 
-    names = list(add_data_selection_widgets(viewer, results, skip=(*SKIP_AXES, *tuple_axes), defaults=defaults))
+    names = list(add_data_selection_widgets(viewer, results, skip=(*SKIP_AXES, *skip, *tuple_axes), defaults=defaults))
 
     tuple_labels: dict[str, dict[str, tuple]] = {}
     for axis in tuple_axes:

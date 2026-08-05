@@ -35,6 +35,11 @@ PF_RESIDUAL_MODEL_NAMES: list[ModelName] = [
 ]
 PF_RESIDUAL_METRICS = ("within_pf_rms", "outside_pf_rms")
 PF_RESIDUAL_SUBSETS = ("all", "quality", "not quality")
+PF_RESIDUAL_SUBSET_LABELS = {
+    "all": None,
+    "quality": "placecells",
+    "not quality": "non placecells",
+}
 PF_RESIDUAL_LABELS = {
     "within_pf_rms": "Within-PF\nResidual RMS",
     "outside_pf_rms": "Outside-PF\nResidual RMS",
@@ -98,11 +103,14 @@ class ModelPlacefieldResidualViewer(FigureViewer):
     main_show, inset_show : {"all", "quality", "not quality"}
         ROI subset displayed in the main panels and inset panels, respectively. ``inset_show``
         has no visual effect when ``include_inset`` is False.
-    sharey : bool
-        Give the two panels a common y-axis scale.
-    relative : bool
-        Subtract each mouse's first-model value from all of that mouse's values, independently
-        on each panel.
+    main_sharey, inset_sharey : bool
+        Give the two main panels or the two inset panels, respectively, a common y-axis scale.
+    main_relative, inset_relative : bool
+        Subtract each mouse's first-model value from all of that mouse's values in the main or
+        inset panels, respectively.
+    sharey, relative : bool, optional
+        Backward-compatible aliases. ``sharey`` sets ``main_sharey``; ``relative`` sets both
+        relative controls unless the corresponding new keyword is supplied explicitly.
     fontsize, markersize, mean_linewidth, subject_linewidth, subject_alpha : float
         Style knobs for the per-mouse traces and the across-mouse mean trace and dots.
     within_text_x, within_text_y, outside_text_x, outside_text_y : float
@@ -110,7 +118,9 @@ class ModelPlacefieldResidualViewer(FigureViewer):
     inset_x, inset_y, inset_width, inset_height : float
         Shared axes-fraction bounds for the inset in each panel.
     placecells_x, placecells_y : float
-        Shared axes-fraction position for the inset's ``placecells`` label.
+        Shared axes-fraction position for the inset's ROI-subset label.
+    inset_ylabel_fontsize_scale : float
+        Inset y-label font size as a multiple of ``fontsize``.
     figsize : tuple[float, float]
         Figure size in inches.
     **selection_defaults
@@ -125,8 +135,12 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         normalized: bool = False,
         main_show: str = "all",
         inset_show: str = "quality",
-        sharey: bool = True,
-        relative: bool = False,
+        main_sharey: bool | None = None,
+        inset_sharey: bool = False,
+        main_relative: bool | None = None,
+        inset_relative: bool | None = None,
+        sharey: bool | None = None,
+        relative: bool | None = None,
         fontsize: float = 12.0,
         markersize: float = 5.0,
         mean_linewidth: float = 1.5,
@@ -143,6 +157,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         inset_height: float = 0.35,
         placecells_x: float = 0.05,
         placecells_y: float = 0.05,
+        inset_ylabel_fontsize_scale: float = 1.0,
         figsize: tuple[float, float] = (7.0, 3.5),
         **selection_defaults,
     ):
@@ -152,12 +167,21 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         self._scores: dict[str, np.ndarray] = {}
         self._inset_scores: dict[str, np.ndarray] = {}
 
+        if main_sharey is None:
+            main_sharey = True if sharey is None else sharey
+        if main_relative is None:
+            main_relative = False if relative is None else relative
+        if inset_relative is None:
+            inset_relative = False if relative is None else relative
+
         self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)
         self.add_boolean("normalized", value=normalized)
         self.add_selection("main_show", value=main_show, options=list(PF_RESIDUAL_SUBSETS))
         self.add_selection("inset_show", value=inset_show, options=list(PF_RESIDUAL_SUBSETS))
-        self.add_boolean("sharey", value=sharey)
-        self.add_boolean("relative", value=relative)
+        self.add_boolean("main_sharey", value=main_sharey)
+        self.add_boolean("inset_sharey", value=inset_sharey)
+        self.add_boolean("main_relative", value=main_relative)
+        self.add_boolean("inset_relative", value=inset_relative)
         self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
         add_trace_style_widgets(
             self,
@@ -176,6 +200,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         self.add_float("inset_height", value=inset_height, min=0.05, max=1.0, step=0.01)
         self.add_float("placecells_x", value=placecells_x, min=0.0, max=1.0, step=0.01)
         self.add_float("placecells_y", value=placecells_y, min=0.0, max=1.0, step=0.01)
+        self.add_float("inset_ylabel_fontsize_scale", value=inset_ylabel_fontsize_scale, min=0.1, max=3.0, step=0.05)
         self.add_boolean("include_inset", value=include_inset)
         for name in (*self.selection_names, "normalized", "main_show", "inset_show"):
             self.on_change(name, self.refresh_data)
@@ -205,7 +230,8 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         fontsize = state["fontsize"]
         xvals = np.arange(len(self.model_names), dtype=float)
 
-        fig, ax = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", sharey=state["sharey"])
+        fig, ax = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", sharey=state["main_sharey"])
+        insets = []
         for axis, metric, text, text_x, text_y in zip(
             ax,
             PF_RESIDUAL_METRICS,
@@ -214,7 +240,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             (state["within_text_y"], state["outside_text_y"]),
         ):
             values = self._scores[metric]
-            if state["relative"]:
+            if state["main_relative"]:
                 values = values - values[0]
                 axis.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
             draw_subject_traces(axis, xvals, values, PERFORMANCE_MODEL_COLORS, state)
@@ -229,57 +255,100 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             )
 
             if state["include_inset"]:
-                inset = axis.inset_axes([state["inset_x"], state["inset_y"], state["inset_width"], state["inset_height"]])
+                inset = axis.inset_axes(
+                    [state["inset_x"], state["inset_y"], state["inset_width"], state["inset_height"]],
+                    sharey=insets[0] if state["inset_sharey"] and insets else None,
+                )
+                insets.append(inset)
                 inset_values = self._inset_scores[metric]
-                if state["relative"]:
+                if state["inset_relative"]:
                     inset_values = inset_values - inset_values[0]
                     inset.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
                 draw_subject_traces(inset, xvals, inset_values, PERFORMANCE_MODEL_COLORS, state, markersize=3.0)
+                inset_label = PF_RESIDUAL_SUBSET_LABELS[state["inset_show"]]
+                if inset_label is not None:
+                    inset.text(
+                        state["placecells_x"],
+                        state["placecells_y"],
+                        inset_label,
+                        transform=inset.transAxes,
+                        ha="left",
+                        va="bottom",
+                        fontsize=fontsize,
+                    )
 
-                # Matplotlib's autoscale can leave the relative baseline almost flush with the
-                # inset boundary when every other value is negative. Add explicit breathing room
-                # before choosing ticks so the y=0 points remain fully visible.
+        # Style the inset pair only after both have contributed to a potentially shared y-axis.
+        # Otherwise the first inset's spine and ticks are based on stale limits.
+        if insets:
+            # Matplotlib's autoscale can leave the relative baseline almost flush with the
+            # inset boundary when every other value is negative. Add explicit breathing room
+            # before choosing ticks so the y=0 points remain fully visible. A shared pair only
+            # needs this once because changing either member changes both.
+            inset_groups = insets[:1] if state["inset_sharey"] else insets
+            for inset in inset_groups:
                 inset_ymin, inset_ymax = inset.get_ylim()
                 inset_ypad = 0.08 * (inset_ymax - inset_ymin)
                 inset.set_ylim(inset_ymin - inset_ypad, inset_ymax + inset_ypad)
+
+            # Always retain the zero reference in view, for both absolute and relative scores.
+            for inset in inset_groups:
                 inset_ymin, inset_ymax = inset.get_ylim()
-                inset_ytick_min = np.ceil(inset_ymin * 10) / 10
-                inset_ytick_max = np.floor(inset_ymax * 10) / 10
-                if inset_ytick_min <= inset_ytick_max:
-                    inset_yticks = np.arange(inset_ytick_min, inset_ytick_max + 0.05, 0.1)
-                else:
-                    # Preserve visible ticks even when the entire inset spans less than 0.1.
-                    inset_yticks = np.linspace(inset_ymin, inset_ymax, 3)
-                style_model_axis(
-                    inset,
-                    fontsize=fontsize,
-                    xvals=xvals,
-                    labels=("",) * len(xvals),
-                    xbounds=[xvals[0], xvals[-1]],
-                    xtick_rotation=0,
-                    yticks=inset_yticks,
-                    xha="center",
+                inset.set_ylim(min(inset_ymin, 0.0), max(inset_ymax, 0.0))
+
+        for inset in insets:
+            inset_ymin, inset_ymax = inset.get_ylim()
+            inset_ytick_step = 0.1 if state["inset_relative"] else 1.0
+            inset_ytick_min = np.ceil(inset_ymin / inset_ytick_step) * inset_ytick_step
+            inset_ytick_max = np.floor(inset_ymax / inset_ytick_step) * inset_ytick_step
+            if inset_ytick_min <= inset_ytick_max:
+                inset_yticks = np.arange(
+                    inset_ytick_min,
+                    inset_ytick_max + inset_ytick_step / 2,
+                    inset_ytick_step,
                 )
-                inset.yaxis.set_visible(True)
-                inset.tick_params(axis="y", which="both", left=True, labelleft=True)
-                inset.tick_params(axis="x", which="major", length=2.0)
-                inset.text(
-                    state["placecells_x"],
-                    state["placecells_y"],
-                    "placecells",
-                    transform=inset.transAxes,
-                    ha="left",
-                    va="bottom",
-                    fontsize=fontsize,
-                )
+            else:
+                # Preserve visible ticks even when the entire inset spans less than one step.
+                inset_yticks = np.linspace(inset_ymin, inset_ymax, 3)
+            style_model_axis(
+                inset,
+                fontsize=fontsize,
+                xvals=xvals,
+                labels=("",) * len(xvals),
+                xbounds=[xvals[0], xvals[-1]],
+                xtick_rotation=0,
+                yticks=inset_yticks,
+                xha="center",
+            )
+            inset.tick_params(axis="x", which="major", length=2.0)
+            # Keep both inset y-axes visible even when their limits are shared. Unlike the main
+            # panels, the insets are visually separated enough that suppressing the second axis
+            # makes their shared scale hard to recognize.
+            inset.yaxis.set_visible(True)
+            inset.tick_params(axis="y", which="both", left=True, labelleft=True, length=2.0)
+            inset_ylabel = "$\\Delta$ Res. RMS" if state["inset_relative"] else "Res. RMS"
+            inset.set_ylabel(
+                inset_ylabel,
+                fontsize=fontsize * state["inset_ylabel_fontsize_scale"],
+            )
 
         # With a shared y-axis, both panels must contribute to autoscaling before format_spines
         # converts its fractional bottom-spine offset to data coordinates. Formatting ax[0] while
         # ax[1] is still empty leaves ax[0]'s spine at a stale y value.
-        for axis_index, axis in enumerate(ax):
-            shared_secondary = state["sharey"] and axis_index == 1
+        main_groups = ax[:1] if state["main_sharey"] else ax
+        for axis in main_groups:
             ymin, ymax = axis.get_ylim()
-            yticks = np.arange(np.fix(ymin * 10) / 10, np.fix(ymax * 10) / 10 + 0.05, 0.1)
+            axis.set_ylim(min(ymin, 0.0), max(ymax, 0.0))
+
+        for axis_index, axis in enumerate(ax):
+            shared_secondary = state["main_sharey"] and axis_index == 1
+            ymin, ymax = axis.get_ylim()
+            ytick_step = 0.1 if state["main_relative"] else 1.0
+            ytick_min = np.ceil(ymin / ytick_step) * ytick_step
+            ytick_max = np.floor(ymax / ytick_step) * ytick_step
+            if ytick_min <= ytick_max:
+                yticks = np.arange(ytick_min, ytick_max + ytick_step / 2, ytick_step)
+            else:
+                yticks = np.linspace(ymin, ymax, 3)
             style_model_axis(
                 axis,
                 fontsize=fontsize,
@@ -296,7 +365,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             if shared_secondary:
                 axis.yaxis.set_visible(False)
             else:
-                ylabel = r"$\Delta$ Residual RMS" if state["relative"] else "Residual RMS"
+                ylabel = r"$\Delta$ Residual RMS" if state["main_relative"] else "Residual RMS"
                 axis.set_ylabel(ylabel, fontsize=fontsize)
         return fig
 

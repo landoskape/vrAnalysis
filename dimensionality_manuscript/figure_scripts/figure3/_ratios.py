@@ -11,8 +11,9 @@ from matplotlib.ticker import LogLocator, NullFormatter
 from vrAnalysis.helpers.plotting import beeswarm, format_spines
 from dimensionality_manuscript import average_by_mouse
 from dimensionality_manuscript.pipeline import ResultsAggregator
+from dimensionality_manuscript.figure_scripts.figure4._spectrum_math import _clip_at_first_negative, _smooth_spectrum
 
-from ._familiarity import CONDITION_COLORS
+from ._familiarity import CONDITION_COLORS, select_by_env_spectra
 
 # The spectrum panel's x axis is cut just past the last dimension still drawn above the y floor:
 # both spectra fall out of view long before the last shared dimension, so autoscaling to the full
@@ -33,7 +34,27 @@ RATIOS_GROUP_KEYS = [
 ]
 
 
-def ratios_arrays(results: ResultsAggregator, sel_params: dict) -> dict[str, np.ndarray]:
+def _average_available_env_slots(spectra: np.ndarray) -> np.ndarray:
+    """Average a session's available environment spectra, preserving all-NaN dimensions."""
+    spectra = np.asarray(spectra, dtype=float)
+    if spectra.ndim == 2:
+        return spectra
+    if spectra.ndim != 3:
+        raise ValueError(f"Expected a 2D or 3D spectrum array, got shape {spectra.shape}")
+    count = np.sum(np.isfinite(spectra), axis=1)
+    total = np.nansum(spectra, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(count > 0, total / count, np.nan)
+
+
+def ratios_arrays(
+    results: ResultsAggregator,
+    sel_params: dict,
+    *,
+    spectrum_mode: str = "all",
+    env_full_scope: str = "within_env",
+    full_within_env: bool = False,
+) -> dict[str, np.ndarray]:
     """Mouse-averaged spectra plus per-mouse cumulative-variance-ratio arrays for the ratios figure.
 
     Shared data prep for :func:`plot_ratios_spectrum`, :func:`plot_ratios_beeswarms` and
@@ -41,6 +62,25 @@ def ratios_arrays(results: ResultsAggregator, sel_params: dict) -> dict[str, np.
     """
     out = results.sel(keys=["sf_cv", "ff"], **sel_params, avg_by_mouse=False, include_iti=False)
     out_iti = results.sel(keys=["sf_cv", "ff"], **sel_params, avg_by_mouse=False, include_iti=True)
+
+    if spectrum_mode == "all":
+        # Retain the unnormalized behaving spectra for optional display-only processing. All SVR
+        # calculations below continue to use their own untouched raw inputs.
+        sf_cv_sessions_raw = np.asarray(out["sf_cv"], dtype=float)
+        ff_sessions_raw = np.asarray(out["ff"], dtype=float)
+        spectrum_mouse_names = results.mouse_names
+    elif spectrum_mode == "avg_env":
+        sf_env, ff_env, session_mask = select_by_env_spectra(
+            results,
+            sel_params,
+            env_full_scope,
+            full_within_env,
+        )
+        sf_cv_sessions_raw = _average_available_env_slots(sf_env)[session_mask]
+        ff_sessions_raw = _average_available_env_slots(ff_env)[session_mask]
+        spectrum_mouse_names = results.mouse_names[session_mask]
+    else:
+        raise ValueError(f"Unknown spectrum_mode {spectrum_mode!r}. Options: ['all', 'avg_env']")
 
     full_sum = np.nansum(out["ff"], axis=1, keepdims=True)
     full_sum_iti = np.nansum(out_iti["ff"], axis=1, keepdims=True)
@@ -63,7 +103,7 @@ def ratios_arrays(results: ResultsAggregator, sel_params: dict) -> dict[str, np.
     sf_cv_total_spont = average_by_mouse(np.nansum(sf_cv_iti[session_has_spontaneous], axis=1), results.mouse_names[session_has_spontaneous])
     sf_cv_total_spont_10 = average_by_mouse(np.nansum(sf_cv_iti_10[session_has_spontaneous], axis=1), results.mouse_names[session_has_spontaneous])
 
-    # Average curves by mouse
+    # Average the unmodified curves by mouse for viewers that do not request display processing.
     sf_cv = average_by_mouse(sf_cv, results.mouse_names)
     ff = average_by_mouse(ff, results.mouse_names)
 
@@ -76,7 +116,48 @@ def ratios_arrays(results: ResultsAggregator, sel_params: dict) -> dict[str, np.
         sf_cv_total_iti_10=sf_cv_total_iti_10,
         sf_cv_total_spont=sf_cv_total_spont,
         sf_cv_total_spont_10=sf_cv_total_spont_10,
+        _sf_cv_sessions_raw=sf_cv_sessions_raw,
+        _ff_sessions_raw=ff_sessions_raw,
+        _mouse_names=spectrum_mouse_names,
     )
+
+
+def spectrum_display_arrays(
+    arrays: dict[str, np.ndarray],
+    pf_smooth_method: str,
+    pf_smooth_width: float,
+    full_smooth_method: str,
+    full_smooth_width: float,
+    clip_negative: bool = True,
+    normalize: bool = True,
+) -> dict[str, np.ndarray]:
+    """Copy ``arrays`` with display-only clipping/smoothing applied to its two spectra.
+
+    The cumulative SVR arrays are deliberately left untouched. This lets a viewer calculate all
+    ratios from raw spectra while using Figure 4's first-negative clipping and geometric-mean
+    rank smoothing only for the curves it draws. When ``normalize`` is true, both processed
+    spectra share the same denominator: the processed Full-CA1 spectrum's sum for that mouse.
+    """
+
+    def _prepare(session_key: str, averaged_key: str, method: str, width: float) -> np.ndarray:
+        spectra = arrays.get(session_key, arrays[averaged_key])
+        if clip_negative:
+            spectra = _clip_at_first_negative(spectra)
+        if session_key in arrays and "_mouse_names" in arrays:
+            spectra = average_by_mouse(spectra, arrays["_mouse_names"])
+        return _smooth_spectrum(spectra, method, width)
+
+    display = dict(arrays)
+    sf_cv = _prepare("_sf_cv_sessions_raw", "sf_cv", pf_smooth_method, pf_smooth_width)
+    ff = _prepare("_ff_sessions_raw", "ff", full_smooth_method, full_smooth_width)
+    if normalize:
+        denominator = np.nansum(ff, axis=1, keepdims=True)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sf_cv = sf_cv / denominator
+            ff = ff / denominator
+    display["sf_cv"] = sf_cv
+    display["ff"] = ff
+    return display
 
 
 def last_visible_dimension(ymin: float, *curve_stacks: np.ndarray) -> int:
@@ -93,7 +174,15 @@ def last_visible_dimension(ymin: float, *curve_stacks: np.ndarray) -> int:
     return last
 
 
-def plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: float) -> None:
+def plot_ratios_spectrum(
+    ax,
+    arrays: dict[str, np.ndarray],
+    fontsize: float,
+    standard_log_yticklabels: bool = False,
+    ylim: tuple[float, float] | None = None,
+    show_first10_indicator: bool = True,
+    include_legend: bool = True,
+) -> None:
     """Mouse-averaged normalized ``sf_cv`` / ``ff`` spectra (log-log).
 
     The x axis is pinned to start at exactly 1 (so no minor decade ticks appear below the first
@@ -102,9 +191,9 @@ def plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: float) -> 
     tick beyond it.
     """
     sf_cv, ff = arrays["sf_cv"], arrays["ff"]
-    ylim_min = -5.5
-    ylim_max = -0.8
-    yline = -5.25
+    ylim = (10**-5.5, 10**-0.8) if ylim is None else ylim
+    ylim_min, ylim_max = np.log10(ylim)
+    yline = ylim_min + 0.25
     sf_color = CONDITION_COLORS["behaving"]
     ff_color = "black"
     each_alpha = 0.3
@@ -114,17 +203,19 @@ def plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: float) -> 
 
     ax.plot(xvals(sf_cv), sf_cv.T, color=sf_color, alpha=each_alpha, linewidth=1.0)
     ax.plot(xvals(ff), ff.T, color=ff_color, alpha=each_alpha, linewidth=1.0)
-    ax.plot(xvals(sf_cv), np.nanmean(sf_cv, axis=0), color=sf_color, label="PF Structure", linewidth=2.0)
-    ax.plot(xvals(ff), np.nanmean(ff, axis=0), color=ff_color, label="Reliable CA1", linewidth=2.0)
+    ax.plot(xvals(sf_cv), np.nanmean(sf_cv, axis=0), color=sf_color, label=r"PF$\times$CA1", linewidth=2.0)
+    ax.plot(xvals(ff), np.nanmean(ff, axis=0), color=ff_color, label=r"CA1$\times$CA1", linewidth=2.0)
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ylim = (10**ylim_min, 10**ylim_max)
-    yticks = ax.get_yticks()
-    ytick_power = [np.log10(yt) for yt in yticks]
-    ax.set_yticks(yticks, labels=ytick_power, fontsize=fontsize)
+    if standard_log_yticklabels:
+        ax.tick_params(axis="y", labelsize=fontsize)
+    else:
+        yticks = ax.get_yticks()
+        ytick_power = [np.log10(yt) for yt in yticks]
+        ax.set_yticks(yticks, labels=ytick_power, fontsize=fontsize)
     ax.set_ylim(*ylim)
-    ax.set_xlabel("Shared Dimension", fontsize=fontsize)
-    ax.set_ylabel("Variance", fontsize=fontsize)
+    ax.set_xlabel("Shared Modes", fontsize=fontsize)
+    ax.set_ylabel("Shared Variance", fontsize=fontsize)
     # Set before format_spines, which freezes its x_pos fraction into a data coordinate.
     xmax = SPECTRUM_XMAX_PAD * last_visible_dimension(ylim[0], sf_cv, ff)
     ax.set_xlim(1, xmax)
@@ -137,7 +228,8 @@ def plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: float) -> 
         ybounds=[ylim[0], ylim[1]],
         tick_fontsize=fontsize,
     )
-    ax.legend(loc="upper right", fontsize=fontsize, frameon=False)
+    if include_legend:
+        ax.legend(loc="upper right", fontsize=fontsize, frameon=False)
     # Ticks are placed explicitly rather than filtered after the fact: matplotlib draws only what
     # falls inside the view interval, so pinning xlim to [1, xmax] is what keeps the sub-decade
     # minor ticks from spilling below 1 or past the end of the data.
@@ -145,14 +237,15 @@ def plot_ratios_spectrum(ax, arrays: dict[str, np.ndarray], fontsize: float) -> 
     ax.set_xticks(decades, labels=[f"{int(decade)}" for decade in decades], fontsize=fontsize)
     ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10)))
     ax.xaxis.set_minor_formatter(NullFormatter())
-    ax.annotate(
-        "",
-        xy=(10, 10**yline),
-        xytext=(1, 10**yline),
-        arrowprops=dict(arrowstyle="<->", color="black", linewidth=1.0),
-        annotation_clip=False,
-    )
-    ax.text(np.sqrt(10), 10 ** (yline + 0.1), "1st 10", fontsize=fontsize, ha="center", va="bottom")
+    if show_first10_indicator:
+        ax.annotate(
+            "",
+            xy=(10, 10**yline),
+            xytext=(1, 10**yline),
+            arrowprops=dict(arrowstyle="<->", color="black", linewidth=1.0),
+            annotation_clip=False,
+        )
+        ax.text(np.sqrt(10), 10 ** (yline + 0.1), "1st 10", fontsize=fontsize, ha="center", va="bottom")
 
 
 def plot_ratios_beeswarms(ax1, ax2, arrays: dict[str, np.ndarray], fontsize: float) -> None:
@@ -325,3 +418,56 @@ def plot_ratios_beeswarms_combined(
             clip_on=False,
             zorder=3,
         )
+
+
+def plot_ratios_beeswarms_concise(
+    ax,
+    arrays: dict[str, np.ndarray],
+    fontsize: float,
+    include_first10: bool = True,
+) -> None:
+    """Behaving-only variance ratios for all dimensions, optionally preceded by the first 10."""
+    keys = ("sf_cv_total_10", "sf_cv_total") if include_first10 else ("sf_cv_total",)
+    labels = RATIOS_GROUP_LABELS if include_first10 else ["All"]
+    xticks = np.arange(len(keys), dtype=float)
+    color = CONDITION_COLORS["behaving"]
+    alpha = 0.3
+    beewidth = 0.2
+    line_extent = np.array([-0.25, 0.25])
+
+    for x, key in zip(xticks, keys):
+        values = arrays[key]
+        ax.plot(
+            x + beewidth * beeswarm(values),
+            values,
+            color=color,
+            linestyle="none",
+            linewidth=0.5,
+            marker="o",
+            markersize=3,
+            alpha=alpha,
+        )
+        ax.plot(
+            x + line_extent,
+            np.repeat(np.nanmean(values), 2),
+            color=color,
+            linewidth=2.0,
+            label="All" if key == "sf_cv_total" else None,
+        )
+
+    ax.set_xlim(-0.4, xticks[-1] + 0.4)
+    ax.set_ylabel("Variance Ratio", fontsize=fontsize)
+    format_spines(
+        ax,
+        x_pos=COMPOSITE_SPINE_OFFSET,
+        y_pos=COMPOSITE_SPINE_OFFSET,
+        spines_visible=["left", "bottom"] if include_first10 else ["left"],
+        xbounds=xticks if include_first10 else None,
+        ybounds=[0, 1],
+        yticks=[0, 0.5, 1.0],
+        tick_fontsize=fontsize,
+    )
+    if include_first10:
+        ax.set_xticks(xticks, labels=labels, fontsize=fontsize)
+    else:
+        ax.set_xticks([])

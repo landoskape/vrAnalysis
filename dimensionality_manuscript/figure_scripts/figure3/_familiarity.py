@@ -34,6 +34,51 @@ ENV_FULL_SCOPES = ["within_env", "outside_env", "with_iti", "with_spontaneous"]
 FAMILIARITY_STYLES = ["errorPlot", "all"]
 
 
+def select_by_env_spectra(
+    results: ResultsAggregator,
+    sel_params: dict,
+    env_full_scope: str,
+    full_within_env: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load the spectra and session mask selected by the ``by_env`` controls.
+
+    The returned PF array always has shape ``(sessions, env slots, dimensions)``. The Full-CA1
+    array has that shape when an environment-specific denominator is selected, otherwise it is
+    the whole-session ``(sessions, dimensions)`` spectrum. Keeping this selection in one place
+    ensures the Env # curves and any environment-averaged spectrum use identical stored keys,
+    ITI state, and spontaneous-session filtering.
+    """
+    if env_full_scope not in ENV_FULL_SCOPES:
+        raise ValueError(f"Unknown env_full_scope {env_full_scope!r}. Options: {ENV_FULL_SCOPES}")
+
+    if env_full_scope == "within_env":
+        sf_key = "sf_cv_env_full1"
+        ff_key = "ff_env_full1"
+        include_iti = False
+    else:
+        sf_key = "sf_cv_env_fullall"
+        ff_key = "ff_env_full1_fullall" if full_within_env else "ff"
+        include_iti = env_full_scope != "outside_env"
+
+    out = results.sel(
+        keys=[sf_key, ff_key],
+        squeeze_ones=False,
+        avg_by_mouse=False,
+        include_iti=include_iti,
+        **sel_params,
+    )
+    sf_all_slots = np.asarray(out[sf_key], dtype=float)
+    ff_all_slots = np.asarray(out[ff_key], dtype=float)
+
+    if env_full_scope == "with_iti":
+        session_mask = ~np.array([session.has_spontaneous() for session in results.sessions])
+    elif env_full_scope == "with_spontaneous":
+        session_mask = np.array([session.has_spontaneous() for session in results.sessions])
+    else:
+        session_mask = np.ones(len(results.sessions), dtype=bool)
+    return sf_all_slots, ff_all_slots, session_mask
+
+
 def _curves_from_defs(
     results: ResultsAggregator,
     curve_defs: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]],
@@ -80,6 +125,7 @@ def familiarity_curves(
     env_full_scope: str = "within_env",
     full_within_env: bool = True,
     within_condition: bool = True,
+    max_dims: int | None = None,
 ) -> dict[str, dict[str, dict[str, np.ndarray]]]:
     """Per-mouse variance-ratio / total-variance curves, keyed by curve label.
 
@@ -90,6 +136,9 @@ def familiarity_curves(
     ``within_condition`` (``mode == "all"`` only; ignored for ``"by_env"``): if False, curves are
     instead aligned to the mouse's overall chronological session index, so e.g. ``"w/ Spont."``
     data from a mouse's 6th session lands in bin 5 rather than bin 0.
+
+    ``max_dims`` limits both the shared-variance numerator and full-variance denominator to the
+    first N dimensions. The default, ``None``, preserves the full-spectrum calculation.
 
     ``mode == "all"``: whole-session ``sf_cv``/``ff`` keys, curve labels ``"Behaving"`` /
     ``"w/ ITIs"`` / ``"w/ Spont."`` overlaid together (unaffected by ``env_full_scope``).
@@ -102,15 +151,20 @@ def familiarity_curves(
     ``include_iti=True``, spontaneous sessions). Curve labels are ``"Env #1"``/``"Env #2"``/``"Env #3"``
     (all ``MAX_ENV_SLOTS`` experience-order slots are always overlaid together).
     """
+    if max_dims is not None and max_dims < 1:
+        raise ValueError("max_dims must be at least 1 or None")
+
     if mode == "all":
         session_has_spontaneous = np.array([s.has_spontaneous() for s in results.sessions])
         all_sessions = np.ones_like(session_has_spontaneous, dtype=bool)
 
         def _fetch(include_iti: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             out = results.sel(keys=["sf_cv", "ff"], squeeze_ones=False, avg_by_mouse=False, include_iti=include_iti, **sel_params)
-            total = np.nansum(out["ff"], axis=1)
-            ratio = np.nansum(out["sf_cv"], axis=1) / total
-            valid = np.isfinite(out["ff"]).any(axis=1)
+            sf = out["sf_cv"][:, :max_dims]
+            ff = out["ff"][:, :max_dims]
+            total = np.nansum(ff, axis=1)
+            ratio = np.nansum(sf, axis=1) / total
+            valid = np.isfinite(ff).any(axis=1) & np.isfinite(sf).any(axis=1)
             return ratio, total, valid
 
         ratio_b, total_b, valid_b = _fetch(False)
@@ -122,35 +176,20 @@ def familiarity_curves(
         }
         return _curves_from_defs(results, curve_defs, exclude_bad_envs=True, within_condition=within_condition)
 
-    if env_full_scope not in ENV_FULL_SCOPES:
-        raise ValueError(f"Unknown env_full_scope {env_full_scope!r}. Options: {ENV_FULL_SCOPES}")
-
-    if env_full_scope == "within_env":
-        sf_key = "sf_cv_env_full1"
-        ff_key = "ff_env_full1"
-        include_iti = False
-    else:
-        sf_key = "sf_cv_env_fullall"
-        ff_key = "ff_env_full1_fullall" if full_within_env else "ff"
-        include_iti = env_full_scope != "outside_env"
-
-    out = results.sel(keys=[sf_key, ff_key], squeeze_ones=False, avg_by_mouse=False, include_iti=include_iti, **sel_params)
-    sf_all_slots, ff_all_slots = out[sf_key], out[ff_key]
-
-    if env_full_scope == "with_iti":
-        session_mask = ~np.array([s.has_spontaneous() for s in results.sessions])
-    elif env_full_scope == "with_spontaneous":
-        session_mask = np.array([s.has_spontaneous() for s in results.sessions])
-    else:
-        session_mask = np.ones(len(results.sessions), dtype=bool)
+    sf_all_slots, ff_all_slots, session_mask = select_by_env_spectra(
+        results,
+        sel_params,
+        env_full_scope,
+        full_within_env,
+    )
 
     curve_defs = {}
     for env_slot in range(MAX_ENV_SLOTS):
-        sf = sf_all_slots[:, env_slot, :]
+        sf = sf_all_slots[:, env_slot, :max_dims]
         if ff_all_slots.ndim == 3:
-            ff = ff_all_slots[:, env_slot, :]
+            ff = ff_all_slots[:, env_slot, :max_dims]
         else:
-            ff = ff_all_slots
+            ff = ff_all_slots[:, :max_dims]
         total = np.nansum(ff, axis=1)
         ratio = np.nansum(sf, axis=1) / total
         valid = np.isfinite(ff).any(axis=1) & np.isfinite(sf).any(axis=1)

@@ -19,7 +19,7 @@ from dimensionality_manuscript.registry import ModelName
 
 # A RegressionConfig score is a whole-session number, so the familiarity x-axis is a mouse's own
 # chronological session index -- there is no per-environment breakdown to align to.
-SESSION_XLABEL = "Session #"
+SESSION_XLABEL = "Overall Session #"
 
 
 def performance_scores(

@@ -88,7 +88,7 @@ def draw_dim_sweep_panel(
     # Restoring ``ylim`` after setting ticks prevents floating-point rounding from expanding it.
     last_tenth = int(np.floor(ylim[1] * 10 + 1e-9))
     yticks = np.arange(0, last_tenth + 1, dtype=float) / 10
-    ax.set_xlabel("Model Dimensionality", fontsize=fontsize)
+    ax.set_xlabel("Model Rank", fontsize=fontsize)
     ax.set_ylabel(DIM_SWEEP_METRIC_LABELS[metric], fontsize=fontsize)
     format_spines(
         ax,
