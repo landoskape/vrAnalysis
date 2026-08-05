@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Optional
 
 import numpy as np
@@ -1081,6 +1081,14 @@ class StimSpaceEnvPCAConfig(AnalysisConfigBase):
 # ---------------------------------------------------------------------------
 
 
+def _filter_placefield_neurons(placefield: Placefield, keep: np.ndarray) -> Placefield:
+    """Restrict a ``Placefield`` to a neuron boolean mask along its last (neuron) axis.
+
+    ``count`` is occupancy (envs, bins), shared across neurons, so it is untouched.
+    """
+    return replace(placefield, placefield=placefield.placefield[:, :, keep])
+
+
 def _svca_score(
     source_train: torch.Tensor,
     target_train: torch.Tensor,
@@ -1326,6 +1334,8 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                 pf_target_test,
                 source_idx,
                 target_idx,
+                source_keep,
+                target_keep,
             )
         )
         return result
@@ -1350,6 +1360,8 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
         pf_target_test: list[Placefield],
         source_idx: np.ndarray,
         target_idx: np.ndarray,
+        source_keep: np.ndarray,
+        target_keep: np.ndarray,
     ) -> dict:
         """Per-environment ``ff``/``sf``/``ss``/``ff_res``/``ss_pred``, keyed by experience-order slot.
 
@@ -1392,8 +1404,11 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                 frac_thresh,
                 filter_by_env=env,
             )
-            source_keep_e = idx_keep_e[source_idx]
-            target_keep_e = idx_keep_e[target_idx]
+            # idx_keep_e is a mask over the *raw* (pre-global-filter) neurons; sources[k]/targets[k]
+            # and the pf_*_train/test Placefields were already row-filtered by source_keep/target_keep
+            # in process(), so re-index the per-env mask through that same filter to align.
+            source_keep_e = idx_keep_e[source_idx][source_keep]
+            target_keep_e = idx_keep_e[target_idx][target_keep]
             n_source_e = int(source_keep_e.sum())
             n_target_e = int(target_keep_e.sum())
             if n_source_e < 2 or n_target_e < 2:
@@ -1406,10 +1421,10 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                 idx_env_k = np.asarray(fbs[k].environment) == env
                 if int(idx_env_k.sum()) < 2:
                     continue
-                pf_st = pf_source_train[k].filter_by_environment(env)
-                pf_tt = pf_target_train[k].filter_by_environment(env)
-                pf_ss = pf_source_test[k].filter_by_environment(env)
-                pf_ts = pf_target_test[k].filter_by_environment(env)
+                pf_st = _filter_placefield_neurons(pf_source_train[k].filter_by_environment(env), source_keep_e)
+                pf_tt = _filter_placefield_neurons(pf_target_train[k].filter_by_environment(env), target_keep_e)
+                pf_ss = _filter_placefield_neurons(pf_source_test[k].filter_by_environment(env), source_keep_e)
+                pf_ts = _filter_placefield_neurons(pf_target_test[k].filter_by_environment(env), target_keep_e)
                 if len(pf_st) == 0 or len(pf_tt) == 0 or len(pf_ss) == 0 or len(pf_ts) == 0:
                     continue
 
