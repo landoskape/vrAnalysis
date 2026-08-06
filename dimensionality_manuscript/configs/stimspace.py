@@ -1097,8 +1097,13 @@ def _svca_score(
     centered: bool,
     num_components: int,
 ) -> torch.Tensor:
-    """Fit SVCA on one fold, score its shared-variance spectrum on another."""
-    model = SVCA(centered=centered, num_components=num_components).fit(source_train, target_train)
+    """Fit SVCA on one fold, score its shared-variance spectrum on another.
+
+    Uses ``truncated=True`` so the gram-matrix decomposition goes through ``randomized_svd``
+    rather than the full LAPACK routine: only the top ``num_components`` are ever kept, so the
+    accuracy loss is negligible against a large speedup.
+    """
+    model = SVCA(centered=centered, num_components=num_components, truncated=True).fit(source_train, target_train)
     return model.score(source_test, target_test)[0]
 
 
@@ -1115,22 +1120,31 @@ def _svca_fold_metrics(
     centered: bool,
     max_components: int,
 ) -> dict[str, torch.Tensor]:
-    """Cross-validated SVCA spectra (``ff``/``sf``/``ss``/``ff_res``/``ss_pred``) over fold combinations.
+    """Cross-validated SVCA spectra (``ff``/``ss``/``ff_res``/``ss_pred``) over fold combinations.
 
     ``sources``/``targets``/``fbs``/``pf_*`` are one entry per fold (4 folds for the global spectra,
     fewer for a per-environment call whenever a fold has too few environment frames -- callers must
-    drop degenerate folds themselves since fold combinatorics need at least 2 (3 for ``ff_res``)
-    folds to be meaningful.
+    drop degenerate folds themselves since every estimator here needs at least 2 folds to be
+    meaningful.
 
-    - ``ff``, ``sf``, ``ss`` : every fold pair, fold ``i`` fit / fold ``j`` scored, averaged.
-    - ``ff_res`` : every fold triple ``(i, j, k)``; fold ``i``'s place field predicts folds ``j``
-      and ``k`` (both held out of the place field fit), residual SVCA fit on ``j``, scored on ``k``.
-    - ``ss_pred`` : every fold pair; each fold's own (in-sample) place field prediction is used for
-      both the fit and score side, so no third fold is needed.
+    - ``ff``, ``ss`` : every fold pair, fold ``i`` fit / fold ``j`` scored, averaged.
+    - ``ff_res``, ``ss_pred`` : every fold pair, same fit/score structure, on each fold's own
+      (in-sample) place field residual and prediction respectively.
+
+    ``ff_res`` and ``ss_pred`` residualize *within* fold -- each fold's activity is decomposed
+    against the place field estimated from that same fold -- so ``prediction + residual`` returns
+    that fold's observed activity exactly and the two spectra partition ``ff``'s input. The cost is
+    that the subtracted map is in-sample: it absorbs some of the fold's own noise, and because
+    source and target are residualized against the same positions the over-subtraction is shared
+    between them, so ``ff_res`` understates residual shared variance somewhat. Fit and score folds
+    are still disjoint, so the cross-validation itself is intact.
+
+    ``max_components`` caps only the place-field-side spectra (``ss``, ``ss_pred``), whose ranks are
+    bounded by position bins rather than by data. The activity-side spectra (``ff``, ``ff_res``) are
+    kept at their full available rank, ``min(n_source, n_target, T)``.
     """
     num_folds = len(sources)
     pairs = list(itertools.combinations(range(num_folds), 2))
-    combos3 = list(itertools.combinations(range(num_folds), 3))
 
     pf_pair_train = [
         _paired_placefield_matrices(pf_source_train[k], pf_target_train[k], n_source, n_target, nan_safe=False) for k in range(num_folds)
@@ -1141,14 +1155,8 @@ def _svca_fold_metrics(
     min_bins_train = min(p[0].shape[1] for p in pf_pair_train)
     min_bins_test = min(p[0].shape[1] for p in pf_pair_test)
 
-    ff_components = min(max_components, n_source, n_target, min_T)
+    ff_components = min(n_source, n_target, min_T)
     ff = torch.mean(torch.stack([_svca_score(sources[i], targets[i], sources[j], targets[j], centered, ff_components) for i, j in pairs]), dim=0)
-
-    sf_components = min(max_components, n_source, n_target, min_bins_train, min_T)
-    sf = torch.mean(
-        torch.stack([_svca_score(pf_pair_train[i][0], pf_pair_train[i][1], sources[j], targets[j], centered, sf_components) for i, j in pairs]),
-        dim=0,
-    )
 
     ss_components = min(max_components, n_source, n_target, min_bins_train, min_bins_test)
     ss = torch.mean(
@@ -1158,19 +1166,35 @@ def _svca_fold_metrics(
         dim=0,
     )
 
-    residual_terms = []
-    for i, j, k in combos3:
-        (res_source_j, res_target_j), _, _ = _residualize_activity((sources[j], targets[j]), fbs[j], (pf_source_train[i], pf_target_train[i]))
-        (res_source_k, res_target_k), _, _ = _residualize_activity((sources[k], targets[k]), fbs[k], (pf_source_train[i], pf_target_train[i]))
-        residual_terms.append((res_source_j, res_target_j, res_source_k, res_target_k))
-    min_res_T = min(min(t.shape[1] for t in term) for term in residual_terms)
-    ffres_components = min(max_components, n_source, n_target, min_res_T)
-    ff_res = torch.mean(torch.stack([_svca_score(rsj, rtj, rsk, rtk, centered, ffres_components) for rsj, rtj, rsk, rtk in residual_terms]), dim=0)
-
-    prediction_by_fold = {}
+    # Each fold is residualized against its own (in-sample) place field, so for every fold
+    # prediction + residual reconstructs that fold's observed activity exactly -- same frames,
+    # same columns, since both come out of a single _residualize_activity call sharing one
+    # valid-frame mask. This is what makes ss_pred and ff_res an additive decomposition of ff.
+    residual_by_fold, prediction_by_fold = {}, {}
     for k in range(num_folds):
-        _, (pred_source_k, pred_target_k), _ = _residualize_activity((sources[k], targets[k]), fbs[k], (pf_source_train[k], pf_target_train[k]))
-        prediction_by_fold[k] = (pred_source_k, pred_target_k)
+        residuals_k, predictions_k, _ = _residualize_activity((sources[k], targets[k]), fbs[k], (pf_source_train[k], pf_target_train[k]))
+        residual_by_fold[k] = residuals_k
+        prediction_by_fold[k] = predictions_k
+
+    min_res_T = min(r[0].shape[1] for r in residual_by_fold.values())
+    ffres_components = min(n_source, n_target, min_res_T)
+    ff_res = torch.mean(
+        torch.stack(
+            [
+                _svca_score(
+                    residual_by_fold[i][0],
+                    residual_by_fold[i][1],
+                    residual_by_fold[j][0],
+                    residual_by_fold[j][1],
+                    centered,
+                    ffres_components,
+                )
+                for i, j in pairs
+            ]
+        ),
+        dim=0,
+    )
+
     min_pred_T = min(p[0].shape[1] for p in prediction_by_fold.values())
     sspred_components = min(max_components, n_source, n_target, min_pred_T)
     ss_pred = torch.mean(
@@ -1190,7 +1214,7 @@ def _svca_fold_metrics(
         dim=0,
     )
 
-    return dict(ff=ff, sf=sf, ss=ss, ff_res=ff_res, ss_pred=ss_pred)
+    return dict(ff=ff, ss=ss, ff_res=ff_res, ss_pred=ss_pred)
 
 
 @dataclass(frozen=True)
@@ -1204,21 +1228,26 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
 
     - ``ff``      : SVCA fit on one fold's raw activity, scored on another fold's raw activity.
                     All 4-choose-2 fold pairs, averaged.
-    - ``sf``      : SVCA fit on one fold's place field map, scored on another fold's raw activity.
-                    All 4-choose-2 fold pairs, averaged.
     - ``ss``      : SVCA fit on one fold's place field map, scored on another fold's place field map.
                     All 4-choose-2 fold pairs, averaged.
-    - ``ff_res``  : SVCA fit on one fold's residual activity (place field prediction from a third,
-                    disjoint fold subtracted), scored on another fold's residual activity (same place
-                    field). All 4-choose-3 fold triples, averaged.
+    - ``ff_res``  : SVCA fit on one fold's residual activity, scored on another fold's residual
+                    activity. Each fold is residualized against its own (in-sample) place field.
+                    All 4-choose-2 fold pairs, averaged.
     - ``ss_pred`` : SVCA fit on one fold's own (in-sample) place field prediction, scored on another
                     fold's own place field prediction. All 4-choose-2 fold pairs, averaged.
 
+    ``ff_res`` and ``ss_pred`` share one within-fold decomposition, so per fold
+    ``prediction + residual`` reconstructs the observed activity exactly. See
+    ``_svca_fold_metrics`` for the bias this in-sample subtraction carries.
+
     Each has a per-environment counterpart (``*_env``) computed the same way restricted to that
     environment's frames, packed onto the mouse's experience-order slot axis (see ``env_order``).
+
+    ``max_components`` truncates only the place-field-side spectra (``ss``, ``ss_pred``); ``ff`` and
+    ``ff_res`` run at their full ``min(n_source, n_target, T)`` rank.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     data_config_name: str = "even"
     activity_parameters_name: str = "std"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
@@ -1363,12 +1392,12 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
         source_keep: np.ndarray,
         target_keep: np.ndarray,
     ) -> dict:
-        """Per-environment ``ff``/``sf``/``ss``/``ff_res``/``ss_pred``, keyed by experience-order slot.
+        """Per-environment ``ff``/``ss``/``ff_res``/``ss_pred``, keyed by experience-order slot.
 
         Same fold combinatorics as the global spectra, restricted to one environment's frames at a
         time; a fold contributes only if it has at least 2 frames (and, for the place-field sides,
-        at least 2 valid bins) in that environment, and an environment is skipped entirely for a
-        given metric if fewer than 2 (``ff_res``: 3) folds qualify.
+        at least 2 valid bins) in that environment, and an environment is skipped entirely if fewer
+        than 3 folds qualify.
         """
         order = load_env_order()
         mouse_order = order.get(session.mouse_name)
@@ -1376,7 +1405,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
         if mouse_order is not None:
             env_slot_ids[: len(mouse_order)] = mouse_order
 
-        keys = ["ff_env", "sf_env", "ss_env", "ff_res_env", "ss_pred_env"]
+        keys = ["ff_env", "ss_env", "ff_res_env", "ss_pred_env"]
         per_env: dict[str, dict[int, np.ndarray]] = {k: {} for k in keys}
 
         if mouse_order is None:
@@ -1438,8 +1467,11 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                 pf_target_test_e.append(pf_ts)
 
             if len(fold_idx) < 3:
-                # ff_res needs 3 folds; fewer than that also makes ff/sf/ss/ss_pred combinatorics
-                # too thin to be worth reporting for this environment.
+                # Every estimator now only needs 2 folds (ff_res residualizes within fold rather
+                # than borrowing a third fold's place field), so 3 is no longer a hard requirement
+                # -- it is kept as a quality floor: a 2-fold environment yields a single un-averaged
+                # fit/score pair, too thin to be worth reporting. Lower to 2 to include more
+                # environments at the cost of noisier per-env spectra.
                 continue
 
             try:
