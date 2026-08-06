@@ -1122,13 +1122,12 @@ def _svca_fold_metrics(
 ) -> dict[str, torch.Tensor]:
     """Cross-validated SVCA spectra (``ff``/``ss``/``ff_res``/``ss_pred``) over fold combinations.
 
-    ``sources``/``targets``/``fbs``/``pf_*`` are one entry per fold (4 folds for the global spectra,
-    fewer for a per-environment call whenever a fold has too few environment frames -- callers must
-    drop degenerate folds themselves since every estimator here needs at least 2 folds to be
-    meaningful.
+    ``sources``/``targets``/``fbs``/``pf_*`` are one entry per fold -- 2 complementary halves, so
+    the ordered pairs below are ``(0, 1)`` and ``(1, 0)``, i.e. 2 terms per estimator. Callers must
+    drop degenerate folds themselves, and must not call with fewer than 2 folds left.
 
-    - ``ff``, ``ss`` : every fold pair, fold ``i`` fit / fold ``j`` scored, averaged.
-    - ``ff_res``, ``ss_pred`` : every fold pair, same fit/score structure, on each fold's own
+    - ``ff``, ``ss`` : each ordered fold pair, fold ``i`` fit / fold ``j`` scored, averaged.
+    - ``ff_res``, ``ss_pred`` : each ordered fold pair, same fit/score structure, on each fold's own
       (in-sample) place field residual and prediction respectively.
 
     ``ff_res`` and ``ss_pred`` residualize *within* fold -- each fold's activity is decomposed
@@ -1144,7 +1143,9 @@ def _svca_fold_metrics(
     kept at their full available rank, ``min(n_source, n_target, T)``.
     """
     num_folds = len(sources)
-    pairs = list(itertools.combinations(range(num_folds), 2))
+    # Ordered pairs, not combinations: with two folds this gives (0, 1) and (1, 0), so each fold is
+    # used once as the fit side and once as the score side and the average stays symmetric.
+    pairs = list(itertools.permutations(range(num_folds), 2))
 
     pf_pair_train = [
         _paired_placefield_matrices(pf_source_train[k], pf_target_train[k], n_source, n_target, nan_safe=False) for k in range(num_folds)
@@ -1222,19 +1223,22 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
     """Fold cross-validated SVCA (source/target neuron split) shared-variance spectra.
 
     Reimplements the SVCA analysis previously done via ``SVCASubspace`` (see
-    ``subspace_analysis/subspaces.py``) as free functions over the same 4-fold time-split
-    combinatorics used by :class:`StimSpaceSpectraConfig`, so every quantity is fit and scored on
-    genuinely disjoint data instead of reslicing the output of one globally-fit subspace:
+    ``subspace_analysis/subspaces.py``) as free functions over an explicit time split, so every
+    quantity is fit and scored on genuinely disjoint data instead of reslicing the output of one
+    globally-fit subspace.
 
-    - ``ff``      : SVCA fit on one fold's raw activity, scored on another fold's raw activity.
-                    All 4-choose-2 fold pairs, averaged.
-    - ``ss``      : SVCA fit on one fold's place field map, scored on another fold's place field map.
-                    All 4-choose-2 fold pairs, averaged.
-    - ``ff_res``  : SVCA fit on one fold's residual activity, scored on another fold's residual
-                    activity. Each fold is residualized against its own (in-sample) place field.
-                    All 4-choose-2 fold pairs, averaged.
-    - ``ss_pred`` : SVCA fit on one fold's own (in-sample) place field prediction, scored on another
-                    fold's own place field prediction. All 4-choose-2 fold pairs, averaged.
+    The session is split into two complementary halves -- ``train`` (time groups 0, 1) and
+    ``not_train`` (groups 2, 3) -- and every estimator below averages the two directions,
+    ``train`` fit / ``not_train`` scored and the reverse. Under ``data_config_name="even"`` the
+    four underlying groups are equal-sized, so the halves are as well and the two directions are
+    interchangeable estimates.
+
+    - ``ff``      : SVCA fit on one half's raw activity, scored on the other half's raw activity.
+    - ``ss``      : SVCA fit on one half's place field map, scored on the other half's place field map.
+    - ``ff_res``  : SVCA fit on one half's residual activity, scored on the other half's residual
+                    activity. Each half is residualized against its own (in-sample) place field.
+    - ``ss_pred`` : SVCA fit on one half's own (in-sample) place field prediction, scored on the
+                    other half's own place field prediction.
 
     ``ff_res`` and ``ss_pred`` share one within-fold decomposition, so per fold
     ``prediction + residual`` reconstructs the observed activity exactly. See
@@ -1310,13 +1314,19 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
 
         pop_kwargs = dict(scale=ap.scale, scale_type=ap.scale_type, pre_split=ap.presplit)
 
+        # Two complementary halves rather than the four raw time groups: "train" is groups (0, 1)
+        # and "not_train" is groups (2, 3). Under this config's "even" data config the four groups
+        # are equal-sized, so the halves are too, which is what makes the two fit/score directions
+        # in _svca_fold_metrics interchangeable estimates worth averaging.
+        fold_splits = (registry.time_split["train"], registry.time_split["not_train"])
+
         sources, targets, fbs = [], [], []
         pf_source_train, pf_target_train, pf_source_test, pf_target_test = [], [], [], []
-        for time_idx in range(4):
-            source_data, target_data = population.get_split_data(time_idx, **pop_kwargs)
+        for split in fold_splits:
+            source_data, target_data = population.get_split_data(split, **pop_kwargs)
             source_data = source_data[source_keep]
             target_data = target_data[target_keep]
-            fb = frame_behavior.filter(population.get_split_times(time_idx, within_idx_samples=False))
+            fb = frame_behavior.filter(population.get_split_times(split, within_idx_samples=False))
 
             sources.append(source_data)
             targets.append(target_data)
@@ -1396,8 +1406,8 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
 
         Same fold combinatorics as the global spectra, restricted to one environment's frames at a
         time; a fold contributes only if it has at least 2 frames (and, for the place-field sides,
-        at least 2 valid bins) in that environment, and an environment is skipped entirely if fewer
-        than 3 folds qualify.
+        at least 2 valid bins) in that environment, and an environment is skipped entirely unless
+        both halves qualify.
         """
         order = load_env_order()
         mouse_order = order.get(session.mouse_name)
@@ -1466,12 +1476,9 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                 pf_source_test_e.append(pf_ss)
                 pf_target_test_e.append(pf_ts)
 
-            if len(fold_idx) < 3:
-                # Every estimator now only needs 2 folds (ff_res residualizes within fold rather
-                # than borrowing a third fold's place field), so 3 is no longer a hard requirement
-                # -- it is kept as a quality floor: a 2-fold environment yields a single un-averaged
-                # fit/score pair, too thin to be worth reporting. Lower to 2 to include more
-                # environments at the cost of noisier per-env spectra.
+            if len(fold_idx) < 2:
+                # Both folds must survive: with a two-way split, losing one leaves nothing to score
+                # against (itertools.permutations over a single fold is empty).
                 continue
 
             try:
