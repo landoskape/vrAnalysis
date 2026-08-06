@@ -10,6 +10,7 @@ from .configs import (
     SubspaceConfig,
     StimSpaceConfig,
     StimSpaceSpectraConfig,
+    StimspaceSVCAConfig,
     ExpMaxConfig,
     LocPredConfig,
     LocPredCrossVal,

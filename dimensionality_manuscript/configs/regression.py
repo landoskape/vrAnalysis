@@ -44,6 +44,8 @@ KEY_FIGURE_MODELS: list[ModelName] = [
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
+    "external_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain",
     "rrr",
     "rrr_no_intercept",
     "fullregressor_decoder_only_1dspeed_predreward",

@@ -229,6 +229,55 @@ class RegressionModel(ABC, Generic[H]):
         frame_behavior = frame_behavior.filter(idx)
         return source_data.float(), target_data.float(), frame_behavior
 
+    def get_split_chunk_index(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "test",
+    ) -> np.ndarray:
+        """Get a chunk identifier for every frame of a split.
+
+        Time splits are built by cutting the (filtered) samples into contiguous chunks and
+        dealing whole chunks out to the splits, discarding ``num_buffer`` samples between every
+        pair of chunks. A chunk therefore belongs to exactly one split, and within a split the
+        samples of one chunk are consecutive integers in the filtered sample space while
+        consecutive chunks differ by more than one. That makes the chunk boundaries exactly
+        recoverable from the split's sample indices.
+
+        The returned ids are aligned with the frame ordering of :meth:`get_session_data`, which
+        sorts the same index array.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to get the chunk index for.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the session's default.
+        split : Optional["SplitName"]
+            The split to get the chunk index for. Default is "test".
+
+        Returns
+        -------
+        np.ndarray
+            Chunk id (0, 1, 2, ...) for each frame of the split, in split frame order.
+
+        Raises
+        ------
+        ValueError
+            If the registry uses no buffer between chunks, in which case adjacent chunks are
+            indistinguishable from a single chunk.
+        """
+        if self.registry.registry_params.time_split_num_buffer < 1:
+            raise ValueError(
+                "Chunk boundaries are only recoverable when time splits leave a buffer between "
+                f"chunks, but time_split_num_buffer={self.registry.registry_params.time_split_num_buffer}."
+            )
+        population, _ = self.registry.get_population(session, spks_type)
+        idx = np.array(population.get_split_times(self.registry.time_split[split], within_idx_samples=False))
+        if len(idx) == 0:
+            return np.zeros(0, dtype=np.int64)
+        return np.concatenate([[0], np.cumsum(np.diff(idx) != 1)]).astype(np.int64)
+
     def score(
         self,
         session: B2Session,

@@ -10,7 +10,13 @@ from vrAnalysis.processors.placefields import get_frame_behavior, FrameBehavior
 from vrAnalysis.processors.support import convert_position_to_bins
 from dimilibi import Population
 from .regression_models.base import RegressionModel, ActivityParameters
-from .regression_models.models import PlaceFieldModel, RBFPosModel, FullRegressorModel, ReducedRankRegressionModel
+from .regression_models.models import (
+    PlaceFieldModel,
+    PlaceFieldStructuredGainModel,
+    RBFPosModel,
+    FullRegressorModel,
+    ReducedRankRegressionModel,
+)
 from .regression_models.hyperparameters import HyperparametersBase
 from .subspace_analysis.base import SubspaceModel
 from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
@@ -68,6 +74,9 @@ ModelName = Literal[
     "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
     "fullregressor_1dspeed_predreward_no_intercept",
     "fullregressor_leak_1dspeed_predreward_no_intercept",
+    # Placefield models with a structured (low-rank, cell-specific) gain
+    "external_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain",
 ]
 
 # Type alias for subspace names
@@ -647,6 +656,9 @@ MODEL_NAMES: tuple[ModelName] = (
     "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
     "fullregressor_1dspeed_predreward_no_intercept",
     "fullregressor_leak_1dspeed_predreward_no_intercept",
+    # Placefield models with a structured (low-rank, cell-specific) gain
+    "external_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain",
 )
 
 
@@ -730,6 +742,9 @@ def short_model_name(model_name: ModelName) -> str:
         "fullregressor_decoder_only_1dspeed_predreward_no_intercept": "HD-Pos+Speed+PredReward (no int)",
         "fullregressor_1dspeed_predreward_no_intercept": "Int. HD-Pos+Speed+PredReward (no int)",
         "fullregressor_leak_1dspeed_predreward_no_intercept": "Int. HD-Pos+Speed+PredReward (no int) + Leak",
+        # Placefield models with a structured gain
+        "external_placefield_1d_structured_gain": "Placefield (+Struct. Gain)",
+        "internal_placefield_1d_structured_gain": "Int. Placefield (+Struct. Gain)",
     }
     if model_name not in _short_name_mapping:
         raise ValueError(f"Model name {model_name} not found in short name mapping.")
@@ -750,6 +765,18 @@ def get_model(
     hyperparameters: Optional[HyperparametersBase] = None,
     activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> PlaceFieldModel: ...
+
+
+@overload
+def get_model(
+    model_name: Literal[
+        "external_placefield_1d_structured_gain",
+        "internal_placefield_1d_structured_gain",
+    ],
+    population_registry: PopulationRegistry,
+    hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
+) -> PlaceFieldStructuredGainModel: ...
 
 
 @overload
@@ -894,6 +921,9 @@ def get_model(
         "fullregressor_decoder_only_1dspeed_predreward_no_intercept": FullRegressorModel,
         "fullregressor_1dspeed_predreward_no_intercept": FullRegressorModel,
         "fullregressor_leak_1dspeed_predreward_no_intercept": FullRegressorModel,
+        # Placefield models with a structured gain
+        "external_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
+        "internal_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
     }
     _kwargs_lookup: dict[str, dict[str, Any]] = {
         "external_placefield_1d": dict(internal=False, gain=False),
@@ -965,6 +995,9 @@ def get_model(
         "fullregressor_leak_1dspeed_predreward_no_intercept": dict(
             speed_basis=False, predictive_reward=True, split_train=False, predict_latents=True, fit_intercept=False
         ),
+        # Placefield models with a structured gain
+        "external_placefield_1d_structured_gain": dict(internal=False),
+        "internal_placefield_1d_structured_gain": dict(internal=True),
     }
     if model_name not in MODEL_NAMES:
         raise ValueError(f"Model {model_name} not found in registry.")

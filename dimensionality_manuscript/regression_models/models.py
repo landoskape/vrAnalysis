@@ -1,6 +1,7 @@
 from typing import Optional, Union, TYPE_CHECKING, Type
 from copy import copy
 import numpy as np
+from scipy import sparse
 from scipy.stats import norm, linregress
 from sklearn.decomposition import randomized_svd
 import torch
@@ -11,14 +12,26 @@ from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction, Placefield, FrameBehavior, get_frame_behavior
 from dimilibi import RidgeRegression, ReducedRankRegression
 from .base import RegressionModel, ActivityParameters, OptimizationMethod
-from .hyperparameters import PlaceFieldHyperparameters, RBFPosHyperparameters, FullRegressorHyperparameters, ReducedRankRegressionHyperparameters
+from .hyperparameters import (
+    PlaceFieldHyperparameters,
+    PlaceFieldStructuredGainHyperparameters,
+    RBFPosHyperparameters,
+    FullRegressorHyperparameters,
+    ReducedRankRegressionHyperparameters,
+)
 
 if TYPE_CHECKING:
     from ..registry import PopulationRegistry, SplitName
 
 
 def get_regressor_dimensionality_from_hyperparameters(
-    hyperparameters: PlaceFieldHyperparameters | RBFPosHyperparameters | FullRegressorHyperparameters | ReducedRankRegressionHyperparameters,
+    hyperparameters: (
+        PlaceFieldHyperparameters
+        | PlaceFieldStructuredGainHyperparameters
+        | RBFPosHyperparameters
+        | FullRegressorHyperparameters
+        | ReducedRankRegressionHyperparameters
+    ),
     num_environments: int = 1,
     gain: bool = False,
     vector_gain: bool = False,
@@ -67,6 +80,11 @@ def get_regressor_dimensionality_from_hyperparameters(
 
     if isinstance(hyperparameters, ReducedRankRegressionHyperparameters):
         return hyperparameters.rank
+
+    # Checked before PlaceFieldHyperparameters because it subclasses it: the spatial maps plus
+    # the latent dimensions of the structured gain.
+    if isinstance(hyperparameters, PlaceFieldStructuredGainHyperparameters):
+        return hyperparameters.num_bins * num_environments + hyperparameters.rank
 
     if isinstance(hyperparameters, PlaceFieldHyperparameters):
         base_dim = hyperparameters.num_bins * num_environments
@@ -225,6 +243,62 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
 
         return train_target_placefield
 
+    def decode_internal_frame_behavior(
+        self,
+        source_data: torch.Tensor,
+        source_placefield: Placefield,
+        frame_behavior: FrameBehavior,
+        block_size: int = 128,
+    ) -> FrameBehavior:
+        """Replace behavioral position/environment with the estimate decoded from source cells.
+
+        For each frame, finds the (environment, position bin) whose source place-field vector
+        has the lowest mean squared error against the observed source activity. Bins where any
+        source cell has an undefined place field (unvisited on the training split) produce a NaN
+        error and are excluded from the search.
+
+        Frames are processed in blocks: the error tensor is
+        ``(environments, bins, source cells, frames)`` before the mean over cells, which is
+        several GB for a whole training split. Blocking does not change the result.
+
+        Parameters
+        ----------
+        source_data : torch.Tensor
+            Source cell activity of shape (source cells, frames).
+        source_placefield : Placefield
+            Place fields of the source cells, estimated on the training split.
+        frame_behavior : FrameBehavior
+            Behavior for the same frames as ``source_data``.
+        block_size : int
+            Number of frames decoded at once. Peak memory is
+            ``environments * bins * source cells * block_size`` doubles, so the default of 128
+            keeps a whole-session decode to a few hundred MB.
+
+        Returns
+        -------
+        FrameBehavior
+            A new FrameBehavior whose position and environment are the decoded estimates. All
+            other fields (speed, trial, reward, idx) are carried over unchanged.
+        """
+        placefield = torch.tensor(source_placefield.placefield[..., None])
+        num_bins = placefield.size(1)
+        num_frames = source_data.size(1)
+        idx_env = np.empty(num_frames, dtype=np.int64)
+        idx_pos = np.empty(num_frames, dtype=np.int64)
+        for start in range(0, num_frames, block_size):
+            stop = min(start + block_size, num_frames)
+            error = torch.mean((source_data[None, None, :, start:stop] - placefield) ** 2, dim=2)
+            error = torch.nan_to_num(error, nan=float("inf"))
+            argmin = error.view(-1, error.size(-1)).argmin(dim=0).numpy()
+            idx_env[start:stop] = argmin // num_bins
+            idx_pos[start:stop] = argmin % num_bins
+
+        dist_centers = edge2center(source_placefield.dist_edges)
+        decoded = copy(frame_behavior)
+        decoded.position = dist_centers[idx_pos]
+        decoded.environment = source_placefield.environment[idx_env]
+        return decoded
+
     def predict(
         self,
         session: B2Session,
@@ -289,16 +363,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
 
         # Get the source data to predict the internal position estimates
         if self.internal:
-            error = torch.mean((source_data[None, None] - torch.tensor(source_placefield.placefield[..., None])) ** 2, dim=2)
-            error = torch.nan_to_num(error, nan=float("inf"))
-            argmin = error.view(-1, error.size(-1)).argmin(dim=0)
-            idx_env = argmin // error.size(1)
-            idx_pos = argmin % error.size(1)
-
-            dist_centers = edge2center(source_placefield.dist_edges)
-            frame_behavior.position = dist_centers[idx_pos.numpy()]
-            frame_behavior.environment = source_placefield.environment[idx_env.numpy()]
-
+            frame_behavior = self.decode_internal_frame_behavior(source_data, source_placefield, frame_behavior)
             extras["frame_behavior_internal"] = frame_behavior
 
         if self.gain:
@@ -545,6 +610,771 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         }
 
         return internals
+
+
+def make_gain_unit_index(chunk_index: np.ndarray, trial: np.ndarray) -> tuple[np.ndarray, int]:
+    """Group a split's frames into gain units: contiguous time chunks intersected with trials.
+
+    A time chunk belongs to exactly one split (see
+    :meth:`RegressionModel.get_split_chunk_index`), so a quantity estimated within a unit never
+    mixes data across the train/validation/test folds. Chunks that span a trial boundary produce
+    one unit per trial, so a unit is always a contiguous stretch of a single trial.
+
+    Parameters
+    ----------
+    chunk_index : np.ndarray
+        Chunk id of each frame, from ``get_split_chunk_index``.
+    trial : np.ndarray
+        Trial number of each frame (``FrameBehavior.trial``).
+
+    Returns
+    -------
+    unit_index : np.ndarray
+        Unit id of each frame, in ``[0, num_units)``.
+    num_units : int
+        Number of distinct units.
+    """
+    chunk_index = np.asarray(chunk_index)
+    trial = np.asarray(trial, dtype=float)
+    if len(chunk_index) != len(trial):
+        raise ValueError(f"chunk_index and trial must be the same length, got {len(chunk_index)} and {len(trial)}")
+    if not np.all(np.isfinite(trial)):
+        raise ValueError(f"{np.sum(~np.isfinite(trial))} / {len(trial)} frames have no trial number, cannot define gain units")
+    if len(chunk_index) == 0:
+        return np.zeros(0, dtype=np.int64), 0
+
+    pairs = np.stack([chunk_index.astype(float), trial])
+    unit_index = np.unique(pairs, axis=1, return_inverse=True)[1]
+    unit_index = np.reshape(unit_index, -1).astype(np.int64)
+    return unit_index, int(unit_index.max()) + 1
+
+
+def least_squares_gain(
+    activity: np.ndarray,
+    placefield_prediction: np.ndarray,
+    unit_index: np.ndarray,
+    num_units: int,
+    regularization: float = 0.0,
+) -> np.ndarray:
+    """Least-squares scale factor between activity and its place-field prediction, per unit.
+
+    For cell ``i`` and unit ``u``, the gain is the scalar that best rescales the cell's place
+    field to match its activity over that unit's frames::
+
+        gain[i, u] = sum_f a[i, f] * p[i, f] / sum_f p[i, f] ** 2
+
+    so ``gain == 1`` means the cell behaved exactly as its place field predicts. This is the same
+    estimator :meth:`PlaceFieldModel.predict` uses for its scalar gain, with the pooling axis
+    transposed: that one pools over cells within a frame, this one pools over a unit's frames
+    within a cell.
+
+    Frames where either input is not finite are excluded (place-field predictions are NaN in bins
+    that were never visited on the training split).
+
+    The ratio is only well posed where the cell's place field predicts something over the unit.
+    Where it predicts almost nothing the denominator approaches zero and the gain explodes -- in
+    practice to values above 1e30, which are meaningless and destroy any downstream fit.
+    ``regularization`` shrinks the estimate toward the neutral gain of 1 by adding
+    ``regularization * (that cell's mean place-field energy per unit)`` to both sides of the
+    ratio. Well-measured units are essentially unaffected, badly-measured ones fall back toward 1
+    instead of diverging, and a cell with no place-field energy at all in a unit lands exactly on
+    1 -- its prediction there is ~0 regardless of gain.
+
+    Parameters
+    ----------
+    activity : np.ndarray
+        Activity of shape (cells, frames).
+    placefield_prediction : np.ndarray
+        Place-field prediction of shape (cells, frames).
+    unit_index : np.ndarray
+        Unit id of each frame, from ``make_gain_unit_index``.
+    num_units : int
+        Number of units (columns of the result).
+    regularization : float
+        Shrinkage toward a gain of 1, relative to each cell's mean place-field energy per unit.
+        Default is 0.0, the unregularized ratio.
+
+    Returns
+    -------
+    np.ndarray
+        Gains of shape (cells, num_units).
+    """
+    activity = np.asarray(activity, dtype=float)
+    placefield_prediction = np.asarray(placefield_prediction, dtype=float)
+    if activity.shape != placefield_prediction.shape:
+        raise ValueError(f"activity and placefield_prediction must match, got {activity.shape} and {placefield_prediction.shape}")
+    if activity.shape[1] != len(unit_index):
+        raise ValueError(f"activity has {activity.shape[1]} frames but unit_index has {len(unit_index)}")
+    if regularization < 0:
+        raise ValueError(f"regularization must be non-negative, got {regularization}")
+
+    valid = np.isfinite(activity) & np.isfinite(placefield_prediction)
+    prediction = np.where(valid, placefield_prediction, 0.0)
+    observed = np.where(valid, activity, 0.0)
+
+    num_frames = len(unit_index)
+    unit_matrix = sparse.csr_matrix(
+        (np.ones(num_frames), (unit_index, np.arange(num_frames))),
+        shape=(num_units, num_frames),
+    )
+    numerator = (unit_matrix @ (observed * prediction).T).T
+    denominator = (unit_matrix @ (prediction * prediction).T).T
+
+    if regularization > 0:
+        shrinkage = regularization * np.mean(denominator, axis=1, keepdims=True)
+        numerator = numerator + shrinkage
+        denominator = denominator + shrinkage
+
+    gain = np.ones_like(numerator)
+    np.divide(numerator, denominator, out=gain, where=denominator > 0)
+    return gain
+
+
+class PlaceFieldStructuredGainModel(PlaceFieldModel):
+    """Place fields modulated by a gain that is structured across cells and slow in time.
+
+    The model sits between ``*_placefield_1d`` (no gain) and ``*_placefield_1d_gain`` (one scalar
+    gain per frame, shared by the whole population and read directly off the source cells). Here
+    each cell gets its own gain on each short epoch, and the map from source-cell gains to
+    target-cell gains is *learned* as a reduced-rank regression, so the gain fluctuations are
+    constrained to a low-dimensional shared subspace.
+
+    Training (on the train split):
+
+    1. Place fields for source and target cells, exactly as in :class:`PlaceFieldModel`.
+    2. Frames are grouped into gain units -- one contiguous time chunk intersected with one trial.
+    3. A least-squares gain per cell per unit (:func:`least_squares_gain`).
+    4. A reduced-rank regression from source gains to target gains, over units.
+
+    Prediction (on a held-out split): gains of the *source* cells are measured on that split's own
+    frames, mapped through the regression to predicted target gains, and each target cell's place
+    field prediction is scaled by its predicted gain for the unit that frame belongs to.
+
+    Note on timescale: the unit is a time chunk, not a trial. The population's time splits cut a
+    session into contiguous chunks that are shorter than one traversal of the track, so a per-trial
+    gain would be estimated from frames spanning several folds -- a cross-validation breach, since
+    most test trials also contribute frames to the training split. Estimating within a chunk keeps
+    every fold's gains independent of the others, at the cost of a shorter (few second) timescale.
+
+    Parameters
+    ----------
+    registry : PopulationRegistry
+        The population registry to use for the model.
+    internal : bool
+        If True, position and environment are decoded from source-cell activity instead of read
+        from behavior. The decoded estimate is used everywhere the model reads a position, on the
+        training split as well as at prediction time, so the model never sees true position
+        outside place-field estimation.
+    fit_intercept : bool
+        Whether the gain regression fits an intercept. Default is True; gains are centered near 1,
+        so the intercept matters.
+    min_frames_per_unit : int
+        Units with fewer frames than this are excluded from the regression fit, since their gains
+        are dominated by noise. They are still predicted at test time, so the held-out sample stays
+        comparable with the other models. Default is 5.
+    gain_regularization : float
+        Shrinkage of the measured gains toward 1, relative to each cell's mean place-field energy
+        per unit (see :func:`least_squares_gain`). Without it the ratio diverges for cells whose
+        place field predicts nothing over a unit -- observed above 1e30 in real sessions, which is
+        enough to make the gain regression non-finite. Default is 0.01.
+    hyperparameters : PlaceFieldStructuredGainHyperparameters
+        Place-field and gain-regression hyperparameters.
+    activity_parameters : ActivityParameters
+        Activity scaling parameters.
+    autosave : bool
+        Whether to save optimization results to the cache.
+    """
+
+    preferred_optimization_method: OptimizationMethod = "golden"
+
+    def __init__(
+        self,
+        registry: "PopulationRegistry",
+        internal: bool = False,
+        fit_intercept: bool = True,
+        min_frames_per_unit: int = 5,
+        gain_regularization: float = 0.01,
+        hyperparameters: PlaceFieldStructuredGainHyperparameters = PlaceFieldStructuredGainHyperparameters(),
+        activity_parameters: ActivityParameters = ActivityParameters(),
+        autosave: bool = True,
+    ):
+        super().__init__(
+            registry,
+            internal=internal,
+            gain=True,
+            vector_gain=False,
+            hyperparameters=hyperparameters,
+            activity_parameters=activity_parameters,
+            autosave=autosave,
+        )
+        self.fit_intercept = fit_intercept
+        self.min_frames_per_unit = min_frames_per_unit
+        self.gain_regularization = gain_regularization
+
+    def train(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "train",
+        hyperparameters: Optional[PlaceFieldStructuredGainHyperparameters] = None,
+    ) -> tuple[Placefield, Placefield, ReducedRankRegression]:
+        """Estimate place fields and fit the source->target gain regression.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to train on.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to train on. Default is "train".
+        hyperparameters : Optional[PlaceFieldStructuredGainHyperparameters]
+            The hyperparameters to use. If None, uses the model's default hyperparameters.
+
+        Returns
+        -------
+        target_placefield : Placefield
+            Place fields of the target cells.
+        source_placefield : Placefield
+            Place fields of the source cells.
+        gain_model : ReducedRankRegression
+            The fitted gain regression, mapping source-cell gains to target-cell gains.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        target_placefield, source_placefield = super().train(session, spks_type, split, hyperparameters)
+        gain_model = self.fit_gain_model(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=split,
+            alpha=hyperparameters.alpha,
+        )
+        return target_placefield, source_placefield, gain_model
+
+    def fit_gain_model(
+        self,
+        session: B2Session,
+        target_placefield: Placefield,
+        source_placefield: Placefield,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "train",
+        alpha: float = 1e2,
+    ) -> ReducedRankRegression:
+        """Fit the source->target gain regression for given place fields.
+
+        Separated from :meth:`train` so hyperparameter optimization can hold the place fields
+        fixed (they do not depend on ``alpha`` or ``rank``) and refit only the regression.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to fit on.
+        target_placefield : Placefield
+            Place fields of the target cells.
+        source_placefield : Placefield
+            Place fields of the source cells.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to fit on. Default is "train".
+        alpha : float
+            Ridge regularization for the gain regression.
+
+        Returns
+        -------
+        ReducedRankRegression
+            The fitted gain regression.
+        """
+        source_data, target_data, frame_behavior = self.get_session_data(session, spks_type, split)
+        if self.internal:
+            frame_behavior = self.decode_internal_frame_behavior(source_data, source_placefield, frame_behavior)
+
+        unit_index, num_units = make_gain_unit_index(
+            self.get_split_chunk_index(session, spks_type, split),
+            frame_behavior.trial,
+        )
+        source_prediction = get_placefield_prediction(source_placefield, frame_behavior)[0].T
+        target_prediction = get_placefield_prediction(target_placefield, frame_behavior)[0].T
+        source_gain = least_squares_gain(source_data.numpy(), source_prediction, unit_index, num_units, self.gain_regularization)
+        target_gain = least_squares_gain(target_data.numpy(), target_prediction, unit_index, num_units, self.gain_regularization)
+
+        idx_fit = np.bincount(unit_index, minlength=num_units) >= self.min_frames_per_unit
+        if not np.any(idx_fit):
+            raise ValueError(f"No gain unit has at least {self.min_frames_per_unit} frames on split {split!r} " f"in {session.session_print()}!!!")
+
+        # Fit in double precision: gains are ratios with a long tail, and rounding them to single
+        # precision has been enough to make the solve non-finite.
+        gain_model = ReducedRankRegression(alpha=alpha, fit_intercept=self.fit_intercept)
+        return gain_model.fit(
+            torch.tensor(source_gain[:, idx_fit].T, dtype=torch.float64),
+            torch.tensor(target_gain[:, idx_fit].T, dtype=torch.float64),
+        )
+
+    def prediction_inputs(
+        self,
+        session: B2Session,
+        target_placefield: Placefield,
+        source_placefield: Placefield,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "test",
+        nan_safe: bool = False,
+    ) -> dict:
+        """Everything needed to predict a split except the gain regression itself.
+
+        Measures the source cells' gains on this split's own frames and reads out the target place
+        fields. Splitting this from :meth:`apply_gain_model` lets hyperparameter optimization reuse
+        one pass over the data across every ``alpha`` and ``rank``.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to predict.
+        target_placefield : Placefield
+            Place fields of the target cells.
+        source_placefield : Placefield
+            Place fields of the source cells.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to predict. Default is "test".
+        nan_safe : bool
+            If True, raises when any source prediction is NaN instead of dropping those frames.
+
+        Returns
+        -------
+        dict
+            Keys: ``target_prediction`` (targets, frames), ``source_gain`` (sources, units),
+            ``unit_index`` (frames,), ``num_units``, ``frame_behavior``,
+            ``frame_behavior_internal`` (only when ``internal``), ``idx_valid_prediction``
+            (indices into the split's original frames) and ``was_filtered``.
+        """
+        source_data, _, frame_behavior = self.get_session_data(session, spks_type, split)
+        unit_index, num_units = make_gain_unit_index(
+            self.get_split_chunk_index(session, spks_type, split),
+            frame_behavior.trial,
+        )
+        idx_valid_prediction = np.arange(len(frame_behavior), dtype=np.int64)
+        true_frame_behavior = copy(frame_behavior)
+
+        if self.internal:
+            frame_behavior = self.decode_internal_frame_behavior(source_data, source_placefield, frame_behavior)
+
+        source_prediction = get_placefield_prediction(source_placefield, frame_behavior)[0].T
+        source_activity = source_data.numpy()
+
+        # Frames where a source cell's place field is undefined carry no gain information; the
+        # scalar-gain model drops them the same way.
+        idx_nan_gain = np.any(np.isnan(source_prediction), axis=0) | np.any(np.isnan(source_activity), axis=0)
+        was_filtered = False
+        if nan_safe:
+            if np.any(idx_nan_gain):
+                raise ValueError(f"{np.sum(idx_nan_gain)} / {len(idx_nan_gain)} samples have nan predictions in {session.session_print()}!!!")
+        elif np.any(idx_nan_gain):
+            idx_valid_gain = np.where(~idx_nan_gain)[0]
+            source_prediction = source_prediction[:, idx_valid_gain]
+            source_activity = source_activity[:, idx_valid_gain]
+            frame_behavior = frame_behavior.filter(idx_valid_gain)
+            true_frame_behavior = true_frame_behavior.filter(idx_valid_gain)
+            unit_index = unit_index[idx_valid_gain]
+            idx_valid_prediction = idx_valid_prediction[idx_valid_gain]
+            was_filtered = True
+
+        inputs = {
+            "target_prediction": get_placefield_prediction(target_placefield, frame_behavior)[0].T,
+            "source_gain": least_squares_gain(source_activity, source_prediction, unit_index, num_units, self.gain_regularization),
+            "unit_index": unit_index,
+            "num_units": num_units,
+            "frame_behavior": true_frame_behavior,
+            "idx_valid_prediction": idx_valid_prediction,
+            "was_filtered": was_filtered,
+        }
+        if self.internal:
+            inputs["frame_behavior_internal"] = frame_behavior
+        return inputs
+
+    def apply_gain_model(
+        self,
+        inputs: dict,
+        gain_model: ReducedRankRegression,
+        rank: int,
+        nan_safe: bool = False,
+    ) -> tuple[np.ndarray, dict]:
+        """Scale place-field predictions by the gains the regression predicts for each unit.
+
+        Parameters
+        ----------
+        inputs : dict
+            Output of :meth:`prediction_inputs`. Not modified.
+        gain_model : ReducedRankRegression
+            The fitted gain regression.
+        rank : int
+            Requested rank. Clipped to the regression's achievable rank, which here is bounded by
+            the number of gain units and is therefore much smaller than for frame-wise models.
+        nan_safe : bool
+            If True, raises when the prediction contains NaN instead of dropping those frames.
+
+        Returns
+        -------
+        prediction : np.ndarray
+            Predicted target activity of shape (targets, frames).
+        extras : dict
+            Prediction extras, including the measured source gains, the predicted target gains,
+            and the per-frame gain that was applied.
+        """
+        unit_index = inputs["unit_index"]
+        source_gain = inputs["source_gain"]
+        predicted_gain = (
+            gain_model.predict(
+                torch.tensor(source_gain.T, dtype=torch.float64),
+                rank=min(int(rank), int(gain_model.max_rank)),
+                nonnegative=False,
+            )
+            .numpy()
+            .T
+        )
+
+        gain_applied = predicted_gain[:, unit_index]
+        prediction = inputs["target_prediction"] * gain_applied
+
+        extras = {
+            "frame_behavior": inputs["frame_behavior"],
+            "gain_source": source_gain,
+            "gain_predicted": predicted_gain,
+            "gain_applied": gain_applied,
+            "gain_unit_index": unit_index,
+        }
+        if "frame_behavior_internal" in inputs:
+            extras["frame_behavior_internal"] = inputs["frame_behavior_internal"]
+
+        idx_valid_prediction = inputs["idx_valid_prediction"]
+        was_filtered = inputs["was_filtered"]
+
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                raise ValueError(f"{np.sum(idx_nan_samples)} / {len(idx_nan_samples)} samples have NaN values in prediction!")
+        elif np.any(idx_nan_samples):
+            idx_valid_final = np.where(~idx_nan_samples)[0]
+            prediction = prediction[:, idx_valid_final]
+            extras["gain_applied"] = extras["gain_applied"][:, idx_valid_final]
+            extras["gain_unit_index"] = extras["gain_unit_index"][idx_valid_final]
+            extras["frame_behavior"] = extras["frame_behavior"].filter(idx_valid_final)
+            if "frame_behavior_internal" in extras:
+                extras["frame_behavior_internal"] = extras["frame_behavior_internal"].filter(idx_valid_final)
+            idx_valid_prediction = idx_valid_prediction[idx_valid_final]
+            was_filtered = True
+
+        # Any dropped frame -- at the gain stage or here -- has to be reported, otherwise callers
+        # line the prediction up against an unfiltered target.
+        extras["predictions_were_filtered"] = was_filtered
+        if was_filtered:
+            extras["idx_valid_predictions"] = idx_valid_prediction
+
+        return prediction, extras
+
+    def predict(
+        self,
+        session: B2Session,
+        coefficients: tuple[Placefield, Placefield, ReducedRankRegression],
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[PlaceFieldStructuredGainHyperparameters] = None,
+        nan_safe: bool = False,
+    ) -> tuple[np.ndarray, dict]:
+        """Predict target activity as place fields scaled by the predicted structured gain.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to predict.
+        coefficients : tuple[Placefield, Placefield, ReducedRankRegression]
+            Output of :meth:`train`: target place fields, source place fields, gain regression.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to predict. Default is "test".
+        hyperparameters : Optional[PlaceFieldStructuredGainHyperparameters]
+            The hyperparameters to use. Only ``rank`` is used at prediction time.
+        nan_safe : bool
+            If True, raises when predictions contain NaN instead of dropping those frames.
+
+        Returns
+        -------
+        prediction : np.ndarray
+            The predicted target activity for the requested timepoints.
+        extras : dict
+            Extra information about the prediction.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        target_placefield, source_placefield, gain_model = coefficients
+        inputs = self.prediction_inputs(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=split,
+            nan_safe=nan_safe,
+        )
+        return self.apply_gain_model(inputs, gain_model, hyperparameters.rank, nan_safe=nan_safe)
+
+    @property
+    def _model_hyperparameters(self) -> Type[PlaceFieldStructuredGainHyperparameters]:
+        """Return the hyperparameter class constructor for PlaceFieldStructuredGainModel.
+
+        Returns
+        -------
+        type[PlaceFieldStructuredGainHyperparameters]
+            The PlaceFieldStructuredGainHyperparameters class constructor.
+        """
+        return PlaceFieldStructuredGainHyperparameters
+
+    def _get_model_name(self) -> str:
+        """Get the model name identifier based on the internal flag.
+
+        Returns
+        -------
+        str
+            The model name identifier, e.g. "external_placefield_1d_structured_gain".
+        """
+        model_type = "internal" if self.internal else "external"
+        model_name = f"{model_type}_placefield_1d_structured_gain"
+        if not self.fit_intercept:
+            model_name += "_no_intercept"
+        return model_name
+
+    def regressor_dimensionality(
+        self,
+        num_environments: int = 1,
+        hyperparameters: Optional[PlaceFieldStructuredGainHyperparameters] = None,
+    ) -> int:
+        """Return effective dimensionality: the spatial maps plus the gain latents.
+
+        Parameters
+        ----------
+        num_environments : int
+            Number of environments in the session.
+        hyperparameters : Optional[PlaceFieldStructuredGainHyperparameters]
+            Hyperparameters to evaluate. If None, uses ``self.hyperparameters``.
+
+        Returns
+        -------
+        int
+            Regressor dimensionality for this model configuration.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return get_regressor_dimensionality_from_hyperparameters(
+            num_environments=num_environments,
+            hyperparameters=hyperparameters,
+        )
+
+    def max_gain_rank(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "train",
+    ) -> int:
+        """Largest rank the gain regression can take on a split.
+
+        Bounded by the number of gain units, which is on the order of the number of time chunks --
+        far smaller than the frame counts that bound frame-wise regressions.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to measure.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split the gain regression is fit on. Default is "train".
+
+        Returns
+        -------
+        int
+            The maximum achievable rank (at least 1).
+        """
+        source_data, target_data, frame_behavior = self.get_session_data(session, spks_type, split)
+        unit_index, num_units = make_gain_unit_index(
+            self.get_split_chunk_index(session, spks_type, split),
+            frame_behavior.trial,
+        )
+        num_fit_units = int(np.sum(np.bincount(unit_index, minlength=num_units) >= self.min_frames_per_unit))
+        num_features = source_data.shape[0] + int(self.fit_intercept)
+        return max(1, min(num_features, target_data.shape[0], num_fit_units))
+
+    def inherited_placefield_hyperparameters(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
+    ) -> PlaceFieldHyperparameters:
+        """Best place-field hyperparameters of the matching plain place-field model.
+
+        The place fields here are estimated exactly as in ``external_placefield_1d`` /
+        ``internal_placefield_1d``, so their optimized ``num_bins`` and ``smooth_width`` are reused
+        instead of being searched again. Same session, spike type, splits and activity scaling, so
+        this is a cache hit whenever that model has already been run.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to look up.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        train_split : Optional["SplitName"]
+            The training split. Default is "train".
+        validation_split : Optional["SplitName"]
+            The validation split. Default is "validation".
+
+        Returns
+        -------
+        PlaceFieldHyperparameters
+            The best place-field hyperparameters for this session.
+        """
+        placefield_model = PlaceFieldModel(
+            self.registry,
+            internal=self.internal,
+            gain=False,
+            activity_parameters=self.activity_parameters,
+            autosave=self.autosave,
+        )
+        return placefield_model.get_best_hyperparameters(
+            session,
+            spks_type=spks_type,
+            train_split=train_split,
+            validation_split=validation_split,
+            method="best",
+        )[0]
+
+    def _optimize_golden(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        train_split: "SplitName",
+        validation_split: "SplitName",
+        nan_safe: bool = False,
+    ) -> tuple[dict, float, pd.DataFrame]:
+        """Optimize the gain regression with golden section search.
+
+        The place-field hyperparameters are inherited from the matching plain place-field model
+        (see :meth:`inherited_placefield_hyperparameters`) and held fixed, so the place fields and
+        the measured gains are computed once. Then alpha is searched with rank at its maximum, and
+        rank is searched at the best alpha -- the same two-stage scheme as
+        :class:`ReducedRankRegressionModel`.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to optimize the hyperparameters for.
+        spks_type : SpksTypes
+            The type of spike data to use for the population.
+        train_split : "SplitName"
+            The split to use for the training.
+        validation_split : "SplitName"
+            The split to use for the validation.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+
+        Returns
+        -------
+        best_params : dict
+            The best hyperparameters for the model.
+        best_score : float
+            The best score for the model.
+        results_df : pd.DataFrame
+            A DataFrame with all the results from the golden section search optimization.
+        """
+        placefield_hyperparameters = self.inherited_placefield_hyperparameters(
+            session,
+            spks_type=spks_type,
+            train_split=train_split,
+            validation_split=validation_split,
+        )
+        num_bins = placefield_hyperparameters.num_bins
+        smooth_width = placefield_hyperparameters.smooth_width
+        hyperparameters = PlaceFieldStructuredGainHyperparameters(num_bins=num_bins, smooth_width=smooth_width)
+
+        # Place fields and measured gains don't depend on alpha or rank, so build them once.
+        target_placefield, source_placefield = PlaceFieldModel.train(self, session, spks_type, train_split, hyperparameters)
+        validation_inputs = self.prediction_inputs(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=validation_split,
+            nan_safe=nan_safe,
+        )
+        target_validation = self.get_session_data(session, spks_type, validation_split)[1]
+        max_rank = self.max_gain_rank(session, spks_type, train_split)
+
+        results: list[dict] = []
+
+        def evaluate(alpha: float, rank: int, gain_model: Optional[ReducedRankRegression] = None) -> tuple[float, ReducedRankRegression]:
+            """Score one (alpha, rank) pair on the validation split."""
+            if gain_model is None:
+                gain_model = self.fit_gain_model(
+                    session,
+                    target_placefield,
+                    source_placefield,
+                    spks_type=spks_type,
+                    split=train_split,
+                    alpha=alpha,
+                )
+            prediction, extras = self.apply_gain_model(validation_inputs, gain_model, rank, nan_safe=nan_safe)
+            target = target_validation
+            if extras.get("predictions_were_filtered", False):
+                target = target[:, extras["idx_valid_predictions"]]
+            score = float(self.evaluate(prediction, target, nan_safe=nan_safe)["mse"])
+            if np.isnan(score):
+                score = float("inf")
+            results.append({"num_bins": num_bins, "smooth_width": smooth_width, "alpha": alpha, "rank": int(rank), "score": score})
+            return score, gain_model
+
+        best_alpha = golden_section_search(
+            func=lambda alpha: evaluate(alpha, max_rank)[0],
+            a=1e-2,
+            b=1e6,
+            tolerance_param=1e-2,
+            tolerance_score=1e-3,
+            max_iterations=25,
+            minimize=True,
+            logspace=True,
+        )[0]
+
+        # Rank is a prediction-time knob: fit once at the best alpha and re-score each rank.
+        best_gain_model = self.fit_gain_model(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=train_split,
+            alpha=best_alpha,
+        )
+        golden_section_search(
+            func=lambda rank: evaluate(best_alpha, int(rank), gain_model=best_gain_model)[0],
+            a=1.0,
+            b=float(max_rank),
+            tolerance_param=1.0,
+            tolerance_score=1e-3,
+            max_iterations=25,
+            minimize=True,
+            logspace=False,
+        )
+
+        best_result = min(results, key=lambda result: result["score"])
+        best_params = {
+            "num_bins": best_result["num_bins"],
+            "smooth_width": best_result["smooth_width"],
+            "alpha": best_result["alpha"],
+            "rank": best_result["rank"],
+        }
+        return best_params, best_result["score"], pd.DataFrame(results)
 
 
 def make_position_basis(
