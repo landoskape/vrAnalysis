@@ -372,9 +372,7 @@ def residual_per_roi_keys() -> list[str]:
 
 def residual_summary_keys() -> list[str]:
     """Every scalar summary key emitted by :class:`RegressionPlacefieldResidualConfig`."""
-    return [
-        f"{statistic}_{subset}{key}" for statistic in RESIDUAL_STATISTICS for subset in RESIDUAL_SUBSETS for key in residual_per_roi_keys()
-    ]
+    return [f"{statistic}_{subset}{key}" for statistic in RESIDUAL_STATISTICS for subset in RESIDUAL_SUBSETS for key in residual_per_roi_keys()]
 
 
 def _finite_mean(values: np.ndarray) -> float:
@@ -500,7 +498,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "preferred"
-    activity_parameters_name: str = "default"
+    activity_parameters_name: str = "std"
 
     num_placefield_bins: int = 100
     placefield_smooth_width: float | None = None
@@ -512,7 +510,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(KEY_FIGURE_MODELS),
-            "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
+            # "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
         }
 
     def validate(self):
@@ -733,7 +731,7 @@ class RegressionResidualStructureConfig(AnalysisConfigBase):
     model_name: ModelName = "internal_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "preferred"
-    activity_parameters_name: str = "default"
+    activity_parameters_name: str = "std"
     multiplicative_eps_scale: float = 0.01
     chunk_gain_regularization: float = 0.01
 
@@ -749,8 +747,7 @@ class RegressionResidualStructureConfig(AnalysisConfigBase):
             raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(MODEL_NAMES)}")
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
             raise ValueError(
-                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: "
-                f"{', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: " f"{', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
             )
         if self.multiplicative_eps_scale <= 0:
             raise ValueError("multiplicative_eps_scale must be positive")
