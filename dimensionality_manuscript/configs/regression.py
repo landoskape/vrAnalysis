@@ -32,6 +32,8 @@ from ..regression_models.models import (
     RBFPosModel,
     FullRegressorModel,
     ReducedRankRegressionModel,
+    make_gain_unit_index,
+    least_squares_gain,
 )
 from ..pipeline.base import AnalysisConfigBase
 
@@ -135,22 +137,30 @@ class RegressionConfig(AnalysisConfigBase):
         return score
 
 
-def _placefield_weighted_residual_rms(
+# Residual localization is reported for two membership place fields: ``xval`` estimates the place
+# field on the training frames and reads it out on the held-out frames, so the membership never saw
+# the residuals it weights; ``infold`` estimates it on the same held-out frames, which is the
+# optimistic in-sample reference the cross-validated number should be compared against.
+RESIDUAL_FOLDS: tuple[str, ...] = ("xval", "infold")
+RESIDUAL_FOLD_SPLITS: dict[str, str] = {"xval": "train", "infold": "test"}
+RESIDUAL_REGIONS: tuple[str, ...] = ("within", "outside")
+RESIDUAL_METRICS: tuple[str, ...] = ("rms", "normalized_rms", "r2_weighted", "r2_shared")
+# Scalar summaries are reported over all ROIs and over each side of the quality filter.
+RESIDUAL_SUBSETS: tuple[str, ...] = ("", "quality_filtered_", "notquality_filtered_")
+# Both an across-ROI mean and median are reported. The mean is the historical summary, but every
+# one of these metrics is right-skewed across the population, and ``r2_weighted`` catastrophically
+# so: an ROI whose within-field weighted variance is near zero produces an R² in the thousands,
+# which a mean over ~2000 ROIs cannot survive (observed mean -938 against a median of -0.07 on a
+# real session). Prefer the median unless the mean is specifically wanted.
+RESIDUAL_STATISTICS: tuple[str, ...] = ("mean", "median")
+
+
+def _validate_residual_inputs(
     residual: np.ndarray,
     placefield_prediction: np.ndarray,
     placefield_peak: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Per-ROI residual RMS inside and outside a soft place field.
-
-    The place-field prediction is converted to a membership in ``[0, 1]`` by
-    dividing each ROI by the peak of its all-data place-field map. Within-field
-    weights are proportional to that membership; outside-field weights are
-    proportional to one minus the membership. Each set of temporal weights is
-    normalized independently before calculating RMS.
-    """
-    residual = np.asarray(residual, dtype=float)
-    placefield_prediction = np.asarray(placefield_prediction, dtype=float)
-    placefield_peak = np.asarray(placefield_peak, dtype=float)
+) -> None:
+    """Check that a residual, its place-field prediction, and the per-ROI peak line up."""
     if residual.ndim != 2:
         raise ValueError(f"residual must have shape (rois, frames), got {residual.shape}")
     if placefield_prediction.shape != residual.shape:
@@ -158,8 +168,35 @@ def _placefield_weighted_residual_rms(
     if placefield_peak.shape != (residual.shape[0],):
         raise ValueError(f"placefield_peak must have shape ({residual.shape[0]},), got {placefield_peak.shape}")
 
+
+def _placefield_membership_weights(
+    placefield_prediction: np.ndarray,
+    placefield_peak: np.ndarray,
+    valid: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Within- and outside-field temporal weights from a soft place-field membership.
+
+    The place-field prediction is converted to a membership in ``[0, 1]`` by dividing each ROI by
+    the peak of its place-field map. Within-field weights are proportional to that membership;
+    outside-field weights are proportional to one minus the membership. Both are zeroed wherever
+    ``valid`` is False, so every downstream metric ignores those frames.
+
+    Parameters
+    ----------
+    placefield_prediction : np.ndarray
+        Place-field prediction of shape (rois, frames).
+    placefield_peak : np.ndarray
+        Peak of each ROI's place-field map, shape (rois,).
+    valid : np.ndarray
+        Boolean mask of shape (rois, frames) marking usable samples.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Within-field and outside-field weights, both of shape (rois, frames).
+    """
     valid_peak = np.isfinite(placefield_peak) & (placefield_peak > 0)
-    valid = np.isfinite(residual) & np.isfinite(placefield_prediction) & valid_peak[:, None]
+    valid = valid & np.isfinite(placefield_prediction) & valid_peak[:, None]
     membership = np.divide(
         np.clip(placefield_prediction, 0, None),
         placefield_peak[:, None],
@@ -167,26 +204,177 @@ def _placefield_weighted_residual_rms(
         where=valid_peak[:, None],
     )
     membership = np.clip(membership, 0, 1)
+    return np.where(valid, membership, 0.0), np.where(valid, 1 - membership, 0.0)
 
-    squared_error = np.where(valid, residual**2, 0)
-    within_weight = np.where(valid, membership, 0)
-    outside_weight = np.where(valid, 1 - membership, 0)
-    within_total = np.sum(within_weight, axis=1)
-    outside_total = np.sum(outside_weight, axis=1)
 
-    within_mse = np.divide(
-        np.sum(within_weight * squared_error, axis=1),
-        within_total,
+def _weighted_mse(residual: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Per-ROI weighted mean squared residual, ``sum(w * r**2) / sum(w)``.
+
+    Callers must zero the weight of every sample whose residual is not finite -- which is what
+    :func:`_placefield_membership_weights` does -- otherwise the NaN propagates into the result.
+
+    Parameters
+    ----------
+    residual : np.ndarray
+        Residual of shape (rois, frames).
+    weights : np.ndarray
+        Non-negative weights of shape (rois, frames).
+
+    Returns
+    -------
+    np.ndarray
+        Weighted MSE per ROI, NaN where the weights sum to zero.
+    """
+    total = np.sum(weights, axis=1)
+    error = np.where(weights > 0, residual, 0.0)
+    return np.divide(
+        np.sum(weights * error**2, axis=1),
+        total,
         out=np.full(residual.shape[0], np.nan),
-        where=within_total > 0,
+        where=total > 0,
     )
-    outside_mse = np.divide(
-        np.sum(outside_weight * squared_error, axis=1),
-        outside_total,
-        out=np.full(residual.shape[0], np.nan),
-        where=outside_total > 0,
+
+
+def _weighted_r2(target: np.ndarray, prediction: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Per-ROI weighted R², measured against the weighted mean of the target.
+
+    ``1 - sum(w * (y - yhat)**2) / sum(w * (y - ybar_w)**2)``, where ``ybar_w`` is the weighted
+    mean of the target over the same weights. The baseline is therefore specific to the weight set:
+    within- and outside-field R² are each well posed, but they are not on a common scale because
+    place-field weighting concentrates on frames where the ROI is most active.
+
+    Parameters
+    ----------
+    target : np.ndarray
+        Observed activity of shape (rois, frames).
+    prediction : np.ndarray
+        Model prediction of shape (rois, frames).
+    weights : np.ndarray
+        Non-negative weights of shape (rois, frames).
+
+    Returns
+    -------
+    np.ndarray
+        Weighted R² per ROI, NaN where the weights sum to zero or the weighted target has no
+        variance.
+    """
+    total = np.sum(weights, axis=1)
+    weighted_mean = np.divide(
+        np.sum(weights * np.where(weights > 0, target, 0.0), axis=1),
+        total,
+        out=np.full(target.shape[0], np.nan),
+        where=total > 0,
     )
-    return np.sqrt(within_mse), np.sqrt(outside_mse)
+    residual = np.where(weights > 0, target - prediction, 0.0)
+    deviation = np.where(weights > 0, target - weighted_mean[:, None], 0.0)
+    ss_res = np.sum(weights * residual**2, axis=1)
+    ss_tot = np.sum(weights * deviation**2, axis=1)
+    ratio = np.full(target.shape[0], np.nan)
+    np.divide(ss_res, ss_tot, out=ratio, where=ss_tot > 0)
+    return 1.0 - ratio
+
+
+def _placefield_weighted_residual_rms(
+    residual: np.ndarray,
+    placefield_prediction: np.ndarray,
+    placefield_peak: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-ROI residual RMS inside and outside a soft place field.
+
+    Thin wrapper over :func:`_placefield_membership_weights` and :func:`_weighted_mse`; each set of
+    temporal weights is normalized independently before calculating RMS.
+    """
+    residual = np.asarray(residual, dtype=float)
+    placefield_prediction = np.asarray(placefield_prediction, dtype=float)
+    placefield_peak = np.asarray(placefield_peak, dtype=float)
+    _validate_residual_inputs(residual, placefield_prediction, placefield_peak)
+    within_weight, outside_weight = _placefield_membership_weights(
+        placefield_prediction,
+        placefield_peak,
+        np.isfinite(residual),
+    )
+    return np.sqrt(_weighted_mse(residual, within_weight)), np.sqrt(_weighted_mse(residual, outside_weight))
+
+
+def _residual_fold_metrics(
+    target: np.ndarray,
+    prediction: np.ndarray,
+    placefield_prediction: np.ndarray,
+    placefield_peak: np.ndarray,
+    variance_pf: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Every per-ROI residual metric for one membership place field.
+
+    Emits ``{region}_pf_{metric}`` for each region in :data:`RESIDUAL_REGIONS` and metric in
+    :data:`RESIDUAL_METRICS`, plus the ``outside_minus_within_pf_{metric}`` differences. The
+    difference keys are literal: for R² a positive difference means the *outside*-field fit is
+    better, the opposite reading from the RMS differences.
+
+    ``r2_shared`` normalizes the weighted MSE by the ROI's total held-out variance rather than by
+    the weighted target variance, which makes it exactly ``1 - normalized_rms**2``. It is stored as
+    a convenience for readers who think in R² units; ``r2_weighted`` is the one that carries
+    information the RMS keys do not.
+
+    Parameters
+    ----------
+    target : np.ndarray
+        Held-out target activity of shape (rois, frames).
+    prediction : np.ndarray
+        Model prediction of shape (rois, frames).
+    placefield_prediction : np.ndarray
+        Membership place-field prediction of shape (rois, frames).
+    placefield_peak : np.ndarray
+        Peak of each ROI's membership place field, shape (rois,).
+    variance_pf : np.ndarray
+        Total held-out variance per ROI (ddof=0), shape (rois,).
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Per-ROI metric arrays keyed without a fold prefix.
+    """
+    residual = target - prediction
+    _validate_residual_inputs(residual, placefield_prediction, placefield_peak)
+    weights = dict(
+        zip(
+            RESIDUAL_REGIONS,
+            _placefield_membership_weights(placefield_prediction, placefield_peak, np.isfinite(residual)),
+        )
+    )
+    target_std = np.sqrt(variance_pf)
+    scale_ok = np.isfinite(variance_pf) & (variance_pf > 0)
+
+    metrics: dict[str, np.ndarray] = {}
+    for region, weight in weights.items():
+        weighted_mse = _weighted_mse(residual, weight)
+        rms = np.sqrt(weighted_mse)
+        metrics[f"{region}_pf_rms"] = rms
+        metrics[f"{region}_pf_normalized_rms"] = np.divide(rms, target_std, out=np.full_like(rms, np.nan), where=scale_ok)
+        metrics[f"{region}_pf_r2_shared"] = 1.0 - np.divide(
+            weighted_mse,
+            variance_pf,
+            out=np.full_like(weighted_mse, np.nan),
+            where=scale_ok,
+        )
+        metrics[f"{region}_pf_r2_weighted"] = _weighted_r2(target, prediction, weight)
+
+    for metric in RESIDUAL_METRICS:
+        metrics[f"outside_minus_within_pf_{metric}"] = metrics[f"outside_pf_{metric}"] - metrics[f"within_pf_{metric}"]
+    return metrics
+
+
+def residual_per_roi_keys() -> list[str]:
+    """Every per-ROI array key emitted by :class:`RegressionPlacefieldResidualConfig`."""
+    keys = [f"{fold}_{region}_pf_{metric}" for fold in RESIDUAL_FOLDS for region in RESIDUAL_REGIONS for metric in RESIDUAL_METRICS]
+    keys += [f"{fold}_outside_minus_within_pf_{metric}" for fold in RESIDUAL_FOLDS for metric in RESIDUAL_METRICS]
+    return keys + ["variance_pf"]
+
+
+def residual_summary_keys() -> list[str]:
+    """Every scalar summary key emitted by :class:`RegressionPlacefieldResidualConfig`."""
+    return [
+        f"{statistic}_{subset}{key}" for statistic in RESIDUAL_STATISTICS for subset in RESIDUAL_SUBSETS for key in residual_per_roi_keys()
+    ]
 
 
 def _finite_mean(values: np.ndarray) -> float:
@@ -195,17 +383,115 @@ def _finite_mean(values: np.ndarray) -> float:
     return float(np.mean(finite)) if finite.size else np.nan
 
 
+def _finite_median(values: np.ndarray) -> float:
+    """Median of finite values, or NaN when no finite values exist."""
+    finite = np.asarray(values)[np.isfinite(values)]
+    return float(np.median(finite)) if finite.size else np.nan
+
+
+def _residual_summary_scalars(per_roi: dict[str, np.ndarray], quality_filtered_roi_mask: np.ndarray) -> dict[str, float]:
+    """Across-ROI finite mean and median of every per-ROI array, for each ROI subset."""
+    subset_masks = {
+        "": np.ones_like(quality_filtered_roi_mask, dtype=bool),
+        "quality_filtered_": quality_filtered_roi_mask,
+        "notquality_filtered_": ~quality_filtered_roi_mask,
+    }
+    reducers = {"mean": _finite_mean, "median": _finite_median}
+    return {
+        f"{statistic}_{subset}{key}": reduce(values[mask])
+        for statistic, reduce in reducers.items()
+        for subset, mask in subset_masks.items()
+        for key, values in per_roi.items()
+    }
+
+
+def _membership_placefield(
+    model,
+    session: B2Session,
+    spks_type: SpksTypes,
+    split: str,
+    dist_edges: np.ndarray,
+    smooth_width: float | None,
+):
+    """Estimate the membership place field from one time split's frames.
+
+    ``model.get_session_data`` applies the exact activity scaling the model was fit with, so the
+    place field is in the same units as the residuals it will weight.
+    """
+    _, target, frame_behavior = model.get_session_data(session, spks_type, split)
+    return get_placefield(
+        target.T.numpy(),
+        frame_behavior,
+        dist_edges=dist_edges,
+        speed_threshold=None,
+        average=True,
+        smooth_width=smooth_width,
+        zero_to_nan=True,
+    )
+
+
+def _placefield_peak(placefield) -> np.ndarray:
+    """Peak of each ROI's place-field map, NaN for ROIs with no finite bin."""
+    finite = np.isfinite(placefield.placefield)
+    peak = np.max(np.where(finite, placefield.placefield, -np.inf), axis=(0, 1))
+    peak[~np.any(finite, axis=(0, 1))] = np.nan
+    return peak
+
+
+def _membership_prediction(placefield, frame_behavior, fold: str, session: B2Session) -> np.ndarray:
+    """Read a membership place field out on a set of frames, shaped (rois, frames).
+
+    The ``xval`` place field is built from the training frames only, so it can in principle miss an
+    environment that the held-out frames visit. That would make the residual localization silently
+    incomparable across sessions, so it is raised rather than dropped.
+    """
+    missing = np.setdiff1d(np.unique(frame_behavior.environment), placefield.environment)
+    if missing.size:
+        raise ValueError(
+            f"The {fold!r} membership place field for {session.session_print()} has no map for "
+            f"environment(s) {missing.tolist()}, which the held-out frames visit."
+        )
+    return get_placefield_prediction(placefield, frame_behavior)[0].T
+
+
 @dataclass(frozen=True)
 class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     """Compare held-out model residuals within and outside each target ROI's place field.
 
     The parameter grid deliberately mirrors :class:`RegressionConfig`: every
     regression result therefore has a corresponding residual-localization job.
-    A common, non-cross-validated place field is estimated from the target
-    population's full split in the same activity units used by the model.
+
+    The membership place field is estimated twice, in the same activity units used by the model.
+    The ``xval`` fold estimates it on the training frames and reads it out on the held-out frames,
+    so the membership never saw the residuals it weights. The ``infold`` fold estimates it on the
+    held-out frames themselves, which is the in-sample reference the cross-validated number should
+    be compared against. Both folds weight residuals from the *same* held-out frames -- only the
+    membership changes.
+
+    Four metrics are reported per (fold, region): ``rms``, ``normalized_rms`` (RMS over the ROI's
+    held-out standard deviation), ``r2_weighted`` (weighted R² against the weighted mean of the
+    target), and ``r2_shared`` (weighted MSE over the ROI's total held-out variance). Note that
+    ``r2_weighted`` uses a baseline specific to each weight set, so the within- and outside-field
+    values are each well posed but are not on a common scale; ``r2_shared`` shares one baseline and
+    is exactly ``1 - normalized_rms**2``.
+
+    Each per-ROI array is summarized by both an across-ROI ``mean_*`` and ``median_*``. These
+    distributions are right-skewed, so the two differ substantially even for RMS; for
+    ``r2_weighted`` the mean is unusable, because an ROI whose within-field weighted variance is
+    near zero produces an R² in the thousands and swamps the population.
+
+    Note that ``infold`` covers noticeably fewer ROIs than ``xval``. The held-out split is about a
+    tenth of the session, so ROIs that are silent over it have an all-NaN place-field map and no
+    usable membership. The two folds are therefore not measured over identical ROI sets --
+    ``quality_filtered_roi_mask`` plus each fold's own finite mask is the honest comparison.
+
+    The ROI quality filter is deliberately *not* cross-validated: it selects which neurons are
+    compared, so it stays on the full split and is identical across folds.
     """
 
-    schema_version: str = "v5"
+    schema_version: str = "v6"
+    # v6: estimate the membership place field per fold (xval on train, infold on test) instead of
+    # once on the full split, and report weighted R² alongside RMS.
     # v5: compute the ROI quality filter the same way cvpca / stimspace_spectra do
     # (fast behavioral sampling, unvisited bins at zero instead of NaN). v4 required
     # every bin to be occupied on every trial, which left zero quality ROIs in most
@@ -275,19 +561,23 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
             hyperparameters=hyperparameters,
         )
 
-        # Estimate a common target-neuron PF from every population time split.
-        # get_session_data applies the exact activity scaling used by this model.
-        _, target_full, frame_behavior_full = model.get_session_data(session, self.spks_type, "full")
+        # One membership place field per fold, in the model's own activity units.
         dist_edges = np.linspace(0, session.env_length[0], self.num_placefield_bins + 1)
-        placefield = get_placefield(
-            target_full.T.numpy(),
-            frame_behavior_full,
-            dist_edges=dist_edges,
-            speed_threshold=None,
-            average=True,
-            smooth_width=self.placefield_smooth_width,
-            zero_to_nan=True,
-        )
+        placefields = {
+            fold: _membership_placefield(
+                model,
+                session,
+                self.spks_type,
+                split,
+                dist_edges,
+                self.placefield_smooth_width,
+            )
+            for fold, split in RESIDUAL_FOLD_SPLITS.items()
+        }
+
+        # The ROI quality filter is a neuron-selection criterion rather than a residual estimate,
+        # so it stays on the full split and is shared by both folds.
+        _, target_full, frame_behavior_full = model.get_session_data(session, self.spks_type, "full")
 
         # Trial-resolved maps provide per-environment quality values in the same
         # target-ROI order and activity units as the residual arrays below. This
@@ -329,83 +619,219 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
         # Evaluate PF membership on the same held-out frames as the model report,
         # including any model-specific removal of frames with invalid predictions.
         _, _, frame_behavior_test = model.get_session_data(session, self.spks_type, "test")
-        pf_prediction = get_placefield_prediction(placefield, frame_behavior_test)[0].T
         if report.extras.get("predictions_were_filtered", False):
-            pf_prediction = pf_prediction[:, report.extras["idx_valid_predictions"]]
+            frame_behavior_test = frame_behavior_test.filter(report.extras["idx_valid_predictions"])
 
         target = np.asarray(report.target_data)
         prediction = np.asarray(report.predicted_data)
-        if pf_prediction.shape != target.shape or prediction.shape != target.shape:
-            raise ValueError(
-                "Held-out target, model prediction, and PF prediction are misaligned: "
-                f"target={target.shape}, prediction={prediction.shape}, pf={pf_prediction.shape}"
-            )
-
-        finite_pf = np.isfinite(placefield.placefield)
-        placefield_peak = np.max(
-            np.where(finite_pf, placefield.placefield, -np.inf),
-            axis=(0, 1),
-        )
-        placefield_peak[~np.any(finite_pf, axis=(0, 1))] = np.nan
-        within_rms, outside_rms = _placefield_weighted_residual_rms(
-            target - prediction,
-            pf_prediction,
-            placefield_peak,
-        )
         # One total held-out variance per ROI provides the scale needed to compare
         # residual magnitudes across sessions. Using ddof=0 matches the SSE / SST
         # normalization in R²: RMS / sqrt(variance) is sqrt(SSE / SST) when the
         # same frames and weights are used.
         variance_pf = np.var(target, axis=1)
-        target_std = np.sqrt(variance_pf)
-        normalized_within_rms = np.divide(
-            within_rms,
-            target_std,
-            out=np.full_like(within_rms, np.nan),
-            where=np.isfinite(target_std) & (target_std > 0),
-        )
-        normalized_outside_rms = np.divide(
-            outside_rms,
-            target_std,
-            out=np.full_like(outside_rms, np.nan),
-            where=np.isfinite(target_std) & (target_std > 0),
-        )
-        difference = outside_rms - within_rms
-        normalized_difference = normalized_outside_rms - normalized_within_rms
+
+        per_roi: dict[str, np.ndarray] = {"variance_pf": variance_pf}
+        for fold, placefield in placefields.items():
+            pf_prediction = _membership_prediction(placefield, frame_behavior_test, fold, session)
+            if pf_prediction.shape != target.shape or prediction.shape != target.shape:
+                raise ValueError(
+                    f"Held-out target, model prediction, and {fold!r} PF prediction are misaligned: "
+                    f"target={target.shape}, prediction={prediction.shape}, pf={pf_prediction.shape}"
+                )
+            fold_metrics = _residual_fold_metrics(
+                target,
+                prediction,
+                pf_prediction,
+                _placefield_peak(placefield),
+                variance_pf,
+            )
+            per_roi.update({f"{fold}_{key}": values for key, values in fold_metrics.items()})
+
         return {
-            "within_pf_rms": within_rms,
-            "outside_pf_rms": outside_rms,
-            "variance_pf": variance_pf,
-            "normalized_within_pf_rms": normalized_within_rms,
-            "normalized_outside_pf_rms": normalized_outside_rms,
-            "outside_minus_within_pf_rms": difference,
-            "normalized_outside_minus_within_pf_rms": normalized_difference,
+            **per_roi,
+            **_residual_summary_scalars(per_roi, quality_filtered_roi_mask),
             "reliability": reliability,
             "fraction_active": fraction_active,
             "quality_environments": environments,
             "quality_filtered_roi_mask": quality_filtered_roi_mask,
             "num_quality_filtered_rois": int(np.sum(quality_filtered_roi_mask)),
-            "mean_within_pf_rms": _finite_mean(within_rms),
-            "mean_outside_pf_rms": _finite_mean(outside_rms),
-            "mean_variance_pf": _finite_mean(variance_pf),
-            "mean_normalized_within_pf_rms": _finite_mean(normalized_within_rms),
-            "mean_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms),
-            "mean_outside_minus_within_pf_rms": _finite_mean(difference),
-            "mean_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference),
-            "mean_quality_filtered_within_pf_rms": _finite_mean(within_rms[quality_filtered_roi_mask]),
-            "mean_quality_filtered_outside_pf_rms": _finite_mean(outside_rms[quality_filtered_roi_mask]),
-            "mean_quality_filtered_variance_pf": _finite_mean(variance_pf[quality_filtered_roi_mask]),
-            "mean_quality_filtered_normalized_within_pf_rms": _finite_mean(normalized_within_rms[quality_filtered_roi_mask]),
-            "mean_quality_filtered_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms[quality_filtered_roi_mask]),
-            "mean_quality_filtered_outside_minus_within_pf_rms": _finite_mean(difference[quality_filtered_roi_mask]),
-            "mean_quality_filtered_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference[quality_filtered_roi_mask]),
-            "mean_notquality_filtered_within_pf_rms": _finite_mean(within_rms[~quality_filtered_roi_mask]),
-            "mean_notquality_filtered_outside_pf_rms": _finite_mean(outside_rms[~quality_filtered_roi_mask]),
-            "mean_notquality_filtered_variance_pf": _finite_mean(variance_pf[~quality_filtered_roi_mask]),
-            "mean_notquality_filtered_normalized_within_pf_rms": _finite_mean(normalized_within_rms[~quality_filtered_roi_mask]),
-            "mean_notquality_filtered_normalized_outside_pf_rms": _finite_mean(normalized_outside_rms[~quality_filtered_roi_mask]),
-            "mean_notquality_filtered_outside_minus_within_pf_rms": _finite_mean(difference[~quality_filtered_roi_mask]),
-            "mean_notquality_filtered_normalized_outside_minus_within_pf_rms": _finite_mean(normalized_difference[~quality_filtered_roi_mask]),
+        }
+
+
+# Models whose held-out residual structure is worth storing in full. The plain place-field model
+# supplies the raw place-field prediction, so the gain / structured-gain / peer-prediction variants
+# can be read against it without a second denominator.
+RESIDUAL_STRUCTURE_MODELS: list[ModelName] = [
+    "external_placefield_1d",
+    "internal_placefield_1d",
+    "internal_placefield_1d_gain",
+    "internal_placefield_1d_structured_gain",
+    "rrr",
+]
+
+# Every key this config returns. All are excluded from ResultsAggregator stacking: they are
+# per-session matrices meant to be inspected one session at a time, not padded into a grid.
+RESIDUAL_STRUCTURE_KEYS: tuple[str, ...] = (
+    "residual_additive",
+    "residual_multiplicative",
+    "model_prediction",
+    "chunk_gain",
+    "chunk_gain_unit_index",
+    "chunk_gain_unit_frame_count",
+    "chunk_gain_unit_trial",
+    "chunk_gain_unit_environment",
+    "frame_position",
+    "frame_speed",
+    "frame_trial",
+    "frame_environment",
+    "target_roi_index",
+)
+
+
+@dataclass(frozen=True)
+class RegressionResidualStructureConfig(AnalysisConfigBase):
+    """Store the held-out residual of a regression model in full, three ways.
+
+    :class:`RegressionPlacefieldResidualConfig` reduces the residual to per-ROI scalars. This
+    config keeps the matrices themselves so the structure of the residual *across the population*
+    can be looked at directly, one session at a time:
+
+    1. **Additive** -- ``target - prediction``, shape (targets, frames).
+    2. **Multiplicative** -- ``target / (relu(prediction) + eps)``, with a per-neuron ``eps``
+       proportional to that neuron's mean prediction. Every model in the grid already applies a
+       ReLU to its output, so the clip only bites for ``*_structured_gain``, whose predicted gains
+       are not rectified and can turn a place-field prediction negative.
+    3. **Chunk gain** -- the least-squares scale factor per cell per (time chunk ∩ trial), the same
+       estimator and shrinkage regularizer :class:`PlaceFieldStructuredGainModel` fits its gain
+       regression on. A time chunk belongs to exactly one split, so a unit never mixes folds.
+
+    ``min_frames_per_unit`` is deliberately not applied -- per-unit frame counts are returned so
+    filtering short units stays the analyst's decision.
+
+    Parameters
+    ----------
+    model_name : ModelName
+        Name of the regression model (must be in ``RESIDUAL_STRUCTURE_MODELS``).
+    spks_type : SpksTypes
+        Spike type to use for the population.
+    method : str
+        Hyperparameter selection method used to fix the model's hyperparameters.
+    activity_parameters_name : str
+        Named activity preprocessing preset. Not a grid axis: the stored matrices are large, so
+        only one preset is computed.
+    multiplicative_eps_scale : float
+        Denominator floor for the multiplicative residual, as a fraction of each neuron's mean
+        rectified prediction. Relative rather than absolute so it means the same thing under every
+        activity preset.
+    chunk_gain_regularization : float
+        Shrinkage of the chunk gains toward 1, passed to :func:`least_squares_gain`.
+    """
+
+    schema_version: str = "v1"
+
+    data_config_name: str = "default"
+    model_name: ModelName = "internal_placefield_1d"
+    spks_type: SpksTypes = "sigrebase"
+    method: str = "preferred"
+    activity_parameters_name: str = "default"
+    multiplicative_eps_scale: float = 0.01
+    chunk_gain_regularization: float = 0.01
+
+    display_name: ClassVar[str] = "regression_residual_structure"
+    _result_handling: ClassVar[dict[str, str]] = {key: "skip" for key in RESIDUAL_STRUCTURE_KEYS}
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {"model_name": list(RESIDUAL_STRUCTURE_MODELS)}
+
+    def validate(self):
+        if self.model_name not in MODEL_NAMES:
+            raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(MODEL_NAMES)}")
+        if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
+            raise ValueError(
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: "
+                f"{', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
+            )
+        if self.multiplicative_eps_scale <= 0:
+            raise ValueError("multiplicative_eps_scale must be positive")
+        if self.chunk_gain_regularization < 0:
+            raise ValueError("chunk_gain_regularization must be non-negative")
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"{self.model_name}",
+            f"spks={self.spks_type}",
+            f"method={self.method}",
+        ]
+        if self.activity_parameters_name != "default":
+            parts.append(f"ap={self.activity_parameters_name}")
+        parts.extend([f"eps={self.multiplicative_eps_scale:g}", f"gainreg={self.chunk_gain_regularization:g}"])
+        parts.append(self.schema_version)
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        """Fit the cached-best model and store its held-out residual three ways."""
+        model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
+        hyperparameters = model.get_best_hyperparameters(
+            session,
+            spks_type=self.spks_type,
+            method=self.method,
+        )[0]
+        report = model.process(
+            session,
+            self.spks_type,
+            train_split="train",
+            test_split="test",
+            hyperparameters=hyperparameters,
+        )
+        target = np.asarray(report.target_data, dtype=float)
+        prediction = np.asarray(report.predicted_data, dtype=float)
+
+        # Chunk ids come from gaps in the split's *unfiltered* sample indices, so deriving them
+        # first and subsetting afterwards preserves chunk identity. report.extras["source_data"]
+        # is left unfiltered by process(), so it is never used for alignment here.
+        _, _, frame_behavior = model.get_session_data(session, self.spks_type, "test")
+        chunk_index = model.get_split_chunk_index(session, self.spks_type, "test")
+        if report.extras.get("predictions_were_filtered", False):
+            idx_valid = report.extras["idx_valid_predictions"]
+            frame_behavior = frame_behavior.filter(idx_valid)
+            chunk_index = chunk_index[idx_valid]
+        if target.shape[1] != len(frame_behavior):
+            raise ValueError(f"Held-out target has {target.shape[1]} frames but behavior has {len(frame_behavior)}")
+
+        rectified = np.clip(prediction, 0, None)
+        eps = self.multiplicative_eps_scale * np.mean(rectified, axis=1, keepdims=True)
+        residual_multiplicative = np.divide(
+            target,
+            rectified + eps,
+            out=np.full_like(target, np.nan),
+            where=eps > 0,
+        )
+
+        unit_index, num_units = make_gain_unit_index(chunk_index, frame_behavior.trial)
+        chunk_gain = least_squares_gain(target, prediction, unit_index, num_units, self.chunk_gain_regularization)
+        # One representative frame per unit; a unit is a contiguous stretch of a single trial, so
+        # its trial and environment are constant.
+        unit_first_frame = np.unique(unit_index, return_index=True)[1]
+
+        population, _ = registry.get_population(session, self.spks_type)
+        target_roi_index = np.asarray(population.idx_neurons[population.cell_split_indices[1]])
+
+        return {
+            "residual_additive": (target - prediction).astype(np.float32),
+            "residual_multiplicative": residual_multiplicative.astype(np.float32),
+            "model_prediction": prediction.astype(np.float32),
+            "chunk_gain": chunk_gain.astype(np.float32),
+            "chunk_gain_unit_index": unit_index.astype(np.int32),
+            "chunk_gain_unit_frame_count": np.bincount(unit_index, minlength=num_units).astype(np.int32),
+            "chunk_gain_unit_trial": np.asarray(frame_behavior.trial)[unit_first_frame],
+            "chunk_gain_unit_environment": np.asarray(frame_behavior.environment)[unit_first_frame],
+            "frame_position": np.asarray(frame_behavior.position, dtype=np.float32),
+            "frame_speed": np.asarray(frame_behavior.speed, dtype=np.float32),
+            "frame_trial": np.asarray(frame_behavior.trial),
+            "frame_environment": np.asarray(frame_behavior.environment),
+            "target_roi_index": target_roi_index,
         }
 
 

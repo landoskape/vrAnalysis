@@ -8,7 +8,13 @@ from .data_config import DataConfig, get_data_config, list_data_configs
 from .pfpred_quality import PFPredQualityConfig
 from .placefield_structure import CrossValidatedPlacefieldsConfig, PlacefieldPredictionConfig, PlaceFieldStructureConfig
 from .population import PopulationConfig
-from .regression import RegressionConfig, RegressionPlacefieldResidualConfig, VectorGainRankConfig, RegressionDimensionalitySweepConfig
+from .regression import (
+    RegressionConfig,
+    RegressionPlacefieldResidualConfig,
+    RegressionResidualStructureConfig,
+    VectorGainRankConfig,
+    RegressionDimensionalitySweepConfig,
+)
 from .rrr_to_external_latents import RRRToExternalLatentsConfig
 from .subspace import SubspaceConfig
 from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig, StimSpaceEnvPCAConfig, StimspaceSVCAConfig
@@ -43,6 +49,7 @@ ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
     RRRToExternalLatentsConfig,
     RegressionConfig,
     RegressionPlacefieldResidualConfig,
+    RegressionResidualStructureConfig,
     RegressionDimensionalitySweepConfig,
     SmoothGPSweepConfig,
     StimFullSweepConfig,
@@ -85,6 +92,7 @@ __all__ = [
     "PopulationConfig",
     "RegressionConfig",
     "RegressionPlacefieldResidualConfig",
+    "RegressionResidualStructureConfig",
     "RRRToExternalLatentsConfig",
     "VectorGainRankConfig",
     "RegressionDimensionalitySweepConfig",
