@@ -1137,6 +1137,33 @@ def _pack_sweep(name: str, values: np.ndarray, dim: np.ndarray, mse_arr: np.ndar
     }
 
 
+def _rank_grid(max_rank: int) -> np.ndarray:
+    """The sweep's rank grid, clipped to ``max_rank`` and extended to reach it.
+
+    :data:`RANK_VALUES` is logarithmic, so clipping alone leaves the curve ending wherever the grid
+    happens to fall -- 84 against an achievable rank of 100, say. That makes the endpoint arbitrary
+    and stops the sweep from ever reporting the unprojected model's own performance, so
+    ``max_rank`` is appended when the grid stops short of it.
+
+    When ``max_rank`` runs past the grid's own ceiling the curve stops at that ceiling instead,
+    which is deliberate: the grid, not the data, is the limit there.
+
+    Parameters
+    ----------
+    max_rank : int
+        Highest rank the fitted model supports.
+
+    Returns
+    -------
+    np.ndarray
+        Increasing ranks, each at most ``max_rank``.
+    """
+    ranks = RANK_VALUES[RANK_VALUES <= max_rank]
+    if max_rank <= RANK_VALUES[-1] and (ranks.size == 0 or ranks[-1] != max_rank):
+        ranks = np.append(ranks, max_rank)
+    return ranks
+
+
 def _prediction_basis(train_prediction: np.ndarray) -> np.ndarray:
     """Right singular vectors of a training prediction, as columns of shape (targets, rank).
 
@@ -1245,11 +1272,17 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     varies the effective resolution.
 
     ``high_dim_width`` is well below one bin spacing, so the background model is essentially
-    unsmoothed and ``high_dim_value`` alone sets how many frames land in each bin. That matters:
-    the projection is a rank constraint on the ``(targets, bins)`` tuning matrix, so it discards
-    noise in the directions it drops but keeps whatever noise survives in the ones it retains. Bins
-    estimated from too few frames make *every* direction noise-dominated, which flattens the whole
-    curve rather than just its tail -- at 200 bins the curve was flat at R^2 ~ 0.002.
+    unsmoothed. That is deliberate: smoothing collapses the achievable rank quickly (on one
+    session, 200 bins reached rank 334 at 0.5 cm, 224 at 2 cm, and only 96 at 5 cm), and the rank
+    projection is supposed to be the thing that varies resolution.
+
+    The defaults were chosen by sweeping bins against width on real sessions. On a session with
+    enough data, ``200 / 0.5`` was best on every measure -- highest unprojected R^2, highest
+    achieved rank, and the only setting where the projection improved on the unprojected model
+    (0.0744 -> 0.0803). Low-frame sessions are a separate matter: one with 1466 training frames
+    scored below chance at every bin count and width tried, and peaked at R^2 ~ 0.005 even at the
+    ~20 cm smoothing its own optimizer chose. Such sessions sit near zero regardless of the
+    background model and should be filtered on their own merits, not designed around here.
 
     Result keys, for every model::
 
@@ -1293,7 +1326,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     spks_type: SpksTypes = "sigrebase"
     method: str = "best"
     activity_parameters_name: str = "default"
-    high_dim_value: int = 100
+    high_dim_value: int = 200
     high_dim_width: float = 0.5
 
     display_name: ClassVar[str] = "regression_dim_sweep"
@@ -1326,7 +1359,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         ]
         if self.activity_parameters_name != "default":
             parts.append(f"ap={self.activity_parameters_name}")
-        if self.high_dim_value != 100:
+        if self.high_dim_value != 200:
             parts.append(f"highdim={self.high_dim_value}")
         if self.high_dim_width != 0.5:
             parts.append(f"highdimw={self.high_dim_width:g}")
@@ -1390,11 +1423,12 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         if extras.get("predictions_were_filtered", False):
             target = target[:, extras["idx_valid_predictions"]]
 
-        ranks = RANK_VALUES[RANK_VALUES <= basis.shape[1]]
+        max_rank = basis.shape[1]
+        ranks = _rank_grid(max_rank)
         mse_arr, r2_arr = _score_rank_projection(model, basis, prediction, target, ranks)
         return {
             **_pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr),
-            "full_rank": float(basis.shape[1]),
+            "full_rank": float(max_rank),
         }
 
     def _sweep_rrr(self, model: ReducedRankRegressionModel, session: B2Session, base_hp) -> dict:
@@ -1406,7 +1440,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         # here; leaving it out asked for ranks the fitted model could not build coefficients for.
         num_features = int(source_data.shape[0]) + int(model.fit_intercept)
         max_rank = int(min(num_features, target_data_train.shape[0], source_data.shape[1]))
-        ranks = RANK_VALUES[RANK_VALUES <= max_rank]
+        ranks = _rank_grid(max_rank)
 
         trained_model = model.train(session, spks_type=self.spks_type, split="train", hyperparameters=base_hp)
         target_test = model.get_session_data(session, self.spks_type, "test")[1]
