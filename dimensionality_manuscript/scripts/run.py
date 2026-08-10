@@ -9,6 +9,7 @@ Replicates the measure_cvpca.py workflow using the new pipeline architecture.
 
 import argparse
 import json
+import os
 from pathlib import Path
 from vrAnalysis.sessions import B2Session
 from dimensionality_manuscript.registry import RegistryPaths
@@ -96,15 +97,25 @@ def build_analysis_configs(
     return configs
 
 
-def collect_sessions() -> list[B2Session]:
-    """All imaging sessions from the vrSessions database."""
+#: Environment variable naming an exported session list, used when ``--sessions-file`` is not passed.
+SESSIONS_FILE_ENV_VAR: str = "DIM_MANUSCRIPT_SESSIONS_FILE"
+
+
+def collect_sessions(session_params: dict | None = None) -> list[B2Session]:
+    """All imaging sessions from the vrSessions database.
+
+    Parameters
+    ----------
+    session_params : dict or None
+        Session parameters (e.g. ``dict(spks_type="sigrebase")``) applied to every session.
+    """
     from vrAnalysis.database import get_database
 
     sessiondb = get_database("vrSessions")
-    return list(sessiondb.iter_sessions(imaging=True))
+    return list(sessiondb.iter_sessions(imaging=True, session_params=session_params or {}))
 
 
-def collect_sessions_from_file(path: Path) -> list[B2Session]:
+def collect_sessions_from_file(path: Path, session_params: dict | None = None) -> list[B2Session]:
     """Load sessions from a JSON file exported by export_sessions.py.
 
     Use this on systems where the Access database is unavailable (e.g. MYRIAD).
@@ -113,9 +124,50 @@ def collect_sessions_from_file(path: Path) -> list[B2Session]:
     ----------
     path : Path
         JSON file produced by ``export_sessions.py``.
+    session_params : dict or None
+        Session parameters (e.g. ``dict(spks_type="sigrebase")``) applied to every session.
     """
     records = json.loads(Path(path).read_text())
-    return [B2Session.create(r["mouse_name"], r["date"], r["session_id"]) for r in records]
+    return [B2Session.create(r["mouse_name"], r["date"], r["session_id"], params=session_params) for r in records]
+
+
+def resolve_sessions_file(sessions_file: Path | None = None) -> Path | None:
+    """Fall back to the ``DIM_MANUSCRIPT_SESSIONS_FILE`` environment variable.
+
+    Parameters
+    ----------
+    sessions_file : Path or None
+        Explicitly requested session list, which always wins.
+
+    Returns
+    -------
+    Path or None
+        The session list to use, or None to fall back to the vrSessions database.
+    """
+    if sessions_file is not None:
+        return Path(sessions_file)
+    env_value = os.environ.get(SESSIONS_FILE_ENV_VAR)
+    return Path(env_value) if env_value else None
+
+
+def collect_sessions_auto(sessions_file: Path | None = None, session_params: dict | None = None) -> list[B2Session]:
+    """Sessions from an exported JSON list when one is configured, else from the database.
+
+    The single entry point for scripts that must run both locally and on MYRIAD, where the
+    Access database (and ``pyodbc``) is unavailable.
+
+    Parameters
+    ----------
+    sessions_file : Path or None
+        JSON file produced by ``export_sessions.py``. If None, falls back to
+        ``DIM_MANUSCRIPT_SESSIONS_FILE`` and then to the vrSessions database.
+    session_params : dict or None
+        Session parameters (e.g. ``dict(spks_type="sigrebase")``) applied to every session.
+    """
+    sessions_file = resolve_sessions_file(sessions_file)
+    if sessions_file is not None:
+        return collect_sessions_from_file(sessions_file, session_params=session_params)
+    return collect_sessions(session_params=session_params)
 
 
 def run(

@@ -1,18 +1,23 @@
 import gc
+from pathlib import Path
 from tqdm import tqdm
 import torch
-from vrAnalysis.database import get_database
 from vrAnalysis.sessions import SpksTypes
 from dimensionality_manuscript.registry import ModelName, PopulationRegistry, get_model
+from dimensionality_manuscript.scripts.run import collect_sessions_auto
 
-clear_hyperparameters = False  # Clears hyperparameter cache
-clear_scores = False  # Clears score cache
+# Session list exported by export_sessions.py, for systems where the Access database (and pyodbc)
+# is unavailable. Leave as None to read $DIM_MANUSCRIPT_SESSIONS_FILE, then the vrSessions database.
+SESSIONS_FILE: Path | None = None
+
+clear_hyperparameters = True  # Clears hyperparameter cache
+clear_scores = True  # Clears score cache
 
 score_models = False  # Scores models
 force_remake = False  # Remakes even if existing
 force_reoptimize = False  # Re-optimizes even if existing
 
-check_existing_scores = True  # Checks if scores already exist
+check_existing_scores = False  # Checks if scores already exist
 
 # Note: there's more parameters to scores & hyperparameters, but by not setting them we use the default values
 # which are the primary ones used for the manuscript. Non-defaults are primarly for testing and exploratory analysis.
@@ -70,15 +75,15 @@ METHOD = "preferred"
 ACTIVITY_PARAMETERS_NAMES_TO_RUN: list[str] = ["default"]
 
 if __name__ == "__main__":
-    sessiondb = get_database("vrSessions")
     registry = PopulationRegistry()
+    sessions_by_spks_type = {spks_type: collect_sessions_auto(SESSIONS_FILE, session_params=dict(spks_type=spks_type)) for spks_type in SPKS_TYPES}
 
     for model_name in tqdm(MODEL_NAMES, desc="Testing different model types"):
         for activity_parameters_name in ACTIVITY_PARAMETERS_NAMES_TO_RUN:
             model = get_model(model_name, registry, activity_parameters=activity_parameters_name)
 
             for spks_type in SPKS_TYPES:
-                for isession, session in enumerate(tqdm(sessiondb.iter_sessions(imaging=True, session_params=dict(spks_type=spks_type)))):
+                for isession, session in enumerate(tqdm(sessions_by_spks_type[spks_type])):
                     if clear_hyperparameters:
                         model.clear_cached_hyperparameter(session, spks_type=spks_type, method=METHOD)
 
