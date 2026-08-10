@@ -45,3 +45,5 @@ idx,model_name,main,one_d_pos,high_d_pos,speed,reward,unconstrained,internal,lea
 43,fullregressor_leak_1dspeed_predreward_no_intercept,0,0,1,0,1,0,1,1,0,1,0,fullregressor_leak_1dspeed_predreward
 44,external_placefield_1d_structured_gain,1,1,0,0,0,0,0,0,0,0,0,
 45,internal_placefield_1d_structured_gain,1,1,0,0,0,0,1,0,0,0,0,
+46,external_placefield_1d_structured_additive,0,1,0,0,0,0,0,0,1,0,0,external_placefield_1d_gain
+47,internal_placefield_1d_structured_additive,0,1,0,0,0,0,1,0,1,0,0,internal_placefield_1d_gain

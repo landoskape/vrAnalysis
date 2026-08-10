@@ -68,6 +68,8 @@ MODEL_NAMES: tuple[str, ...] = (
     "fullregressor_leak_1dspeed_predreward_no_intercept",
     "external_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain",
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
 )
 
 

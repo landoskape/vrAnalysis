@@ -314,6 +314,82 @@ class PlaceFieldStructuredGainHyperparameters(PlaceFieldHyperparameters):
 
 
 @dataclass(frozen=True)
+class PlaceFieldStructuredAdditiveHyperparameters(PlaceFieldHyperparameters):
+    """Hyperparameters for the PlaceFieldStructuredAdditiveModel.
+
+    The union of the place-field hyperparameters (which define the spatial maps) and the
+    reduced-rank hyperparameters (which define the source->target residual map).
+
+    Parameters
+    ----------
+    num_bins : int, default=100
+        Number of spatial bins for the place field.
+    smooth_width : float | None, default=1.0
+        Width of the Gaussian smoothing kernel applied to place fields (in spatial units).
+    rank : int, default=25
+        The rank of the residual regression. Clipped at prediction time to the rank achievable
+        given the number of source cells, target cells, and frames.
+    alpha : float, default=1e2
+        The ridge regularization parameter for the residual regression.
+    """
+
+    rank: int = field(default=25, init=True, repr=True)
+    alpha: float = field(default=1e2, init=True, repr=True)
+    independent_optimization: bool = field(default=True, init=False, repr=False)
+
+    @classmethod
+    def get_search_space(cls) -> dict[str, tuple[Any, ...]]:
+        """Get the search space for grid search.
+
+        Returns
+        -------
+        search_space : dict[str, tuple[Any, ...]]
+            Dictionary with "training" and "prediction" keys, each mapping hyperparameter
+            names to tuples of possible values.
+        """
+        training = {
+            "num_bins": (100, 40, 25, 10),
+            "smooth_width": (None, 1.0, 5.0, 20.0),
+            "alpha": tuple(torch.logspace(0, 4, 9).tolist()),
+        }
+        prediction = {
+            "rank": (1, 2, 3, 5, 8, 15, 50, 100),
+        }
+        return {"training": training, "prediction": prediction}
+
+    @classmethod
+    def get_optuna_space(cls, trial: "Trial") -> dict[str, Any]:
+        """Get the Optuna search space for the PlaceFieldStructuredAdditiveModel.
+
+        Parameters
+        ----------
+        trial : optuna.Trial
+            The Optuna trial object to suggest hyperparameters from.
+
+        Returns
+        -------
+        search_space : dict[str, Any]
+            Dictionary with "training" and "prediction" keys, each mapping hyperparameter
+            names to the suggested values (training) or grid values (prediction).
+        """
+        use_smoothing = trial.suggest_categorical("use_smoothing", [True, False])
+        if use_smoothing:
+            smooth_width = trial.suggest_float("smooth_width", 1.0, 50.0, log=True)
+        else:
+            smooth_width = None
+
+        training = {
+            "num_bins": trial.suggest_int("num_bins", 10, 100, log=True),
+            "smooth_width": smooth_width,
+            "alpha": trial.suggest_float("alpha", 1e-2, 1e10, log=True),
+        }
+        prediction = {
+            "rank": (1, 2, 3, 5, 8, 15, 50, 100),
+        }
+        return {"training": training, "prediction": prediction}
+
+
+@dataclass(frozen=True)
 class ReducedRankRegressionHyperparameters(HyperparametersBase):
     """Hyperparameters for the ReducedRankRegressionModel.
 

@@ -13,6 +13,7 @@ from .regression_models.base import RegressionModel, ActivityParameters
 from .regression_models.models import (
     PlaceFieldModel,
     PlaceFieldStructuredGainModel,
+    PlaceFieldStructuredAdditiveModel,
     RBFPosModel,
     FullRegressorModel,
     ReducedRankRegressionModel,
@@ -77,6 +78,9 @@ ModelName = Literal[
     # Placefield models with a structured (low-rank, cell-specific) gain
     "external_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain",
+    # Placefield models with a structured (low-rank) additive offset from the source residual
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
 ]
 
 # Type alias for subspace names
@@ -659,6 +663,9 @@ MODEL_NAMES: tuple[ModelName] = (
     # Placefield models with a structured (low-rank, cell-specific) gain
     "external_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain",
+    # Placefield models with a structured (low-rank) additive offset from the source residual
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
 )
 
 
@@ -745,6 +752,9 @@ def short_model_name(model_name: ModelName) -> str:
         # Placefield models with a structured gain
         "external_placefield_1d_structured_gain": "Placefield (+Struct. Gain)",
         "internal_placefield_1d_structured_gain": "Int. Placefield (+Struct. Gain)",
+        # Placefield models with a structured additive offset
+        "external_placefield_1d_structured_additive": "Placefield (+Struct. Additive)",
+        "internal_placefield_1d_structured_additive": "Int. Placefield (+Struct. Additive)",
     }
     if model_name not in _short_name_mapping:
         raise ValueError(f"Model name {model_name} not found in short name mapping.")
@@ -777,6 +787,18 @@ def get_model(
     hyperparameters: Optional[HyperparametersBase] = None,
     activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> PlaceFieldStructuredGainModel: ...
+
+
+@overload
+def get_model(
+    model_name: Literal[
+        "external_placefield_1d_structured_additive",
+        "internal_placefield_1d_structured_additive",
+    ],
+    population_registry: PopulationRegistry,
+    hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
+) -> PlaceFieldStructuredAdditiveModel: ...
 
 
 @overload
@@ -924,6 +946,9 @@ def get_model(
         # Placefield models with a structured gain
         "external_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
         "internal_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
+        # Placefield models with a structured additive offset
+        "external_placefield_1d_structured_additive": PlaceFieldStructuredAdditiveModel,
+        "internal_placefield_1d_structured_additive": PlaceFieldStructuredAdditiveModel,
     }
     _kwargs_lookup: dict[str, dict[str, Any]] = {
         "external_placefield_1d": dict(internal=False, gain=False),
@@ -998,6 +1023,9 @@ def get_model(
         # Placefield models with a structured gain
         "external_placefield_1d_structured_gain": dict(internal=False),
         "internal_placefield_1d_structured_gain": dict(internal=True),
+        # Placefield models with a structured additive offset
+        "external_placefield_1d_structured_additive": dict(internal=False),
+        "internal_placefield_1d_structured_additive": dict(internal=True),
     }
     if model_name not in MODEL_NAMES:
         raise ValueError(f"Model {model_name} not found in registry.")

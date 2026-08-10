@@ -15,6 +15,7 @@ from .base import RegressionModel, ActivityParameters, OptimizationMethod
 from .hyperparameters import (
     PlaceFieldHyperparameters,
     PlaceFieldStructuredGainHyperparameters,
+    PlaceFieldStructuredAdditiveHyperparameters,
     RBFPosHyperparameters,
     FullRegressorHyperparameters,
     ReducedRankRegressionHyperparameters,
@@ -28,6 +29,7 @@ def get_regressor_dimensionality_from_hyperparameters(
     hyperparameters: (
         PlaceFieldHyperparameters
         | PlaceFieldStructuredGainHyperparameters
+        | PlaceFieldStructuredAdditiveHyperparameters
         | RBFPosHyperparameters
         | FullRegressorHyperparameters
         | ReducedRankRegressionHyperparameters
@@ -81,9 +83,9 @@ def get_regressor_dimensionality_from_hyperparameters(
     if isinstance(hyperparameters, ReducedRankRegressionHyperparameters):
         return hyperparameters.rank
 
-    # Checked before PlaceFieldHyperparameters because it subclasses it: the spatial maps plus
-    # the latent dimensions of the structured gain.
-    if isinstance(hyperparameters, PlaceFieldStructuredGainHyperparameters):
+    # Checked before PlaceFieldHyperparameters because they subclass it: the spatial maps plus
+    # the latent dimensions of the low-rank source->target map.
+    if isinstance(hyperparameters, (PlaceFieldStructuredGainHyperparameters, PlaceFieldStructuredAdditiveHyperparameters)):
         return hyperparameters.num_bins * num_environments + hyperparameters.rank
 
     if isinstance(hyperparameters, PlaceFieldHyperparameters):
@@ -514,6 +516,52 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             vector_gain=self.vector_gain,
             gain_rank=self.rank,
         )
+
+    def inherited_placefield_hyperparameters(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        train_split: Optional["SplitName"] = "train",
+        validation_split: Optional["SplitName"] = "validation",
+    ) -> PlaceFieldHyperparameters:
+        """Best place-field hyperparameters of the matching plain place-field model.
+
+        Subclasses that wrap the place fields in a second stage (a structured gain, a structured
+        additive offset) estimate their place fields exactly as in ``external_placefield_1d`` /
+        ``internal_placefield_1d``, so their optimized ``num_bins`` and ``smooth_width`` are reused
+        instead of being searched again. Same session, spike type, splits and activity scaling, so
+        this is a cache hit whenever that model has already been run.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to look up.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        train_split : Optional["SplitName"]
+            The training split. Default is "train".
+        validation_split : Optional["SplitName"]
+            The validation split. Default is "validation".
+
+        Returns
+        -------
+        PlaceFieldHyperparameters
+            The best place-field hyperparameters for this session.
+        """
+        placefield_model = PlaceFieldModel(
+            self.registry,
+            internal=self.internal,
+            gain=False,
+            activity_parameters=self.activity_parameters,
+            autosave=self.autosave,
+        )
+        return placefield_model.get_best_hyperparameters(
+            session,
+            spks_type=spks_type,
+            train_split=train_split,
+            validation_split=validation_split,
+            method="best",
+        )[0]
 
     def measure_internals(
         self,
@@ -1207,51 +1255,6 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         num_features = source_data.shape[0] + int(self.fit_intercept)
         return max(1, min(num_features, target_data.shape[0], num_fit_units))
 
-    def inherited_placefield_hyperparameters(
-        self,
-        session: B2Session,
-        spks_type: Optional[SpksTypes] = None,
-        train_split: Optional["SplitName"] = "train",
-        validation_split: Optional["SplitName"] = "validation",
-    ) -> PlaceFieldHyperparameters:
-        """Best place-field hyperparameters of the matching plain place-field model.
-
-        The place fields here are estimated exactly as in ``external_placefield_1d`` /
-        ``internal_placefield_1d``, so their optimized ``num_bins`` and ``smooth_width`` are reused
-        instead of being searched again. Same session, spike type, splits and activity scaling, so
-        this is a cache hit whenever that model has already been run.
-
-        Parameters
-        ----------
-        session : B2Session
-            The session to look up.
-        spks_type : Optional[SpksTypes]
-            The type of spike data to use. If None, uses the spks_type from the session.
-        train_split : Optional["SplitName"]
-            The training split. Default is "train".
-        validation_split : Optional["SplitName"]
-            The validation split. Default is "validation".
-
-        Returns
-        -------
-        PlaceFieldHyperparameters
-            The best place-field hyperparameters for this session.
-        """
-        placefield_model = PlaceFieldModel(
-            self.registry,
-            internal=self.internal,
-            gain=False,
-            activity_parameters=self.activity_parameters,
-            autosave=self.autosave,
-        )
-        return placefield_model.get_best_hyperparameters(
-            session,
-            spks_type=spks_type,
-            train_split=train_split,
-            validation_split=validation_split,
-            method="best",
-        )[0]
-
     def _optimize_golden(
         self,
         session: B2Session,
@@ -1358,6 +1361,558 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         )
         golden_section_search(
             func=lambda rank: evaluate(best_alpha, int(rank), gain_model=best_gain_model)[0],
+            a=1.0,
+            b=float(max_rank),
+            tolerance_param=1.0,
+            tolerance_score=1e-3,
+            max_iterations=25,
+            minimize=True,
+            logspace=False,
+        )
+
+        best_result = min(results, key=lambda result: result["score"])
+        best_params = {
+            "num_bins": best_result["num_bins"],
+            "smooth_width": best_result["smooth_width"],
+            "alpha": best_result["alpha"],
+            "rank": best_result["rank"],
+        }
+        return best_params, best_result["score"], pd.DataFrame(results)
+
+
+class PlaceFieldStructuredAdditiveModel(PlaceFieldModel):
+    """Place fields plus a low-rank additive offset read off the source cells' own residual.
+
+    The prediction for the target cells is::
+
+        yhat_target(t) = PF_target(position(t)) + f(Y_source(t) - PF_source(position(t)))
+
+    where ``f`` is a reduced-rank ridge regression fit on the training frames. Everything the place
+    fields already explain is subtracted off *before* the regression runs, on both sides, so ``f``
+    only ever sees -- and only ever predicts -- the part of the activity that position does not
+    account for. There is no SVD of a concatenated deviation matrix and no assumption that source
+    and target share a single arousal axis with a common scale: the map from source residual to
+    target residual is estimated directly, and its rank is a hyperparameter rather than a property
+    of a decomposition that was never posed for this problem. That is the difference from
+    ``*_placefield_1d_vector_gain``, which this model is meant to replace.
+
+    It is also the additive counterpart of :class:`PlaceFieldStructuredGainModel`: same two-stage
+    recipe (place fields first, then a low-rank source->target map), same golden-section search over
+    ``alpha`` and ``rank``, but the second stage adds an offset per frame rather than multiplying by
+    a gain per time chunk. Because the offset is per frame, no chunking is needed and the
+    cross-validation concern that forces the gain model onto time-chunk units does not arise -- a
+    frame belongs to exactly one split by construction.
+
+    Training (on the train split):
+
+    1. Place fields for source and target cells, exactly as in :class:`PlaceFieldModel`.
+    2. Residuals of both populations against their own place-field predictions.
+    3. A reduced-rank ridge regression from source residual to target residual, over frames.
+
+    Prediction (on a held-out split): the source residual is measured on that split's own frames,
+    mapped through the regression, and added to the target cells' place-field prediction.
+
+    Parameters
+    ----------
+    registry : PopulationRegistry
+        The population registry to use for the model.
+    internal : bool
+        If True, position and environment are decoded from source-cell activity instead of read
+        from behavior. The decoded estimate is used everywhere the model reads a position, on the
+        training split as well as at prediction time, so the model never sees true position
+        outside place-field estimation.
+    fit_intercept : bool
+        Whether the residual regression fits an intercept. Default is True.
+    nonnegative : bool
+        Whether the *summed* prediction is clipped at zero. The offset itself is signed -- a
+        residual is only meaningful if it can go both ways -- but the activity it is added to is
+        non-negative under every activity preset, so a negative total prediction is not a
+        physically possible firing rate. Default is True, matching the rectification every other
+        model in the grid applies to its own output.
+    hyperparameters : PlaceFieldStructuredAdditiveHyperparameters
+        Place-field and residual-regression hyperparameters.
+    activity_parameters : ActivityParameters
+        Activity scaling parameters.
+    autosave : bool
+        Whether to save optimization results to the cache.
+    """
+
+    preferred_optimization_method: OptimizationMethod = "golden"
+
+    def __init__(
+        self,
+        registry: "PopulationRegistry",
+        internal: bool = False,
+        fit_intercept: bool = True,
+        nonnegative: bool = True,
+        hyperparameters: PlaceFieldStructuredAdditiveHyperparameters = PlaceFieldStructuredAdditiveHyperparameters(),
+        activity_parameters: ActivityParameters = ActivityParameters(),
+        autosave: bool = True,
+    ):
+        super().__init__(
+            registry,
+            internal=internal,
+            # gain=True only tells PlaceFieldModel.train to also estimate the source cells' place
+            # fields, which this model always needs. Every gain-specific code path
+            # (predict, model name, dimensionality) is overridden below; nothing here is
+            # multiplied by anything.
+            gain=True,
+            vector_gain=False,
+            hyperparameters=hyperparameters,
+            activity_parameters=activity_parameters,
+            autosave=autosave,
+        )
+        self.fit_intercept = fit_intercept
+        self.nonnegative = nonnegative
+
+    def train(
+        self,
+        session: B2Session,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "train",
+        hyperparameters: Optional[PlaceFieldStructuredAdditiveHyperparameters] = None,
+    ) -> tuple[Placefield, Placefield, ReducedRankRegression]:
+        """Estimate place fields and fit the source->target residual regression.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to train on.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to train on. Default is "train".
+        hyperparameters : Optional[PlaceFieldStructuredAdditiveHyperparameters]
+            The hyperparameters to use. If None, uses the model's default hyperparameters.
+
+        Returns
+        -------
+        target_placefield : Placefield
+            Place fields of the target cells.
+        source_placefield : Placefield
+            Place fields of the source cells.
+        residual_model : ReducedRankRegression
+            The fitted residual regression, mapping source residuals to target residuals.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        target_placefield, source_placefield = super().train(session, spks_type, split, hyperparameters)
+        residuals = self.get_residuals(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=split,
+        )
+        residual_model = self.fit_residual_model(residuals, alpha=hyperparameters.alpha)
+        return target_placefield, source_placefield, residual_model
+
+    def get_residuals(
+        self,
+        session: B2Session,
+        target_placefield: Placefield,
+        source_placefield: Placefield,
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "train",
+        nan_safe: bool = False,
+    ) -> dict:
+        """Measure both populations' deviation from their place fields on one split.
+
+        This is the whole state the second stage needs, on the training split (where the target
+        residual is the regression's target) and on a held-out split alike (where only the source
+        residual and the target place-field prediction are used). Splitting it out from
+        :meth:`fit_residual_model` and :meth:`apply_residual_model` lets hyperparameter
+        optimization reuse one pass over the data across every ``alpha`` and ``rank``.
+
+        Frames where a place-field prediction is undefined -- an unvisited bin on the training
+        split -- carry no residual, and are dropped here rather than propagating NaN into the
+        regression. Both populations' predictions are checked, so the frames that survive are
+        exactly those where the model can produce a value.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to measure.
+        target_placefield : Placefield
+            Place fields of the target cells.
+        source_placefield : Placefield
+            Place fields of the source cells.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to measure. Default is "train".
+        nan_safe : bool
+            If True, raises when any place-field prediction is NaN instead of dropping those frames.
+
+        Returns
+        -------
+        dict
+            Keys: ``target_prediction`` (targets, frames), ``source_residual`` (sources, frames),
+            ``target_residual`` (targets, frames), ``frame_behavior``,
+            ``frame_behavior_internal`` (only when ``internal``), ``idx_valid_prediction``
+            (indices into the split's original frames) and ``was_filtered``.
+        """
+        source_data, target_data, frame_behavior = self.get_session_data(session, spks_type, split)
+        idx_valid_prediction = np.arange(len(frame_behavior), dtype=np.int64)
+        true_frame_behavior = copy(frame_behavior)
+
+        if self.internal:
+            frame_behavior = self.decode_internal_frame_behavior(source_data, source_placefield, frame_behavior)
+
+        source_prediction = get_placefield_prediction(source_placefield, frame_behavior)[0].T
+        target_prediction = get_placefield_prediction(target_placefield, frame_behavior)[0].T
+        source_activity = source_data.numpy()
+        target_activity = target_data.numpy()
+
+        idx_nan = (
+            np.any(np.isnan(source_prediction), axis=0) | np.any(np.isnan(target_prediction), axis=0) | np.any(np.isnan(source_activity), axis=0)
+        )
+        was_filtered = False
+        if nan_safe:
+            if np.any(idx_nan):
+                raise ValueError(f"{np.sum(idx_nan)} / {len(idx_nan)} samples have nan predictions in {session.session_print()}!!!")
+        elif np.any(idx_nan):
+            idx_valid = np.where(~idx_nan)[0]
+            source_prediction = source_prediction[:, idx_valid]
+            target_prediction = target_prediction[:, idx_valid]
+            source_activity = source_activity[:, idx_valid]
+            target_activity = target_activity[:, idx_valid]
+            frame_behavior = frame_behavior.filter(idx_valid)
+            true_frame_behavior = true_frame_behavior.filter(idx_valid)
+            idx_valid_prediction = idx_valid_prediction[idx_valid]
+            was_filtered = True
+
+        residuals = {
+            "target_prediction": target_prediction,
+            "source_residual": source_activity - source_prediction,
+            "target_residual": target_activity - target_prediction,
+            "frame_behavior": true_frame_behavior,
+            "idx_valid_prediction": idx_valid_prediction,
+            "was_filtered": was_filtered,
+        }
+        if self.internal:
+            residuals["frame_behavior_internal"] = frame_behavior
+        return residuals
+
+    def fit_residual_model(self, residuals: dict, alpha: float = 1e2) -> ReducedRankRegression:
+        """Fit the source-residual -> target-residual regression.
+
+        Parameters
+        ----------
+        residuals : dict
+            Output of :meth:`get_residuals` on the training split.
+        alpha : float
+            Ridge regularization for the residual regression.
+
+        Returns
+        -------
+        ReducedRankRegression
+            The fitted residual regression.
+        """
+        residual_model = ReducedRankRegression(alpha=alpha, fit_intercept=self.fit_intercept)
+        return residual_model.fit(
+            torch.tensor(residuals["source_residual"].T, dtype=torch.float32),
+            torch.tensor(residuals["target_residual"].T, dtype=torch.float32),
+        )
+
+    def max_residual_rank(self, residuals: dict) -> int:
+        """Largest rank the residual regression can take on a set of residuals.
+
+        Matches the bound ``ReducedRankRegression.fit`` applies: the smaller of the feature count
+        (source cells, plus the intercept column), the target count, and the sample count. Unlike
+        the gain model's units, frames are plentiful, so in practice this is a cell count.
+
+        Parameters
+        ----------
+        residuals : dict
+            Output of :meth:`get_residuals` on the split the regression is fit on.
+
+        Returns
+        -------
+        int
+            The maximum achievable rank (at least 1).
+        """
+        num_source, num_frames = residuals["source_residual"].shape
+        num_target = residuals["target_residual"].shape[0]
+        return max(1, min(num_source + int(self.fit_intercept), num_target, num_frames))
+
+    def apply_residual_model(
+        self,
+        residuals: dict,
+        residual_model: ReducedRankRegression,
+        rank: int,
+        nan_safe: bool = False,
+    ) -> tuple[np.ndarray, dict]:
+        """Add the predicted residual to the target cells' place-field prediction.
+
+        Parameters
+        ----------
+        residuals : dict
+            Output of :meth:`get_residuals`. Not modified.
+        residual_model : ReducedRankRegression
+            The fitted residual regression.
+        rank : int
+            Requested rank, clipped to the regression's achievable rank.
+        nan_safe : bool
+            If True, raises when the prediction contains NaN instead of dropping those frames.
+
+        Returns
+        -------
+        prediction : np.ndarray
+            Predicted target activity of shape (targets, frames).
+        extras : dict
+            Prediction extras, including the measured source residual, the predicted target
+            residual, and the place-field prediction they were added to.
+        """
+        source_residual = residuals["source_residual"]
+        predicted_residual = (
+            residual_model.predict(
+                torch.tensor(source_residual.T, dtype=torch.float32),
+                rank=min(int(rank), int(residual_model.max_rank)),
+            )
+            .numpy()
+            .T
+        )
+
+        prediction = residuals["target_prediction"] + predicted_residual
+        if self.nonnegative:
+            prediction = np.maximum(prediction, 0.0)
+
+        extras = {
+            "frame_behavior": residuals["frame_behavior"],
+            "placefield_prediction": residuals["target_prediction"],
+            "residual_source": source_residual,
+            "residual_predicted": predicted_residual,
+        }
+        if "frame_behavior_internal" in residuals:
+            extras["frame_behavior_internal"] = residuals["frame_behavior_internal"]
+
+        idx_valid_prediction = residuals["idx_valid_prediction"]
+        was_filtered = residuals["was_filtered"]
+
+        # get_residuals already dropped every frame with an undefined place field, so this should
+        # not fire -- but a dropped frame that goes unreported misaligns the caller's target.
+        idx_nan_samples = np.any(np.isnan(prediction), axis=0)
+        if nan_safe:
+            if np.any(idx_nan_samples):
+                raise ValueError(f"{np.sum(idx_nan_samples)} / {len(idx_nan_samples)} samples have NaN values in prediction!")
+        elif np.any(idx_nan_samples):
+            idx_valid_final = np.where(~idx_nan_samples)[0]
+            prediction = prediction[:, idx_valid_final]
+            extras["placefield_prediction"] = extras["placefield_prediction"][:, idx_valid_final]
+            extras["residual_source"] = extras["residual_source"][:, idx_valid_final]
+            extras["residual_predicted"] = extras["residual_predicted"][:, idx_valid_final]
+            extras["frame_behavior"] = extras["frame_behavior"].filter(idx_valid_final)
+            if "frame_behavior_internal" in extras:
+                extras["frame_behavior_internal"] = extras["frame_behavior_internal"].filter(idx_valid_final)
+            idx_valid_prediction = idx_valid_prediction[idx_valid_final]
+            was_filtered = True
+
+        extras["predictions_were_filtered"] = was_filtered
+        if was_filtered:
+            extras["idx_valid_predictions"] = idx_valid_prediction
+
+        return prediction, extras
+
+    def predict(
+        self,
+        session: B2Session,
+        coefficients: tuple[Placefield, Placefield, ReducedRankRegression],
+        spks_type: Optional[SpksTypes] = None,
+        split: Optional["SplitName"] = "test",
+        hyperparameters: Optional[PlaceFieldStructuredAdditiveHyperparameters] = None,
+        nan_safe: bool = False,
+    ) -> tuple[np.ndarray, dict]:
+        """Predict target activity as place fields plus the predicted residual offset.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to predict.
+        coefficients : tuple[Placefield, Placefield, ReducedRankRegression]
+            Output of :meth:`train`: target place fields, source place fields, residual regression.
+        spks_type : Optional[SpksTypes]
+            The type of spike data to use. If None, uses the spks_type from the session.
+        split : Optional["SplitName"]
+            The split to predict. Default is "test".
+        hyperparameters : Optional[PlaceFieldStructuredAdditiveHyperparameters]
+            The hyperparameters to use. Only ``rank`` is used at prediction time.
+        nan_safe : bool
+            If True, raises when predictions contain NaN instead of dropping those frames.
+
+        Returns
+        -------
+        prediction : np.ndarray
+            The predicted target activity for the requested timepoints.
+        extras : dict
+            Extra information about the prediction.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+
+        target_placefield, source_placefield, residual_model = coefficients
+        residuals = self.get_residuals(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=split,
+            nan_safe=nan_safe,
+        )
+        return self.apply_residual_model(residuals, residual_model, hyperparameters.rank, nan_safe=nan_safe)
+
+    @property
+    def _model_hyperparameters(self) -> Type[PlaceFieldStructuredAdditiveHyperparameters]:
+        """Return the hyperparameter class constructor for PlaceFieldStructuredAdditiveModel.
+
+        Returns
+        -------
+        type[PlaceFieldStructuredAdditiveHyperparameters]
+            The PlaceFieldStructuredAdditiveHyperparameters class constructor.
+        """
+        return PlaceFieldStructuredAdditiveHyperparameters
+
+    def _get_model_name(self) -> str:
+        """Get the model name identifier based on the internal flag.
+
+        Returns
+        -------
+        str
+            The model name identifier, e.g. "external_placefield_1d_structured_additive".
+        """
+        model_type = "internal" if self.internal else "external"
+        model_name = f"{model_type}_placefield_1d_structured_additive"
+        if not self.fit_intercept:
+            model_name += "_no_intercept"
+        return model_name
+
+    def regressor_dimensionality(
+        self,
+        num_environments: int = 1,
+        hyperparameters: Optional[PlaceFieldStructuredAdditiveHyperparameters] = None,
+    ) -> int:
+        """Return effective dimensionality: the spatial maps plus the residual latents.
+
+        Parameters
+        ----------
+        num_environments : int
+            Number of environments in the session.
+        hyperparameters : Optional[PlaceFieldStructuredAdditiveHyperparameters]
+            Hyperparameters to evaluate. If None, uses ``self.hyperparameters``.
+
+        Returns
+        -------
+        int
+            Regressor dimensionality for this model configuration.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return get_regressor_dimensionality_from_hyperparameters(
+            num_environments=num_environments,
+            hyperparameters=hyperparameters,
+        )
+
+    def _optimize_golden(
+        self,
+        session: B2Session,
+        spks_type: SpksTypes,
+        train_split: "SplitName",
+        validation_split: "SplitName",
+        nan_safe: bool = False,
+    ) -> tuple[dict, float, pd.DataFrame]:
+        """Optimize the residual regression with golden section search.
+
+        The place-field hyperparameters are inherited from the matching plain place-field model
+        (see :meth:`PlaceFieldModel.inherited_placefield_hyperparameters`) and held fixed, so the
+        place fields and the residuals are computed once. Then alpha is searched with rank at its
+        maximum, and rank is searched at the best alpha -- the same two-stage scheme as
+        :class:`ReducedRankRegressionModel` and :class:`PlaceFieldStructuredGainModel`.
+
+        Parameters
+        ----------
+        session : B2Session
+            The session to optimize the hyperparameters for.
+        spks_type : SpksTypes
+            The type of spike data to use for the population.
+        train_split : "SplitName"
+            The split to use for the training.
+        validation_split : "SplitName"
+            The split to use for the validation.
+        nan_safe : bool
+            If True, will check for NaN values in predictions and metrics and raise errors if found.
+
+        Returns
+        -------
+        best_params : dict
+            The best hyperparameters for the model.
+        best_score : float
+            The best score for the model.
+        results_df : pd.DataFrame
+            A DataFrame with all the results from the golden section search optimization.
+        """
+        placefield_hyperparameters = self.inherited_placefield_hyperparameters(
+            session,
+            spks_type=spks_type,
+            train_split=train_split,
+            validation_split=validation_split,
+        )
+        num_bins = placefield_hyperparameters.num_bins
+        smooth_width = placefield_hyperparameters.smooth_width
+        hyperparameters = PlaceFieldStructuredAdditiveHyperparameters(num_bins=num_bins, smooth_width=smooth_width)
+
+        # Place fields and residuals don't depend on alpha or rank, so build them once.
+        target_placefield, source_placefield = PlaceFieldModel.train(self, session, spks_type, train_split, hyperparameters)
+        train_residuals = self.get_residuals(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=train_split,
+            nan_safe=nan_safe,
+        )
+        validation_residuals = self.get_residuals(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type=spks_type,
+            split=validation_split,
+            nan_safe=nan_safe,
+        )
+        target_validation = self.get_session_data(session, spks_type, validation_split)[1]
+        max_rank = self.max_residual_rank(train_residuals)
+
+        results: list[dict] = []
+
+        def evaluate(alpha: float, rank: int, residual_model: Optional[ReducedRankRegression] = None) -> tuple[float, ReducedRankRegression]:
+            """Score one (alpha, rank) pair on the validation split."""
+            if residual_model is None:
+                residual_model = self.fit_residual_model(train_residuals, alpha=alpha)
+            prediction, extras = self.apply_residual_model(validation_residuals, residual_model, rank, nan_safe=nan_safe)
+            target = target_validation
+            if extras.get("predictions_were_filtered", False):
+                target = target[:, extras["idx_valid_predictions"]]
+            score = float(self.evaluate(prediction, target, nan_safe=nan_safe)["mse"])
+            if np.isnan(score):
+                score = float("inf")
+            results.append({"num_bins": num_bins, "smooth_width": smooth_width, "alpha": alpha, "rank": int(rank), "score": score})
+            return score, residual_model
+
+        best_alpha = golden_section_search(
+            func=lambda alpha: evaluate(alpha, max_rank)[0],
+            a=1e-2,
+            b=1e6,
+            tolerance_param=1e-2,
+            tolerance_score=1e-3,
+            max_iterations=25,
+            minimize=True,
+            logspace=True,
+        )[0]
+
+        # Rank is a prediction-time knob: fit once at the best alpha and re-score each rank.
+        best_residual_model = self.fit_residual_model(train_residuals, alpha=best_alpha)
+        golden_section_search(
+            func=lambda rank: evaluate(best_alpha, int(rank), residual_model=best_residual_model)[0],
             a=1.0,
             b=float(max_rank),
             tolerance_param=1.0,

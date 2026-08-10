@@ -47,14 +47,11 @@ KEY_FIGURE_MODELS: list[ModelName] = [
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
-    "external_placefield_1d_structured_gain",
-    "internal_placefield_1d_structured_gain",
+    # "external_placefield_1d_structured_gain",
+    # "internal_placefield_1d_structured_gain",
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
     "rrr",
-    "rrr_no_intercept",
-    "fullregressor_decoder_only_1dspeed_predreward",
-    "fullregressor_1dspeed_predreward",
-    "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
-    "fullregressor_1dspeed_predreward_no_intercept",
 ]
 
 
@@ -64,10 +61,14 @@ def _log_int_values(start: int, stop: int, num: int = 25) -> np.ndarray:
     return np.unique(np.round(raw).astype(int))
 
 
-# Dimensionality sweep grids (integer, log-spaced).
-NUM_BINS_VALUES: np.ndarray = _log_int_values(1, 200)  # placefield num_bins
-NUM_BASIS_VALUES: np.ndarray = _log_int_values(1, 200)  # rbfpos / full num_basis
-RANK_VALUES: np.ndarray = _log_int_values(1, 2000)  # rrr rank (clipped to data)
+# Dimensionality sweep grid (integer, log-spaced), clipped per session to the rank the model
+# actually achieves. Every model in the sweep varies dimensionality by projection rank.
+RANK_VALUES: np.ndarray = _log_int_values(1, 2000)
+
+# Relative tolerance on the Gram eigenvalues used to truncate a prediction's numerical rank. The
+# eigenvalues are squared singular values, so 1e-10 keeps directions down to 1e-5 of the leading
+# singular value.
+PREDICTION_RANK_TOLERANCE: float = 1e-10
 
 
 #: Per-environment score keys, all indexed by experience-order slot rather than by environment
@@ -1136,31 +1137,129 @@ def _pack_sweep(name: str, values: np.ndarray, dim: np.ndarray, mse_arr: np.ndar
     }
 
 
+def _prediction_basis(train_prediction: np.ndarray) -> np.ndarray:
+    """Right singular vectors of a training prediction, as columns of shape (targets, rank).
+
+    Mirrors :meth:`dimilibi.ReducedRankRegression.fit`, which builds its rank constraint from the
+    right singular vectors of ``X_train @ beta_ols`` -- the training prediction -- by
+    eigendecomposing that prediction's Gram rather than taking a full SVD. Here the prediction is
+    stored as (targets, frames), so the vectors wanted are the *left* singular vectors of that
+    matrix, which is what the (targets, targets) Gram yields.
+
+    Columns are truncated at the numerical rank so a sweep never runs past the dimensionality the
+    model actually has: a place-field prediction's columns are place-field vectors at each
+    ``(environment, bin)``, so the trailing directions carry no signal and would only flatten the
+    end of the curve.
+
+    Parameters
+    ----------
+    train_prediction : np.ndarray
+        Held-in prediction of shape (targets, frames), before any rectification.
+
+    Returns
+    -------
+    np.ndarray
+        Orthonormal basis of shape (targets, rank), ordered by decreasing singular value.
+    """
+    # Keep the Gram in double precision. A Gram squares the condition number, and dropping to
+    # single here visibly rotates the eigenvectors of the closely spaced trailing eigenvalues
+    # (~1e-4 relative error in the projected prediction at mid ranks, against ~1e-7 in double).
+    train_prediction = np.asarray(train_prediction, dtype=np.float64)
+    eigenvalues, eigenvectors = np.linalg.eigh(train_prediction @ train_prediction.T)
+    # eigh returns ascending eigenvalues; the sweep wants the leading directions first.
+    eigenvalues = eigenvalues[::-1]
+    basis = eigenvectors[:, ::-1]
+    keep = eigenvalues > PREDICTION_RANK_TOLERANCE * eigenvalues[0]
+    return basis[:, keep]
+
+
+def _score_rank_projection(
+    model,
+    basis: np.ndarray,
+    prediction: np.ndarray,
+    target,
+    ranks: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Score a prediction projected onto the leading ``rank`` columns of ``basis``.
+
+    The projection is ``basis[:, :rank] @ basis[:, :rank].T @ prediction``, the same operator
+    reduced-rank regression applies to its own prediction. Ranks are nested, so the projection is
+    accumulated across the grid rather than recomputed, matching
+    :meth:`dimilibi.ReducedRankRegression.score_curve`. Each projected prediction is rectified
+    before scoring, as reduced-rank regression does with ``nonnegative=True``.
+
+    Parameters
+    ----------
+    model : RegressionModel
+        Model whose ``evaluate`` supplies the metrics.
+    basis : np.ndarray
+        Orthonormal basis of shape (targets, max_rank) from :func:`_prediction_basis`.
+    prediction : np.ndarray
+        Held-out prediction of shape (targets, frames).
+    target : np.ndarray or torch.Tensor
+        Held-out target aligned to ``prediction``.
+    ranks : np.ndarray
+        Increasing projection ranks, each at most ``basis.shape[1]``.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        MSE and R² at each rank.
+    """
+    latents = basis.T @ prediction
+    running = np.zeros_like(prediction, dtype=float)
+    previous = 0
+    mse_arr = np.full(len(ranks), np.nan)
+    r2_arr = np.full(len(ranks), np.nan)
+    for i, rank in enumerate(ranks):
+        rank = int(rank)
+        running = running + basis[:, previous:rank] @ latents[previous:rank]
+        previous = rank
+        metrics = model.evaluate(np.clip(running, 0, None), target)
+        mse_arr[i] = float(metrics["mse"])
+        r2_arr[i] = float(metrics["r2"])
+    return mse_arr, r2_arr
+
+
 @dataclass(frozen=True)
 class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
-    """Sweep test performance as a function of regressor dimensionality.
+    """Sweep test performance as a function of the rank of the model's prediction.
 
-    For each figure-2 model, holds the best (cached) hyperparameters fixed and
-    sweeps the model's dimensionality knob on the test split:
+    Every model varies dimensionality the same way reduced-rank regression does. One model is fit
+    at high dimensionality, the right singular vectors of its training prediction are taken as a
+    basis, and the held-out prediction is scored after projection onto the leading ``r`` of them.
+    RRR gets this for free -- ``ReducedRankRegression`` stores exactly that basis and
+    ``beta_rrr(r) = beta_ols @ V[:, :r] @ V[:, :r].T`` -- so its path is unchanged, and the other
+    models are given the same treatment explicitly (see :func:`_prediction_basis` and
+    :func:`_score_rank_projection`).
 
-    - Placefield models: ``num_bins`` (log 1..200).
-    - RBFPos / pos_speed / full-regressor models: ``num_basis`` (log 1..200).
-    - RRR: ``rank`` (log 1..2000, clipped to the achievable rank). The model is
-      fit once and re-scored at each rank, since RRR training is rank-agnostic.
+    The alternative, refitting each model at a coarser ``num_bins`` / ``num_basis``, estimates a
+    *different* model at every point and puts a bin count on the x-axis for one curve and a latent
+    rank on it for another. Projecting one fixed model instead makes the x-axis mean the same thing
+    for every curve, which is what the figure-2 dimensionality panel compares.
 
-    For the ``num_bins``/``num_basis`` sweeps, the Gaussian smoothing width
-    (``smooth_width`` / ``basis_width``) is re-derived at every value as
-    ``SMOOTH_SCALE * env_length / value`` instead of held fixed at the best-hyperparameter
-    value. Fixed smoothing means resolution plateaus once bin spacing drops well below the
-    smoothing width — the extra bins carry no new information because the smoothing kernel
-    already blends neighbors together. Scaling smoothing to bin spacing keeps the kernel
-    covering roughly one neighboring bin (adjacent-bin correlation ~= exp(-1) at
-    SMOOTH_SCALE=0.5) regardless of ``num_bins``/``num_basis``, so the sweep reflects
-    resolution rather than a fixed low-pass filter.
+    The single high-dimensional fit uses ``high_dim_value`` bins / basis functions with a Gaussian
+    width of ``high_dim_width`` cm, and the cached best hyperparameters otherwise. The optimized
+    width (typically 5-50 cm) is deliberately not used: it would smooth the fit down to a low rank
+    before the sweep began, and the rank projection rather than the kernel is meant to be what
+    varies the effective resolution.
 
-    Results are flat ``{sweep}_{values,dim,mse,r2}`` arrays, where ``dim`` is the
-    nominal regressor dimensionality for the swept configuration. The activity
-    preprocessing preset is swept over ``VALID_ACTIVITY_PARAMETERS``.
+    ``high_dim_width`` is well below one bin spacing, so the background model is essentially
+    unsmoothed and ``high_dim_value`` alone sets how many frames land in each bin. That matters:
+    the projection is a rank constraint on the ``(targets, bins)`` tuning matrix, so it discards
+    noise in the directions it drops but keeps whatever noise survives in the ones it retains. Bins
+    estimated from too few frames make *every* direction noise-dominated, which flattens the whole
+    curve rather than just its tail -- at 200 bins the curve was flat at R^2 ~ 0.002.
+
+    Result keys, for every model::
+
+        rank_values, rank_dim            (ranks,) both the projection rank, kept for symmetry
+        rank_mse, rank_r2                (ranks,) held-out metrics at each rank
+        full_rank                        scalar, the highest rank available on this session
+
+    Ranks come from :data:`RANK_VALUES` clipped to ``full_rank``, so sessions do not share an exact
+    grid; downstream plotting groups observations by their rank rather than by sweep index. The
+    activity preprocessing preset is swept over ``VALID_ACTIVITY_PARAMETERS``.
 
     Parameters
     ----------
@@ -1172,20 +1271,31 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         Hyperparameter selection method used to fix the baseline hyperparameters.
     activity_parameters_name : str
         Named activity preprocessing preset.
+    high_dim_value : int
+        Number of spatial bins (place-field models) or basis functions (RBFPos / full-regressor
+        models) for the single high-dimensional fit. Ignored by RRR, which is rank-agnostic at
+        training time.
+    high_dim_width : float
+        Gaussian width in cm for that fit, passed as ``smooth_width`` (place-field models) or
+        ``basis_width`` (RBFPos / full-regressor models). Also ignored by RRR.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     # v2: scale smooth_width/basis_width to bin spacing during the num_bins/num_basis
     # sweep instead of holding it fixed, so resolution doesn't plateau from oversmoothing.
     # v3: because upstream regression models changed and we need to rerun the sweep with new params.
+    # v4: sweep the rank of an SVD projection of one high-dimensional fit instead of refitting at
+    # each num_bins/num_basis, so every model varies dimensionality the way RRR does. Result keys
+    # are now rank_* for every model.
 
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "best"
     activity_parameters_name: str = "default"
+    high_dim_value: int = 100
+    high_dim_width: float = 0.5
 
-    SMOOTH_SCALE: ClassVar[float] = 0.5
     display_name: ClassVar[str] = "regression_dim_sweep"
 
     @staticmethod
@@ -1202,6 +1312,10 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
             raise ValueError(
                 f"Unknown activity_parameters_name {self.activity_parameters_name!r}. " f"Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}"
             )
+        if self.high_dim_value < 1:
+            raise ValueError("high_dim_value must be at least 1")
+        if self.high_dim_width <= 0:
+            raise ValueError("high_dim_width must be positive")
 
     def summary(self) -> str:
         parts = [
@@ -1212,71 +1326,86 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
         ]
         if self.activity_parameters_name != "default":
             parts.append(f"ap={self.activity_parameters_name}")
+        if self.high_dim_value != 100:
+            parts.append(f"highdim={self.high_dim_value}")
+        if self.high_dim_width != 0.5:
+            parts.append(f"highdimw={self.high_dim_width:g}")
         parts.append(self.schema_version)
         return "_".join(parts)
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
-        """Run the dimensionality sweep appropriate for this model."""
+        """Run the rank sweep appropriate for this model."""
         model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
-        num_env = len(session.environments)
         base_hp = model.get_best_hyperparameters(session, spks_type=self.spks_type, method=self.method)[0]
 
-        if isinstance(model, PlaceFieldModel):
-            if np.unique(session.env_length).size != 1:
-                raise ValueError("All trials must have the same environment length!")
-            env_length = float(session.env_length[0])
-            return _pack_sweep(
-                "num_bins", *self._sweep_param(model, session, base_hp, num_env, "num_bins", NUM_BINS_VALUES, "smooth_width", env_length)
-            )
-
-        if isinstance(model, FullRegressorModel) or isinstance(model, RBFPosModel):
-            if np.unique(session.env_length).size != 1:
-                raise ValueError("All trials must have the same environment length!")
-            env_length = float(session.env_length[0])
-            return _pack_sweep(
-                "num_basis", *self._sweep_param(model, session, base_hp, num_env, "num_basis", NUM_BASIS_VALUES, "basis_width", env_length)
-            )
-
+        # RRR builds the projection basis itself, so it keeps its own path. It is checked first
+        # only for symmetry with the PlaceFieldModel check below, which must come after the
+        # structured-gain model it is a base class of.
         if isinstance(model, ReducedRankRegressionModel):
             return self._sweep_rrr(model, session, base_hp)
 
-        raise TypeError(f"No dimensionality sweep defined for model type {type(model).__name__}")
+        if isinstance(model, PlaceFieldModel):
+            param_name, smooth_param_name = "num_bins", "smooth_width"
+        elif isinstance(model, (RBFPosModel, FullRegressorModel)):
+            param_name, smooth_param_name = "num_basis", "basis_width"
+        else:
+            raise TypeError(f"No dimensionality sweep defined for model type {type(model).__name__}")
 
-    def _sweep_param(
-        self,
-        model,
-        session: B2Session,
-        base_hp,
-        num_env: int,
-        param_name: str,
-        values: np.ndarray,
-        smooth_param_name: str,
-        env_length: float,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Refit and score ``model`` at each value of a single integer hyperparameter.
+        if np.unique(session.env_length).size != 1:
+            raise ValueError("All trials must have the same environment length!")
+        hyperparameters = replace(
+            base_hp,
+            **{param_name: self.high_dim_value, smooth_param_name: self.high_dim_width},
+        )
+        return self._sweep_projection(model, session, hyperparameters)
 
-        At each ``value``, ``smooth_param_name`` (``smooth_width``/``basis_width``) is
-        overridden to ``SMOOTH_SCALE * env_length / value`` so the smoothing kernel tracks
-        bin spacing instead of staying fixed at the best-hyperparameter width.
+    def _sweep_projection(self, model, session: B2Session, hyperparameters) -> dict:
+        """Fit ``model`` once, then score its held-out prediction at each projection rank.
+
+        One train and two predicts: the training prediction supplies the basis, the held-out
+        prediction is what gets projected. Frames whose prediction is NaN -- unvisited bins at
+        ``high_dim_value`` resolution, mostly -- are dropped once by ``predict``, so every rank is
+        scored on an identical set of frames.
         """
-        n = len(values)
-        dim = np.full(n, np.nan)
-        mse_arr = np.full(n, np.nan)
-        r2_arr = np.full(n, np.nan)
-        for i, value in enumerate(values):
-            bin_spacing = env_length / float(value)
-            smooth_width = self.SMOOTH_SCALE * bin_spacing
-            hyperparameters = replace(base_hp, **{param_name: int(value), smooth_param_name: smooth_width})
-            dim[i] = model.regressor_dimensionality(num_env, hyperparameters=hyperparameters)
-            report = model.process(session, spks_type=self.spks_type, hyperparameters=hyperparameters)
-            mse_arr[i] = float(report.metrics["mse"])
-            r2_arr[i] = float(report.metrics["r2"])
-        return values, dim, mse_arr, r2_arr
+        trained_model = model.train(session, spks_type=self.spks_type, split="train", hyperparameters=hyperparameters)
+
+        train_prediction = model.predict(
+            session,
+            trained_model,
+            spks_type=self.spks_type,
+            split="train",
+            hyperparameters=hyperparameters,
+        )[0]
+        basis = _prediction_basis(train_prediction)
+        del train_prediction
+
+        prediction, extras = model.predict(
+            session,
+            trained_model,
+            spks_type=self.spks_type,
+            split="test",
+            hyperparameters=hyperparameters,
+        )
+        target = model.get_session_data(session, self.spks_type, "test")[1]
+        if extras.get("predictions_were_filtered", False):
+            target = target[:, extras["idx_valid_predictions"]]
+
+        ranks = RANK_VALUES[RANK_VALUES <= basis.shape[1]]
+        mse_arr, r2_arr = _score_rank_projection(model, basis, prediction, target, ranks)
+        return {
+            **_pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr),
+            "full_rank": float(basis.shape[1]),
+        }
 
     def _sweep_rrr(self, model: ReducedRankRegressionModel, session: B2Session, base_hp) -> dict:
         """Fit RRR once at the best alpha, then re-score the test split at each rank."""
         source_data, target_data_train, _ = model.get_session_data(session, self.spks_type, "train")
-        max_rank = int(min(source_data.shape[0], target_data_train.shape[0]))
+        # Match ReducedRankRegression.fit's own ceiling, min(num_features, num_targets,
+        # num_samples), or predict() asserts on any rank past it. The training frame count is the
+        # binding term whenever a session has more cells than held-in frames, which is common
+        # here; leaving it out asked for ranks the fitted model could not build coefficients for.
+        num_features = int(source_data.shape[0]) + int(model.fit_intercept)
+        max_rank = int(min(num_features, target_data_train.shape[0], source_data.shape[1]))
         ranks = RANK_VALUES[RANK_VALUES <= max_rank]
 
         trained_model = model.train(session, spks_type=self.spks_type, split="train", hyperparameters=base_hp)
@@ -1301,4 +1430,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
             mse_arr[i] = float(metrics["mse"])
             r2_arr[i] = float(metrics["r2"])
 
-        return _pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr)
+        return {
+            **_pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr),
+            "full_rank": float(max_rank),
+        }
