@@ -1030,7 +1030,7 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
             gain_model.predict(
                 torch.tensor(source_gain.T, dtype=torch.float64),
                 rank=min(int(rank), int(gain_model.max_rank)),
-                nonnegative=False,
+                nonnegative=True,
             )
             .numpy()
             .T
