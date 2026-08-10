@@ -665,7 +665,7 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     compared, so it stays on the full split and is identical across folds.
     """
 
-    schema_version: str = "v6"
+    schema_version: str = "v7"
     # v6: estimate the membership place field per fold (xval on train, infold on test) instead of
     # once on the full split, and report weighted R² alongside RMS.
     # v5: compute the ROI quality filter the same way cvpca / stimspace_spectra do
@@ -903,7 +903,7 @@ class RegressionResidualStructureConfig(AnalysisConfigBase):
         Shrinkage of the chunk gains toward 1, passed to :func:`least_squares_gain`.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
 
     data_config_name: str = "default"
     model_name: ModelName = "internal_placefield_1d"
