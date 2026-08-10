@@ -48,7 +48,7 @@ DEFAULT_ANALYSES: tuple[str, ...] = (
     "cross_validated_placefields",
     "placefield_prediction",
     "pf_structure",
-    "rrr_to_external_latents",
+    # "rrr_to_external_latents",
     "tilbury_fit",
     "behavior_speed_env",
     "stimspace_env_pca",

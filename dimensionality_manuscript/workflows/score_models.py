@@ -32,6 +32,8 @@ MODEL_NAMES: list[ModelName] = [
     # "internal_placefield_1d_vector_gain",
     "external_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain",
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
     # # Core regression models
     # "rbfpos_decoder_only",
     # "rbfpos",

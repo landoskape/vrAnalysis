@@ -12,7 +12,9 @@ class _FakeDimSweepResults:
 
     def sel(self, *, model_name, squeeze_ones, **selection):
         assert squeeze_ones is False
-        prefix = "rank" if model_name == "rrr" else "num_bins"
+        # Every model sweeps projection rank, so every model reads the same keys. The third row's
+        # trailing NaN stands in for a session that reached a lower maximum rank than the others.
+        prefix = "rank"
         return {
             f"{prefix}_dim": np.array(
                 [
@@ -51,7 +53,7 @@ def test_dim_sweep_curve_rejects_mismatched_dim_and_metric_shapes():
 
     def mismatched_sel(**kwargs):
         selected = original_sel(**kwargs)
-        selected["num_bins_r2"] = selected["num_bins_r2"][:, :-1]
+        selected["rank_r2"] = selected["rank_r2"][:, :-1]
         return selected
 
     results.sel = mismatched_sel

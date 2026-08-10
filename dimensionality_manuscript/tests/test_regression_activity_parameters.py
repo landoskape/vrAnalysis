@@ -12,7 +12,7 @@ from dimensionality_manuscript.configs.regression import (
     RegressionDimensionalitySweepConfig,
     RegressionPlacefieldResidualConfig,
 )
-from dimensionality_manuscript.configs.rrr_to_external_latents import VALID_MODEL_EXT_INT_PAIRS
+# from dimensionality_manuscript.configs.rrr_to_external_latents import VALID_MODEL_EXT_INT_PAIRS
 from dimensionality_manuscript.registry import get_activity_parameters, get_model
 
 
@@ -21,14 +21,9 @@ EXPECTED_KEY_FIGURE_MODELS = [
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
-    "external_placefield_1d_structured_gain",
-    "internal_placefield_1d_structured_gain",
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
     "rrr",
-    "rrr_no_intercept",
-    "fullregressor_decoder_only_1dspeed_predreward",
-    "fullregressor_1dspeed_predreward",
-    "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
-    "fullregressor_1dspeed_predreward_no_intercept",
 ]
 
 
@@ -82,20 +77,24 @@ def test_regression_grids_use_only_key_figure_models_and_include_std():
     dimensionality_grid = RegressionDimensionalitySweepConfig._param_grid()
     assert regression_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
     assert residual_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
-    assert regression_grid["activity_parameters_name"] == ["default", "preserved", "std"]
+    # RegressionConfig no longer sweeps the activity preset ("only using std!"), so its grid has
+    # no such axis. The dimensionality sweep still does.
+    assert "activity_parameters_name" not in regression_grid
     assert dimensionality_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
     assert dimensionality_grid["activity_parameters_name"] == ["default", "preserved", "std"]
 
 
-def test_rrr_external_latent_pairs_are_derived_from_key_figure_models():
-    assert VALID_MODEL_EXT_INT_PAIRS == [
-        (
-            "fullregressor_decoder_only_1dspeed_predreward",
-            "fullregressor_1dspeed_predreward",
-        ),
-        (
-            "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
-            "fullregressor_1dspeed_predreward_no_intercept",
-        ),
-    ]
-    assert all(model_name in KEY_FIGURE_MODELS for pair in VALID_MODEL_EXT_INT_PAIRS for model_name in pair)
+# The rrr_to_external_latents analysis is retired, and the fullregressor models its pairs were
+# built from are no longer in KEY_FIGURE_MODELS.
+# def test_rrr_external_latent_pairs_are_derived_from_key_figure_models():
+#     assert VALID_MODEL_EXT_INT_PAIRS == [
+#         (
+#             "fullregressor_decoder_only_1dspeed_predreward",
+#             "fullregressor_1dspeed_predreward",
+#         ),
+#         (
+#             "fullregressor_decoder_only_1dspeed_predreward_no_intercept",
+#             "fullregressor_1dspeed_predreward_no_intercept",
+#         ),
+#     ]
+#     assert all(model_name in KEY_FIGURE_MODELS for pair in VALID_MODEL_EXT_INT_PAIRS for model_name in pair)
