@@ -1,10 +1,10 @@
 """ScoreModelsConfig — wraps regression model scoring from score_models.py.
 
-This is a self-caching workflow: the regression model infrastructure manages
-its own file-based cache (joblib files in ``score_path``).  The pipeline's
-``ResultsStore`` records *that* the computation was done (with
-``result_stored=False``), and ``get_result`` knows how to retrieve the
-score dict from the model's own cache.
+The regression model infrastructure manages its own file-based caches (joblib files in
+``hyperparameter_path`` and ``score_path``), keyed independently of this module's
+``schema_version``. Those caches hold the optimized hyperparameters and the whole-split
+metrics; anything derived from the held-out *predictions* is not cached there and is
+recomputed by the config that needs it.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from vrAnalysis.helpers import reliability_loo
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.sessions import B2Session, SpksTypes
 from vrAnalysis.processors.placefields import get_placefield, get_placefield_prediction
+from ..env_order import MAX_ENV_SLOTS, load_env_order
 from ..registry import (
     MODEL_NAMES,
     ModelName,
@@ -69,9 +70,132 @@ NUM_BASIS_VALUES: np.ndarray = _log_int_values(1, 200)  # rbfpos / full num_basi
 RANK_VALUES: np.ndarray = _log_int_values(1, 2000)  # rrr rank (clipped to data)
 
 
+#: Per-environment score keys, all indexed by experience-order slot rather than by environment
+#: index: the two cohorts run disjoint environment sets, so slot 0 ("the first environment this
+#: mouse saw") is the only axis that means the same thing for every mouse. ``env_slot_ids`` records
+#: which environment index each slot actually held.
+PER_ENV_SCORE_KEYS: tuple[str, ...] = (
+    "mse_env",
+    "r2_env",
+    "mse_roi_env",
+    "r2_roi_env",
+    "num_frames_env",
+    "env_slot_ids",
+)
+
+
+def _per_environment_scores(
+    model,
+    session: B2Session,
+    spks_type: SpksTypes,
+    report,
+) -> dict[str, np.ndarray]:
+    """Score one held-out prediction separately within each environment.
+
+    The model is untouched: it is fit once across all environments and then scored once per
+    environment, so this measures where a single global fit does well — not what a per-environment
+    fit would achieve.
+
+    The metrics mirror the whole-split ones. ``mse_env`` / ``r2_env`` reduce over ROIs and frames
+    together (``dim=None``, matching :meth:`RegressionModel.evaluate`); ``mse_roi_env`` /
+    ``r2_roi_env`` reduce over frames alone, matching the ``mse_roi`` / ``r2_roi`` keys.
+
+    Parameters
+    ----------
+    model : RegressionModel
+        The model that produced ``report``, used to recover the held-out frame behavior.
+    session : B2Session
+        Session being scored.
+    spks_type : SpksTypes
+        Spike type the model was scored with.
+    report : RegressionModel.Report
+        Report from ``model.process`` on the held-out split.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        The keys in :data:`PER_ENV_SCORE_KEYS`, each indexed by experience-order slot. Slots the
+        session never visits are NaN, except ``num_frames_env``, which is 0 there.
+
+    Notes
+    -----
+    R² does not decompose across environments. Each environment's R² is measured against that
+    environment's own mean, whereas the whole-split R² uses a single baseline that must also
+    account for the activity difference *between* environments. Per-environment values are
+    therefore usually higher than the whole-split value and must not be averaged into it.
+
+    An environment can hold very few held-out frames — the test split is roughly a tenth of a
+    session and the environments are not visited equally — so ``num_frames_env`` is reported
+    alongside, and slots with few frames should be filtered rather than trusted.
+    """
+    _, _, frame_behavior = model.get_session_data(session, spks_type, "test")
+    if report.extras.get("predictions_were_filtered", False):
+        frame_behavior = frame_behavior.filter(report.extras["idx_valid_predictions"])
+
+    target = np.asarray(report.target_data)
+    prediction = np.asarray(report.predicted_data)
+    if target.shape[1] != len(frame_behavior):
+        raise ValueError(f"Held-out target has {target.shape[1]} frames but behavior has {len(frame_behavior)}")
+
+    mouse_order = load_env_order().get(session.mouse_name)
+    env_slot_ids = np.full(MAX_ENV_SLOTS, np.nan)
+    if mouse_order is not None:
+        env_slot_ids[: len(mouse_order)] = mouse_order
+
+    scores: dict[str, np.ndarray] = {
+        "mse_env": np.full(MAX_ENV_SLOTS, np.nan),
+        "r2_env": np.full(MAX_ENV_SLOTS, np.nan),
+        "mse_roi_env": np.full((MAX_ENV_SLOTS, target.shape[0]), np.nan),
+        "r2_roi_env": np.full((MAX_ENV_SLOTS, target.shape[0]), np.nan),
+        "num_frames_env": np.zeros(MAX_ENV_SLOTS),
+        "env_slot_ids": env_slot_ids,
+    }
+    if mouse_order is None:
+        return scores
+
+    environment = np.asarray(frame_behavior.environment)
+    for env in np.unique(environment):
+        env = int(env)
+        # Negative indices are the unlabeled sentinel, and an environment outside this mouse's
+        # order (or past the last slot) has no slot to be reported in.
+        if env < 0 or env not in mouse_order:
+            continue
+        slot = mouse_order.index(env)
+        if slot >= MAX_ENV_SLOTS:
+            continue
+        idx = environment == env
+        env_target = target[:, idx]
+        env_prediction = prediction[:, idx]
+        scores["mse_env"][slot] = float(mse(env_prediction, env_target, reduce="mean", dim=None))
+        scores["r2_env"][slot] = float(measure_r2(env_prediction, env_target, reduce="mean", dim=None))
+        scores["mse_roi_env"][slot] = np.asarray(mse(env_prediction, env_target, reduce="none", dim=1))
+        scores["r2_roi_env"][slot] = np.asarray(measure_r2(env_prediction, env_target, reduce="none", dim=1))
+        scores["num_frames_env"][slot] = int(np.sum(idx))
+    return scores
+
+
 @dataclass(frozen=True)
 class RegressionConfig(AnalysisConfigBase):
     """Configuration for regression model scoring.
+
+    Result keys
+    -----------
+    Whole-split metrics, straight from the model's own score cache::
+
+        mse, r2                          scalars, reduced over ROIs and frames together
+        mse_roi, r2_roi                  (rois,), reduced over frames
+
+    Per-environment metrics, from :func:`_per_environment_scores`, indexed by experience-order
+    slot (see ``..env_order``) so slot 0 is the first environment each mouse saw::
+
+        mse_env, r2_env                  (MAX_ENV_SLOTS,)
+        mse_roi_env, r2_roi_env          (MAX_ENV_SLOTS, rois)
+        num_frames_env                   (MAX_ENV_SLOTS,) held-out frames scored in each slot
+        env_slot_ids                     (MAX_ENV_SLOTS,) environment index behind each slot
+
+    The model itself is unchanged — one fit across all environments, scored once per environment.
+    Per-environment R² is measured against each environment's own mean and so does not decompose
+    into the whole-split value; see :func:`_per_environment_scores`.
 
     Parameters
     ----------
@@ -80,11 +204,15 @@ class RegressionConfig(AnalysisConfigBase):
     spks_type : SpksTypes
         Spike type to use for the population.
     method : str
-        Hyperparameter optimization method.
+        Hyperparameter optimization method. Must resolve to a single method, so ``"best"`` is
+        rejected: it picks the cached score and the cached hyperparameters by different criteria
+        (held-out MSE versus validation MSE), which would let the whole-split metrics come from
+        one optimization run and the per-environment metrics from another.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     # v3: recompute with numerically improved placefield code
+    # v4: add per-env scores (using global session fits)
 
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
@@ -109,6 +237,12 @@ class RegressionConfig(AnalysisConfigBase):
             raise ValueError(
                 f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
             )
+        if self.method == "best":
+            raise ValueError(
+                "method='best' would select the cached score and the cached hyperparameters by "
+                "different criteria, so the whole-split and per-environment metrics could come "
+                "from different optimization runs. Name a single method (e.g. 'preferred')."
+            )
 
     def summary(self) -> str:
         parts = [
@@ -123,10 +257,13 @@ class RegressionConfig(AnalysisConfigBase):
         return "_".join(parts)
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
-        """Score the model on this session.
+        """Score the model on this session, over the whole held-out split and within each environment.
 
-        The model infrastructure caches results to its own file store,
-        so we return None (completion marker) — no blob in ResultsStore.
+        The whole-split metrics come from the model's own joblib score cache, which is keyed
+        independently of this config's ``schema_version`` and so is a cache hit even right after a
+        schema bump. The per-environment metrics need the held-out predictions themselves, which
+        that cache does not hold, so the model is refit once at its cached-best hyperparameters —
+        one train plus one predict, with no hyperparameter re-optimization.
         """
         model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
         score = model.get_best_score(
@@ -134,7 +271,19 @@ class RegressionConfig(AnalysisConfigBase):
             spks_type=self.spks_type,
             method=self.method,
         )
-        return score
+        hyperparameters = model.get_best_hyperparameters(
+            session,
+            spks_type=self.spks_type,
+            method=self.method,
+        )[0]
+        report = model.process(
+            session,
+            self.spks_type,
+            train_split="train",
+            test_split="test",
+            hyperparameters=hyperparameters,
+        )
+        return {**score, **_per_environment_scores(model, session, self.spks_type, report)}
 
 
 # Residual localization is reported for two membership place fields: ``xval`` estimates the place
@@ -459,6 +608,34 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
     The parameter grid deliberately mirrors :class:`RegressionConfig`: every
     regression result therefore has a corresponding residual-localization job.
 
+    Result keys
+    -----------
+    Almost every key is assembled from the same three axes, so the whole result dict is::
+
+        fold      = xval | infold                            which frames the membership PF saw
+        region    = within | outside                         side of the soft place field
+        metric    = rms | normalized_rms | r2_weighted | r2_shared
+        statistic = mean | median                            across-ROI, over finite values only
+        subset    = <empty> | quality_filtered_ | notquality_filtered_
+
+    Per-ROI arrays, shape (rois,), enumerated by :func:`residual_per_roi_keys` -- 25 keys::
+
+        {fold}_{region}_pf_{metric}                          16 keys
+        {fold}_outside_minus_within_pf_{metric}               8 keys, literal outside minus within
+        variance_pf                                           total held-out variance per ROI
+
+    Scalar summaries, one per (statistic, subset, per-ROI key), enumerated by
+    :func:`residual_summary_keys` -- 150 keys::
+
+        {statistic}_{subset}{per_roi_key}
+
+    ROI-quality diagnostics, computed once on the full split and shared by both folds::
+
+        reliability, fraction_active                          (environments, rois)
+        quality_environments                                  (environments,), env id of each row
+        quality_filtered_roi_mask                             (rois,) bool
+        num_quality_filtered_rois                             int
+
     The membership place field is estimated twice, in the same activity units used by the model.
     The ``xval`` fold estimates it on the training frames and reads it out on the held-out frames,
     so the membership never saw the residuals it weights. The ``infold`` fold estimates it on the
@@ -696,9 +873,9 @@ class RegressionResidualStructureConfig(AnalysisConfigBase):
 
     1. **Additive** -- ``target - prediction``, shape (targets, frames).
     2. **Multiplicative** -- ``target / (relu(prediction) + eps)``, with a per-neuron ``eps``
-       proportional to that neuron's mean prediction. Every model in the grid already applies a
-       ReLU to its output, so the clip only bites for ``*_structured_gain``, whose predicted gains
-       are not rectified and can turn a place-field prediction negative.
+       proportional to that neuron's mean prediction. Every model in the grid rectifies its own
+       output, ``*_structured_gain`` included now that its predicted gains are clipped at zero, so
+       the ReLU here never bites and serves only to keep the denominator well posed.
     3. **Chunk gain** -- the least-squares scale factor per cell per (time chunk ∩ trial), the same
        estimator and shrinkage regularizer :class:`PlaceFieldStructuredGainModel` fits its gain
        regression on. A time chunk belongs to exactly one split, so a unit never mixes folds.
