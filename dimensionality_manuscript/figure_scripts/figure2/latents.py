@@ -535,7 +535,7 @@ class DimSweepLatentsViewer(FigureViewer):
         "rank_axis_log",
         "inset_num_dims",
     )
-    _SWEEP_KNOBS = ("metric", "se", "xlog", "linewidth", "fill_alpha", "legend_options")
+    _SWEEP_KNOBS = ("metric", "plot_style", "se", "xlog", "linewidth", "fill_alpha", "legend_options")
 
     def __init__(
         self,
@@ -590,6 +590,7 @@ class DimSweepLatentsViewer(FigureViewer):
             self.results_sweep,
             state["metric"],
             data_selection(state, self.results_sweep, self.selection_names),
+            plot_style=state["plot_style"],
             se=state["se"],
             xlog=state["xlog"],
             linewidth=state["linewidth"],

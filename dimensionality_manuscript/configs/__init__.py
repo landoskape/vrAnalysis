@@ -15,7 +15,8 @@ from .regression import (
     VectorGainRankConfig,
     RegressionDimensionalitySweepConfig,
 )
-from .rrr_to_external_latents import RRRToExternalLatentsConfig
+
+# from .rrr_to_external_latents import RRRToExternalLatentsConfig # Not in use at the moment, might revive later, but import currently broken
 from .subspace import SubspaceConfig
 from .stimspace import StimSpaceConfig, StimSpaceSpectraConfig, StimSpaceEnvPCAConfig, StimspaceSVCAConfig
 from .expmax import ExpMaxConfig
@@ -46,7 +47,7 @@ ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
     PlaceFieldStructureConfig,
     PlacefieldPredictionConfig,
     PopulationConfig,
-    RRRToExternalLatentsConfig,
+    # RRRToExternalLatentsConfig, # see above
     RegressionConfig,
     RegressionPlacefieldResidualConfig,
     RegressionResidualStructureConfig,

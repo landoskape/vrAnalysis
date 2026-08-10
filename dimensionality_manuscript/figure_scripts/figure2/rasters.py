@@ -6,7 +6,7 @@ from rastermap import Rastermap
 
 from vrAnalysis.helpers.plotting import format_spines
 from vrAnalysis.sessions import B2Session, SpksTypes
-from dimensionality_manuscript.configs.rrr_to_external_latents import VALID_SPKS_TYPES
+from dimensionality_manuscript.configs.regression import VALID_SPKS_TYPES
 from dimensionality_manuscript.pipeline import ResultsAggregator
 from dimensionality_manuscript.registry import ACTIVITY_PARAMETERS_NAMES, ModelName, PopulationRegistry, short_model_name
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer, add_data_selection_widgets

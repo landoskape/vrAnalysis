@@ -14,15 +14,10 @@ from dimensionality_manuscript.figure_scripts.panels import (
 
 from .performance import PERFORMANCE_MODEL_COLORS, PERFORMANCE_MODEL_LABELS, PERFORMANCE_MODEL_NAMES
 
-# RegressionDimensionalitySweepConfig.process() (configs/regression.py) sweeps a different
-# hyperparameter per model type: placefield models vary num_bins, RBFPos/pos_speed/full-regressor
-# models vary num_basis, and RRR varies rank. Each produces its own {prefix}_{values,dim,mse,r2}
-# result keys, so a model's sweep data must be read from its own prefix.
-SWEEP_KEY_BY_MODEL: dict[ModelName, str] = {
-    "internal_placefield_1d": "num_bins",
-    "internal_placefield_1d_gain": "num_bins",
-    "rrr": "rank",
-}
+# RegressionDimensionalitySweepConfig.process() (configs/regression.py) sweeps the same quantity
+# for every model type: the rank of the projection applied to a single fitted model's prediction.
+# Every model therefore writes one set of rank_{values,dim,mse,r2} keys.
+SWEEP_PREFIX: str = "rank"
 
 DIM_SWEEP_METRIC_LABELS = {"r2": r"$R^2$", "mse": "MSE"}
 DIM_SWEEP_MODEL_NAMES: tuple[ModelName, ...] = tuple(PERFORMANCE_MODEL_NAMES)
@@ -36,14 +31,14 @@ def dim_sweep_curve(
     metric: str,
     selection: dict,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """True dimensionalities and NaN-aligned per-mouse metric means.
+    """Projection ranks and NaN-aligned per-mouse metric means.
 
     Within each mouse, flatten all session/sweep observations and average metric values
     sharing the same finite dimensionality.  The returned y rows are mice and its columns
     are the sorted union of dimensionalities in x; combinations a mouse did not sample stay
     NaN so population error bars use mice, rather than sessions, as observations.
     """
-    prefix = SWEEP_KEY_BY_MODEL[model_name]
+    prefix = SWEEP_PREFIX
     sel = results.sel(model_name=model_name, squeeze_ones=False, **selection)
     dim = np.atleast_2d(sel[f"{prefix}_dim"])
     y = np.atleast_2d(sel[f"{prefix}_{metric}"])
@@ -179,10 +174,10 @@ def add_dim_sweep_widgets(
 class RegressionDimSweepViewer(FigureViewer):
     """Mean +/- SE performance-vs-dimensionality curves for PF, PF+Gain, and Peer.
 
-    Each model sweeps a different hyperparameter (num_bins / num_basis / rank; see
-    ``SWEEP_KEY_BY_MODEL``), and the resulting regressor dimensionality also depends on a
-    session's number of environments, so sessions don't share an exact dimensionality grid.
-    Session/sweep observations are grouped by their true dimensionality and averaged within
+    Every model sweeps the same quantity -- the rank of the projection applied to one fitted
+    model's prediction -- so the three curves share an x-axis. The highest rank a session reaches
+    still depends on its data (number of target cells, number of environments), so sessions don't
+    share an exact grid. Session/sweep observations are grouped by their rank and averaged within
     mouse. The resulting NaN-aligned mouse curves can be drawn individually with their mean,
     or as the across-mouse mean +/- SE with
     :func:`~vrAnalysis.helpers.plotting.errorPlot`.
