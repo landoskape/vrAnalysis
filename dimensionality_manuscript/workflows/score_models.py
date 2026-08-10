@@ -8,58 +8,60 @@ from dimensionality_manuscript.registry import ModelName, PopulationRegistry, ge
 clear_hyperparameters = False  # Clears hyperparameter cache
 clear_scores = False  # Clears score cache
 
-score_models = True  # Scores models
+score_models = False  # Scores models
 force_remake = False  # Remakes even if existing
 force_reoptimize = False  # Re-optimizes even if existing
 
-check_existing_scores = False  # Checks if scores already exist
+check_existing_scores = True  # Checks if scores already exist
 
 # Note: there's more parameters to scores & hyperparameters, but by not setting them we use the default values
 # which are the primary ones used for the manuscript. Non-defaults are primarly for testing and exploratory analysis.
 
 MODEL_NAMES: list[ModelName] = [
     # 1D Placfield Models
-    "external_placefield_1d",
-    "internal_placefield_1d",
-    "external_placefield_1d_gain",
-    "internal_placefield_1d_gain",
-    "external_placefield_1d_vector_gain",
-    "internal_placefield_1d_vector_gain",
-    # Core regression models
-    "rbfpos_decoder_only",
-    "rbfpos",
-    "rbfpos_leak",
-    "pos_speed_decoder_only",
-    "pos_speed",
-    "pos_speed_leak",
-    "fullregressor_decoder_only",
-    "fullregressor",
-    "fullregressor_leak",
-    # Core regression models with 1D Speed
-    "pos_speed_decoder_only_1dspeed",
-    "pos_speed_1dspeed",
-    "pos_speed_leak_1dspeed",
-    "fullregressor_decoder_only_1dspeed",
-    "fullregressor_1dspeed",
-    "fullregressor_leak_1dspeed",
-    # No intercept models
-    "rbfpos_decoder_only_no_intercept",
-    "rbfpos_no_intercept",
-    "rbfpos_leak_no_intercept",
-    "pos_speed_decoder_only_no_intercept",
-    "pos_speed_no_intercept",
-    "pos_speed_leak_no_intercept",
-    "fullregressor_decoder_only_no_intercept",
-    "fullregressor_no_intercept",
-    "fullregressor_leak_no_intercept",
-    # Reduced Rank Regression models
-    "rrr",
-    "rrr_no_intercept",
+    # "external_placefield_1d",
+    # "internal_placefield_1d",
+    # "external_placefield_1d_gain",
+    # "internal_placefield_1d_gain",
+    # "external_placefield_1d_vector_gain",
+    # "internal_placefield_1d_vector_gain",
+    "external_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain",
+    # # Core regression models
+    # "rbfpos_decoder_only",
+    # "rbfpos",
+    # "rbfpos_leak",
+    # "pos_speed_decoder_only",
+    # "pos_speed",
+    # "pos_speed_leak",
+    # "fullregressor_decoder_only",
+    # "fullregressor",
+    # "fullregressor_leak",
+    # # Core regression models with 1D Speed
+    # "pos_speed_decoder_only_1dspeed",
+    # "pos_speed_1dspeed",
+    # "pos_speed_leak_1dspeed",
+    # "fullregressor_decoder_only_1dspeed",
+    # "fullregressor_1dspeed",
+    # "fullregressor_leak_1dspeed",
+    # # No intercept models
+    # "rbfpos_decoder_only_no_intercept",
+    # "rbfpos_no_intercept",
+    # "rbfpos_leak_no_intercept",
+    # "pos_speed_decoder_only_no_intercept",
+    # "pos_speed_no_intercept",
+    # "pos_speed_leak_no_intercept",
+    # "fullregressor_decoder_only_no_intercept",
+    # "fullregressor_no_intercept",
+    # "fullregressor_leak_no_intercept",
+    # # Reduced Rank Regression models
+    # "rrr",
+    # "rrr_no_intercept",
 ]
 
 SPKS_TYPES: tuple[SpksTypes] = (
-    "oasis",
-    # "sigrebase",
+    # "oasis",
+    "sigrebase",
     # "deconvolved",
 )
 
