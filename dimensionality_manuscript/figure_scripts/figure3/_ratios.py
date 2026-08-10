@@ -54,18 +54,23 @@ def ratios_arrays(
     spectrum_mode: str = "all",
     env_full_scope: str = "within_env",
     full_within_env: bool = False,
+    first_n: int = 10,
 ) -> dict[str, np.ndarray]:
     """Mouse-averaged spectra plus per-mouse cumulative-variance-ratio arrays for the ratios figure.
 
     Shared data prep for :func:`plot_ratios_spectrum`, :func:`plot_ratios_beeswarms` and
-    :func:`plot_ratios_beeswarms_combined`.
+    :func:`plot_ratios_beeswarms_combined`. The behaving beeswarm arrays use the same raw
+    spectra, session mask, and mouse grouping as the selected ``spectrum_mode``. Consequently,
+    ``env_full_scope`` and ``full_within_env`` also apply when ``spectrum_mode="avg_env"``.
     """
+    if not 1 <= first_n <= 30:
+        raise ValueError(f"first_n must be between 1 and 30, got {first_n}")
+
     out = results.sel(keys=["sf_cv", "ff"], **sel_params, avg_by_mouse=False, include_iti=False)
     out_iti = results.sel(keys=["sf_cv", "ff"], **sel_params, avg_by_mouse=False, include_iti=True)
 
     if spectrum_mode == "all":
-        # Retain the unnormalized behaving spectra for optional display-only processing. All SVR
-        # calculations below continue to use their own untouched raw inputs.
+        # Retain the unnormalized behaving spectra for display-only processing and raw SVRs.
         sf_cv_sessions_raw = np.asarray(out["sf_cv"], dtype=float)
         ff_sessions_raw = np.asarray(out["ff"], dtype=float)
         spectrum_mouse_names = results.mouse_names
@@ -82,30 +87,32 @@ def ratios_arrays(
     else:
         raise ValueError(f"Unknown spectrum_mode {spectrum_mode!r}. Options: ['all', 'avg_env']")
 
-    full_sum = np.nansum(out["ff"], axis=1, keepdims=True)
+    # Normalize the behaving spectra selected above. These arrays feed both the spectrum and the
+    # concise beeswarm, so the two panels cannot silently describe different data selections.
+    full_sum = np.nansum(ff_sessions_raw, axis=1, keepdims=True)
     full_sum_iti = np.nansum(out_iti["ff"], axis=1, keepdims=True)
-    sf_cv = out["sf_cv"] / full_sum
+    sf_cv = sf_cv_sessions_raw / full_sum
     sf_cv_iti = out_iti["sf_cv"] / full_sum_iti
-    ff = out["ff"] / full_sum
+    ff = ff_sessions_raw / full_sum
 
-    full_sum_10 = np.nansum(out["ff"][:, :10], axis=1, keepdims=True)
-    full_sum_iti_10 = np.nansum(out_iti["ff"][:, :10], axis=1, keepdims=True)
-    sf_cv_10 = out["sf_cv"][:, :10] / full_sum_10
-    sf_cv_iti_10 = out_iti["sf_cv"][:, :10] / full_sum_iti_10
+    full_sum_10 = np.nansum(ff_sessions_raw[:, :first_n], axis=1, keepdims=True)
+    full_sum_iti_10 = np.nansum(out_iti["ff"][:, :first_n], axis=1, keepdims=True)
+    sf_cv_10 = sf_cv_sessions_raw[:, :first_n] / full_sum_10
+    sf_cv_iti_10 = out_iti["sf_cv"][:, :first_n] / full_sum_iti_10
 
     session_has_spontaneous = np.array([session.has_spontaneous() for session in results.sessions])
 
     # Measure cumulative variance after normalizing
-    sf_cv_total = average_by_mouse(np.nansum(sf_cv, axis=1), results.mouse_names)
-    sf_cv_total_10 = average_by_mouse(np.nansum(sf_cv_10, axis=1), results.mouse_names)
+    sf_cv_total = average_by_mouse(np.nansum(sf_cv, axis=1), spectrum_mouse_names)
+    sf_cv_total_10 = average_by_mouse(np.nansum(sf_cv_10, axis=1), spectrum_mouse_names)
     sf_cv_total_iti = average_by_mouse(np.nansum(sf_cv_iti[~session_has_spontaneous], axis=1), results.mouse_names[~session_has_spontaneous])
     sf_cv_total_iti_10 = average_by_mouse(np.nansum(sf_cv_iti_10[~session_has_spontaneous], axis=1), results.mouse_names[~session_has_spontaneous])
     sf_cv_total_spont = average_by_mouse(np.nansum(sf_cv_iti[session_has_spontaneous], axis=1), results.mouse_names[session_has_spontaneous])
     sf_cv_total_spont_10 = average_by_mouse(np.nansum(sf_cv_iti_10[session_has_spontaneous], axis=1), results.mouse_names[session_has_spontaneous])
 
     # Average the unmodified curves by mouse for viewers that do not request display processing.
-    sf_cv = average_by_mouse(sf_cv, results.mouse_names)
-    ff = average_by_mouse(ff, results.mouse_names)
+    sf_cv = average_by_mouse(sf_cv, spectrum_mouse_names)
+    ff = average_by_mouse(ff, spectrum_mouse_names)
 
     return dict(
         sf_cv=sf_cv,
@@ -181,6 +188,7 @@ def plot_ratios_spectrum(
     standard_log_yticklabels: bool = False,
     ylim: tuple[float, float] | None = None,
     show_first10_indicator: bool = True,
+    leading_dims: int = 10,
     include_legend: bool = True,
 ) -> None:
     """Mouse-averaged normalized ``sf_cv`` / ``ff`` spectra (log-log).
@@ -215,7 +223,7 @@ def plot_ratios_spectrum(
         ax.set_yticks(yticks, labels=ytick_power, fontsize=fontsize)
     ax.set_ylim(*ylim)
     ax.set_xlabel("Shared Modes", fontsize=fontsize)
-    ax.set_ylabel("Shared Variance", fontsize=fontsize)
+    ax.set_ylabel("Cross-Covariance", fontsize=fontsize)
     # Set before format_spines, which freezes its x_pos fraction into a data coordinate.
     xmax = SPECTRUM_XMAX_PAD * last_visible_dimension(ylim[0], sf_cv, ff)
     ax.set_xlim(1, xmax)
@@ -240,12 +248,19 @@ def plot_ratios_spectrum(
     if show_first10_indicator:
         ax.annotate(
             "",
-            xy=(10, 10**yline),
+            xy=(leading_dims, 10**yline),
             xytext=(1, 10**yline),
             arrowprops=dict(arrowstyle="<->", color="black", linewidth=1.0),
             annotation_clip=False,
         )
-        ax.text(np.sqrt(10), 10 ** (yline + 0.1), "1st 10", fontsize=fontsize, ha="center", va="bottom")
+        ax.text(
+            np.sqrt(leading_dims),
+            10 ** (yline + 0.1),
+            "Head",
+            fontsize=fontsize,
+            ha="center",
+            va="bottom",
+        )
 
 
 def plot_ratios_beeswarms(ax1, ax2, arrays: dict[str, np.ndarray], fontsize: float) -> None:
@@ -425,10 +440,12 @@ def plot_ratios_beeswarms_concise(
     arrays: dict[str, np.ndarray],
     fontsize: float,
     include_first10: bool = True,
+    value_scale: float = 1.0,
+    leading_dims: int = 10,
 ) -> None:
     """Behaving-only variance ratios for all dimensions, optionally preceded by the first 10."""
     keys = ("sf_cv_total_10", "sf_cv_total") if include_first10 else ("sf_cv_total",)
-    labels = RATIOS_GROUP_LABELS if include_first10 else ["All"]
+    labels = ["Head", "Full"] if include_first10 else ["Full"]
     xticks = np.arange(len(keys), dtype=float)
     color = CONDITION_COLORS["behaving"]
     alpha = 0.3
@@ -436,7 +453,7 @@ def plot_ratios_beeswarms_concise(
     line_extent = np.array([-0.25, 0.25])
 
     for x, key in zip(xticks, keys):
-        values = arrays[key]
+        values = arrays[key] * value_scale
         ax.plot(
             x + beewidth * beeswarm(values),
             values,
@@ -456,18 +473,18 @@ def plot_ratios_beeswarms_concise(
         )
 
     ax.set_xlim(-0.4, xticks[-1] + 0.4)
-    ax.set_ylabel("Variance Ratio", fontsize=fontsize)
+    ax.set_ylabel("Variance Ratio", fontsize=fontsize, labelpad=-10)
     format_spines(
         ax,
         x_pos=COMPOSITE_SPINE_OFFSET,
         y_pos=COMPOSITE_SPINE_OFFSET,
         spines_visible=["left", "bottom"] if include_first10 else ["left"],
         xbounds=xticks if include_first10 else None,
-        ybounds=[0, 1],
-        yticks=[0, 0.5, 1.0],
+        ybounds=[0, value_scale],
+        yticks=np.array([0, 1.0]) * value_scale,
         tick_fontsize=fontsize,
     )
     if include_first10:
-        ax.set_xticks(xticks, labels=labels, fontsize=fontsize)
+        ax.set_xticks(xticks, labels=labels, fontsize=fontsize, rotation=45, ha="right")
     else:
         ax.set_xticks([])

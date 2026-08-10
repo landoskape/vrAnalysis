@@ -203,18 +203,27 @@ def familiarity_curves(
 # ======================================================================================
 
 
-def familiarity_panel(ax, axis_curves: dict, metric: str, xlabel: str, ylabel: str, style: str, fontsize: float) -> float:
+def familiarity_panel(
+    ax,
+    axis_curves: dict,
+    metric: str,
+    xlabel: str,
+    ylabel: str,
+    style: str,
+    fontsize: float,
+    value_scale: float = 1.0,
+) -> float:
     """Plot one familiarity metric panel (svr or total) across curve labels; returns the max finite value drawn."""
     max_val = 0.0
     for curve_label, data in axis_curves.items():
         color = FAMILIARITY_COLORS[curve_label]
         per_mouse = data[metric]
-        stack = pad_stack_by_mouse(per_mouse)
+        stack = pad_stack_by_mouse(per_mouse) * value_scale
         length = support_length(stack)
         stack = stack[:, :length]
         if style == "all":
             for values in per_mouse.values():
-                ax.plot(np.arange(len(values)), values, color=(color, 0.3), linewidth=0.5)
+                ax.plot(np.arange(len(values)), np.asarray(values) * value_scale, color=(color, 0.3), linewidth=0.5)
             ax.plot(np.arange(length), mean_with_min_support(stack), color=color, linewidth=2.0, label=curve_label)
             visible = stack
         elif length:
@@ -271,9 +280,25 @@ def render_familiarity_panels(ax_ratio, ax_total, curves: dict, mode: str, style
     format_familiarity_ylim(ax_total, max_total, fontsize, round_to_tenth=False)
 
 
-def render_familiarity_ratio_panel(ax_ratio, curves: dict, mode: str, style: str, fontsize: float) -> None:
+def render_familiarity_ratio_panel(
+    ax_ratio,
+    curves: dict,
+    mode: str,
+    style: str,
+    fontsize: float,
+    value_scale: float = 1.0,
+) -> None:
     """Render only the Variance Ratio panel (no Total Variance), for the composite figure."""
     xlabel = familiarity_xlabel(mode)
-    max_ratio = familiarity_panel(ax_ratio, curves, "svr", xlabel, "Variance Ratio", style, fontsize)
+    max_ratio = familiarity_panel(
+        ax_ratio,
+        curves,
+        "svr",
+        xlabel,
+        "Variance Ratio",
+        style,
+        fontsize,
+        value_scale=value_scale,
+    )
     ax_ratio.legend(loc="upper left", fontsize=fontsize, frameon=False, markerfirst=True, handlelength=0.8, handletextpad=0.5)
     format_familiarity_ylim(ax_ratio, max_ratio, fontsize)

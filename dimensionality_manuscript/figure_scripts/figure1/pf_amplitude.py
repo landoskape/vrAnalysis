@@ -26,6 +26,8 @@ from ._shared import (
     support_length,
 )
 
+RELIABILITY_THRESHOLD = 0.3
+
 
 def _nanmax_over_slots(slot_peaks: np.ndarray) -> np.ndarray:
     """Largest peak across environment slots for each ROI, NaN where an ROI has none.
@@ -48,6 +50,8 @@ class PlacefieldPeakAmplitude(FigureViewer):
     ``pf_peak_hist`` (counts per session and environment slot, precomputed on
     ``pf_peak_hist_edges``), ``pf_peak_n`` (how many ROIs went into each), and ``pf_peak`` (the
     per-ROI peaks themselves) -- so nothing is measured here and the figure is cheap to redraw.
+    The aggregator's slot-aligned ``reliability_slot`` values optionally restrict every panel to
+    ROIs with reliability greater than 0.3 in the environment contributing that peak.
 
     - ``ax[0]``: every session of one mouse, one histogram per session colored by session number
       (early sessions cool and late warm). A drift in how strongly cells are driven at their
@@ -77,6 +81,10 @@ class PlacefieldPeakAmplitude(FigureViewer):
         splits by slot, so this does not affect it.
     env_slot : int
         Experience-order slot used when ``env_mode="slot"``.
+    filter_by_reliability : bool
+        Keep only peaks whose same-environment spatial reliability is greater than 0.3. Both the
+        unfiltered and filtered histograms are cached when the aggregator selection is loaded, so
+        toggling this option does not reload or recompute session data.
     xrange : tuple[float, float] or None
         X limits of ``ax[0]``/``ax[1]``. None shows the full stored range. This only crops the
         view -- the bins are fixed by the config that wrote the results.
@@ -122,6 +130,7 @@ class PlacefieldPeakAmplitude(FigureViewer):
         mouse: str | None = None,
         env_mode: str = "pooled",
         env_slot: int = 0,
+        filter_by_reliability: bool = False,
         xrange: tuple[float, float] | None = None,
         density: bool = True,
         cumulative: bool = False,
@@ -164,6 +173,7 @@ class PlacefieldPeakAmplitude(FigureViewer):
         self.add_selection("mouse", value=mouse if mouse is not None else self.mice[0], options=self.mice)
         self.add_selection("env_mode", value=env_mode, options=["pooled", "best", "slot"])
         self.add_integer("env_slot", value=env_slot, min=0, max=MAX_ENV_SLOTS - 1)
+        self.add_boolean("filter_by_reliability", value=filter_by_reliability)
         # The bins come from the config that wrote the results, so this crops the view rather than
         # rebinning -- hence the step of one bin width.
         self.add_float_range(
@@ -205,7 +215,10 @@ class PlacefieldPeakAmplitude(FigureViewer):
 
         self.on_change(list(self.selection_names), self.reload_arrays)
         self.on_change("mouse", self.update_slot_bounds)
-        self.on_change(["mouse", "env_mode", "env_slot", "density", "cumulative", "summary_stat"], self.refresh_data)
+        self.on_change(
+            ["mouse", "env_mode", "env_slot", "filter_by_reliability", "density", "cumulative", "summary_stat"],
+            self.refresh_data,
+        )
         self.update_slot_bounds(self.state)
         self.refresh_data(self.state)
 
@@ -213,11 +226,12 @@ class PlacefieldPeakAmplitude(FigureViewer):
 
     def _load_arrays(self, state) -> None:
         """Pull the per-ROI peaks, their precomputed histograms, and the bin edges."""
-        keys = ["pf_peak", "pf_peak_hist", "pf_peak_n", "pf_peak_hist_edges", "env_slot_ids"]
+        keys = ["pf_peak", "pf_peak_hist", "pf_peak_n", "pf_peak_hist_edges", "reliability_slot", "env_slot_ids"]
         out = self.results.sel(keys=keys, squeeze_ones=False, **data_selection(state, self.results, self.selection_names))
         self.pf_peak = np.asarray(out["pf_peak"], dtype=float)  # (sessions, slots, max_rois)
         self.pf_peak_hist = np.asarray(out["pf_peak_hist"], dtype=float)  # (sessions, slots, bins)
         self.pf_peak_n = np.asarray(out["pf_peak_n"], dtype=float)  # (sessions, slots)
+        self.reliability_slot = np.asarray(out["reliability_slot"], dtype=float)  # (sessions, slots, max_rois)
         self.env_slot_ids = np.asarray(out["env_slot_ids"], dtype=float)  # (sessions, slots)
         # Every session stores the same edges (they come from the config), so take the first
         # session that actually has them.
@@ -229,6 +243,25 @@ class PlacefieldPeakAmplitude(FigureViewer):
         self.bin_centers = edge2center(self.bin_edges)
         self.bin_width = float(self.bin_edges[1] - self.bin_edges[0])
         self.num_slots = self.pf_peak_n.shape[1]
+
+        # Cache the reliability-filtered counterparts once per aggregator selection. The mask is
+        # slot-local: a peak only survives when that ROI is reliable in the environment whose
+        # place field supplied the peak. NaN padding naturally fails the comparison.
+        reliable_peaks = np.where(self.reliability_slot > RELIABILITY_THRESHOLD, self.pf_peak, np.nan)
+        reliable_hist = np.full_like(self.pf_peak_hist, np.nan)
+        reliable_n = np.full_like(self.pf_peak_n, np.nan)
+        for row in range(reliable_peaks.shape[0]):
+            for slot in range(reliable_peaks.shape[1]):
+                # Preserve missing/unrun slots as NaN rather than turning them into real zeros.
+                if not np.isfinite(self.pf_peak_n[row, slot]):
+                    continue
+                values = reliable_peaks[row, slot]
+                values = values[np.isfinite(values)]
+                reliable_hist[row, slot] = np.histogram(values, bins=self.bin_edges)[0]
+                reliable_n[row, slot] = values.size
+        self._peak_cache = {False: self.pf_peak, True: reliable_peaks}
+        self._hist_cache = {False: self.pf_peak_hist, True: reliable_hist}
+        self._n_cache = {False: self.pf_peak_n, True: reliable_n}
 
     def reload_arrays(self, state):
         """Re-pull the arrays after a data-selection change, then re-derive every curve."""
@@ -251,20 +284,21 @@ class PlacefieldPeakAmplitude(FigureViewer):
         means for *this* mouse -- the two cohorts run disjoint environment indices, so the slot
         number is the only thing comparable across them.
         """
+        reliability_label = f"\nrel > {RELIABILITY_THRESHOLD:g}" if state["filter_by_reliability"] else ""
         if state["env_mode"] == "pooled":
-            return "all envs"
+            return "all envs" + reliability_label
         if state["env_mode"] == "best":
-            return "best env"
+            return "best env" + reliability_label
         slot = state["env_slot"]
         slot_ids = self.env_slot_ids[self._rows_by_mouse[state["mouse"]], slot]
         slot_ids = slot_ids[np.isfinite(slot_ids)]
         if slot_ids.size == 0:
-            return f"env #{slot + 1}"
-        return f"env #{slot + 1} (id {int(slot_ids[0])})"
+            return f"env #{slot + 1}" + reliability_label
+        return f"env #{slot + 1} (id {int(slot_ids[0])})" + reliability_label
 
     def _row_peaks(self, row: int, state) -> np.ndarray:
         """Per-ROI peaks of one session under the current env mode (empty if it ran nothing)."""
-        slot_peaks = self.pf_peak[row]  # (slots, max_rois)
+        slot_peaks = self._peak_cache[state["filter_by_reliability"]][row]  # (slots, max_rois)
         env_mode = state["env_mode"]
         if env_mode == "pooled":
             # Every (roi, environment) pair is its own sample.
@@ -284,20 +318,22 @@ class PlacefieldPeakAmplitude(FigureViewer):
         ``counts / (n * bin_width)`` and integrates to the fraction that fell in range.
         """
         env_mode = state["env_mode"]
+        hist = self._hist_cache[state["filter_by_reliability"]]
+        n = self._n_cache[state["filter_by_reliability"]]
         if env_mode == "best":
             # Not derivable from the per-slot histograms -- rebin the stored per-ROI peaks.
             values = self._row_peaks(row, state)
             return np.histogram(values, bins=self.bin_edges)[0].astype(float), float(values.size)
         if env_mode == "pooled":
-            valid = np.isfinite(self.pf_peak_n[row])
+            valid = np.isfinite(n[row])
             if not np.any(valid):
                 return np.zeros(len(self.bin_centers)), 0.0
-            return np.sum(self.pf_peak_hist[row][valid], axis=0), float(np.sum(self.pf_peak_n[row][valid]))
+            return np.sum(hist[row][valid], axis=0), float(np.sum(n[row][valid]))
         slot = state["env_slot"]
-        n_slot = self.pf_peak_n[row, slot]
+        n_slot = n[row, slot]
         if not np.isfinite(n_slot):
             return np.zeros(len(self.bin_centers)), 0.0
-        return self.pf_peak_hist[row, slot], float(n_slot)
+        return hist[row, slot], float(n_slot)
 
     def _row_curve(self, row: int, state) -> np.ndarray | None:
         """One session's plotted curve (density or counts, optionally cumulative), None if empty."""
@@ -322,12 +358,13 @@ class PlacefieldPeakAmplitude(FigureViewer):
         # has had", not the session number in the experiment.
         summarize = np.median if state["summary_stat"] == "median" else np.mean
         self.slot_stacks: dict[int, np.ndarray] = {}
+        peak = self._peak_cache[state["filter_by_reliability"]]
         for slot in range(self.num_slots):
             per_mouse = []
             for mouse in self.mice:
                 values = []
                 for row in self._rows_by_mouse[mouse]:
-                    peaks = self.pf_peak[row, slot]
+                    peaks = peak[row, slot]
                     peaks = peaks[np.isfinite(peaks)]
                     if peaks.size:
                         values.append(float(summarize(peaks)))

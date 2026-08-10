@@ -32,7 +32,6 @@ def _state(**overrides) -> dict:
         "pf_text_y": 0.9,
         "ff_text_x": 0.05,
         "ff_text_y": 0.9,
-        "legend_panel": "top",
         "legend_anchor_x": 0.0,
         "legend_anchor_y": 0.0,
         "legend_visible": False,
@@ -46,8 +45,12 @@ def test_by_env_column_layout_puts_residual_above_pfs_and_shares_x():
     fig = viewer._plot_by_env(_state(by_env_layout="col"), fontsize=8.0)
     top, bottom = fig.axes
 
-    assert top.texts[0].get_text() == "Residual CA1"
+    assert top.texts[0].get_text() == "PF Residual"
+    assert top.texts[0].get_color() == "brown"
+    assert top.texts[0].get_fontweight() == "bold"
     assert bottom.texts[0].get_text() == "Placefields"
+    assert bottom.texts[0].get_color() == "purple"
+    assert bottom.texts[0].get_fontweight() == "bold"
     assert top.get_shared_x_axes().joined(top, bottom)
     assert not top.spines["bottom"].get_visible()
     assert not top.xaxis.get_visible()
@@ -64,7 +67,7 @@ def test_by_env_row_layout_keeps_placefields_left_and_ca1_right():
     left, right = fig.axes
 
     assert left.texts[0].get_text() == "Placefields"
-    assert right.texts[0].get_text() == "Residual CA1"
+    assert right.texts[0].get_text() == "PF Residual"
     assert not left.get_shared_x_axes().joined(left, right)
     assert left.spines["bottom"].get_visible()
     assert right.spines["bottom"].get_visible()
@@ -73,13 +76,8 @@ def test_by_env_row_layout_keeps_placefields_left_and_ca1_right():
     plt.close(fig)
 
 
-def test_by_env_column_legend_can_anchor_above_lower_panel():
+def test_by_env_shared_layout_overlays_sources_and_keeps_legend_controls():
     viewer = _viewer()
-    reference = viewer._plot_by_env(_state(by_env_layout="col"), fontsize=8.0)
-    reference.canvas.draw()
-    reference_positions = [axis.get_position().bounds for axis in reference.axes]
-    plt.close(reference)
-
     legend_state = {
         "legend_visible": True,
         "legend_loc": "upper left",
@@ -96,23 +94,26 @@ def test_by_env_column_legend_can_anchor_above_lower_panel():
 
     fig = viewer._plot_by_env(
         _state(
-            by_env_layout="col",
-            legend_panel="bottom",
+            by_env_layout="shared",
             legend_anchor_x=0.1,
             legend_anchor_y=0.2,
             **legend_state,
         ),
         fontsize=8.0,
     )
-    top, bottom = fig.axes
-    legend = bottom.get_legend()
+    assert len(fig.axes) == 1
+    axis = fig.axes[0]
+    legend = axis.get_legend()
     fig.canvas.draw()
 
-    assert top.get_legend() is None
     assert legend is not None
     assert not legend.get_in_layout()
-    anchor = legend.get_bbox_to_anchor().transformed(bottom.transAxes.inverted())
+    assert [text.get_text() for text in axis.texts] == ["Placefields", "PF Residual"]
+    assert [text.get_color() for text in axis.texts] == ["purple", "brown"]
+    assert len(axis.lines) == 2
+    assert len(legend.get_texts()) == 1
+    anchor = legend.get_bbox_to_anchor().transformed(axis.transAxes.inverted())
     np.testing.assert_allclose(anchor.bounds, (0.1, 0.2, 1.0, 1.0))
-    for axis, reference_position in zip(fig.axes, reference_positions):
-        np.testing.assert_allclose(axis.get_position().bounds, reference_position)
+    assert axis.get_xlabel() == "Env session #"
+    assert axis.get_ylabel() == "Dimensionality"
     plt.close(fig)

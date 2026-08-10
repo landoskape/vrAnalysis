@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import numpy as np
 
+from dimensionality_manuscript.configs.regression import residual_summary_keys
 from dimensionality_manuscript.figure_scripts.figure2.pf_residual import (
     ModelPlacefieldResidualViewer,
     ModelPlacefieldResidualFamiliarityViewer,
@@ -30,7 +31,8 @@ class _FakeResidualResults:
         assert avg_by_mouse is False
         model_offset = self.param_axes["model_name"].index(model_name) * 0.05
         key = keys[0]
-        metric_offset = 0.2 if key.endswith("outside_pf_rms") else 0.0
+        assert key in residual_summary_keys(), f"{key!r} is not a key the residual config emits"
+        metric_offset = 0.2 if "outside_pf" in key else 0.0
         return {key: np.array([0.4, 0.5, 0.45, 0.55]) + model_offset + metric_offset}
 
 
@@ -43,6 +45,7 @@ class _FakeResidualSummaryResults:
     def sel(self, *, model_name, keys, avg_by_mouse, **selection):
         assert avg_by_mouse is True
         key = keys[0]
+        assert key in residual_summary_keys(), f"{key!r} is not a key the residual config emits"
         self.requested_keys.append(key)
         if "notquality_filtered" in key:
             subset_offset = 1.0
@@ -64,22 +67,39 @@ def test_pf_residual_summary_selects_main_and_inset_roi_subsets():
 
     assert viewer.state["main_show"] == "not quality"
     assert viewer.state["inset_show"] == "all"
-    assert "mean_notquality_filtered_within_pf_rms" in results.requested_keys
-    assert "mean_within_pf_rms" in results.requested_keys
-    np.testing.assert_allclose(viewer._scores["within_pf_rms"][:, 0], [1.4, 1.45, 1.5])
-    np.testing.assert_allclose(viewer._inset_scores["within_pf_rms"][:, 0], [0.4, 0.45, 0.5])
+    assert "mean_notquality_filtered_xval_within_pf_rms" in results.requested_keys
+    assert "mean_xval_within_pf_rms" in results.requested_keys
+    np.testing.assert_allclose(viewer._scores["within"][:, 0], [1.4, 1.45, 1.5])
+    np.testing.assert_allclose(viewer._inset_scores["within"][:, 0], [0.4, 0.45, 0.5])
 
 
 def test_pf_residual_summary_notquality_normalized_key_order():
     results = _FakeResidualSummaryResults()
     ModelPlacefieldResidualViewer(
         results,
-        normalized=True,
+        metric="normalized_rms",
         main_show="not quality",
         include_inset=False,
     )
 
-    assert "mean_notquality_filtered_normalized_within_pf_rms" in results.requested_keys
+    assert "mean_notquality_filtered_xval_within_pf_normalized_rms" in results.requested_keys
+
+
+def test_pf_residual_summary_fold_metric_and_statistic_select_the_matching_keys():
+    for fold in ("xval", "infold"):
+        for metric in ("rms", "normalized_rms", "r2_weighted", "r2_shared"):
+            for statistic in ("mean", "median"):
+                results = _FakeResidualSummaryResults()
+                ModelPlacefieldResidualViewer(
+                    results,
+                    fold=fold,
+                    metric=metric,
+                    statistic=statistic,
+                    include_inset=False,
+                )
+
+                assert f"{statistic}_{fold}_within_pf_{metric}" in results.requested_keys
+                assert f"{statistic}_{fold}_outside_pf_{metric}" in results.requested_keys
 
 
 def test_pf_residual_summary_main_and_inset_relative_are_independent():

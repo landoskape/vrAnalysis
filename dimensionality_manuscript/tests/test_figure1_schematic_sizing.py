@@ -64,11 +64,32 @@ def test_fitted_layout_uses_more_constraining_width_and_centers_height():
     assert fitted["axes_bounds"] == pytest.approx((0.0, (1.0 - axes_height) / 2, 1.0, axes_height))
 
 
-def test_combined_figure_reuses_width_forced_schematic_sizing():
+def test_report_figsize_returns_requested_or_width_derived_size():
     schematic, state = _schematic_and_state()
-    schematic.state = state
+
+    assert schematic.report_figsize(state) == pytest.approx((7.0, 4.0))
+
+    state["force_width"] = True
+    metrics = schematic.layout_metrics(state)
+    expected_height = metrics["height"] * state["fig_width"] / metrics["width"]
+    assert schematic.report_figsize(state) == pytest.approx((state["fig_width"], expected_height))
+
+
+def test_combined_figure_reuses_width_forced_schematic_sizing():
+    _, state = _schematic_and_state()
+
+    class ComposableSchematic:
+        num_rooms = 4
+        envs = (1, 3, 4)
+        layout_metrics = VREnvironmentSchematic.layout_metrics
+        fitted_figure_layout = VREnvironmentSchematic.fitted_figure_layout
+
+        def __init__(self):
+            self.state = state
+            self.draw = Mock()
+
+    schematic = ComposableSchematic()
     schematic.fitted_figure_layout = Mock(wraps=schematic.fitted_figure_layout)
-    schematic.draw = Mock()
 
     speed = Mock()
     speed.state = {}

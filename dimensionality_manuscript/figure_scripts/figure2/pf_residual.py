@@ -33,16 +33,44 @@ PF_RESIDUAL_MODEL_NAMES: list[ModelName] = [
     "internal_placefield_1d_gain",
     "rrr",
 ]
-PF_RESIDUAL_METRICS = ("within_pf_rms", "outside_pf_rms")
+PF_RESIDUAL_REGIONS = ("within", "outside")
+# Which membership place field localized the residual: ``xval`` measured it on the training
+# frames, ``infold`` on the held-out frames themselves.
+PF_RESIDUAL_FOLDS = ("xval", "infold")
+PF_RESIDUAL_METRIC_OPTIONS = ("rms", "normalized_rms", "r2_weighted", "r2_shared")
+# Across-ROI reduction. These distributions are right-skewed, so mean and median differ noticeably
+# for every metric; for the R² metrics the mean is unusable and "median" is the one to read.
+PF_RESIDUAL_STATISTICS = ("mean", "median")
 PF_RESIDUAL_SUBSETS = ("all", "quality", "not quality")
 PF_RESIDUAL_SUBSET_LABELS = {
     "all": None,
     "quality": "placecells",
     "not quality": "non placecells",
 }
-PF_RESIDUAL_LABELS = {
-    "within_pf_rms": "Within-PF\nResidual RMS",
-    "outside_pf_rms": "Outside-PF\nResidual RMS",
+PF_RESIDUAL_REGION_LABELS = {
+    "within": "Within-PF",
+    "outside": "Outside-PF",
+}
+# Lowercase forms compose after a region name ("Within-PF residual RMS").
+PF_RESIDUAL_METRIC_LABELS = {
+    "rms": "residual RMS",
+    "normalized_rms": "normalized residual RMS",
+    "r2_weighted": "weighted $R^2$",
+    "r2_shared": "shared-variance $R^2$",
+}
+# Standalone forms label an axis whose region is named by panel text instead.
+PF_RESIDUAL_METRIC_AXIS_LABELS = {
+    "rms": "Residual RMS",
+    "normalized_rms": "Normalized residual RMS",
+    "r2_weighted": "Weighted $R^2$",
+    "r2_shared": "Shared-variance $R^2$",
+}
+# Two-line variants for the cramped inset axes.
+PF_RESIDUAL_METRIC_SHORT_LABELS = {
+    "rms": "Res.\nRMS",
+    "normalized_rms": "Norm.\nRes. RMS",
+    "r2_weighted": "Weighted\n$R^2$",
+    "r2_shared": "Shared\n$R^2$",
 }
 
 # The familiarity panel names its three curves by role rather than by the models' own roles: the
@@ -59,9 +87,13 @@ PF_RESIDUAL_FAMILIARITY_LABELS = {
 }
 
 
-def _residual_key_prefix(subset: bool | str, normalized: bool) -> str:
+def _residual_key_prefix(subset: bool | str, fold: str, statistic: str = "mean") -> str:
     """Result-key prefix for the requested precomputed scalar summary."""
-    prefix = "mean_"
+    if fold not in PF_RESIDUAL_FOLDS:
+        raise ValueError(f"Unknown residual fold: {fold!r}")
+    if statistic not in PF_RESIDUAL_STATISTICS:
+        raise ValueError(f"Unknown residual statistic: {statistic!r}")
+    prefix = f"{statistic}_"
     # Keep accepting the familiarity viewer's boolean quality selection while the
     # summary viewer exposes all three available ROI subsets.
     if subset is True or subset == "quality":
@@ -70,16 +102,17 @@ def _residual_key_prefix(subset: bool | str, normalized: bool) -> str:
         prefix += "notquality_filtered_"
     elif subset is not False and subset != "all":
         raise ValueError(f"Unknown residual subset: {subset!r}")
-    if normalized:
-        prefix += "normalized_"
-    return prefix
+    return f"{prefix}{fold}_"
 
 
-def _residual_ylabel(metric: str, normalized: bool, relative: bool) -> str:
-    """Y label for one residual metric under the current display options."""
-    label = PF_RESIDUAL_LABELS[metric]
-    if normalized:
-        label = f"Normalized {label.lower()}"
+def _residual_metric_key(region: str, metric: str) -> str:
+    """Result-key suffix naming one region's metric, e.g. ``within_pf_r2_weighted``."""
+    return f"{region}_pf_{metric}"
+
+
+def _residual_ylabel(region: str, metric: str, relative: bool) -> str:
+    """Y label for one region's metric under the current display options."""
+    label = f"{PF_RESIDUAL_REGION_LABELS[region]} {PF_RESIDUAL_METRIC_LABELS[metric]}"
     if relative:
         label = rf"$\Delta$ {label}"
     return label
@@ -98,8 +131,19 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         Aggregated ``RegressionPlacefieldResidualConfig`` results.
     model_names : list[ModelName]
         Models to draw, in x order.
-    normalized : bool
-        Select residual RMS divided by each ROI's held-out target standard deviation.
+    fold : {"xval", "infold"}
+        Membership place field that localized the residual: estimated on the training frames
+        (``xval``) or on the held-out frames themselves (``infold``).
+    metric : {"rms", "normalized_rms", "r2_weighted", "r2_shared"}
+        Residual metric to draw. ``normalized_rms`` divides by each ROI's held-out target standard
+        deviation; ``r2_weighted`` measures against the weighted mean of the target, so its within-
+        and outside-field values do not share a baseline; ``r2_shared`` normalizes by the ROI's
+        total held-out variance and is exactly ``1 - normalized_rms**2``.
+    statistic : {"mean", "median"}
+        Across-ROI reduction of the per-session values. These distributions are right-skewed, so
+        the two differ noticeably for every metric; for the R² metrics the mean is unusable (an ROI
+        with near-zero within-field variance produces an R² in the thousands) and the median is the
+        one to read.
     main_show, inset_show : {"all", "quality", "not quality"}
         ROI subset displayed in the main panels and inset panels, respectively. ``inset_show``
         has no visual effect when ``include_inset`` is False.
@@ -132,7 +176,9 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         results: ResultsAggregator,
         *,
         model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
-        normalized: bool = False,
+        fold: str = "xval",
+        metric: str = "rms",
+        statistic: str = "mean",
         main_show: str = "all",
         inset_show: str = "quality",
         main_sharey: bool | None = None,
@@ -175,7 +221,9 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             inset_relative = False if relative is None else relative
 
         self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)
-        self.add_boolean("normalized", value=normalized)
+        self.add_selection("fold", value=fold, options=list(PF_RESIDUAL_FOLDS))
+        self.add_selection("metric", value=metric, options=list(PF_RESIDUAL_METRIC_OPTIONS))
+        self.add_selection("statistic", value=statistic, options=list(PF_RESIDUAL_STATISTICS))
         self.add_selection("main_show", value=main_show, options=list(PF_RESIDUAL_SUBSETS))
         self.add_selection("inset_show", value=inset_show, options=list(PF_RESIDUAL_SUBSETS))
         self.add_boolean("main_sharey", value=main_sharey)
@@ -202,7 +250,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         self.add_float("placecells_y", value=placecells_y, min=0.0, max=1.0, step=0.01)
         self.add_float("inset_ylabel_fontsize_scale", value=inset_ylabel_fontsize_scale, min=0.1, max=3.0, step=0.05)
         self.add_boolean("include_inset", value=include_inset)
-        for name in (*self.selection_names, "normalized", "main_show", "inset_show"):
+        for name in (*self.selection_names, "fold", "metric", "statistic", "main_show", "inset_show"):
             self.on_change(name, self.refresh_data)
         self.refresh_data(self.state)
 
@@ -211,17 +259,18 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         selection = data_selection(state, self.results, self.selection_names)
 
         def load_scores(subset):
-            prefix = _residual_key_prefix(subset, state["normalized"])
-            return {
-                metric: np.stack(
+            prefix = _residual_key_prefix(subset, state["fold"], state["statistic"])
+            scores = {}
+            for region in PF_RESIDUAL_REGIONS:
+                key = prefix + _residual_metric_key(region, state["metric"])
+                scores[region] = np.stack(
                     [
-                        self.results.sel(model_name=model_name, keys=[prefix + metric], avg_by_mouse=True, **selection)[prefix + metric]
+                        self.results.sel(model_name=model_name, keys=[key], avg_by_mouse=True, **selection)[key]
                         for model_name in self.model_names
                     ],
                     axis=0,
                 )
-                for metric in PF_RESIDUAL_METRICS
-            }
+            return scores
 
         self._scores = load_scores(state["main_show"])
         self._inset_scores = load_scores(state["inset_show"])
@@ -232,14 +281,14 @@ class ModelPlacefieldResidualViewer(FigureViewer):
 
         fig, ax = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", sharey=state["main_sharey"])
         insets = []
-        for axis, metric, text, text_x, text_y in zip(
+        for axis, region, text, text_x, text_y in zip(
             ax,
-            PF_RESIDUAL_METRICS,
+            PF_RESIDUAL_REGIONS,
             ("Within PF", "Outside PF"),
             (state["within_text_x"], state["outside_text_x"]),
             (state["within_text_y"], state["outside_text_y"]),
         ):
-            values = self._scores[metric]
+            values = self._scores[region]
             if state["main_relative"]:
                 values = values - values[0]
                 axis.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
@@ -260,7 +309,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
                     sharey=insets[0] if state["inset_sharey"] and insets else None,
                 )
                 insets.append(inset)
-                inset_values = self._inset_scores[metric]
+                inset_values = self._inset_scores[region]
                 if state["inset_relative"]:
                     inset_values = inset_values - inset_values[0]
                     inset.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
@@ -325,7 +374,9 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             # makes their shared scale hard to recognize.
             inset.yaxis.set_visible(True)
             inset.tick_params(axis="y", which="both", left=True, labelleft=True, length=2.0)
-            inset_ylabel = "$\\Delta$ Res. RMS" if state["inset_relative"] else "Res. RMS"
+            inset_ylabel = PF_RESIDUAL_METRIC_SHORT_LABELS[state["metric"]]
+            if state["inset_relative"]:
+                inset_ylabel = f"$\\Delta$ {inset_ylabel}"
             inset.set_ylabel(
                 inset_ylabel,
                 fontsize=fontsize * state["inset_ylabel_fontsize_scale"],
@@ -365,7 +416,9 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             if shared_secondary:
                 axis.yaxis.set_visible(False)
             else:
-                ylabel = r"$\Delta$ Residual RMS" if state["main_relative"] else "Residual RMS"
+                ylabel = PF_RESIDUAL_METRIC_AXIS_LABELS[state["metric"]]
+                if state["main_relative"]:
+                    ylabel = rf"$\Delta$ {ylabel}"
                 axis.set_ylabel(ylabel, fontsize=fontsize)
         return fig
 
@@ -383,7 +436,9 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
         Aggregated ``RegressionPlacefieldResidualConfig`` results.
     model_names : list[ModelName]
         Models to draw, one curve each.
-    normalized, quality, sharey, relative : bool
+    fold, metric, statistic : str
+        As in :class:`ModelPlacefieldResidualViewer`.
+    quality, sharey, relative : bool
         As in :class:`ModelPlacefieldResidualViewer`.
     within_only : bool
         Draw only the within-place-field metric as a single-axis figure.
@@ -413,7 +468,9 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
         results: ResultsAggregator,
         *,
         model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
-        normalized: bool = False,
+        fold: str = "xval",
+        metric: str = "rms",
+        statistic: str = "mean",
         quality: bool = True,
         sharey: bool = True,
         relative: bool = False,
@@ -434,7 +491,9 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
 
         curve_kwargs = {name: curve_and_selection.pop(name) for name in self._CURVE_KNOBS if name in curve_and_selection}
         self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=curve_and_selection)
-        self.add_boolean("normalized", value=normalized)
+        self.add_selection("fold", value=fold, options=list(PF_RESIDUAL_FOLDS))
+        self.add_selection("metric", value=metric, options=list(PF_RESIDUAL_METRIC_OPTIONS))
+        self.add_selection("statistic", value=statistic, options=list(PF_RESIDUAL_STATISTICS))
         self.add_boolean("quality", value=quality)
         self.add_boolean("sharey", value=sharey)
         self.add_boolean("relative", value=relative)
@@ -448,42 +507,42 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
         add_legend_widgets(self)
         update_legend_widgets(self, legend_options or {})
 
-        for name in (*self.selection_names, "normalized", "quality"):
+        for name in (*self.selection_names, "fold", "metric", "statistic", "quality"):
             self.on_change(name, self.refresh_data)
         self.refresh_data(self.state)
 
     def refresh_data(self, state):
-        """Select session-level finite ROI means for every metric and model."""
-        prefix = _residual_key_prefix(state["quality"], state["normalized"])
+        """Select session-level finite ROI means for every region and model."""
+        prefix = _residual_key_prefix(state["quality"], state["fold"], state["statistic"])
         selection = data_selection(state, self.results, self.selection_names)
-        self._scores = {
-            metric: np.stack(
+        self._scores = {}
+        for region in PF_RESIDUAL_REGIONS:
+            key = prefix + _residual_metric_key(region, state["metric"])
+            self._scores[region] = np.stack(
                 [
-                    self.results.sel(model_name=model_name, keys=[prefix + metric], avg_by_mouse=False, **selection)[prefix + metric]
+                    self.results.sel(model_name=model_name, keys=[key], avg_by_mouse=False, **selection)[key]
                     for model_name in self.model_names
                 ],
                 axis=0,
             )
-            for metric in PF_RESIDUAL_METRICS
-        }
 
     def plot(self, state):
         fontsize = state["fontsize"]
-        metrics = PF_RESIDUAL_METRICS[:1] if state["within_only"] else PF_RESIDUAL_METRICS
+        regions = PF_RESIDUAL_REGIONS[:1] if state["within_only"] else PF_RESIDUAL_REGIONS
         fig, axes = self.new_subplots(
             1,
-            len(metrics),
+            len(regions),
             figsize=self.figsize,
             layout="constrained",
-            sharey=state["sharey"] and len(metrics) > 1,
+            sharey=state["sharey"] and len(regions) > 1,
             squeeze=False,
         )
         axes = axes.ravel()
 
         extents = []
-        visible_by_metric = []
-        for axis, metric in zip(axes, metrics):
-            scores = self._scores[metric]
+        visible_by_region = []
+        for axis, region in zip(axes, regions):
+            scores = self._scores[region]
             model_names = self.model_names
             if state["relative"]:
                 scores = scores - scores[0]
@@ -503,17 +562,17 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
                 )
                 extents.append(extent)
                 visible_values.append(visible[np.isfinite(visible)])
-            visible_by_metric.append(np.concatenate(visible_values) if visible_values else np.array([]))
+            visible_by_region.append(np.concatenate(visible_values) if visible_values else np.array([]))
 
         # Defer the spine styling until both panels have populated the shared y-axis; otherwise
         # format_spines' fractional bottom-spine offset is converted using stale shared limits.
         xmax = max(max(extents, default=1) - 1, 1)
-        if state["sharey"] and len(metrics) > 1:
-            finite_groups = [values for values in visible_by_metric if values.size]
+        if state["sharey"] and len(regions) > 1:
+            finite_groups = [values for values in visible_by_region if values.size]
             shared_values = np.concatenate(finite_groups) if finite_groups else np.array([])
-            visible_by_metric = [shared_values] * len(metrics)
+            visible_by_region = [shared_values] * len(regions)
 
-        for axis, metric, visible in zip(axes, metrics, visible_by_metric):
+        for axis, region, visible in zip(axes, regions, visible_by_region):
             if state["auto_ylim"] and visible.size:
                 low, high = min(float(visible.min()), 0.0), max(float(visible.max()), 0.0)
                 pad = 0.05 * (high - low) if high > low else 0.05
@@ -536,7 +595,7 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
             )
             axis.set_xlabel(SESSION_XLABEL, fontsize=fontsize)
             axis.set_ylabel(
-                _residual_ylabel(metric, state["normalized"], state["relative"]),
+                _residual_ylabel(region, state["metric"], state["relative"]),
                 labelpad=-10,
                 fontsize=fontsize,
             )

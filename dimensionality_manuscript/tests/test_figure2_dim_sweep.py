@@ -1,0 +1,72 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+from dimensionality_manuscript.figure_scripts.figure2.dim_sweep import RegressionDimSweepViewer, dim_sweep_curve
+
+
+class _FakeDimSweepResults:
+    param_axes = {
+        "model_name": ["internal_placefield_1d", "internal_placefield_1d_gain", "rrr"],
+    }
+    mouse_names = np.array(["m1", "m1", "m2"])
+
+    def sel(self, *, model_name, squeeze_ones, **selection):
+        assert squeeze_ones is False
+        prefix = "rank" if model_name == "rrr" else "num_bins"
+        return {
+            f"{prefix}_dim": np.array(
+                [
+                    [2.0, 4.0, 6.0],
+                    [2.0, 6.0, 8.0],
+                    [4.0, 6.0, np.nan],
+                ]
+            ),
+            f"{prefix}_r2": np.array(
+                [
+                    [0.1, 0.4, 0.5],
+                    [0.3, np.nan, 0.75],
+                    [0.8, 0.9, 1.0],
+                ]
+            ),
+        }
+
+
+def test_dim_sweep_curve_groups_true_dimensionalities_and_averages_by_mouse():
+    x, y = dim_sweep_curve(_FakeDimSweepResults(), "internal_placefield_1d", "r2", {})
+
+    np.testing.assert_array_equal(x, [2.0, 4.0, 6.0, 8.0])
+    np.testing.assert_allclose(
+        y,
+        [
+            [0.2, 0.4, 0.5, 0.75],
+            [np.nan, 0.8, 0.9, np.nan],
+        ],
+        equal_nan=True,
+    )
+
+
+def test_dim_sweep_curve_rejects_mismatched_dim_and_metric_shapes():
+    results = _FakeDimSweepResults()
+    original_sel = results.sel
+
+    def mismatched_sel(**kwargs):
+        selected = original_sel(**kwargs)
+        selected["num_bins_r2"] = selected["num_bins_r2"][:, :-1]
+        return selected
+
+    results.sel = mismatched_sel
+
+    with np.testing.assert_raises_regex(ValueError, "arrays must match"):
+        dim_sweep_curve(results, "internal_placefield_1d", "r2", {})
+
+
+def test_dim_sweep_viewer_each_draws_each_mouse_and_mean_for_every_model():
+    viewer = RegressionDimSweepViewer(_FakeDimSweepResults(), plot_style="each", xlog=False)
+
+    fig = viewer.plot(viewer.state)
+    ax = fig.axes[0]
+
+    assert viewer.state["plot_style"] == "each"
+    assert len(ax.lines) == 9  # two mouse curves and one mean for each of three models
+    assert [line.get_label() for line in ax.lines if not line.get_label().startswith("_")] == ["PF", "PF+Gain", "Peer"]
+    plt.close(fig)

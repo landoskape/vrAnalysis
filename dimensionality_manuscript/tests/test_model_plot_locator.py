@@ -9,7 +9,7 @@ import pytest
 from dimensionality_manuscript.model_metadata_io import ModelMetadata
 from dimensionality_manuscript.model_plot_locator import ModelPlotLocator, select_models
 
-FULL_MAIN_IDX = [0, 1, 2, 3, 6, 7, 8, 15, 16, 17, 18, 19, 20, 30, 35, 36, 37]
+FULL_MAIN_IDX = [0, 1, 2, 3, 6, 7, 8, 15, 16, 17, 18, 19, 20, 30, 35, 36, 37, 44, 45]
 FULL_HIGH_D_SPEED_IDX = [9, 10, 11, 12, 13, 14, 32, 33, 34]
 FULL_HIGH_D_SPEED_ANCHOR_IDX = [15, 16, 17, 18, 19, 20, 35, 36, 37]
 FULL_NO_INTERCEPT_IDX = [21, 22, 23, 24, 25, 26, 27, 28, 29, 31, 38, 39, 40, 41, 42, 43]
@@ -17,7 +17,7 @@ FULL_NO_INTERCEPT_ANCHOR_IDX = [6, 7, 8, 15, 16, 17, 18, 19, 20, 30, 35, 36, 37,
 FULL_VECTOR_GAIN_IDX = [4, 5]
 FULL_VECTOR_GAIN_ANCHOR_IDX = [2, 3]
 
-REDUCED_MAIN_IDX = [0, 1, 2, 3, 6, 15, 18, 30, 35]
+REDUCED_MAIN_IDX = [0, 1, 2, 3, 6, 15, 18, 30, 35, 44, 45]
 REDUCED_HIGH_D_SPEED_IDX = [9, 12, 32]
 REDUCED_HIGH_D_SPEED_ANCHOR_IDX = [15, 18, 35]
 REDUCED_NO_INTERCEPT_IDX = [21, 24, 27, 31, 38, 41]

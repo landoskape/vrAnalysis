@@ -42,10 +42,18 @@ class ReliabilityHistogramViewer(FigureViewer):
     swarm_mode : {"pooled", "by_mouse"}
         Beeswarm layout for ``ax[1]``. ``"pooled"`` also narrows the panel's width ratio, since
         one swarm needs far less room than one per mouse.
+    mouse_order : {"sorted", "random"}
+        Ordering of the mouse swarms in ``swarm_mode="by_mouse"``. ``"sorted"`` orders mice by
+        decreasing mean place-cell fraction, while ``"random"`` uses ``random_seed``.
+    random_seed : int
+        Seed for the mouse permutation when ``mouse_order="random"``. Ignored in pooled mode and
+        when ``mouse_order="sorted"``.
     beewidth : float
         Horizontal spread of the beeswarm points.
     hist_alpha : float
         Opacity of the per-mouse histogram lines.
+    include_legend : bool
+        Whether to include a legend for the histogram panel.
     fontsize : float
         Font size of every text element.
     figsize : tuple[float, float]
@@ -61,8 +69,11 @@ class ReliabilityHistogramViewer(FigureViewer):
         place_cell_threshold: float = 0.3,
         n_bins: int = 40,
         swarm_mode: str = "pooled",
+        mouse_order: str = "sorted",
+        random_seed: int = 0,
         beewidth: float = 0.2,
         hist_alpha: float = 0.3,
+        include_legend: bool = True,
         fontsize: float = 9.0,
         figsize: tuple[float, float] = (6.0, 3.0),
         **selection_defaults,
@@ -75,8 +86,11 @@ class ReliabilityHistogramViewer(FigureViewer):
         self.add_integer("n_bins", value=n_bins, min=5, max=100)
         self.add_float("place_cell_threshold", value=place_cell_threshold, min=-1.0, max=1.0, step=0.05)
         self.add_selection("swarm_mode", options=["pooled", "by_mouse"], value=swarm_mode)
+        self.add_selection("mouse_order", options=["sorted", "random"], value=mouse_order)
+        self.add_integer("random_seed", value=random_seed, min=0, max=100000)
         self.add_float("beewidth", value=beewidth, min=0.0, max=1.0, step=0.01)
         self.add_float("hist_alpha", value=hist_alpha, min=0.0, max=1.0, step=0.05)
+        self.add_boolean("include_legend", value=include_legend)
         self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
 
         self.on_change([*self.selection_names, "n_bins", "place_cell_threshold"], self.refresh_data)
@@ -124,16 +138,17 @@ class ReliabilityHistogramViewer(FigureViewer):
         ylim = ax.get_ylim()
         ax.text(threshold + 0.05, ylim[1] * 0.9, f"{threshold:.1f}", color="0.6", fontsize=fontsize - 1, ha="left", va="top")
         ax.set_xlabel("Spatial Reliability", fontsize=fontsize)
-        ax.set_ylabel("Fraction of Cells", fontsize=fontsize)
-        ax.legend(
-            handles=[
-                Line2D([0], [0], color="k", alpha=state["hist_alpha"], linewidth=1.0, label="each"),
-                Line2D([0], [0], color="k", linewidth=2.0, label="avg"),
-            ],
-            fontsize=fontsize,
-            frameon=False,
-            handlelength=1.25,
-        )
+        ax.set_ylabel("Fraction", fontsize=fontsize)
+        if state["include_legend"]:
+            ax.legend(
+                handles=[
+                    Line2D([0], [0], color="k", alpha=state["hist_alpha"], linewidth=1.0, label="each"),
+                    Line2D([0], [0], color="k", linewidth=2.0, label="avg"),
+                ],
+                fontsize=fontsize,
+                frameon=False,
+                handlelength=1.25,
+            )
         style_axis(
             ax,
             fontsize=fontsize,
@@ -148,13 +163,12 @@ class ReliabilityHistogramViewer(FigureViewer):
         frac = self.fraction_place_cells
         if state["swarm_mode"] == "pooled":
             vals = average_by_mouse(frac, self.mouse_names)
-            ax.plot(beewidth * self._swarm_offsets(vals), vals, linestyle="none", color="k", marker="o", markersize=2.5, alpha=0.8)
+            ax.plot(beewidth * self._swarm_offsets(vals), vals, linestyle="none", color="k", marker="o", markersize=2, alpha=0.8)
             ax.plot([-0.25, 0.25], [np.nanmean(vals)] * 2, color="k", linewidth=2.0)
             ax.set_xlim(-0.5, 0.5)
             xbounds, xticks = (0, 0), []
         else:
-            mice = list(dict.fromkeys(self.mouse_names))
-            mice.sort(key=lambda m: np.nanmean(frac[self.mouse_names == m]), reverse=True)
+            mice = self._ordered_mice(frac, state)
             for xi, mouse in enumerate(mice):
                 vals = frac[self.mouse_names == mouse]
                 ax.plot(
@@ -172,10 +186,18 @@ class ReliabilityHistogramViewer(FigureViewer):
             xbounds, xticks = (0, len(mice) - 1), range(len(mice))
 
         ax.set_ylim(0, 1)
-        ax.set_ylabel("Fraction Place Cells", fontsize=fontsize)
+        ax.set_ylabel("Fraction\nPlacecells", fontsize=fontsize)
         style_axis(ax, fontsize=fontsize, xbounds=xbounds, ybounds=(0, 1), yticks=[0, 0.5, 1])
         # After style_axis: format_spines sets the x ticks from xbounds, and this panel labels none.
         ax.set_xticks(xticks, labels=[])
+
+    def _ordered_mice(self, frac: np.ndarray, state) -> list[str]:
+        """Return mice in decreasing-fraction or seeded-random order for the by-mouse swarm."""
+        mice = list(dict.fromkeys(self.mouse_names))
+        if state["mouse_order"] == "random":
+            return np.random.default_rng(int(state["random_seed"])).permutation(mice).tolist()
+        mice.sort(key=lambda mouse: np.nanmean(frac[self.mouse_names == mouse]), reverse=True)
+        return mice
 
     def plot(self, state):
         fontsize = state["fontsize"]

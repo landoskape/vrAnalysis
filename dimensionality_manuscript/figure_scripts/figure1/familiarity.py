@@ -128,11 +128,17 @@ class R2Familiarity(FigureViewer):
         False uses ``r2_ylim``. Ignored by ``"histogram"`` (always fit) and ``"ecdf"`` (always 0-1).
     r2_ylim : tuple[float, float]
         Explicit R² limits, used when ``auto_ylim`` is False.
-    summary_stat : {"mean", "median", "percentile"}
+    summary_stat : {"mean", "median", "percentile", "percentile_from_rel"}
         How ``ax[3]`` collapses a session's per-ROI R² to one number. A high percentile tracks the
         best-predicted cells rather than the bulk, which the mean is dominated by.
+        ``"percentile_from_rel"`` instead reports the R² of the cell at the requested reliability
+        percentile.
     summary_percentile : float
-        Percentile in ``[0, 100]`` used when ``summary_stat="percentile"``, in steps of 0.5.
+        Percentile in ``[0, 100]`` used by either percentile summary, in steps of 0.5.
+    percentile_mode : {"slice", "threshold"}
+        ``"slice"`` reports the requested percentile value (or the R² of the nearest observed
+        reliability-percentile cell). ``"threshold"`` reports mean R² over cells at or above the
+        requested R² or reliability percentile.
     slot_style : {"each", "errorPlot"}
         ``ax[3]``'s rendering.
     show_slot_legend : bool
@@ -186,6 +192,7 @@ class R2Familiarity(FigureViewer):
         inset_position: tuple[float, float, float, float] = (0.35, 0.85, 0.6, 0.075),
         summary_stat: str = "mean",
         summary_percentile: float = 90.0,
+        percentile_mode: str = "slice",
         slot_style: str = "errorPlot",
         show_slot_legend: bool = True,
         cmap: str = "coolwarm",
@@ -271,9 +278,14 @@ class R2Familiarity(FigureViewer):
         )
 
         # --- ax[3]: summary stat against experience, one curve per environment slot ---
-        self.add_selection("summary_stat", value=summary_stat, options=["mean", "median", "percentile"])
+        self.add_selection(
+            "summary_stat",
+            value=summary_stat,
+            options=["mean", "median", "percentile", "percentile_from_rel"],
+        )
         # Half-percentile steps so the conventional tail levels (2.5, 97.5) are reachable.
         self.add_float("summary_percentile", value=summary_percentile, min=0.0, max=100.0, step=0.5)
+        self.add_selection("percentile_mode", value=percentile_mode, options=["slice", "threshold"])
         self.add_selection("slot_style", value=slot_style, options=["each", "errorPlot"])
         self.add_boolean("show_slot_legend", value=show_slot_legend)
 
@@ -302,6 +314,7 @@ class R2Familiarity(FigureViewer):
                 "prct_bandwidth",
                 "summary_stat",
                 "summary_percentile",
+                "percentile_mode",
             ],
             self.refresh_data,
         )
@@ -527,23 +540,58 @@ class R2Familiarity(FigureViewer):
             return np.searchsorted(np.sort(clipped), grid, side="right") / r2.size
         raise ValueError(f"Invalid panel_mode: {panel_mode!r}")
 
-    def _summarizer(self, state):
-        """The ROI-collapsing statistic ax[3] uses, as a callable on a 1-D array of R² values."""
+    @staticmethod
+    def _summarize_slot(r2: np.ndarray, reliability: np.ndarray, state) -> float:
+        """Collapse one session/slot while preserving paired R² and reliability values."""
         summary_stat = state["summary_stat"]
+        r2 = np.asarray(r2, dtype=float)
+        reliability = np.asarray(reliability, dtype=float)
+        valid_r2 = np.isfinite(r2)
         if summary_stat == "mean":
-            return np.mean
+            return float(np.mean(r2[valid_r2]))
         if summary_stat == "median":
-            return np.median
+            return float(np.median(r2[valid_r2]))
+        if summary_stat not in {"percentile", "percentile_from_rel"}:
+            raise ValueError(f"Invalid summary_stat: {summary_stat!r}")
+
+        percentile = state["summary_percentile"]
         if summary_stat == "percentile":
-            percentile = state["summary_percentile"]
-            return lambda values: np.percentile(values, percentile)
-        raise ValueError(f"Invalid summary_stat: {summary_stat!r}")
+            r2 = r2[valid_r2]
+            selector = r2
+        else:
+            valid = valid_r2 & np.isfinite(reliability)
+            r2 = r2[valid]
+            selector = reliability[valid]
+
+        if state["percentile_mode"] == "threshold":
+            cutoff = np.percentile(selector, percentile)
+            return float(np.mean(r2[selector >= cutoff]))
+        if state["percentile_mode"] != "slice":
+            raise ValueError(f"Invalid percentile_mode: {state['percentile_mode']!r}")
+        if summary_stat == "percentile":
+            # Preserve the original interpolated percentile behavior.
+            return float(np.percentile(r2, percentile))
+
+        # A reliability percentile names a cell rather than an interpolated R² value. Select the
+        # nearest observed rank, retaining a stable order for tied reliability values.
+        order = np.argsort(selector, kind="stable")
+        rank = int(np.floor(percentile / 100.0 * (order.size - 1) + 0.5))
+        return float(r2[order[rank]])
 
     def _summary_label(self, state) -> str:
         """Y-axis label of ax[3], naming the statistic (percentiles carry their level)."""
-        if state["summary_stat"] == "percentile":
-            return f"{ordinal(state['summary_percentile'])} pct " + r"$R^2$"
-        return f"{state['summary_stat'].capitalize()} " + r"$R^2$"
+        summary_stat = state["summary_stat"]
+        if summary_stat in {"percentile", "percentile_from_rel"}:
+            percentile = ordinal(state["summary_percentile"])
+            source = r"$R^2$" if summary_stat == "percentile" else "reliability"
+            if state["percentile_mode"] == "threshold":
+                if summary_stat == "percentile_from_rel":
+                    return "Mean " + r"$R^2$" + " Placecells"
+                return "Mean " + r"$R^2$" + f" ({source} >= {percentile} pct)"
+            if summary_stat == "percentile_from_rel":
+                return r"$R^2$" + f" at {percentile} pct reliability"
+            return f"{percentile} pct " + r"$R^2$"
+        return f"{summary_stat.capitalize()} " + r"$R^2$"
 
     def refresh_data(self, state):
         """Rebuild every curve on the figure: the example mouse's, the population's, and the slots'.
@@ -561,7 +609,6 @@ class R2Familiarity(FigureViewer):
         # Per-slot (mice, sessions) summary: a mouse's curve for slot j is the summary stat over
         # ROIs of every session in which it ran that environment, in chronological order -- so x is
         # "how many sessions of this environment the mouse has had", not the session number.
-        summarize = self._summarizer(state)
         self.slot_stacks: dict[int, np.ndarray] = {}
         for slot in range(self.num_slots):
             per_mouse = []
@@ -569,9 +616,12 @@ class R2Familiarity(FigureViewer):
                 values = []
                 for row in self._rows_by_mouse[mouse]:
                     r2 = self.r2_slot[row, slot]
-                    r2 = r2[np.isfinite(r2)]
-                    if r2.size:
-                        values.append(float(summarize(r2)))
+                    reliability = self.reliability_slot[row, slot]
+                    valid = np.isfinite(r2)
+                    if state["summary_stat"] == "percentile_from_rel":
+                        valid &= np.isfinite(reliability)
+                    if np.any(valid):
+                        values.append(self._summarize_slot(r2, reliability, state))
                 per_mouse.append(np.array(values))
             self.slot_stacks[slot] = pad_stack(per_mouse)
 
@@ -668,12 +718,14 @@ class R2Familiarity(FigureViewer):
             color = cmap(isession / max(num_sessions - 1, 1))
             ax[1].plot(grid, curve, color=color, linewidth=state["linewidth"], alpha=state["alpha"])
             track(curve)
+        ax[1].text(0.05, 0.95, "Example mouse", transform=ax[1].transAxes, fontsize=fontsize, ha="left", va="top")
         ax[1].set_xlabel(self._xlabel(state), fontsize=fontsize)
         ax[1].set_ylabel(self._ylabel(state), fontsize=fontsize)
 
         # ---- ax[2]: the population, mouse-averaged overall or grouped by session number ----
         for mean_curve in draw_session_curve_groups(ax[2], grid, self.by_session, state, fontsize):
             track(mean_curve)
+        ax[2].text(0.05, 0.95, "Mouse average", transform=ax[2].transAxes, fontsize=fontsize, ha="left", va="top")
         ax[2].set_xlabel(self._xlabel(state), fontsize=fontsize)
 
         for axis in (ax[1], ax[2]):

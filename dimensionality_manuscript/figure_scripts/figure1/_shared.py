@@ -52,7 +52,7 @@ def style_axis(ax, *, fontsize: float, spines_visible=("left", "bottom"), x_pos:
         x_pos=x_pos,
         y_pos=y_pos,
         spines_visible=list(spines_visible),
-        tick_length=4,
+        tick_length=3,
         tick_fontsize=fontsize,
         **kwargs,
     )

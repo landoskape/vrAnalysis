@@ -18,8 +18,6 @@ from ._param_axes import (
     PREFERRED_DEFAULTS,
     SOURCE_OF_KEY,
     STIMSPACE_KEYS,
-    SVCA_FULL_ENV_KEYS,
-    SVCA_FULL_KEYS,
     add_merged_param_axis_widgets,
     full_key_options as _full_key_options,
     per_env_full_options as _per_env_full_options,
@@ -34,6 +32,19 @@ from ._spectrum_math import (
     _truncated_participation_ratio,
 )
 from ..panels import FigureViewer, style_model_axis
+
+
+SVCA_PF_KEYS = {"SVCA": "ss", "SVCA_PRED": "ss_pred"}
+SVCA_PF_ENV_KEYS = {"SVCA": "ss_env", "SVCA_PRED": "ss_pred_env"}
+SVCA_FULL_KEYS = {"SVCA": "ff", "SVCA_RES": "ff_res"}
+SVCA_FULL_ENV_KEYS = {"SVCA": "ff_env", "SVCA_RES": "ff_res_env"}
+LEGACY_SVCA_PF_KEYS = {"SVCA": "variance_placefield_placefield", "SVCA_PRED": "variance_placefield_prediction"}
+LEGACY_SVCA_PF_ENV_KEYS = {
+    "SVCA": "variance_placefield_placefield_env",
+    "SVCA_PRED": "variance_placefield_prediction_env",
+}
+LEGACY_SVCA_FULL_KEYS = {"SVCA": "variance_activity", "SVCA_RES": "variance_activity_residual"}
+LEGACY_SVCA_FULL_ENV_KEYS = {"SVCA": "variance_activity_env", "SVCA_RES": "variance_activity_residual_env"}
 
 
 def _ordinal(number: int) -> str:
@@ -63,27 +74,28 @@ class DimensionalityFamiliarityViewer(FigureViewer):
     results_cvpca : ResultsAggregator or None
         Aggregated CVPCAConfig results. When provided, ``reg_covariances_fixed`` is added to the
         selectable PF ``source_key`` options.
+    results_svca : ResultsAggregator or None
+        Aggregated StimspaceSVCAConfig results. Adds ``SVCA``/``SVCA_PRED`` as PF sources backed
+        by ``ss``/``ss_pred`` and ``SVCA``/``SVCA_RES`` as Full sources backed by ``ff``/``ff_res``.
     results_subspace : ResultsAggregator or None
-        Aggregated SubspaceConfig results. When provided, ``"SVCA"`` is added to the selectable
-        ``full_key`` options and reads ``variance_activity`` at
-        ``subspace_name="svca_subspace"`` and ``smooth_width=None``.
+        Legacy SubspaceConfig backend for the same public SVCA choices, using its ``variance_*``
+        keys. When both backends are supplied, ``results_svca`` takes precedence.
     source_cfg, full_cfg : AdaptiveAlphaConfig or None
         Independent adaptive-alpha configurations for the PF and Full-CA1 curves, defaulting to
         ``ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]``/``["full"]``. Each seeds its own Syd
         smoothing, FPD-window, buffer, and minimum-window-size controls (``source_*``/``full_*``
         widgets below); these settings are used only for ``metric="alpha"``. Environment-derived PF
         spectra use ``ss_cvpca_env`` as their context-matched fallback (averaged across slots for
-        ``"avg_env"``); ``ff_env_*`` spectra use ``variance_activity_env`` (SVCA), aligned by both
+        ``"avg_env"``); Full spectra use ``ff_env`` (SVCA), aligned by both
         session and environment slot.
     source_key : str
         Placefield spectrum key: one of ``STIMSPACE_KEYS``, plus ``CVPCA_KEYS`` when
-        ``results_cvpca`` is given.
+        ``results_cvpca`` is given and ``SVCA``/``SVCA_PRED`` when ``results_svca`` is given.
     full_key : {"SVD", "SVD_RES", "SVCA", "SVCA_RES"}
         Full-CA1 estimator for both plot modes. ``SVD_RES`` is exposed only when residual spectra
-        are discoverable; ``SVCA``/``SVCA_RES`` require ``results_subspace`` (``SVCA_RES`` also
-        requires ``variance_activity_residual`` to be discoverable there). In ``"avg_env"``/
-        ``"by_env"``, ``SVCA``/``SVCA_RES`` read the per-environment ``variance_activity_env``/
-        ``variance_activity_residual_env`` keys.
+        are discoverable; ``SVCA``/``SVCA_RES`` require ``results_svca`` (``SVCA_RES`` also
+        requires ``ff_res`` to be discoverable there). In ``"avg_env"``/``"by_env"``, they read
+        the per-environment ``ff_env``/``ff_res_env`` keys.
     full_scope : {"full1", "fullall"}
         Functional-data scope for environment-derived spectra. ``"full1"`` uses the selected
         environment alone; ``"fullall"`` compares it with all-session functional activity.
@@ -93,10 +105,11 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         ``"all"`` uses the overall PF and Full spectra. ``"avg_env"`` averages both selected
         per-environment spectra across available environment slots within each session.
         ``"by_env"`` plots each environment slot separately.
-    by_env_layout : {"row", "col"}
+    by_env_layout : {"row", "col", "shared"}
         Arrange the two ``plot_mode="by_env"`` panels side by side (``"row"``) or vertically
-        (``"col"``). The vertical layout places Full/Residual CA1 above the placefields and
-        shares their x-axis, showing its spine, ticks, and label only on the bottom panel.
+        (``"col"``), or draw both sources on one axis (``"shared"``). The vertical layout places
+        Full/PF Residual above the placefields and shares their x-axis, showing its spine, ticks,
+        and label only on the bottom panel.
     session_alignment : {"within_env", "overall"}
         Per-environment x values: densified within-environment session number or the mouse's
         overall chronological session number.
@@ -136,16 +149,12 @@ class DimensionalityFamiliarityViewer(FigureViewer):
     pf_label, ff_label : str
         Legend labels of the placefield and Full-CA1 curves.
     pf_text_x, pf_text_y, ff_text_x, ff_text_y : float
-        Independent axes-fraction positions for the Placefields and Full/Residual CA1 panel text
+        Independent axes-fraction positions for the Placefields and Full/PF Residual panel text
         in ``plot_mode="by_env"``.
-    legend_panel : {"top", "bottom"}
-        Panel that owns the legend in the vertical ``plot_mode="by_env"`` layout. Ignored for
-        the row layout, where the legend remains on the first (placefields) panel.
     legend_anchor_x, legend_anchor_y : float
-        Axes-fraction offsets for the legend's anchor box in the vertical by-environment layout.
-        ``(0, 0)`` retains the normal position. A negative y offset pushes a top-panel legend
-        down; a positive y offset pushes a bottom-panel legend up. A nonzero offset makes the
-        legend an overlay, so constrained layout does not move either panel to accommodate it.
+        Axes-fraction offsets for the legend's anchor box in the by-environment layout. ``(0, 0)``
+        retains the normal position. A nonzero offset makes the legend an overlay, so constrained
+        layout does not move the axes to accommodate it.
     legend_options : dict or None
         Legend knobs forwarded to :mod:`~dimensionality_manuscript.figure_scripts.legends`
         (``{"loc": ..., "ncols": ...}``); ``{"loc": "none"}`` hides it.
@@ -160,6 +169,7 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         results: ResultsAggregator,
         results_cvpca: ResultsAggregator | None = None,
         results_subspace: ResultsAggregator | None = None,
+        results_svca: ResultsAggregator | None = None,
         *,
         source_cfg: AdaptiveAlphaConfig | None = None,
         full_cfg: AdaptiveAlphaConfig | None = None,
@@ -188,18 +198,26 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         pf_text_y: float = 0.9,
         ff_text_x: float = 0.05,
         ff_text_y: float = 0.9,
-        legend_panel: str = "top",
         legend_anchor_x: float = 0.0,
         legend_anchor_y: float = 0.0,
         legend_options: dict | None = None,
         **param_defaults,
     ):
+        svca_results = results_svca if results_svca is not None else results_subspace
+        use_stimspace_svca = results_svca is not None
+
         self.results = results
         self.results_cvpca = results_cvpca
+        self.results_svca = results_svca
         self.results_subspace = results_subspace
+        self._svca_results = svca_results
+        self._svca_pf_keys = SVCA_PF_KEYS if use_stimspace_svca else LEGACY_SVCA_PF_KEYS
+        self._svca_pf_env_keys = SVCA_PF_ENV_KEYS if use_stimspace_svca else LEGACY_SVCA_PF_ENV_KEYS
+        self._svca_full_keys = SVCA_FULL_KEYS if use_stimspace_svca else LEGACY_SVCA_FULL_KEYS
+        self._svca_full_env_keys = SVCA_FULL_ENV_KEYS if use_stimspace_svca else LEGACY_SVCA_FULL_ENV_KEYS
         self.source_cfg = source_cfg if source_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["placefields"]
         self.full_cfg = full_cfg if full_cfg is not None else ADAPTIVE_ALPHA_CONFIG_REGISTRY["full"]
-        self._agg = {"stimspace": results, "cvpca": results_cvpca}
+        self._agg = {"stimspace": results, "cvpca": results_cvpca, "svca": svca_results}
         self.figsize = figsize
         self.pf_color = pf_color
         self.ff_color = ff_color
@@ -215,25 +233,31 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         pf_options = list(STIMSPACE_KEYS)
         if results_cvpca is not None:
             pf_options += list(CVPCA_KEYS)
+        if svca_results is not None:
+            pf_options += list(SVCA_PF_KEYS)
         self.add_selection("source_key", options=pf_options, value=source_key)
 
-        self.add_selection("full_key", options=_full_key_options(results, results_subspace), value=full_key)
+        full_options = [key for key in _full_key_options(results) if not key.startswith("SVCA")]
+        if svca_results is not None:
+            full_options.append("SVCA")
+            full_options.append("SVCA_RES")
+        self.add_selection("full_key", options=full_options, value=full_key)
         self.add_selection("full_scope", options=["full1", "fullall"], value=full_scope)
         self.add_selection("plot_mode", options=["all", "avg_env", "by_env"], value=plot_mode)
-        self.add_selection("by_env_layout", options=["row", "col"], value=by_env_layout)
+        self.add_selection("by_env_layout", options=["row", "col", "shared"], value=by_env_layout)
         self.add_selection("session_alignment", options=_PER_ENV_SESSION_ALIGNMENTS, value=session_alignment)
         self.add_boolean("sharey", value=sharey)
         self.add_boolean("clip_negative", value=clip_negative)
         self.add_boolean("pr_pre_smooth", value=pr_pre_smooth)
 
         # Shared data-selection widgets, matching SpectrumFigureViewer/PlacefieldSpectraViewer:
-        # one widget per param-axis name across both aggregators, tuple-valued axes encoded as
-        # string labels. The subspace-only ``subspace_name``/``smooth_width`` axes stay fixed
-        # for SVCA (passed as literal params where SVCA is read, not through these widgets).
+        # one widget per param-axis name across all aggregators, tuple-valued axes encoded as
+        # string labels.
         self._tuple_labels = add_merged_param_axis_widgets(
             self,
             results,
             results_cvpca,
+            svca_results,
             preferred_defaults={**PREFERRED_DEFAULTS, **param_defaults},
         )
 
@@ -248,7 +272,6 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         self.add_float("pf_text_y", value=pf_text_y, min=0.0, max=1.0, step=0.01)
         self.add_float("ff_text_x", value=ff_text_x, min=0.0, max=1.0, step=0.01)
         self.add_float("ff_text_y", value=ff_text_y, min=0.0, max=1.0, step=0.01)
-        self.add_selection("legend_panel", options=["top", "bottom"], value=legend_panel)
         self.add_float("legend_anchor_x", value=legend_anchor_x, min=-2.0, max=2.0, step=0.01)
         self.add_float("legend_anchor_y", value=legend_anchor_y, min=-2.0, max=2.0, step=0.01)
         add_legend_widgets(self)
@@ -265,6 +288,8 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         axis_names = set(results.param_axes)
         if results_cvpca is not None:
             axis_names |= set(results_cvpca.param_axes)
+        if svca_results is not None:
+            axis_names |= set(svca_results.param_axes)
         data_widgets = (
             *axis_names,
             "source_key",
@@ -311,9 +336,10 @@ class DimensionalityFamiliarityViewer(FigureViewer):
 
     def _spectrum_sessions(self, state: dict, key: str) -> tuple[np.ndarray, ResultsAggregator]:
         """Return the selected PF spectrum as ``(sessions, dimensions)`` and its aggregator."""
-        source = SOURCE_OF_KEY[key]
+        source = "svca" if key in SVCA_PF_KEYS else SOURCE_OF_KEY[key]
         agg = self._agg[source]
-        spec = agg.sel(keys=[key], avg_by_mouse=False, **self._sel_params(state, source))[key]
+        stored_key = self._svca_pf_keys.get(key, key)
+        spec = agg.sel(keys=[stored_key], avg_by_mouse=False, **self._sel_params(state, source))[stored_key]
         spec = np.atleast_2d(np.asarray(spec, dtype=float))
         if state["clip_negative"]:
             spec = _clip_at_first_negative(spec)
@@ -329,23 +355,24 @@ class DimensionalityFamiliarityViewer(FigureViewer):
                 raise ValueError("The overall residual spectrum 'ffres' is not present in results.")
             return self._spectrum_sessions(state, "ffres")
 
-        params = {"subspace_name": "svca_subspace", "smooth_width": None}
-        if "activity_parameters_name" in state:
-            params["activity_parameters_name"] = state["activity_parameters_name"]
-        key = SVCA_FULL_KEYS[full_key]
-        spec = self.results_subspace.sel(keys=[key], avg_by_mouse=False, **params)[key]
+        key = self._svca_full_keys[full_key]
+        spec = self._svca_results.sel(keys=[key], avg_by_mouse=False, **self._sel_params(state, "svca"))[key]
         spec = np.atleast_2d(np.asarray(spec, dtype=float))
         if state["clip_negative"]:
             spec = _clip_at_first_negative(spec)
-        return spec, self.results_subspace
+        return spec, self._svca_results
 
     @staticmethod
     def _per_env_result_keys(source_key: str, full_key: str, full_scope: str) -> tuple[str, str]:
-        """Map the public per-environment choices to stored spectrum keys."""
-        if source_key not in _PER_ENV_PF_KEYS:
-            raise ValueError(f"source_key={source_key!r} is unavailable with plot_mode='by_env'. " f"Options: {_PER_ENV_PF_KEYS}")
+        """Map public choices to StimspaceSVCA/StimSpace per-environment result keys."""
+        if source_key not in _PER_ENV_PF_KEYS and source_key not in SVCA_PF_KEYS:
+            options = [*_PER_ENV_PF_KEYS, *SVCA_PF_KEYS]
+            raise ValueError(f"source_key={source_key!r} is unavailable with plot_mode='by_env'. Options: {options}")
         use_fullall = full_scope == "fullall"
-        pf_key = f"{source_key}_env_{full_scope}" if source_key in ("sf_cv", "sf_direct") else _PER_ENV_PF_RESULT_KEYS[source_key]
+        if source_key in SVCA_PF_ENV_KEYS:
+            pf_key = SVCA_PF_ENV_KEYS[source_key]
+        else:
+            pf_key = f"{source_key}_env_{full_scope}" if source_key in ("sf_cv", "sf_direct") else _PER_ENV_PF_RESULT_KEYS[source_key]
         if full_key in SVCA_FULL_ENV_KEYS:
             full_stored_key = SVCA_FULL_ENV_KEYS[full_key]
         elif full_key == "SVD_RES":
@@ -354,16 +381,24 @@ class DimensionalityFamiliarityViewer(FigureViewer):
             full_stored_key = "ff_env_full1_fullall" if use_fullall else "ff_env_full1"
         return pf_key, full_stored_key
 
+    def _selected_per_env_result_keys(self, source_key: str, full_key: str, full_scope: str) -> tuple[str, str]:
+        """Map public choices using the selected new or legacy SVCA backend."""
+        pf_key, full_stored_key = self._per_env_result_keys(source_key, full_key, full_scope)
+        if source_key in self._svca_pf_env_keys:
+            pf_key = self._svca_pf_env_keys[source_key]
+        if full_key in self._svca_full_env_keys:
+            full_stored_key = self._svca_full_env_keys[full_key]
+        return pf_key, full_stored_key
+
     def _per_env_spectra(self, state: dict) -> tuple[np.ndarray, ResultsAggregator, np.ndarray, ResultsAggregator]:
         """Return PF and Full spectra with shape ``(sessions, env slots, dimensions)``."""
-        pf_key, full_key = self._per_env_result_keys(state["source_key"], state["full_key"], state["full_scope"])
-        pf = self.results.sel(keys=[pf_key], squeeze_ones=False, avg_by_mouse=False, **self._sel_params(state, "stimspace"))[pf_key]
-        if full_key in SVCA_FULL_ENV_KEYS.values():
-            params = {"subspace_name": "svca_subspace", "smooth_width": None}
-            if "activity_parameters_name" in state:
-                params["activity_parameters_name"] = state["activity_parameters_name"]
-            full_agg = self.results_subspace
-            full = full_agg.sel(keys=[full_key], squeeze_ones=False, avg_by_mouse=False, **params)[full_key]
+        pf_key, full_key = self._selected_per_env_result_keys(state["source_key"], state["full_key"], state["full_scope"])
+        pf_source = "svca" if state["source_key"] in SVCA_PF_KEYS else "stimspace"
+        pf_agg = self._agg[pf_source]
+        pf = pf_agg.sel(keys=[pf_key], squeeze_ones=False, avg_by_mouse=False, **self._sel_params(state, pf_source))[pf_key]
+        if full_key in self._svca_full_env_keys.values():
+            full_agg = self._svca_results
+            full = full_agg.sel(keys=[full_key], squeeze_ones=False, avg_by_mouse=False, **self._sel_params(state, "svca"))[full_key]
         else:
             full_agg = self.results
             full = self.results.sel(keys=[full_key], squeeze_ones=False, avg_by_mouse=False, **self._sel_params(state, "stimspace"))[full_key]
@@ -372,7 +407,7 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         if state["clip_negative"]:
             pf = _clip_at_first_negative(pf)
             full = _clip_at_first_negative(full)
-        return pf, self.results, full, full_agg
+        return pf, pf_agg, full, full_agg
 
     @staticmethod
     def _average_env_slots(spec: np.ndarray) -> np.ndarray:
@@ -385,17 +420,19 @@ class DimensionalityFamiliarityViewer(FigureViewer):
 
     def _avg_env_source_sessions(self, state: dict, source_key: str) -> tuple[np.ndarray, ResultsAggregator]:
         """Average a per-environment PF spectrum across slots for every session."""
-        pf_key, _ = self._per_env_result_keys(source_key, state["full_key"], state["full_scope"])
-        spec = self.results.sel(
+        pf_key, _ = self._selected_per_env_result_keys(source_key, state["full_key"], state["full_scope"])
+        source = "svca" if source_key in SVCA_PF_KEYS else "stimspace"
+        agg = self._agg[source]
+        spec = agg.sel(
             keys=[pf_key],
             squeeze_ones=False,
             avg_by_mouse=False,
-            **self._sel_params(state, "stimspace"),
+            **self._sel_params(state, source),
         )[pf_key]
         spec = np.asarray(spec, dtype=float)
         if state["clip_negative"]:
             spec = _clip_at_first_negative(spec)
-        return self._average_env_slots(spec), self.results
+        return self._average_env_slots(spec), agg
 
     @staticmethod
     def _align_env_spectra(target_session_ids: list, source_session_ids: list, spectra: np.ndarray) -> np.ndarray:
@@ -433,14 +470,15 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         cv_smooth = _smooth_spectrum(cv_flat, source_cfg.smooth_method, source_cfg.smooth_width)
 
         ff_fb_raw = ff_fb_smooth = None
-        if self.results_subspace is not None:
-            params = {"subspace_name": "svca_subspace", "smooth_width": None}
-            if "activity_parameters_name" in state:
-                params["activity_parameters_name"] = state["activity_parameters_name"]
-            svca = self.results_subspace.sel(keys=["variance_activity_env"], squeeze_ones=False, avg_by_mouse=False, **params)[
-                "variance_activity_env"
-            ]
-            svca = self._align_env_spectra(ff_agg.session_ids, self.results_subspace.session_ids, np.asarray(svca, dtype=float))
+        if self._svca_results is not None:
+            svca_key = self._svca_full_env_keys["SVCA"]
+            svca = self._svca_results.sel(
+                keys=[svca_key],
+                squeeze_ones=False,
+                avg_by_mouse=False,
+                **self._sel_params(state, "svca"),
+            )[svca_key]
+            svca = self._align_env_spectra(ff_agg.session_ids, self._svca_results.session_ids, np.asarray(svca, dtype=float))
             ff_fb_raw = svca.reshape(-1, svca.shape[-1])
             ff_fb_smooth = _smooth_spectrum(ff_fb_raw, full_cfg.smooth_method, full_cfg.smooth_width)
 
@@ -550,15 +588,13 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         pf_fb_smooth = _align_rows_to_sessions(pf_agg.session_ids, cvpca_agg.session_ids, cvpca_smooth)
 
         ff_fb_raw, ff_fb_smooth = None, None
-        if self.results_subspace is not None:
-            params = {"subspace_name": "svca_subspace", "smooth_width": None}
-            if "activity_parameters_name" in state:
-                params["activity_parameters_name"] = state["activity_parameters_name"]
-            svca_raw = self.results_subspace.sel(keys=["variance_activity"], avg_by_mouse=False, **params)["variance_activity"]
+        if self._svca_results is not None:
+            svca_key = self._svca_full_keys["SVCA"]
+            svca_raw = self._svca_results.sel(keys=[svca_key], avg_by_mouse=False, **self._sel_params(state, "svca"))[svca_key]
             svca_raw = np.atleast_2d(np.asarray(svca_raw, dtype=float))
             svca_smooth = _smooth_spectrum(svca_raw, full_cfg.smooth_method, full_cfg.smooth_width)
-            ff_fb_raw = _align_rows_to_sessions(ff_agg.session_ids, self.results_subspace.session_ids, svca_raw)
-            ff_fb_smooth = _align_rows_to_sessions(ff_agg.session_ids, self.results_subspace.session_ids, svca_smooth)
+            ff_fb_raw = _align_rows_to_sessions(ff_agg.session_ids, self._svca_results.session_ids, svca_raw)
+            ff_fb_smooth = _align_rows_to_sessions(ff_agg.session_ids, self._svca_results.session_ids, svca_smooth)
 
         pf_alpha = _median_fpd_alpha_per_session(
             pf_raw,
@@ -730,7 +766,7 @@ class DimensionalityFamiliarityViewer(FigureViewer):
 
     def _full_label(self, state: dict) -> str:
         """Return the displayed CA1 label for the selected full-spectrum estimator."""
-        return "Residual CA1" if state["full_key"].endswith("_RES") else self.ff_label
+        return "PF Residual" if state["full_key"].endswith("_RES") else self.ff_label
 
     def _plot_curves(self, state: dict, fontsize: float):
         """Draw the single-axis ``plot_mode in {"all", "avg_env"}`` view."""
@@ -757,27 +793,46 @@ class DimensionalityFamiliarityViewer(FigureViewer):
         return fig
 
     def _plot_by_env(self, state: dict, fontsize: float):
-        """Draw the two-panel ``plot_mode="by_env"`` view."""
-        column_layout = state["by_env_layout"] == "col"
-        nrows, ncols = (2, 1) if column_layout else (1, 2)
+        """Draw the separate- or shared-axis ``plot_mode="by_env"`` view."""
+        layout = state["by_env_layout"]
+        column_layout = layout == "col"
+        shared_layout = layout == "shared"
+        nrows, ncols = (1, 1) if shared_layout else ((2, 1) if column_layout else (1, 2))
         fig, axes = self.new_subplots(
             nrows,
             ncols,
             figsize=self.figsize,
             layout="constrained",
             sharex=column_layout,
-            sharey=state["sharey"],
+            sharey=state["sharey"] and not shared_layout,
         )
+        axes = np.atleast_1d(axes)
         if state["log_y"]:
             for axis in axes:
                 axis.set_yscale("log")
         extents = []
-        pf_spec = (self._pf_curves, self.pf_label, state["pf_text_x"], state["pf_text_y"])
-        ff_spec = (self._ff_curves, self._full_label(state), state["ff_text_x"], state["ff_text_y"])
+        pf_spec = (
+            self._pf_curves,
+            self.pf_label,
+            state["pf_text_x"],
+            state["pf_text_y"],
+            "purple",
+        )
+        ff_spec = (
+            self._ff_curves,
+            self._full_label(state),
+            state["ff_text_x"],
+            state["ff_text_y"],
+            "brown",
+        )
         ordered_specs = (ff_spec, pf_spec) if column_layout else (pf_spec, ff_spec)
-        panel_specs = tuple((axis, *spec) for axis, spec in zip(axes, ordered_specs))
+        panel_specs = (
+            tuple((axes[0], *spec) for spec in ordered_specs)
+            if shared_layout
+            else tuple((axis, *spec) for axis, spec in zip(axes, ordered_specs))
+        )
         xlabel = "Env session #" if state["session_alignment"] == "within_env" else "Overall session #"
-        for axis, curves, text, text_x, text_y in panel_specs:
+        for axis, curves, text, text_x, text_y, text_color in panel_specs:
             extent = 0
             for slot, per_mouse in curves.items():
                 extent = max(
@@ -799,6 +854,8 @@ class DimensionalityFamiliarityViewer(FigureViewer):
                 ha="left",
                 va="center",
                 fontsize=fontsize,
+                color=text_color,
+                fontweight="bold",
             )
             axis.set_ylabel(self._ylabel, fontsize=fontsize)
             axis.set_xlabel(xlabel, fontsize=fontsize)
@@ -821,11 +878,16 @@ class DimensionalityFamiliarityViewer(FigureViewer):
                 axis.xaxis.set_visible(False)
             if not column_layout and ia == 1 and state["sharey"]:
                 axis.yaxis.set_visible(False)
-        legend_axis = axes[1] if column_layout and state["legend_panel"] == "bottom" else axes[0]
-        apply_legend(legend_axis, state, fontsize, auto_loc="best")
+        legend_axis = axes[0]
+        handles = labels = None
+        if shared_layout:
+            all_handles, all_labels = legend_axis.get_legend_handles_labels()
+            unique = dict(zip(all_labels, all_handles))
+            labels, handles = list(unique), list(unique.values())
+        apply_legend(legend_axis, state, fontsize, auto_loc="best", handles=handles, labels=labels)
         legend = legend_axis.get_legend()
         if legend is not None:
-            if column_layout:
+            if layout in ("col", "shared"):
                 legend.set_bbox_to_anchor(
                     (state["legend_anchor_x"], state["legend_anchor_y"], 1.0, 1.0),
                     transform=legend_axis.transAxes,

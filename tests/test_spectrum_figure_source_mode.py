@@ -26,12 +26,16 @@ class _FakeAggregator:
 def _viewer(arrays, mouse_names, *, subspace_arrays=None, subspace_mouse_names=None):
     viewer = object.__new__(SpectrumFigureViewer)
     viewer.results = _FakeAggregator(arrays, mouse_names)
-    viewer.results_subspace = (
+    viewer.results_svca = (
         _FakeAggregator(subspace_arrays, subspace_mouse_names)
         if subspace_arrays is not None
         else None
     )
-    viewer._agg = {"stimspace": viewer.results, "cvpca": None}
+    viewer.results_subspace = viewer.results_svca
+    viewer._svca_results = viewer.results_svca
+    viewer._svca_pf_keys = {"SVCA": "ss", "SVCA_PRED": "ss_pred"}
+    viewer._svca_full_keys = {"SVCA": "ff", "SVCA_RES": "ff_res"}
+    viewer._agg = {"stimspace": viewer.results, "cvpca": None, "svca": viewer._svca_results}
     viewer._tuple_labels = {}
     return viewer
 
@@ -84,7 +88,7 @@ def test_avg_env_supports_svca_placefield_environment_spectra():
     viewer = _viewer(
         {},
         ["stim-mouse"],
-        subspace_arrays={"variance_placefield_placefield_env": per_env},
+        subspace_arrays={"ss_env": per_env},
         subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
     )
     cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
@@ -106,7 +110,7 @@ def test_all_supports_svca_placefield_prediction_spectra():
     viewer = _viewer(
         {},
         ["stim-mouse"],
-        subspace_arrays={"variance_placefield_prediction": prediction},
+        subspace_arrays={"ss_pred": prediction},
         subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
     )
     cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
@@ -135,7 +139,7 @@ def test_avg_env_supports_svca_placefield_prediction_spectra():
     viewer = _viewer(
         {},
         ["stim-mouse"],
-        subspace_arrays={"variance_placefield_prediction_env": per_env},
+        subspace_arrays={"ss_pred_env": per_env},
         subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
     )
     cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
@@ -154,7 +158,7 @@ def test_avg_env_svca_session_path_uses_subspace_session_metadata():
     viewer = _viewer(
         {},
         ["stim-mouse"],
-        subspace_arrays={"variance_placefield_placefield_env": per_env},
+        subspace_arrays={"ss_env": per_env},
         subspace_mouse_names=["svca-mouse"],
     )
     cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
@@ -186,3 +190,37 @@ def test_avg_env_does_not_change_full_source_spectrum():
     spectra = viewer._ff_spectrum({**_state(), "full_source_key": "SVD"}, cfg)
 
     np.testing.assert_allclose(spectra, [[9.0, 3.0, 1.0]])
+
+
+@pytest.mark.parametrize("public_key, stored_key", [("SVCA", "ff"), ("SVCA_RES", "ff_res")])
+def test_full_svca_sources_use_stimspace_svca_keys(public_key, stored_key):
+    spectrum = np.array([[9.0, 3.0, 1.0]])
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={stored_key: spectrum},
+        subspace_mouse_names=["svca-mouse"],
+    )
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    actual = viewer._ff_spectrum({**_state(), "full_source_key": public_key}, cfg)
+
+    np.testing.assert_allclose(actual, spectrum)
+
+
+def test_full_svca_source_still_supports_legacy_subspace_key():
+    spectrum = np.array([[9.0, 3.0, 1.0]])
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={"variance_activity_residual": spectrum},
+        subspace_mouse_names=["svca-mouse"],
+    )
+    viewer.results_svca = None
+    viewer.results_subspace = viewer._svca_results
+    viewer._svca_full_keys = {"SVCA": "variance_activity", "SVCA_RES": "variance_activity_residual"}
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    actual = viewer._ff_spectrum({**_state(), "full_source_key": "SVCA_RES"}, cfg)
+
+    np.testing.assert_allclose(actual, spectrum)

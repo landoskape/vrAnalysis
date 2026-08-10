@@ -53,3 +53,44 @@ def test_draw_shared_reliable_annotation_accepts_positive_row_offset_and_curve_c
     assert separator.get_ydata() == pytest.approx([0.23, 0.23])
     assert top.get_color() == "red"
     assert bottom.get_color() == separator.get_color() == "blue"
+
+
+def test_draw_shared_reliable_annotation_supports_xcov_svr_definition():
+    ax = Figure().subplots()
+
+    top, bottom, separator, svr = draw_shared_reliable_annotation(
+        ax,
+        xy=(0.4, 0.8),
+        yoffset=-0.2,
+        line_yoffset=0.01,
+        line_xpad=0.25,
+        fontsize=9.0,
+        mode="X-Cov",
+    )
+
+    assert top.get_text() == r"$\mathbf{xcov}(\mathbf{PF}_{j};\,\mathbf{CA1}_{k})$"
+    assert bottom.get_text() == r"$\mathbf{xcov}(\mathbf{CA1}_{j};\,\mathbf{CA1}_{k})$"
+    assert svr.get_text() == r"$=\mathrm{SVR}$"
+    assert svr.get_position() == pytest.approx((0.665, 0.71))
+    assert svr.get_ha() == "left"
+    assert svr.get_va() == "center"
+    assert svr.get_transform() == ax.transAxes
+    assert svr.get_color() == separator.get_color() == "black"
+
+
+def test_draw_shared_reliable_annotation_none_mode_draws_nothing():
+    ax = Figure().subplots()
+
+    artists = draw_shared_reliable_annotation(
+        ax,
+        xy=(0.4, 0.8),
+        yoffset=-0.2,
+        line_yoffset=0.0,
+        line_xpad=0.25,
+        fontsize=9.0,
+        mode="None",
+    )
+
+    assert artists == ()
+    assert not ax.texts
+    assert not ax.lines

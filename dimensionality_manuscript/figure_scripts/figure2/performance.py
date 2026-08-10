@@ -1,4 +1,4 @@
-"""Performance of the PF, PF+Gain, and Peer models, relative to PF."""
+"""Performance of the PF, gain, and peer models, relative to PF."""
 
 import numpy as np
 
@@ -27,6 +27,10 @@ PERFORMANCE_MODEL_NAMES: list[ModelName] = [
 PERFORMANCE_MODEL_LABELS = ("PF", "PF+Gain", "Peer")
 PERFORMANCE_MODEL_COLORS = ("#000000", "#c00000", "#0000cd")
 
+STRUCTURED_GAIN_MODEL_NAME: ModelName = "internal_placefield_1d_structured_gain"
+STRUCTURED_GAIN_MODEL_LABEL = "StructuredGain"
+STRUCTURED_GAIN_MODEL_COLOR = "#c06000"
+
 # Axis label for each selectable metric. Both are plotted in their stored units -- R^2 as a
 # fraction (<= 1), not a percentage -- so there is no display rescaling anywhere in this panel.
 PERFORMANCE_METRICS: dict[str, str] = {
@@ -36,13 +40,14 @@ PERFORMANCE_METRICS: dict[str, str] = {
 
 
 class ModelPerformanceViewer(FigureViewer):
-    """One score each for PF, PF+Gain, and Peer, relative to PF.
+    """One score each for PF, PF+Gain, optionally StructuredGain, and Peer, relative to PF.
 
     Each model contributes a single number per subject (a mouse when ``avg_by_mouse``, else a
     session): its optimized-hyperparameter test score from ``RegressionConfig``. The main axis
     plots that score minus the PF score, so the panel reads as "what each extra ingredient buys
     over a plain placefield model", with one faint line per subject behind the across-subject
-    mean. PF, PF+Gain, and Peer are consistently colored black, red, and blue.
+    mean. PF, PF+Gain, and Peer are consistently colored black, red, and blue; the optional
+    StructuredGain point is orange.
 
     An inset repeats the same traces without the PF subtraction, so the absolute scale of the
     scores stays visible next to the differences.
@@ -51,12 +56,14 @@ class ModelPerformanceViewer(FigureViewer):
     ----------
     results : ResultsAggregator
         Aggregated ``RegressionConfig`` results, with ``model_name`` as a param axis covering
-        PF, PF+Gain, and Peer.
+        PF, PF+Gain, and Peer, plus StructuredGain when requested.
     metric : {"r2", "mse"}
         Fit metric, plotted in its stored units: R^2 as a fraction (<= 1), MSE in its own units.
         Every y knob below is in those units too.
     avg_by_mouse : bool
         Average sessions within a mouse before plotting, so one trace is one mouse.
+    include_structured_gain : bool
+        Insert the internal structured-gain model between PF+Gain and Peer.
     fontsize : float
         Font size for the main axis's tick labels and y label.
     xtick_rotation : float
@@ -86,6 +93,7 @@ class ModelPerformanceViewer(FigureViewer):
         *,
         metric: str = "r2",
         avg_by_mouse: bool = True,
+        include_structured_gain: bool = False,
         fontsize: float = 12.0,
         xtick_rotation: float = 45.0,
         ytick_max: float = 0.1,
@@ -113,7 +121,14 @@ class ModelPerformanceViewer(FigureViewer):
 
         self.results = results
         self.figsize = figsize
+        self.include_structured_gain = include_structured_gain
         self.model_names = list(PERFORMANCE_MODEL_NAMES)
+        self.model_labels = list(PERFORMANCE_MODEL_LABELS)
+        self.model_colors = list(PERFORMANCE_MODEL_COLORS)
+        if include_structured_gain:
+            self.model_names.insert(2, STRUCTURED_GAIN_MODEL_NAME)
+            self.model_labels.insert(2, STRUCTURED_GAIN_MODEL_LABEL)
+            self.model_colors.insert(2, STRUCTURED_GAIN_MODEL_COLOR)
         self._scores = np.empty((len(self.model_names), 0))
 
         # --- data selection (model_name is fixed by self.model_names) ---
@@ -176,7 +191,7 @@ class ModelPerformanceViewer(FigureViewer):
         if state["show_zero_line"]:
             pad = state["zero_line_pad"]
             ax.plot([xvals[0] - pad, xvals[-1] + pad], [0, 0], color="k", linewidth=0.5, linestyle="--")
-        draw_subject_traces(ax, xvals, relative_scores, PERFORMANCE_MODEL_COLORS, state)
+        draw_subject_traces(ax, xvals, relative_scores, self.model_colors, state)
 
         # Fix ylim before styling: format_spines positions the offset spines relative to the
         # current limits. The x limits are left to matplotlib (the dashed zero line sets the
@@ -186,14 +201,14 @@ class ModelPerformanceViewer(FigureViewer):
             ax,
             fontsize=fontsize,
             xvals=xvals,
-            labels=PERFORMANCE_MODEL_LABELS,
+            labels=self.model_labels,
             xbounds=[xvals[0], xvals[-1]],
             ybounds=state["ylim"],
             yticks=[0, state["ytick_max"]],
             xtick_rotation=0,
             xha="center",
         )
-        for tick_label, color in zip(ax.get_xticklabels(), PERFORMANCE_MODEL_COLORS):
+        for tick_label, color in zip(ax.get_xticklabels(), self.model_colors):
             tick_label.set_color(color)
         ax.set_ylabel(rf"$\Delta$ {metric_label}", labelpad=-10, fontsize=fontsize)
 
@@ -204,7 +219,7 @@ class ModelPerformanceViewer(FigureViewer):
                 inset,
                 xvals,
                 scores,
-                PERFORMANCE_MODEL_COLORS,
+                self.model_colors,
                 state,
                 markersize=state["inset_markersize"],
             ),

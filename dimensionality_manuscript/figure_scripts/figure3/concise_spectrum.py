@@ -24,6 +24,8 @@ LEGEND_DEFAULTS = {
 LEGEND_AUTO_LOCS = {"spectrum_legend": "upper right", "env_legend": "upper left"}
 TEXT_HORIZONTAL_ALIGNMENTS = ("left", "center", "right")
 TEXT_VERTICAL_ALIGNMENTS = ("top", "center", "bottom", "baseline")
+ANNOTATION_MODES = ("X", "X-Cov", "None")
+ANNOTATION_SVR_XPAD = 0.015
 
 
 def draw_shared_reliable_annotation(
@@ -34,10 +36,11 @@ def draw_shared_reliable_annotation(
     line_xpad: float,
     fontsize: float,
     *,
+    mode: str = "X",
     numerator_color: str = CONDITION_COLORS["behaving"],
     denominator_color: str = "black",
 ):
-    """Draw the two-row shared/reliable spectrum definition on ``ax``.
+    """Draw the selected two-row shared/reliable spectrum definition on ``ax``.
 
     All positions are in axes-fraction coordinates. ``xy`` is the center of the top row,
     ``yoffset`` is added to its y coordinate for the second row, and ``line_yoffset`` moves
@@ -48,8 +51,14 @@ def draw_shared_reliable_annotation(
     Returns
     -------
     tuple[matplotlib.artist.Artist, ...]
-        The top text, bottom text, and solid separator line.
+        The top text, bottom text, and solid separator line, followed by the ``=SVR``
+        text in ``"X-Cov"`` mode. Empty in ``"None"`` mode.
     """
+    if mode not in ANNOTATION_MODES:
+        raise ValueError(f"Unknown annotation mode {mode!r}; expected one of {ANNOTATION_MODES}")
+    if mode == "None":
+        return ()
+
     x, top_y = xy
     bottom_y = top_y + yoffset
     line_y = (top_y + bottom_y) / 2 + line_yoffset
@@ -60,8 +69,14 @@ def draw_shared_reliable_annotation(
         "ha": "center",
         "va": "center",
     }
-    top_text = ax.text(x, top_y, r" PF $\times$ CA1", color=numerator_color, **text_kwargs)
-    bottom_text = ax.text(x, bottom_y, r"CA1 $\times$ CA1", color=denominator_color, **text_kwargs)
+    if mode == "X":
+        top_label = r" PF $\times$ CA1"
+        bottom_label = r"CA1 $\times$ CA1"
+    else:
+        top_label = r"$\mathbf{xcov}(\mathbf{PF}_{j};\,\mathbf{CA1}_{k})$"
+        bottom_label = r"$\mathbf{xcov}(\mathbf{CA1}_{j};\,\mathbf{CA1}_{k})$"
+    top_text = ax.text(x, top_y, top_label, color=numerator_color, **text_kwargs)
+    bottom_text = ax.text(x, bottom_y, bottom_label, color=denominator_color, **text_kwargs)
     (separator,) = ax.plot(
         [x - line_xpad, x + line_xpad],
         [line_y, line_y],
@@ -71,7 +86,21 @@ def draw_shared_reliable_annotation(
         linewidth=1.0,
         clip_on=False,
     )
-    return top_text, bottom_text, separator
+    artists = (top_text, bottom_text, separator)
+    # Suppressing this for now by comment... might bring back?
+    # if mode == "X-Cov":
+    #     svr_text = ax.text(
+    #         x + line_xpad + ANNOTATION_SVR_XPAD,
+    #         line_y,
+    #         r"$=\mathrm{SVR}$",
+    #         transform=ax.transAxes,
+    #         fontsize=fontsize,
+    #         color=denominator_color,
+    #         ha="left",
+    #         va="center",
+    #     )
+    #     artists += (svr_text,)
+    return artists
 
 
 class ConciseSpectrumViewer(FigureViewer):
@@ -82,10 +111,12 @@ class ConciseSpectrumViewer(FigureViewer):
     environment slots within each session, then averages sessions within mouse. Display clipping
     and smoothing remain isolated from every cumulative SVR calculation.
 
-    ``include="both"`` shows the first-10 and all-dimension ratio/familiarity panels;
-    ``"all_only"`` keeps the all-dimension ratio and familiarity panels; ``"none"`` removes the
-    ratio and first-10 familiarity panels, leaving the all-dimension familiarity panel. The
-    optional final panel always summarizes slopes of the all-dimension curves.
+    ``first10`` sets the leading-dimension cutoff. ``include_first10_beeswarm`` and
+    ``include_first10_by_env`` independently control whether that leading subset appears in the
+    beeswarm and environment-familiarity views, while ``include_beeswarm`` controls whether the
+    beeswarm panel itself is present. With the leading by-environment view included,
+    ``by_env_layout`` either keeps it and the all-dimension curves on separate axes or overlays
+    them on one shared axis. The optional final panel always summarizes all-dimension slopes.
     """
 
     def __init__(
@@ -96,7 +127,12 @@ class ConciseSpectrumViewer(FigureViewer):
         full_within_env: bool = False,
         style_by_env: str = "errorPlot",
         spectrum_mode: str = "all",
-        include: str | None = "both",
+        first10: int = 10,
+        include_first10_beeswarm: bool = True,
+        include_first10_by_env: bool = True,
+        include_beeswarm: bool = True,
+        by_env_layout: str = "separate",
+        annotation_mode: str = "X",
         annotation_xy: tuple[float, float] = (0.72, 0.86),
         annotation_yoffset: float = -0.14,
         annotation_line_yoffset: float = 0.0,
@@ -113,6 +149,7 @@ class ConciseSpectrumViewer(FigureViewer):
         full_smooth_width: float = 3.0,
         normalize: bool = True,
         clip_negative: bool = True,
+        as_percent: bool = False,
         ylims: tuple[float, float] = (-5.0, -1.2),
         shared_variance_ratio_ylims: tuple[float, float] = (0.0, 1.0),
         ax1_width_ratio: float = 0.8,
@@ -131,27 +168,24 @@ class ConciseSpectrumViewer(FigureViewer):
         self.figsize = figsize
         self.show_slope_panel = bool(show_slope_panel)
 
-        # Preserve old notebook calls while making ``include`` the only Syd-facing parameter.
-        legacy_include_first10 = selection_defaults.pop("include_first10", None)
-        if legacy_include_first10 is not None:
-            if include != "both":
-                raise ValueError("Pass either include or the legacy include_first10 argument, not both")
-            include = "both" if legacy_include_first10 else "all_only"
-        include = "none" if include is None else include
-
-        # The stored smoothing axis is fixed to (None, None): all reported SVRs use raw spectra.
-        # Independent controls below affect only the curves drawn in ax[0].
+        # Data-grid smoothing is selected independently from the display-only smoothing controls
+        # below. The tuple-valued ``smooth_widths`` axis is label-encoded for Syd by the shared
+        # stimspace selection helper.
         self.selection_names, self._tuple_labels = add_stimspace_selection_widgets(
             self,
             results,
             selection_defaults,
-            skip=("smooth_widths",),
         )
         self.add_selection("env_full_scope", value=env_full_scope, options=ENV_FULL_SCOPES)
         self.add_boolean("full_within_env", value=full_within_env)
         self.add_selection("style_by_env", value=style_by_env, options=FAMILIARITY_STYLES)
         self.add_selection("spectrum_mode", value=spectrum_mode, options=("all", "avg_env"))
-        self.add_selection("include", value=include, options=("both", "all_only", "none"))
+        self.add_integer("first10", value=first10, min=1, max=30)
+        self.add_boolean("include_first10_beeswarm", value=include_first10_beeswarm)
+        self.add_boolean("include_first10_by_env", value=include_first10_by_env)
+        self.add_boolean("include_beeswarm", value=include_beeswarm)
+        self.add_selection("by_env_layout", value=by_env_layout, options=("separate", "shared"))
+        self.add_selection("annotation_mode", value=annotation_mode, options=ANNOTATION_MODES)
         self.add_float("annotation_x", value=annotation_xy[0], min=-1.0, max=2.0, step=0.01)
         self.add_float("annotation_y", value=annotation_xy[1], min=-1.0, max=2.0, step=0.01)
         self.add_float("annotation_yoffset", value=annotation_yoffset, min=-1.0, max=1.0, step=0.001)
@@ -173,6 +207,7 @@ class ConciseSpectrumViewer(FigureViewer):
         self.add_float("full_smooth_width", value=full_smooth_width, min=0.0, max=50.0, step=0.5)
         self.add_boolean("normalize", value=normalize)
         self.add_boolean("clip_negative", value=clip_negative)
+        self.add_boolean("as_percent", value=as_percent)
         self.add_float_range("ylims", value=ylims, min=-8.0, max=2.0, step=0.1)
         self.add_float_range(
             "shared_variance_ratio_ylims",
@@ -202,7 +237,8 @@ class ConciseSpectrumViewer(FigureViewer):
             "env_full_scope",
             "full_within_env",
             "spectrum_mode",
-            "include",
+            "first10",
+            "include_first10_by_env",
         ]
         if self.show_slope_panel:
             data_callbacks.extend(("show_slope_stats", "min_slope_sessions"))
@@ -211,10 +247,7 @@ class ConciseSpectrumViewer(FigureViewer):
         self.refresh_data(self.state)
 
     def _sel_params(self, state: dict) -> dict:
-        params = stimspace_selection(state, self.selection_names, self._tuple_labels)
-        if "smooth_widths" in self.results.param_axes:
-            params["smooth_widths"] = (None, None)
-        return params
+        return stimspace_selection(state, self.selection_names, self._tuple_labels)
 
     def _env_curves(self, state: dict, max_dims: int | None) -> dict:
         return familiarity_curves(
@@ -234,9 +267,10 @@ class ConciseSpectrumViewer(FigureViewer):
             spectrum_mode=state["spectrum_mode"],
             env_full_scope=state["env_full_scope"],
             full_within_env=state["full_within_env"],
+            first_n=state["first10"],
         )
-        if state["include"] == "both":
-            self._curves_first10 = self._env_curves(state, 10)
+        if state["include_first10_by_env"]:
+            self._curves_first10 = self._env_curves(state, state["first10"])
         self._curves_all = self._env_curves(state, None)
         if self.show_slope_panel:
             self._slope_table = env_slope_table(self._curves_all, state["min_slope_sessions"])
@@ -254,12 +288,16 @@ class ConciseSpectrumViewer(FigureViewer):
 
     def plot(self, state: dict):
         fontsize = state["fontsize"]
-        show_ratio = state["include"] != "none"
-        show_first10 = state["include"] == "both"
+        show_ratio = state["include_beeswarm"]
+        show_first10_beeswarm = state["include_first10_beeswarm"]
+        show_first10_by_env = state["include_first10_by_env"]
+        show_first10_indicator = (show_ratio and show_first10_beeswarm) or show_first10_by_env
+        value_scale = 100.0 if state["as_percent"] else 1.0
+        shared_by_env = show_first10_by_env and state["by_env_layout"] == "shared"
         width_ratios = [1.0]
         if show_ratio:
             width_ratios.append(state["ax1_width_ratio"])
-        if show_first10:
+        if show_first10_by_env and not shared_by_env:
             width_ratios.append(state["ax23_width_ratio"])
         width_ratios.append(state["ax23_width_ratio"])
         if self.show_slope_panel:
@@ -287,7 +325,8 @@ class ConciseSpectrumViewer(FigureViewer):
             fontsize,
             standard_log_yticklabels=True,
             ylim=(10 ** state["ylims"][0], 10 ** state["ylims"][1]),
-            show_first10_indicator=show_first10,
+            show_first10_indicator=show_first10_indicator,
+            leading_dims=state["first10"],
         )
         apply_legend(ax[0], state, fontsize, prefix="spectrum_legend", auto_loc=LEGEND_AUTO_LOCS["spectrum_legend"])
         draw_shared_reliable_annotation(
@@ -297,6 +336,7 @@ class ConciseSpectrumViewer(FigureViewer):
             state["annotation_line_yoffset"],
             state["annotation_line_xpad"],
             fontsize,
+            mode=state["annotation_mode"],
         )
 
         axis_index = 1
@@ -308,30 +348,61 @@ class ConciseSpectrumViewer(FigureViewer):
                 ratio_axis,
                 self._ratios_arrays,
                 fontsize,
-                include_first10=show_first10,
+                include_first10=show_first10_beeswarm,
+                value_scale=value_scale,
+                leading_dims=state["first10"],
             )
 
         familiarity_axes = []
-        if show_first10:
+        first10_axis = None
+        if show_first10_by_env:
             first10_axis = ax[axis_index]
-            axis_index += 1
-            first10_axis.sharey(ratio_axis)
-            render_familiarity_ratio_panel(first10_axis, self._curves_first10, "by_env", state["style_by_env"], fontsize)
-            # Both familiarity axes use the same env colors, so keep the legend only on the full panel.
-            first10_axis.get_legend().remove()
+            if not shared_by_env:
+                axis_index += 1
+            if ratio_axis is not None:
+                first10_axis.sharey(ratio_axis)
+            render_familiarity_ratio_panel(
+                first10_axis,
+                self._curves_first10,
+                "by_env",
+                state["style_by_env"],
+                fontsize,
+                value_scale=value_scale,
+            )
             familiarity_axes.append(first10_axis)
 
-        all_axis = ax[axis_index]
-        axis_index += 1
-        if ratio_axis is not None:
-            all_axis.sharey(ratio_axis)
-        render_familiarity_ratio_panel(all_axis, self._curves_all, "by_env", state["style_by_env"], fontsize)
-        familiarity_axes.append(all_axis)
+        all_axis = first10_axis if shared_by_env else ax[axis_index]
+        if not shared_by_env:
+            axis_index += 1
+        share_axis = ratio_axis if ratio_axis is not None else first10_axis
+        if share_axis is not None and all_axis is not share_axis:
+            all_axis.sharey(share_axis)
+        render_familiarity_ratio_panel(
+            all_axis,
+            self._curves_all,
+            "by_env",
+            state["style_by_env"],
+            fontsize,
+            value_scale=value_scale,
+        )
+        if all_axis not in familiarity_axes:
+            familiarity_axes.append(all_axis)
+        if first10_axis is not None and not shared_by_env:
+            # Both familiarity axes use the same env colors, so keep the legend only on the full panel.
+            first10_legend = first10_axis.get_legend()
+            if first10_legend is not None:
+                first10_legend.remove()
         handles, labels = all_axis.get_legend_handles_labels()
         if ratio_axis is not None:
             all_handles, all_labels = ratio_axis.get_legend_handles_labels()
             handles.extend(all_handles)
             labels.extend(all_labels)
+        # A shared familiarity axis draws each environment label twice. Preserve the first
+        # handle for each label so its legend remains identical to the separate-axis layout.
+        unique_handles = {}
+        for label, handle in zip(labels, handles):
+            unique_handles.setdefault(label, handle)
+        labels, handles = list(unique_handles), list(unique_handles.values())
         ordinal_labels = {"Env #1": "1st", "Env #2": "2nd", "Env #3": "3rd"}
         apply_legend(
             all_axis,
@@ -347,12 +418,7 @@ class ConciseSpectrumViewer(FigureViewer):
             legend.set_title("Env #")
             legend.get_title().set_fontsize(fontsize * state["env_legend_fontsize_scale"])
 
-        text_specs = []
-        if show_first10:
-            text_specs = [
-                (first10_axis, "first10_text", "1st 10"),
-                (all_axis, "all_text", "All"),
-            ]
+        text_specs = [(first10_axis, "first10_text", "Head"), (all_axis, "all_text", "Full")] if show_first10_by_env else []
         for axis, prefix, text in text_specs:
             axis.text(
                 state[f"{prefix}_x"],
@@ -375,19 +441,21 @@ class ConciseSpectrumViewer(FigureViewer):
                 self._slope_stats_text,
             )
 
-        ratio_ylims = state["shared_variance_ratio_ylims"]
+        ratio_ylims = tuple(limit * value_scale for limit in state["shared_variance_ratio_ylims"])
+        leading_ratio_axis = ratio_axis if ratio_axis is not None else familiarity_axes[0]
+        leading_ratio_axis.set_ylim(*ratio_ylims)
+        leading_ratio_axis.spines["left"].set_bounds(*ratio_ylims)
+        ylabel = "Placefield Component (%)" if state["as_percent"] else "Placefield Component"
+        leading_ratio_axis.set_ylabel(ylabel, fontsize=fontsize)
         if ratio_axis is not None:
-            ratio_axis.set_ylim(*ratio_ylims)
-            ratio_axis.spines["left"].set_bounds(*ratio_ylims)
-            ratio_axis.set_ylabel("Shared Variance Ratio", fontsize=fontsize)
-            for axis in familiarity_axes:
+            hidden_y_axes = familiarity_axes
+        else:
+            hidden_y_axes = familiarity_axes[1:]
+        for axis in hidden_y_axes:
+            if axis is not leading_ratio_axis:
                 axis.set_ylabel("")
                 axis.spines["left"].set_visible(False)
                 axis.tick_params(axis="y", left=False, labelleft=False)
                 axis.spines["bottom"].set_position(("data", COMPOSITE_SPINE_OFFSET))
-        else:
-            all_axis.set_ylim(*ratio_ylims)
-            all_axis.spines["left"].set_bounds(*ratio_ylims)
-            all_axis.set_ylabel("Shared Variance Ratio", fontsize=fontsize)
 
         return fig

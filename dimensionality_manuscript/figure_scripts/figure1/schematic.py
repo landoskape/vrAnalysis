@@ -1,5 +1,7 @@
 """The VR environments as rendered room stills over reward-zone tracks, and the speed panel beneath."""
 
+from typing import cast
+
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
@@ -225,8 +227,8 @@ class VREnvironmentSchematic(FigureViewer):
             figsize = (metrics["width"] * scale, metrics["height"] * scale)
 
         # Figure dimensions are Syd controls; all other layout values remain relative units.
-        self.add_float("fig_width", value=figsize[0], min=0.5, max=20.0, step=0.01)
-        self.add_float("fig_height", value=figsize[1], min=0.5, max=20.0, step=0.01)
+        self.add_float("fig_width", value=figsize[0], min=0.5, max=20.0, step=0.001)
+        self.add_float("fig_height", value=figsize[1], min=0.5, max=20.0, step=0.001)
         self.add_boolean("force_width", value=force_width)
 
         self.on_change(list(VR_RENDER_PARAMS), self.refresh_data)
@@ -331,6 +333,16 @@ class VREnvironmentSchematic(FigureViewer):
             "content_width_in": metrics["width"] * unit_in,
             "content_height_in": metrics["height"] * unit_in,
         }
+
+    def report_figsize(self, state) -> tuple[float, float]:
+        """Return the resulting ``(width, height)`` in inches for ``state``.
+
+        With ``force_width=False`` this is the requested bounding size. With
+        ``force_width=True`` the reported height is the aspect-preserving height derived from
+        ``fig_width``.
+        """
+        figsize = cast(tuple[float, float], self.fitted_figure_layout(state)["figsize"])
+        return float(figsize[0]), float(figsize[1])
 
     def draw(self, state, ax):
         """Draw the schematic onto ``ax``, whose data limits are set to the layout's own units.
