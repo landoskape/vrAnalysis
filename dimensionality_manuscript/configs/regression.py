@@ -218,7 +218,7 @@ class RegressionConfig(AnalysisConfigBase):
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "preferred"
-    activity_parameters_name: str = "default"
+    activity_parameters_name: str = "std"
 
     display_name: ClassVar[str] = "regression"
 
@@ -226,7 +226,7 @@ class RegressionConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(KEY_FIGURE_MODELS),
-            "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
+            # "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS), # only using std!
             # "spks_type": list(VALID_SPKS_TYPES), # no longer analyzing anything except sigrebase
         }
 
