@@ -1,10 +1,15 @@
 """Place-field residual RMS, within and outside the target place field.
 
-Two panels over the same models: one summarizing each mouse with a single number
+Three panels over the same models: one summarizing each mouse with a single number
 (:class:`ModelPlacefieldResidualViewer`), one following each mouse across its chronological
-sessions (:class:`ModelPlacefieldResidualFamiliarityViewer`).
+sessions (:class:`ModelPlacefieldResidualFamiliarityViewer`), and one exploratory panel that
+overlays any combination of the residual config's result axes
+(:class:`ModelPlacefieldResidualExplorer`).
 """
 
+import itertools
+
+import matplotlib as mpl
 import numpy as np
 
 from dimensionality_manuscript.pipeline import ResultsAggregator
@@ -600,4 +605,339 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
                 fontsize=fontsize,
             )
         apply_legend(axes[0], state, fontsize, auto_loc="lower right")
+        return fig
+
+
+# ======================================================================================
+# Explorer: the whole result menu on two fixed region panels
+# ======================================================================================
+
+# ``RegressionPlacefieldResidualConfig`` names its scalar summaries as a product of five axes
+# (see that config's "Result keys" docstring). The region axis is spent on the two panels, so
+# these four are what a drawn series can vary over. Insertion order sets the order of the
+# product, of the legend text, and of the color assignment.
+PF_RESIDUAL_SERIES_AXES: dict[str, tuple[str, ...]] = {
+    "fold": PF_RESIDUAL_FOLDS,
+    "statistic": PF_RESIDUAL_STATISTICS,
+    "subset": PF_RESIDUAL_SUBSETS,
+    "metric": PF_RESIDUAL_METRIC_OPTIONS,
+}
+# One multi-select widget per axis, named in the plural because it holds several levels.
+PF_RESIDUAL_SERIES_WIDGETS: dict[str, str] = {axis: f"{axis}s" for axis in PF_RESIDUAL_SERIES_AXES}
+# Across-subject spread drawn on the mean marker.
+PF_RESIDUAL_ERROR_OPTIONS = ("none", "se", "sd")
+
+
+def _ordered_levels(axis: str, selected) -> list[str]:
+    """The selected levels of one series axis, in the axis's own canonical order.
+
+    A multi-select widget hands back values in click order, so ordering here is what keeps the
+    series (and therefore the colors) stable as levels are toggled on and off.
+    """
+    options = PF_RESIDUAL_SERIES_AXES[axis]
+    unknown = [value for value in selected if value not in options]
+    if unknown:
+        raise ValueError(f"Unknown {axis} value(s) {unknown}. Options: {list(options)}")
+    return [option for option in options if option in set(selected)]
+
+
+def _series_combinations(state) -> list[tuple[str, ...]]:
+    """Every (fold, statistic, subset, metric) the current widget state asks for."""
+    levels = [_ordered_levels(axis, state[widget]) for axis, widget in PF_RESIDUAL_SERIES_WIDGETS.items()]
+    return list(itertools.product(*levels))
+
+
+def _series_key(series: tuple[str, ...], region: str) -> str:
+    """Summary result key for one series in one region, e.g. ``median_xval_within_pf_rms``."""
+    fold, statistic, subset, metric = series
+    return _residual_key_prefix(subset, fold, statistic) + _residual_metric_key(region, metric)
+
+
+def _series_legend(combinations: list[tuple[str, ...]]) -> tuple[list[str], str]:
+    """Per-series labels naming only the axes that vary, plus a title naming the fixed ones.
+
+    Naming all four axes on every entry makes the legend unreadable as soon as two levels are
+    selected, and most of that text is the same on every line anyway. So the constant part is
+    factored out into the legend title and each entry carries only what distinguishes it. A lone
+    series has nothing to distinguish, so it is named in full instead of being left blank.
+
+    Returns
+    -------
+    tuple[list[str], str]
+        One label per combination, and the legend title (empty when every axis varies).
+    """
+    axes = list(PF_RESIDUAL_SERIES_AXES)
+    varying = [i for i in range(len(axes)) if len({combo[i] for combo in combinations}) > 1]
+    fixed = [i for i in range(len(axes)) if i not in varying]
+    if not varying:
+        varying, fixed = list(range(len(axes))), []
+    labels = [" ".join(combo[i] for i in varying) for combo in combinations]
+    return labels, " ".join(combinations[0][i] for i in fixed)
+
+
+def _series_colors(count: int) -> list:
+    """One distinguishable color per series, staying qualitative for as long as possible."""
+    if count <= 10:
+        return [mpl.colormaps["tab10"](i) for i in range(count)]
+    if count <= 20:
+        return [mpl.colormaps["tab20"](i) for i in range(count)]
+    return [mpl.colormaps["turbo"](i / (count - 1)) for i in range(count)]
+
+
+def _draw_residual_series(ax, xvals: np.ndarray, values: np.ndarray, color, label: str, state) -> None:
+    """Draw one series: a faint line per subject, then the across-subject mean and its markers.
+
+    Unlike :func:`draw_subject_traces`, color identifies the *series* rather than the x position,
+    since the x axis here carries models and several series share it.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    xvals : np.ndarray
+        One x position per model, already dodged for this series.
+    values : np.ndarray
+        ``(n_models, n_subjects)`` scores.
+    color : color-like
+        Color of the whole series.
+    label : str
+        Legend label of the mean line.
+    state : dict
+        Viewer state carrying the trace-style knobs plus ``show_subjects`` / ``error`` /
+        ``capsize``.
+    """
+    if state["show_subjects"]:
+        ax.plot(xvals, values, color=(color, state["subject_alpha"]), linewidth=state["subject_linewidth"])
+    mean = np.nanmean(values, axis=1)
+    if state["error"] == "none":
+        spread = None
+    else:
+        spread = np.nanstd(values, axis=1)
+        if state["error"] == "se":
+            count = np.sum(np.isfinite(values), axis=1)
+            spread = np.divide(spread, np.sqrt(count), out=np.full_like(spread, np.nan), where=count > 0)
+    ax.errorbar(
+        xvals,
+        mean,
+        yerr=spread,
+        color=color,
+        linewidth=state["mean_linewidth"],
+        marker="o",
+        markersize=state["markersize"],
+        capsize=state["capsize"],
+        label=label,
+    )
+
+
+class ModelPlacefieldResidualExplorer(FigureViewer):
+    """Any slice of the residual result menu, within (ax[0]) and outside (ax[1]) the place field.
+
+    ``RegressionPlacefieldResidualConfig`` stores one scalar per (fold, region, metric,
+    statistic, ROI subset) per model per session -- 150 numbers a session, all of which are the
+    same quantity looked at from a different side. The region axis is spent on the two panels;
+    every other axis is a multi-select, and the drawn series are the product of what is selected.
+    Models are the x axis, mice (or sessions) are the points behind each mean.
+
+    The axes and their levels::
+
+        fold      = xval | infold                            which frames the membership PF saw
+        statistic = mean | median                            across-ROI reduction
+        subset    = all | quality | not quality              ROI subset
+        metric    = rms | normalized_rms | r2_weighted | r2_shared
+
+    This is a reading tool, not a figure panel: no y label is drawn, because with several metrics
+    overlaid there is no single correct one, and the metric names live in the legend instead.
+    :class:`ModelPlacefieldResidualViewer` is the panel version, with one metric and full labels.
+
+    Nothing stops a selection from mixing incommensurable series on one y-axis (an RMS and an
+    R^2, or a within-field ``r2_weighted`` against an outside-field one, which do not share a
+    baseline). Overlaying them is often the fastest way to see where a metric misbehaves -- just
+    don't read the vertical distance between them as a difference.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        Aggregated ``RegressionPlacefieldResidualConfig`` results.
+    model_names : list[ModelName]
+        Models selected on the x axis at startup, out of those the results carry.
+    folds, statistics, subsets, metrics : iterable of str
+        Levels selected on each series axis at startup. ``statistics`` defaults to ``median``:
+        every one of these distributions is right-skewed across ROIs, and the ``r2_weighted``
+        mean is unusable (a near-zero within-field variance produces an R^2 in the thousands).
+    avg_by_mouse : bool
+        Average a mouse's sessions before drawing, so each point is a mouse rather than a session.
+    relative : bool
+        Subtract the first selected model's value from every series, per subject.
+    sharey : bool
+        Give the two panels a common y scale.
+    include_zero : bool
+        Keep y = 0 in view.
+    show_subjects : bool
+        Draw the faint per-subject line behind each series mean.
+    show_titles, show_legend : bool
+        Draw the ``within`` / ``outside`` panel titles, and the series legend. The legend sits
+        outside the panels, so a wide selection costs figure width rather than covering data.
+    error : {"none", "se", "sd"}
+        Across-subject spread drawn as error bars on the mean.
+    dodge : float
+        Horizontal offset between series at the same model, in model units.
+    legend_fontsize_scale : float
+        Legend font size as a multiple of ``fontsize``. Worth dropping well below 1 once the
+        selection runs to tens of series.
+    fontsize, markersize, mean_linewidth, subject_linewidth, subject_alpha, capsize : float
+        Style knobs.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    **selection_defaults
+        Starting values for the data-selection widgets built from the aggregator's param axes.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        *,
+        model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
+        folds=("xval",),
+        statistics=("median",),
+        subsets=("all",),
+        metrics=("rms",),
+        avg_by_mouse: bool = True,
+        relative: bool = False,
+        sharey: bool = True,
+        include_zero: bool = True,
+        show_subjects: bool = True,
+        show_titles: bool = True,
+        show_legend: bool = True,
+        error: str = "none",
+        dodge: float = 0.0,
+        fontsize: float = 9.0,
+        legend_fontsize_scale: float = 1.0,
+        markersize: float = 5.0,
+        mean_linewidth: float = 1.5,
+        subject_linewidth: float = 0.5,
+        subject_alpha: float = 0.3,
+        capsize: float = 2.0,
+        figsize: tuple[float, float] = (8.0, 3.5),
+        **selection_defaults,
+    ):
+        self.results = results
+        self.figsize = figsize
+        self._models: list[ModelName] = []
+        self._series: list[tuple[str, ...]] = []
+        self._scores: dict[str, np.ndarray] = {}
+
+        self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)
+        # Models are a selectable axis here rather than a fixed list, so the explorer can reach
+        # every model the results were run over -- but only those, hence the intersection.
+        self.model_options = list(results.param_axes.get("model_name", model_names))
+        selected_models = [name for name in self.model_options if name in set(model_names)]
+        self.add_multiple_selection("models", value=selected_models or self.model_options, options=self.model_options)
+        requested = {"fold": folds, "statistic": statistics, "subset": subsets, "metric": metrics}
+        for axis, widget in PF_RESIDUAL_SERIES_WIDGETS.items():
+            self.add_multiple_selection(
+                widget,
+                value=_ordered_levels(axis, requested[axis]),
+                options=list(PF_RESIDUAL_SERIES_AXES[axis]),
+            )
+        self.add_boolean("avg_by_mouse", value=avg_by_mouse)
+        self.add_boolean("relative", value=relative)
+        self.add_boolean("sharey", value=sharey)
+        self.add_boolean("include_zero", value=include_zero)
+        self.add_boolean("show_subjects", value=show_subjects)
+        self.add_boolean("show_titles", value=show_titles)
+        self.add_boolean("show_legend", value=show_legend)
+        self.add_selection("error", value=error, options=list(PF_RESIDUAL_ERROR_OPTIONS))
+        self.add_float("dodge", value=dodge, min=0.0, max=0.4, step=0.01)
+        self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
+        self.add_float("legend_fontsize_scale", value=legend_fontsize_scale, min=0.2, max=2.0, step=0.05)
+        add_trace_style_widgets(
+            self,
+            markersize=markersize,
+            mean_linewidth=mean_linewidth,
+            subject_linewidth=subject_linewidth,
+            subject_alpha=subject_alpha,
+        )
+        self.add_float("capsize", value=capsize, min=0.0, max=6.0, step=0.5)
+
+        for name in (*self.selection_names, "models", *PF_RESIDUAL_SERIES_WIDGETS.values(), "avg_by_mouse"):
+            self.on_change(name, self.refresh_data)
+        self.refresh_data(self.state)
+
+    def refresh_data(self, state):
+        """Load both regions of every selected series, for every selected model."""
+        self._models = [name for name in self.model_options if name in set(state["models"])]
+        self._series = _series_combinations(state)
+        self._scores = {}
+        keys = [_series_key(series, region) for series in self._series for region in PF_RESIDUAL_REGIONS]
+        if not (self._models and keys):
+            return
+        selection = data_selection(state, self.results, self.selection_names)
+        # One call per model with every key at once: the aggregator materializes lazily, so
+        # asking key by key would re-walk the same slice once per series.
+        loaded = [
+            self.results.sel(model_name=name, keys=keys, avg_by_mouse=state["avg_by_mouse"], **selection) for name in self._models
+        ]
+        self._scores = {key: np.stack([result[key] for result in loaded], axis=0) for key in keys}
+
+    def plot(self, state):
+        fontsize = state["fontsize"]
+        fig, ax = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", sharey=state["sharey"])
+        if not (self._models and self._series):
+            # An empty selection draws empty axes rather than raising: it is a transient state
+            # while the last level of an axis is being swapped for another.
+            return fig
+
+        xvals = np.arange(len(self._models), dtype=float)
+        colors = _series_colors(len(self._series))
+        labels, legend_title = _series_legend(self._series)
+        offsets = (np.arange(len(self._series)) - (len(self._series) - 1) / 2) * state["dodge"]
+
+        for axis, region in zip(ax, PF_RESIDUAL_REGIONS):
+            for series, color, label, offset in zip(self._series, colors, labels, offsets):
+                values = self._scores[_series_key(series, region)]
+                if state["relative"]:
+                    values = values - values[0]
+                _draw_residual_series(axis, xvals + offset, values, color, label, state)
+            if state["relative"]:
+                axis.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
+            if state["show_titles"]:
+                axis.set_title(region, fontsize=fontsize)
+
+        # With a shared y-axis both panels must have drawn before the limits are read, and
+        # widening either one widens both -- so the pair is adjusted once, through ax[0].
+        if state["include_zero"]:
+            for axis in ax[:1] if state["sharey"] else ax:
+                ymin, ymax = axis.get_ylim()
+                axis.set_ylim(min(ymin, 0.0), max(ymax, 0.0))
+
+        for axis_index, axis in enumerate(ax):
+            shared_secondary = state["sharey"] and axis_index == 1
+            style_model_axis(
+                axis,
+                fontsize=fontsize,
+                xvals=xvals,
+                labels=self._models,
+                # A single model would give the bottom spine zero length, so let it span the axis.
+                xbounds=[xvals[0], xvals[-1]] if len(xvals) > 1 else None,
+                spines_visible=("bottom",) if shared_secondary else ("left", "bottom"),
+            )
+            if shared_secondary:
+                axis.yaxis.set_visible(False)
+
+        if state["show_legend"]:
+            # Outside the panels and at figure level: a full product of the axes is 48 entries,
+            # which inside either panel would cover the data it labels. Kept to one column even
+            # then -- a second column of these labels is wide enough that constrained_layout
+            # collapses the panels to nothing, whereas one column that runs off the bottom still
+            # leaves both panels readable. Shrink ``legend_fontsize_scale`` to fit more of it in.
+            handles, drawn_labels = ax[0].get_legend_handles_labels()
+            legend_fontsize = fontsize * state["legend_fontsize_scale"]
+            legend = fig.legend(
+                handles,
+                drawn_labels,
+                loc="outside right upper",
+                frameon=False,
+                fontsize=legend_fontsize,
+                title=legend_title or None,
+            )
+            legend.get_title().set_fontsize(legend_fontsize)
         return fig

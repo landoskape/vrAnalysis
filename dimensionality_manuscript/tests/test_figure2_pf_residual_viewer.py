@@ -5,6 +5,7 @@ import numpy as np
 
 from dimensionality_manuscript.configs.regression import residual_summary_keys
 from dimensionality_manuscript.figure_scripts.figure2.pf_residual import (
+    ModelPlacefieldResidualExplorer,
     ModelPlacefieldResidualViewer,
     ModelPlacefieldResidualFamiliarityViewer,
 )
@@ -239,6 +240,155 @@ def test_pf_residual_familiarity_within_only_uses_one_axis_and_compact_labels():
         "PF+Gain",
         "Peer Prediction",
     ]
+    plt.close(fig)
+
+
+class _FakeResidualMenuResults:
+    """Serves any summary key, with a distinct value per axis level so keys are traceable."""
+
+    param_axes = _FakeResidualResults.param_axes
+
+    def __init__(self):
+        self.calls = []
+
+    @staticmethod
+    def _value(key):
+        value = 0.4
+        value += 0.2 if "outside_pf" in key else 0.0
+        value += 0.01 if "infold" in key else 0.0
+        value += 0.002 if key.startswith("median") else 0.0
+        if "notquality_filtered" in key:
+            value += 1.0
+        elif "quality_filtered" in key:
+            value += 0.5
+        return np.array([value, value + 0.1])
+
+    def sel(self, *, model_name, keys, avg_by_mouse, **selection):
+        self.calls.append((model_name, tuple(keys), avg_by_mouse))
+        for key in keys:
+            assert key in residual_summary_keys(), f"{key!r} is not a key the residual config emits"
+        model_offset = self.param_axes["model_name"].index(model_name) * 0.05
+        return {key: self._value(key) + model_offset for key in keys}
+
+
+def _requested_keys(results):
+    return {key for _, keys, _ in results.calls for key in keys}
+
+
+def test_explorer_draws_the_product_of_every_selected_axis():
+    results = _FakeResidualMenuResults()
+    viewer = ModelPlacefieldResidualExplorer(
+        results,
+        folds=("xval", "infold"),
+        statistics=("median",),
+        subsets=("quality", "not quality"),
+        metrics=("rms",),
+    )
+
+    assert viewer._series == [
+        ("xval", "median", "quality", "rms"),
+        ("xval", "median", "not quality", "rms"),
+        ("infold", "median", "quality", "rms"),
+        ("infold", "median", "not quality", "rms"),
+    ]
+    # Four series x two regions, and one aggregator call per model carrying all eight keys.
+    assert len(_requested_keys(results)) == 8
+    assert {model for model, _, _ in results.calls} == set(viewer._models)
+    assert "median_quality_filtered_xval_within_pf_rms" in _requested_keys(results)
+    assert "median_notquality_filtered_infold_outside_pf_rms" in _requested_keys(results)
+
+
+def test_explorer_panels_are_always_within_then_outside():
+    results = _FakeResidualMenuResults()
+    viewer = ModelPlacefieldResidualExplorer(
+        results,
+        folds=("xval", "infold"),
+        metrics=("rms", "r2_shared"),
+        show_subjects=False,
+    )
+
+    fig = viewer.plot(viewer.state)
+    within_axis, outside_axis = fig.axes[:2]
+
+    for index, series in enumerate(viewer._series):
+        for axis, region in ((within_axis, "within"), (outside_axis, "outside")):
+            expected = np.nanmean(viewer._scores[f"median_{series[0]}_{region}_pf_{series[3]}"], axis=1)
+            np.testing.assert_allclose(axis.lines[index].get_ydata(), expected)
+    plt.close(fig)
+
+
+def test_explorer_legend_names_only_the_varying_axes():
+    viewer = ModelPlacefieldResidualExplorer(
+        _FakeResidualMenuResults(),
+        folds=("xval", "infold"),
+        statistics=("median",),
+        subsets=("all",),
+        metrics=("rms",),
+    )
+
+    fig = viewer.plot(viewer.state)
+    (legend,) = fig.legends
+
+    assert [text.get_text() for text in legend.get_texts()] == ["xval", "infold"]
+    assert legend.get_title().get_text() == "median all rms"
+    # The legend belongs to the figure, not to a panel, so it cannot cover either one.
+    assert all(axis.get_legend() is None for axis in fig.axes)
+    plt.close(fig)
+
+
+def test_explorer_lone_series_is_named_in_full():
+    viewer = ModelPlacefieldResidualExplorer(
+        _FakeResidualMenuResults(),
+        folds=("infold",),
+        statistics=("mean",),
+        subsets=("quality",),
+        metrics=("r2_weighted",),
+    )
+
+    fig = viewer.plot(viewer.state)
+    (legend,) = fig.legends
+
+    assert [text.get_text() for text in legend.get_texts()] == ["infold mean quality r2_weighted"]
+    assert legend.get_title().get_text() == ""
+    plt.close(fig)
+
+
+def test_explorer_relative_subtracts_the_first_selected_model():
+    viewer = ModelPlacefieldResidualExplorer(
+        _FakeResidualMenuResults(),
+        relative=True,
+        show_subjects=False,
+    )
+
+    fig = viewer.plot(viewer.state)
+    within_axis = fig.axes[0]
+
+    # The fake offsets every model by 0.05, so the relative curve is 0, 0.05, 0.1.
+    np.testing.assert_allclose(within_axis.lines[0].get_ydata(), [0.0, 0.05, 0.1], atol=1e-12)
+    plt.close(fig)
+
+
+def test_explorer_empty_axis_selection_draws_empty_panels():
+    results = _FakeResidualMenuResults()
+    viewer = ModelPlacefieldResidualExplorer(results, metrics=())
+
+    assert viewer._series == []
+    assert results.calls == []
+
+    fig = viewer.plot(viewer.state)
+    assert len(fig.axes) == 2
+    assert all(not axis.lines for axis in fig.axes)
+    plt.close(fig)
+
+
+def test_explorer_model_selection_follows_the_aggregators_order():
+    results = _FakeResidualMenuResults()
+    viewer = ModelPlacefieldResidualExplorer(results, model_names=["rrr", "internal_placefield_1d"])
+
+    assert viewer._models == ["internal_placefield_1d", "rrr"]
+
+    fig = viewer.plot(viewer.state)
+    assert [label.get_text() for label in fig.axes[0].get_xticklabels()] == ["internal_placefield_1d", "rrr"]
     plt.close(fig)
 
 

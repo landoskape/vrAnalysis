@@ -20,11 +20,13 @@ from .model_style import ARCH_LABELS, ARCH_LINESTYLE, MODEL_STYLE, ROLE_COLOR, R
 from .performance import PERFORMANCE_MODEL_NAMES, ModelPerformanceViewer
 from .pf_residual import (
     PF_RESIDUAL_MODEL_NAMES,
+    ModelPlacefieldResidualExplorer,
     ModelPlacefieldResidualFamiliarityViewer,
     ModelPlacefieldResidualViewer,
 )
 from .prediction import RegressionPredictionViewer
 from .rasters import PREDICTION_FIGURE_MODELS, ModelPredictionsFigureViewer, ModelRasterFocus
+from .residual_structure import RegressionResidualStructureViewer
 from .zoo import ModelZooCondensed, ModelZooSchematic, ModelZooSchematicConfig
 
 __all__ = [
@@ -34,6 +36,7 @@ __all__ = [
     "DimSweepLatentsViewer",
     "MODEL_STYLE",
     "ModelPerformanceViewer",
+    "ModelPlacefieldResidualExplorer",
     "ModelPlacefieldResidualFamiliarityViewer",
     "ModelPlacefieldResidualViewer",
     "ModelPredictionsFigureViewer",
@@ -50,6 +53,7 @@ __all__ = [
     "RegressionDimSweepViewer",
     "RegressionFamiliarityViewer",
     "RegressionPredictionViewer",
+    "RegressionResidualStructureViewer",
     "clear_prediction_cache",
     "get_model_predictions",
 ]
