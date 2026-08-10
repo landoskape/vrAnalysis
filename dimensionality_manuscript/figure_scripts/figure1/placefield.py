@@ -240,6 +240,9 @@ class PlaceFieldPredictionFocus(FigureViewer):
         Draw the trial-consistency / reliability column (column 2).
     show_prediction : bool
         Draw the place-field prediction column (column 3).
+    use_trial_weights : bool
+        Weight the trial-consistency scatter by each trial's RMS activity, so silent trials
+        don't show up in the plot.
     figsize : tuple[float, float]
         Figure size in inches. Not rescaled when columns are dropped, so the remaining columns get
         wider; pass a narrower width for the two-column (activity + error) version.
@@ -260,6 +263,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         fontsize: float = 12.0,
         show_consistency: bool = True,
         show_prediction: bool = True,
+        use_trial_weights: bool = True,
         figsize: tuple[float, float] = (12.0, 6.0),
         **selection_defaults,
     ):
@@ -295,6 +299,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         self.add_float("fontsize", value=fontsize, min=4.0, max=30.0)
         self.add_boolean("show_consistency", value=show_consistency)
         self.add_boolean("show_prediction", value=show_prediction)
+        self.add_boolean("use_trial_weights", value=use_trial_weights)
 
         self.on_change("mouse", self.update_example_session)
         self.on_change("example_session", self.update_example_bounds)
@@ -335,7 +340,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         # Every trial is predicted by the same place field; mask where the trial has no data.
         self.pred_spkmap = np.broadcast_to(self.placefield, self.spkmap.shape).copy()
         self.pred_spkmap[np.isnan(self.spkmap)] = np.nan
-        self.error = self.pred_spkmap - self.spkmap
+        self.error = self.spkmap - self.pred_spkmap
         self.avg_prediction = np.nanmean(self.pred_spkmap, axis=0)
         self.rms_error = np.sqrt(np.nanmean(self.error**2, axis=0))
         self.consistency = _trial_consistency(self.spkmap)
@@ -359,17 +364,17 @@ class PlaceFieldPredictionFocus(FigureViewer):
         ymax_pf = np.nanmax([np.nanmax(self.placefield), np.nanmax(self.avg_prediction), np.nanmax(self.rms_error)]) * 1.2
 
         # Columns are added left to right, so the optional ones only shift what follows them.
-        width_ratios = [3]
+        width_ratios = [1]
         icol_consistency = None
         icol_prediction = None
         if show_consistency:
             icol_consistency = len(width_ratios)
-            width_ratios.append(1)
+            width_ratios.append(0.25)
         if show_prediction:
             icol_prediction = len(width_ratios)
-            width_ratios.append(3)
+            width_ratios.append(1)
         icol_error = len(width_ratios)
-        width_ratios.append(3)
+        width_ratios.append(1)
 
         fig = self.new_figure(figsize=self.figsize, layout="constrained")
         gs = fig.add_gridspec(2, len(width_ratios), width_ratios=width_ratios, height_ratios=[6, 1])
@@ -385,7 +390,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
             ax.set_ylim(ylims[0], ylims[1])
             style_axis(ax, fontsize=fontsize, xbounds=xlims_clean, xticks=[], yticks=[], spines_visible=spines_visible)
 
-        def draw_curve(ax, values, label):
+        def draw_curve(ax, values, label, ylabel=None, include_left_spine=False):
             """One position-axis curve below a map, on the shared y range, labeled in-axes."""
             ax.plot(distcenters, values, color="k", linewidth=1.5)
             ax.set_facecolor(("black", 0.04))
@@ -393,6 +398,17 @@ class PlaceFieldPredictionFocus(FigureViewer):
             ax.set_xlim(xlims_clean)
             ax.set_ylim(-0.05, ymax_pf)
             ax.text(xlims[0], ymax_pf, label, ha="left", va="top", color="k", fontsize=fontsize)
+            ax.set_ylabel(ylabel, fontsize=fontsize, labelpad=-2)
+
+            if include_left_spine:
+                spines_visible = ["bottom", "left"]
+                yticks = [0, int(np.fix(ymax_pf))]
+                ybounds = (0, ymax_pf)
+            else:
+                spines_visible = ["bottom"]
+                yticks = []
+                ybounds = (-0.05, ymax_pf)
+
             style_axis(
                 ax,
                 fontsize=fontsize,
@@ -400,14 +416,15 @@ class PlaceFieldPredictionFocus(FigureViewer):
                 xbounds=xlims_clean,
                 xticks=xlims_clean,
                 xlabels=xlabels,
-                yticks=[],
-                spines_visible=["bottom"],
+                ybounds=ybounds,
+                yticks=yticks,
+                spines_visible=spines_visible,
             )
 
         # ------------------------------------------------------------- col 1: activity --
         draw_map(ax_spkmap, spkmap, "gray_r", 0, vmax, ["left"])
         ax_spkmap.set_ylabel("Trials", fontsize=fontsize)
-        draw_curve(ax_placefield, self.placefield, "Place Field")
+        draw_curve(ax_placefield, self.placefield, "Placefield", r"$\sigma$", include_left_spine=True)
 
         # ---------------------------------------------------------- col 2: consistency --
         if show_consistency:
@@ -448,25 +465,27 @@ class PlaceFieldPredictionFocus(FigureViewer):
         ax_reliability = fig.add_subplot(gs[1, icol])
         trial_numbers, trial_weights, trial_consistency, reliability = self.consistency
 
-        ax_consistency.scatter(trial_consistency, trial_numbers, color="k", s=5, alpha=trial_weights)
+        alpha = trial_weights if state["use_trial_weights"] else 1.0
+        ax_consistency.scatter(trial_consistency, trial_numbers, color="k", s=1.75, alpha=alpha)
         ax_consistency.set_facecolor(("black", 0.04))
-        ax_consistency.set_xlim(-1.05, 1.05)
+        ax_consistency.set_xlim(-1.1, 1.1)
         ax_consistency.set_ylim(ylims[0], ylims[1])
-        ax_consistency.set_xlabel(r"$\sigma$", fontsize=fontsize)
         ax_consistency.text(
             -0.5,
             max(trial_numbers) / 2,
-            r"$\sigma = \mathrm{corr}(\langle\mathrm{other\ trials}\rangle)$",
+            r"$r = \mathrm{corr}(\langle\mathrm{other}\rangle)$",
             ha="center",
             va="center",
             rotation=90,
             fontsize=fontsize,
         )
-        style_axis(ax_consistency, fontsize=fontsize, xbounds=(-1, 1), xticks=[-1, 0, 1], yticks=[], spines_visible=["bottom"])
+        style_axis(ax_consistency, fontsize=fontsize, xbounds=(-1, 1), xticks=[], yticks=[], spines_visible=[])
 
         ax_reliability.plot([-1, 1], [0, 0], color="black", linewidth=1.5)
-        ax_reliability.plot([reliability], [0], color="black", marker="o", markersize=8)
-        ax_reliability.set_xlim(-1, 1)
-        ax_reliability.set_ylim(-0.05, 0.05)
-        ax_reliability.set_xlabel("Reliability", fontsize=fontsize)
-        style_axis(ax_reliability, fontsize=fontsize, xbounds=(-1, 1), xticks=[-1, 0, 1], yticks=[], spines_visible=["bottom"])
+        ax_reliability.plot([reliability], [0], color="black", marker="o", markersize=2.5)
+        ax_reliability.set_xlim(-1.1, 1.1)
+        ax_reliability.set_ylim(-0.05, 0.15)
+        ax_reliability.set_xlabel(r"$r$", fontsize=fontsize, labelpad=-2)
+        ax_reliability.text(-1.05, 0.15, "Avg.", ha="left", va="top", color="k", fontsize=fontsize)
+        # ax_reliability.set_xlabel("Spatial\nReliability", fontsize=fontsize)
+        style_axis(ax_reliability, fontsize=fontsize, xbounds=(-1, 1), xticks=[-1, 1], yticks=[], spines_visible=["bottom"])

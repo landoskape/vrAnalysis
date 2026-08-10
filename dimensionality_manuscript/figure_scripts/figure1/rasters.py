@@ -128,9 +128,7 @@ class StackedRasterFocus(FigureViewer):
         self._rows_by_mouse = {name: rows for name, rows in rows_by_mouse.items() if rows}
         if not self._rows_by_mouse:
             raise ValueError("No PlacefieldPredictionConfig schema-v1 results are stored for these sessions.")
-        self._session_rows = {
-            name: {results.sessions[row].session_print(): row for row in rows} for name, rows in self._rows_by_mouse.items()
-        }
+        self._session_rows = {name: {results.sessions[row].session_print(): row for row in rows} for name, rows in self._rows_by_mouse.items()}
         initial_mouse = mouse if mouse in self._rows_by_mouse else next(iter(self._rows_by_mouse))
         session_options = list(self._session_rows[initial_mouse])
         initial_session = session if session in session_options else session_options[0]
@@ -190,8 +188,7 @@ class StackedRasterFocus(FigureViewer):
             result = self._config.get_result(self.results.store, self._store_rows[self.session.session_uid])
             if result is None or "placefield_prediction" not in result or "spks_std" not in result:
                 raise KeyError(
-                    f"{self.session.session_print()} lacks placefield_prediction or spks_std "
-                    "(PlacefieldPredictionConfig schema v1 required)."
+                    f"{self.session.session_print()} lacks placefield_prediction or spks_std " "(PlacefieldPredictionConfig schema v1 required)."
                 )
             self._result_cache[row] = result
         result = self._result_cache[row]
