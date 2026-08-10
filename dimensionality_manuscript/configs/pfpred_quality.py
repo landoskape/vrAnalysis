@@ -13,11 +13,11 @@ every mouse, and the aggregator can stack them across mice. A histogram over
 ``peak_bin_edges`` is precomputed per slot so the distribution can be plotted
 straight from disk without re-measuring any session.
 
-The R² keys come in two flavours: the top-level ones (``r2``, ``reliability``,
-``r2_kde_mean``, ...) describe the session's *best* environment, while
-``r2_slot`` / ``reliability_slot`` / ``r2_kde_slot`` repeat the measurement for
-every environment on that same experience-order slot axis, so R² quality can be
-followed per environment as a mouse gets more familiar with it.
+The prediction-quality keys come in two flavours: the top-level ones (``r2``,
+``rms``, ``reliability``, ``r2_kde_mean``, ``rms_kde_mean``, ...) describe the
+session's *best* environment, while the ``*_slot`` keys repeat the measurement
+for every environment on that same experience-order slot axis, so prediction
+quality can be followed per environment as a mouse gets more familiar with it.
 """
 
 from __future__ import annotations
@@ -71,7 +71,8 @@ class PFPredQualityConfig(AnalysisConfigBase):
     # pf_peak_hist, pf_peak_hist_edges, pf_peak_n, env_slot_ids).
     # v5: added the per-experience-slot R² keys (r2_slot, reliability_slot, r2_kde_slot,
     # r2_kde_pooled, best_env_slot), so R² vs reliability can be tracked per environment.
-    schema_version: str = "v5"
+    # v6: added per-ROI RMS error and its binned, KDE, and per-slot counterparts.
+    schema_version: str = "v6"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     reliability_threshold: float = 0.7
@@ -128,15 +129,18 @@ class PFPredQualityConfig(AnalysisConfigBase):
             r2 = vectorRSquared(pfpred_valid, spks_valid, axis=0)
             r2[r2 < -1] = np.nan
             cc = vectorCorrelation(pfpred_valid, spks_valid, axis=0)
+            rms = _rms_error(pfpred_valid, spks_valid)
 
             relia = reliability.values[best_env]  # best env, shape (n_rois,)
 
-            result = {"r2": r2, "cc": cc, "reliability": relia}
+            result = {"r2": r2, "cc": cc, "rms": rms, "reliability": relia}
             result.update(_per_roi_stats(spks_valid, pfpred_valid, r2, relia, self.accuracy_pct))
 
             bin_edges = self.bin_edges
             result.update(_binned_r2(r2, relia, bin_edges))
+            result.update(_binned_rms(rms, relia, bin_edges))
             result.update(_kde_r2(r2, relia, self.kde_grid))
+            result.update(_kde_rms(rms, relia, self.kde_grid))
 
             idx_reliable = np.isfinite(r2) & (relia > self.reliability_threshold)
             r2_hist_counts, _ = np.histogram(r2[idx_reliable], bins=bin_edges)
@@ -251,10 +255,10 @@ def _r2_by_slot(
     frame masks are the ones already built for the best environment, just restricted to a
     different set of frames.
 
-    ``r2_kde_slot`` is the running average E[R² | reliability] of one slot, and ``r2_kde_pooled``
-    the same curve over every (ROI, environment) pair at once -- both precomputed here so the
-    figure can plot them straight from disk, since a kernel regression per session is too slow to
-    redo on every redraw.
+    ``r2_kde_slot`` and ``rms_kde_slot`` are the running averages of R² and RMS error given
+    reliability for one slot. Their ``*_pooled`` counterparts contain the same curves over every
+    (ROI, environment) pair at once. They are precomputed here because a kernel regression per
+    session is too slow to redo on every redraw.
 
     Parameters
     ----------
@@ -279,16 +283,19 @@ def _r2_by_slot(
     Returns
     -------
     dict
-        ``r2_slot`` and ``reliability_slot`` ``(MAX_ENV_SLOTS, rois)``, ``r2_kde_slot``
-        ``(MAX_ENV_SLOTS, n_kde_grid)``, ``r2_kde_pooled`` ``(n_kde_grid,)``, and
-        ``best_env_slot``, the slot of ``best_env`` (NaN if it has none).
+        ``r2_slot``, ``rms_slot``, and ``reliability_slot`` ``(MAX_ENV_SLOTS, rois)``;
+        ``r2_kde_slot`` and ``rms_kde_slot`` ``(MAX_ENV_SLOTS, n_kde_grid)``; the corresponding
+        ``*_kde_pooled`` arrays ``(n_kde_grid,)``; and ``best_env_slot``, the slot of ``best_env``
+        (NaN if it has none).
     """
     n_rois = spks.shape[1]
     mouse_order = load_env_order().get(session.mouse_name)
 
     r2_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    rms_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
     reliability_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
     r2_kde_slot = np.full((MAX_ENV_SLOTS, kde_grid.size), np.nan)
+    rms_kde_slot = np.full((MAX_ENV_SLOTS, kde_grid.size), np.nan)
     best_env_slot = np.nan
 
     for idx_env, env in enumerate(env_maps.environments):
@@ -302,22 +309,29 @@ def _r2_by_slot(
             continue
         r2 = vectorRSquared(placefield_prediction[idx_keep], spks[idx_keep], axis=0)
         r2[r2 < -1] = np.nan
+        rms = _rms_error(placefield_prediction[idx_keep], spks[idx_keep])
         relia = reliability.values[idx_env]
         r2_slot[slot] = r2
+        rms_slot[slot] = rms
         reliability_slot[slot] = relia
         r2_kde_slot[slot] = _kde_r2(r2, relia, kde_grid)["r2_kde_mean"]
+        rms_kde_slot[slot] = _kde_rms(rms, relia, kde_grid)["rms_kde_mean"]
         if idx_env == best_env:
             best_env_slot = float(slot)
 
     # Every (ROI, environment) pair as its own sample -- not the same as any single slot's curve,
     # since environments differ in how many reliable cells they have.
-    pooled = _kde_r2(r2_slot.reshape(-1), reliability_slot.reshape(-1), kde_grid)["r2_kde_mean"]
+    r2_pooled = _kde_r2(r2_slot.reshape(-1), reliability_slot.reshape(-1), kde_grid)["r2_kde_mean"]
+    rms_pooled = _kde_rms(rms_slot.reshape(-1), reliability_slot.reshape(-1), kde_grid)["rms_kde_mean"]
 
     return {
         "r2_slot": r2_slot,
+        "rms_slot": rms_slot,
         "reliability_slot": reliability_slot,
         "r2_kde_slot": r2_kde_slot,
-        "r2_kde_pooled": pooled,
+        "rms_kde_slot": rms_kde_slot,
+        "r2_kde_pooled": r2_pooled,
+        "rms_kde_pooled": rms_pooled,
         "best_env_slot": best_env_slot,
     }
 
@@ -362,35 +376,66 @@ def _per_roi_stats(
     return result
 
 
+def _rms_error(prediction: np.ndarray, activity: np.ndarray) -> np.ndarray:
+    """Root-mean-square prediction error for each ROI (axis 0)."""
+    return np.sqrt(np.mean((prediction - activity) ** 2, axis=0))
+
+
 def _binned_r2(r2: np.ndarray, relia: np.ndarray, bin_edges: np.ndarray) -> dict:
     """Mean and SEM of R² in each reliability bin."""
+    return _binned_metric(r2, relia, bin_edges, prefix="r2")
+
+
+def _binned_rms(rms: np.ndarray, relia: np.ndarray, bin_edges: np.ndarray) -> dict:
+    """Mean and SEM of RMS error in each reliability bin."""
+    return _binned_metric(rms, relia, bin_edges, prefix="rms")
+
+
+def _binned_metric(values: np.ndarray, relia: np.ndarray, bin_edges: np.ndarray, prefix: str) -> dict:
+    """Mean, SEM, and sample count of a per-ROI metric in reliability bins."""
     n_bins = len(bin_edges) - 1
-    r2_bin_mean = np.full(n_bins, np.nan)
-    r2_bin_sem = np.full(n_bins, np.nan)
-    r2_bin_n = np.zeros(n_bins, dtype=float)
+    bin_mean = np.full(n_bins, np.nan)
+    bin_sem = np.full(n_bins, np.nan)
+    bin_n = np.zeros(n_bins, dtype=float)
 
     bin_idx = np.digitize(relia, bin_edges) - 1
     bin_idx = np.clip(bin_idx, 0, n_bins - 1)
 
     for b in range(n_bins):
-        mask = (bin_idx == b) & np.isfinite(r2)
-        vals = r2[mask]
+        mask = (bin_idx == b) & np.isfinite(values) & np.isfinite(relia)
+        vals = values[mask]
         if vals.size > 0:
-            r2_bin_mean[b] = np.mean(vals)
-            r2_bin_sem[b] = np.std(vals, ddof=1) / np.sqrt(vals.size) if vals.size > 1 else 0.0
-            r2_bin_n[b] = vals.size
+            bin_mean[b] = np.mean(vals)
+            bin_sem[b] = np.std(vals, ddof=1) / np.sqrt(vals.size) if vals.size > 1 else 0.0
+            bin_n[b] = vals.size
 
-    return {"r2_bin_mean": r2_bin_mean, "r2_bin_sem": r2_bin_sem, "r2_bin_n": r2_bin_n}
+    return {f"{prefix}_bin_mean": bin_mean, f"{prefix}_bin_sem": bin_sem, f"{prefix}_bin_n": bin_n}
 
 
 def _kde_r2(r2: np.ndarray, relia: np.ndarray, kde_grid: np.ndarray, bw: float | None = None) -> dict:
     """Kernel regression: E[R² | reliability = x] evaluated on a uniform grid."""
-    valid = np.isfinite(r2) & np.isfinite(relia)
-    r2v = r2[valid]
+    return _kde_metric(r2, relia, kde_grid, prefix="r2", bw=bw)
+
+
+def _kde_rms(rms: np.ndarray, relia: np.ndarray, kde_grid: np.ndarray, bw: float | None = None) -> dict:
+    """Kernel regression: E[RMS error | reliability = x] on a uniform grid."""
+    return _kde_metric(rms, relia, kde_grid, prefix="rms", bw=bw)
+
+
+def _kde_metric(
+    values: np.ndarray,
+    relia: np.ndarray,
+    kde_grid: np.ndarray,
+    prefix: str,
+    bw: float | None = None,
+) -> dict:
+    """Kernel regression of a per-ROI metric against reliability."""
+    valid = np.isfinite(values) & np.isfinite(relia)
+    metric_values = values[valid]
     reliav = relia[valid]
 
-    if r2v.size == 0:
-        return {"r2_kde_grid": kde_grid, "r2_kde_mean": np.full(kde_grid.size, np.nan)}
+    if metric_values.size == 0:
+        return {f"{prefix}_kde_grid": kde_grid, f"{prefix}_kde_mean": np.full(kde_grid.size, np.nan)}
 
     if bw is None:
         # Scott's rule
@@ -402,6 +447,6 @@ def _kde_r2(r2: np.ndarray, relia: np.ndarray, kde_grid: np.ndarray, bw: float |
         w = np.exp(-0.5 * ((reliav - x) / bw) ** 2)
         w_sum = w.sum()
         if w_sum > 0:
-            kde_mean[i] = np.dot(w, r2v) / w_sum
+            kde_mean[i] = np.dot(w, metric_values) / w_sum
 
-    return {"r2_kde_grid": kde_grid, "r2_kde_mean": kde_mean}
+    return {f"{prefix}_kde_grid": kde_grid, f"{prefix}_kde_mean": kde_mean}
