@@ -10,7 +10,9 @@ This module answers both. Within each environment the gain matrix is split into 
 target half of neurons, the trials are split into train/validation/test, and a reduced-rank
 regression is fit from source gain to target gain. The cross-validated optimal rank is a direct
 estimate of the dimensionality of shared gain fluctuation, and the held-out score says how much of
-another neuron's gain is predictable from the population at all.
+another neuron's gain is predictable from the population at all. Both are reported against a
+trial-permuted null that keeps each neuron's own gain statistics and destroys only what the
+neurons share.
 
 Deliberately standalone. The ``regression_models`` / ``PopulationRegistry`` stack regresses
 frame-by-frame activity through ``Population``/``TimeSplit`` chunk splits; here the sample axis is
@@ -52,7 +54,17 @@ GAIN_TRANSFORMS: tuple[str, ...] = ("raw", "sqrt")
 SPLIT_NAMES: tuple[str, ...] = ("train", "val", "test")
 
 #: Curve keys emitted per slot, NaN-padded to the widest rank range in the session.
-CURVE_KEYS: tuple[str, ...] = ("rank_values", "mse_val_curve", "r2_val_curve", "mse_test_curve", "r2_test_curve")
+CURVE_KEYS: tuple[str, ...] = (
+    "rank_values",
+    "mse_val_curve",
+    "r2_val_curve",
+    "mse_test_curve",
+    "r2_test_curve",
+    "mse_val_curve_null",
+    "r2_val_curve_null",
+    "mse_test_curve_null",
+    "r2_test_curve_null",
+)
 
 #: Relative validation-MSE slack within which the *smallest* rank wins. The reported rank is a
 #: dimensionality estimate, so a flat tail must not hand the answer to the largest rank evaluated:
@@ -417,9 +429,7 @@ def optimize_rrr(
     else:
         searched.append((1, _validation_mse(model, 1)))
 
-    ranks, scores = model.score_curve(
-        x_val, y_val, ranks=list(range(1, max_rank + 1)), nonnegative=True, dim=None, verbose=False
-    )
+    ranks, scores = model.score_curve(x_val, y_val, ranks=list(range(1, max_rank + 1)), nonnegative=True, dim=None, verbose=False)
     searched_ranks = [rank for rank, _ in searched]
     searched_scores = [score for _, score in searched]
     return _RRRFit(
@@ -438,6 +448,159 @@ def score_rrr(model: ReducedRankRegression, rank: int, x: torch.Tensor, y: torch
     """Pooled MSE and R^2 of a rank-truncated prediction."""
     prediction = model.predict(x, rank=rank, nonnegative=True)
     return float(mse(prediction, y, reduce="mean", dim=None)), float(measure_r2(prediction, y, reduce="mean", dim=None))
+
+
+def split_tensors(
+    gain: np.ndarray,
+    source_rows: np.ndarray,
+    target_rows: np.ndarray,
+    columns: dict[str, np.ndarray],
+) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """Slice a gain matrix into per-split ``(trials, neurons)`` source/target tensor pairs."""
+    return {
+        name: (
+            torch.tensor(gain[source_rows][:, cols].T, dtype=torch.float64),
+            torch.tensor(gain[target_rows][:, cols].T, dtype=torch.float64),
+        )
+        for name, cols in columns.items()
+    }
+
+
+def roll_gain_rows(gain: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Circularly shift each neuron's trial series by its own random offset.
+
+    Every neuron keeps its exact gain distribution and its own trial-to-trial autocorrelation; only
+    the alignment *between* neurons is destroyed. Offsets are drawn from ``1 .. trials - 1`` so no
+    neuron keeps its original alignment.
+
+    Parameters
+    ----------
+    gain : np.ndarray
+        Gain matrix, ``(neurons, trials)``.
+    rng : np.random.Generator
+        Source of the per-neuron offsets.
+
+    Returns
+    -------
+    np.ndarray
+        The rolled gain matrix, same shape.
+    """
+    n_neurons, n_trials = gain.shape
+    if n_trials < 2:
+        return gain.copy()
+    offsets = rng.integers(1, n_trials, size=n_neurons)
+    return np.take_along_axis(gain, (np.arange(n_trials)[None, :] - offsets[:, None]) % n_trials, axis=1)
+
+
+def _roll_average(values: list[np.ndarray]) -> np.ndarray:
+    """Mean over rolls, ignoring non-finite entries and returning NaN where none are finite."""
+    stacked = np.asarray(values, dtype=float)
+    stacked = np.where(np.isfinite(stacked), stacked, np.nan)
+    counts = np.sum(np.isfinite(stacked), axis=0)
+    return np.divide(
+        np.nansum(stacked, axis=0),
+        counts,
+        out=np.full(np.shape(counts), np.nan, dtype=float),
+        where=counts > 0,
+    )
+
+
+@dataclass(frozen=True)
+class _NullFit:
+    """Roll-averaged scores and rank curves for the trial-permuted null."""
+
+    rank: float
+    mse_val: float
+    r2_val: float
+    mse_test: float
+    r2_test: float
+    mse_val_curve: np.ndarray
+    r2_val_curve: np.ndarray
+    mse_test_curve: np.ndarray
+    r2_test_curve: np.ndarray
+
+
+def evaluate_null_rolls(
+    gain: np.ndarray,
+    source_rows: np.ndarray,
+    target_rows: np.ndarray,
+    columns: dict[str, np.ndarray],
+    *,
+    alpha: float,
+    rank: int,
+    ranks: list[int],
+    n_rolls: int,
+    rng: np.random.Generator,
+) -> _NullFit:
+    """Refit and rescore the regression on trial-permuted gain, averaged over rolls.
+
+    Each roll shifts every neuron's trial series independently (:func:`roll_gain_rows`) on the
+    *full* environment gain matrix, and only then applies the same train/validation/test column
+    split as the real fit. Rolling before splitting keeps the null pipeline identical to the real
+    one: the null model sees the same number of trials, the same neurons, and the same split
+    boundaries, differing only in that no trial structure is shared across neurons.
+
+    Hyperparameters are not re-optimized. ``alpha`` and ``rank`` come from the real fit, so the
+    comparison is "the same model, on data with the shared structure removed" rather than "the best
+    model that can be fit to noise". The full rank curves are recorded anyway, since they cost one
+    accumulating pass, and give a floor to read the real rank curve against at every rank.
+
+    Parameters
+    ----------
+    gain : np.ndarray
+        Gain matrix for one environment, ``(neurons, trials)``.
+    source_rows, target_rows : np.ndarray
+        Row indices of the two neuron halves.
+    columns : dict
+        Split name -> gain column indices.
+    alpha : float
+        Ridge alpha from the real fit.
+    rank : int
+        Winning rank from the real fit; where the scalar null scores are read.
+    ranks : list of int
+        Ranks spanned by the real score curves; the null curves use the same grid.
+    n_rolls : int
+        Number of independent rolls to average. Zero returns all-NaN.
+    rng : np.random.Generator
+        Source of the roll offsets.
+
+    Returns
+    -------
+    _NullFit
+        Roll-averaged validation and test scores and rank curves.
+    """
+    empty = np.full(len(ranks), np.nan)
+    if n_rolls <= 0:
+        return _NullFit(np.nan, np.nan, np.nan, np.nan, np.nan, empty, empty.copy(), empty.copy(), empty.copy())
+
+    points: dict[str, list[float]] = {f"{metric}_{split}": [] for metric in ("mse", "r2") for split in ("val", "test")}
+    curves: dict[str, list[np.ndarray]] = {key: [] for key in points}
+    for _ in range(n_rolls):
+        tensors = split_tensors(roll_gain_rows(gain, rng), source_rows, target_rows, columns)
+        model = ReducedRankRegression(alpha=float(alpha), fit_intercept=True).fit(*tensors["train"])
+        for split in ("val", "test"):
+            mse_point, r2_point = score_rrr(model, rank, *tensors[split])
+            points[f"mse_{split}"].append(mse_point)
+            points[f"r2_{split}"].append(r2_point)
+            _, scores = model.score_curve(*tensors[split], ranks=ranks, nonnegative=True, dim=None, verbose=False)
+            curves[f"mse_{split}"].append(np.asarray(scores["mse"], dtype=float))
+            curves[f"r2_{split}"].append(np.asarray(scores["r2"], dtype=float))
+
+    averaged_points = {key: float(_roll_average(values)) for key, values in points.items()}
+    averaged_curves = {key: _roll_average(values) for key, values in curves.items()}
+    mse_val_curve = averaged_curves["mse_val"]
+    null_rank = float(_parsimonious_rank(ranks, list(mse_val_curve))) if np.any(np.isfinite(mse_val_curve)) else np.nan
+    return _NullFit(
+        rank=null_rank,
+        mse_val=averaged_points["mse_val"],
+        r2_val=averaged_points["r2_val"],
+        mse_test=averaged_points["mse_test"],
+        r2_test=averaged_points["r2_test"],
+        mse_val_curve=mse_val_curve,
+        r2_val_curve=averaged_curves["r2_val"],
+        mse_test_curve=averaged_curves["mse_test"],
+        r2_test_curve=averaged_curves["r2_test"],
+    )
 
 
 def _stack_curves(curves: dict[int, dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
@@ -476,6 +639,12 @@ class GainRegressionConfig(AnalysisConfigBase):
     ``ReducedRankRegressionModel`` does; the intercept carries the per-neuron mean gain.
     ``gain_transform`` selects whether the regressed quantity is gain itself or its square root.
 
+    Every fit is paired with a trial-permuted null. Once alpha and rank are chosen on the real data,
+    the environment's gain matrix is rolled ``n_null_rolls`` times -- each neuron's trial series
+    shifted circularly by its own random offset -- and the same fit-and-score pipeline is rerun on
+    each roll at those fixed hyperparameters. The roll-averaged scores are stored beside the real
+    ones under the ``*_null`` keys.
+
     Sessions with too few trials in an environment leave that slot NaN rather than failing. Every
     trial and neuron count is stored so those sessions can be filtered post hoc.
 
@@ -511,41 +680,58 @@ class GainRegressionConfig(AnalysisConfigBase):
     split_seed : int
         Base seed for the trial and source/target splits; mixed with the session UID so different
         sessions get different splits reproducibly.
+    n_null_rolls : int
+        Number of trial-permuted null repetitions scored per environment, or 0 to skip the null and
+        leave every ``*_null`` key NaN. See :func:`evaluate_null_rolls`.
 
     Result keys
     -----------
     ``S`` is ``MAX_ENV_SLOTS``, ``N`` the number of ROIs with usable activity, ``R`` the largest
-    achievable rank across slots.
+    achievable rank across slots. Every ``*_null`` entry is the roll-average of the same quantity
+    measured on trial-permuted gain at the real fit's hyperparameters.
 
-    ===============================  ==========  ====================================================
-    key                              shape       description
-    ===============================  ==========  ====================================================
-    env_slot_ids                     (S,)        environment index occupying each slot
-    rrr_alpha                        (S,)        winning ridge alpha
-    rrr_rank                         (S,)        winning rank, read off the exact validation curve
-    rrr_rank_gss                     (S,)        winning rank from the golden-section search alone
-    max_rank                         (S,)        largest achievable rank
-    mse_val, r2_val                  (S,)        validation score at the winning rank
-    mse_test, r2_test                (S,)        test score at the winning rank
-    rank_values                      (S, R)      ranks spanned by the score curves
-    mse_val_curve, r2_val_curve      (S, R)      validation score at every rank
-    mse_test_curve, r2_test_curve    (S, R)      test score at every rank
-    n_trials_env                     (S,)        full trials in the environment
-    n_trials_train/_val/_test        (S,)        trials per split
-    n_neurons_env                    (S,)        ROIs before the reliability screen
-    n_neurons_kept                   (S,)        ROIs passing the screen
-    n_neurons_finite                 (S,)        ROIs with a finite gain on every trial
-    n_neurons_source/_target         (S,)        ROIs in each half of the regression
-    reliability, fraction_active     (S, N)      screening metrics over the prediction trials
-    gain_matrices                    per slot    (neurons, trials) regressed gain, object list
-    gain_roi_indices                 per slot    session ROI index per gain row, object list
-    source_rows, target_rows         per slot    gain row indices per half, object list
-    trial_columns                    per slot    {split: gain column indices}, object list
-    roi_lookup                       (N,)        session ROI index per column of the metric arrays
-    ===============================  ==========  ====================================================
+    =======================================  ==========  ============================================
+    key                                      shape       description
+    =======================================  ==========  ============================================
+    env_slot_ids                             (S,)        environment index occupying each slot
+    rrr_alpha                                (S,)        winning ridge alpha
+    rrr_rank                                 (S,)        winning rank, off the exact validation curve
+    rrr_rank_gss                             (S,)        winning rank from the golden-section search
+    rrr_rank_null                            (S,)        rank the null validation curve would choose
+    max_rank                                 (S,)        largest achievable rank
+    mse_val, r2_val                          (S,)        validation score at the winning rank
+    mse_test, r2_test                        (S,)        test score at the winning rank
+    mse_val_null, r2_val_null                (S,)        null validation score at the winning rank
+    mse_test_null, r2_test_null              (S,)        null test score at the winning rank
+    rank_values                              (S, R)      ranks spanned by the score curves
+    mse_val_curve, r2_val_curve              (S, R)      validation score at every rank
+    mse_test_curve, r2_test_curve            (S, R)      test score at every rank
+    mse_val_curve_null, r2_val_curve_null    (S, R)      null validation score at every rank
+    mse_test_curve_null, r2_test_curve_null  (S, R)      null test score at every rank
+    n_trials_env                             (S,)        full trials in the environment
+    n_trials_train/_val/_test                (S,)        trials per split
+    n_neurons_env                            (S,)        ROIs before the reliability screen
+    n_neurons_kept                           (S,)        ROIs passing the screen
+    n_neurons_finite                         (S,)        ROIs with a finite gain on every trial
+    n_neurons_source/_target                 (S,)        ROIs in each half of the regression
+    reliability, fraction_active             (S, N)      screening metrics over prediction trials
+    gain_matrices                            per slot    (neurons, trials) gain, object list
+    gain_roi_indices                         per slot    session ROI index per gain row, object list
+    source_rows, target_rows                 per slot    gain row indices per half, object list
+    trial_columns                            per slot    {split: gain column indices}, object list
+    roi_lookup                               (N,)        session ROI index per metric-array column
+    =======================================  ==========  ============================================
 
     Notes
     -----
+    The ``*_null`` keys are the reference the real numbers should be read against. A rolled matrix
+    keeps every neuron's own gain distribution and autocorrelation and destroys only the alignment
+    between neurons, so the null carries everything the regression can exploit *except* shared trial
+    structure. It is not zero: the intercept still predicts each target neuron's mean gain, and with
+    tens of training trials a high-rank fit can chase noise. ``r2_test_null`` is therefore the floor
+    against which ``r2_test`` counts, and ``mse_test_curve_null`` is the floor for the whole rank
+    curve. Where the two curves separate is the range of ranks that carry real shared structure.
+
     Two properties of the measured data shape how these results should be read.
 
     Single-trial gain from deconvolved spikes is sparse and heavy tailed. Across sessions the
@@ -564,7 +750,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     ``max_rank`` and ``n_trials_train`` before reading it as a dimensionality estimate.
     """
 
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
@@ -578,6 +764,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     placefield_split: str = "train"
     gain_transform: str = "raw"
     split_seed: int = 0
+    n_null_rolls: int = 10
 
     display_name: ClassVar[str] = "gain_regression"
 
@@ -620,6 +807,8 @@ class GainRegressionConfig(AnalysisConfigBase):
             raise ValueError("every entry of trial_fractions must be positive")
         if self.num_bins < 4:
             raise ValueError("num_bins must be at least 4")
+        if self.n_null_rolls < 0:
+            raise ValueError("n_null_rolls must be non-negative")
 
     def summary(self) -> str:
         parts = [
@@ -632,6 +821,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             f"pf={self.placefield_split}",
             f"gain={self.gain_transform}",
             f"seed={self.split_seed}",
+            f"null={self.n_null_rolls}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -642,6 +832,14 @@ class GainRegressionConfig(AnalysisConfigBase):
         Reproduces ``PlacefieldGainViewer._load`` minus the display-only pieces: each ROI's activity
         is divided by its full-session standard deviation, and only trials that traverse every
         required position bin are kept.
+
+        The standard-deviation division does not affect any result. Gain is a ratio between a
+        neuron's own trial activity and its own fitted place field, so any per-neuron scalar
+        cancels; reliability and fraction-active are likewise per-neuron scale invariant. It is kept
+        because the same computation supplies ``valid_rois`` -- ROIs with a zero or non-finite
+        standard deviation carry no signal and must be dropped -- and because it keeps this loader
+        identical to the viewer's. This is also why the config exposes no activity-scaling
+        parameter: ``std`` and ``max`` scaling would be indistinguishable here.
 
         Parameters
         ----------
@@ -680,9 +878,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             required_bins = smp._idx_required_position_bins()
             full_trials = _full_trial_indices(raw_maps.occmap, required_bins)
             trial_environment = np.asarray(session.trial_environment)
-            trials_by_environment = {
-                int(env): full_trials[trial_environment[full_trials] == env] for env in session.environments
-            }
+            trials_by_environment = {int(env): full_trials[trial_environment[full_trials] == env] for env in session.environments}
             env_maps = smp.get_env_maps()
             env_maps.distcenters = smp.dist_centers
             # Remove only bins that remain NaN in at least one retained traversal; reliability_loo
@@ -801,11 +997,16 @@ class GainRegressionConfig(AnalysisConfigBase):
             "rrr_alpha",
             "rrr_rank",
             "rrr_rank_gss",
+            "rrr_rank_null",
             "max_rank",
             "mse_val",
             "r2_val",
             "mse_test",
             "r2_test",
+            "mse_val_null",
+            "r2_val_null",
+            "mse_test_null",
+            "r2_test_null",
             "n_trials_env",
             "n_trials_train",
             "n_trials_val",
@@ -853,13 +1054,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             target_rows[slot] = gain_data.target_rows
             trial_columns[slot] = dict(gain_data.columns)
 
-            tensors = {
-                name: (
-                    torch.tensor(gain_data.gain[gain_data.source_rows][:, cols].T, dtype=torch.float64),
-                    torch.tensor(gain_data.gain[gain_data.target_rows][:, cols].T, dtype=torch.float64),
-                )
-                for name, cols in gain_data.columns.items()
-            }
+            tensors = split_tensors(gain_data.gain, gain_data.source_rows, gain_data.target_rows, gain_data.columns)
             fit = optimize_rrr(
                 *tensors["train"],
                 *tensors["val"],
@@ -875,15 +1070,34 @@ class GainRegressionConfig(AnalysisConfigBase):
 
             # The validation curve came back from the optimizer; the test curve is one more pass,
             # cheap because the nested low-rank structure accumulates across ranks.
-            _, test_scores = fit.model.score_curve(
-                *tensors["test"], ranks=fit.ranks, nonnegative=True, dim=None, verbose=False
+            _, test_scores = fit.model.score_curve(*tensors["test"], ranks=fit.ranks, nonnegative=True, dim=None, verbose=False)
+
+            # The null reuses this fit's alpha and rank, so it has to run after the optimizer.
+            null = evaluate_null_rolls(
+                gain_data.gain,
+                gain_data.source_rows,
+                gain_data.target_rows,
+                gain_data.columns,
+                alpha=fit.alpha,
+                rank=fit.rank,
+                ranks=fit.ranks,
+                n_rolls=self.n_null_rolls,
+                rng=np.random.default_rng(_seed(session.session_uid, env, self.split_seed, "null")),
             )
+            scalars["rrr_rank_null"][slot] = null.rank
+            scalars["mse_val_null"][slot], scalars["r2_val_null"][slot] = null.mse_val, null.r2_val
+            scalars["mse_test_null"][slot], scalars["r2_test_null"][slot] = null.mse_test, null.r2_test
+
             curves[slot] = {
                 "rank_values": np.asarray(fit.ranks, dtype=float),
                 "mse_val_curve": np.asarray(fit.val_mse, dtype=float),
                 "r2_val_curve": np.asarray(fit.val_r2, dtype=float),
                 "mse_test_curve": np.asarray(test_scores["mse"], dtype=float),
                 "r2_test_curve": np.asarray(test_scores["r2"], dtype=float),
+                "mse_val_curve_null": null.mse_val_curve,
+                "r2_val_curve_null": null.r2_val_curve,
+                "mse_test_curve_null": null.mse_test_curve,
+                "r2_test_curve_null": null.r2_test_curve,
             }
 
         return {
