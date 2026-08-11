@@ -40,6 +40,7 @@ DEFAULT_ANALYSES: tuple[str, ...] = (
     "vector_gain_rank",
     "structured_additive_rank",
     "regression_dim_sweep",
+    "rank_models_sweep",
     "cvpca",
     "subspace",
     "stimspace",

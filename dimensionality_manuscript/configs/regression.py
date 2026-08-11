@@ -1602,3 +1602,194 @@ class StructuredAdditiveRankConfig(AnalysisConfigBase):
             offset=extras["placefield_prediction"],
         )
         return {"mse": mse_arr, "r2": r2_arr, "full_rank": float(basis.shape[1])}
+
+
+#: Models whose prediction is built on a reduced-rank regression, and whose rank is therefore a
+#: hyperparameter of the model rather than a projection imposed after the fact. The structured-
+#: additive pair regress source residuals onto target residuals; ``rrr`` regresses raw source
+#: activity onto raw target activity.
+RANK_MODELS: list[ModelName] = [*STRUCTURED_ADDITIVE_MODELS, "rrr"]
+
+
+@dataclass(frozen=True)
+class RankModelsSweepConfig(AnalysisConfigBase):
+    """Sweep test performance against the rank of a model's *reduced-rank regression*.
+
+    :class:`RegressionDimensionalitySweepConfig` sweeps the rank of the whole held-out prediction,
+    which for the structured-additive models means projecting the place fields and the residual
+    regression together — a rank axis that mixes the two stages and is not any rank the model can
+    actually be fit at. This config sweeps the one knob the model really has: the rank of the
+    reduced-rank regression inside it. Every point on the curve is a model that could have been fit
+    directly, and the x-axis means the same thing for all three models.
+
+    All three are swept the same way, by the identity reduced-rank regression is built on::
+
+        X @ beta_ols @ V[:, :r] @ V[:, :r].T == (X @ beta_ols @ V @ V.T) @ V[:, :r] @ V[:, :r].T
+
+    where ``V`` holds the right singular vectors of the *training* prediction. So each model is
+    asked for its full-rank regression prediction once per split, ``V`` is recovered from the
+    training one by :func:`_prediction_basis`, and :func:`_score_rank_projection` accumulates the
+    projection across the grid. That is exact, not an approximation, and it avoids rebuilding the
+    (targets, targets) rank restraint that ``ReducedRankRegression.predict`` recomputes per call.
+
+    ``ReducedRankRegression.score_curve`` implements the same accumulation, but it scores its own
+    prediction directly: there is nowhere to add the place-field prediction back before rectifying,
+    and it returns metrics rather than predictions. The structured-additive models need the sum
+    rectified, not the residual, so the accumulation is done here with an ``offset`` instead.
+
+    What differs between the models is only what enters the projection:
+
+    - **structured additive** — the projection sees the predicted *residual*; the place-field
+      prediction is the rank-independent ``offset``, estimated once and added back unchanged at
+      every rank. Rank 0 would therefore be the plain place-field model, and the curve measures
+      what the second stage buys on top of it.
+    - **rrr** — the projection sees the whole prediction and there is no offset, which is the plain
+      reduced-rank regression curve.
+
+    Both are rectified after the offset is added, matching every model's own ``nonnegative=True``
+    output.
+
+    Result keys::
+
+        rank_values, rank_dim            (ranks,) both the regression rank, kept for symmetry
+        rank_mse, rank_r2                (ranks,) held-out metrics at each rank
+        full_rank                        scalar, the numerical rank of the training prediction
+
+    Ranks come from :data:`RANK_VALUES` clipped to ``full_rank`` by :func:`_rank_grid`, the same
+    grid and the same ``rank_*`` key scheme :class:`RegressionDimensionalitySweepConfig` uses, so
+    the two sweeps are directly comparable on one axis. Sessions do not share an exact grid;
+    downstream plotting groups observations by their rank rather than by sweep index.
+
+    ``full_rank`` is the numerical rank of the training prediction, which can fall below the
+    regression's own ``max_rank`` ceiling — the trailing directions carry no signal, so the curve
+    stops there rather than repeating a value it did not measure.
+
+    Parameters
+    ----------
+    model_name : ModelName
+        Model to sweep (must be in :data:`RANK_MODELS`).
+    spks_type : SpksTypes
+        Spike type to use for the population.
+    method : str
+        Hyperparameter selection method used to fix the place-field and ``alpha`` hyperparameters.
+        The cached ``rank`` is ignored — it is what this config sweeps.
+    activity_parameters_name : str
+        Named activity preprocessing preset.
+    """
+
+    schema_version: str = "v1"
+
+    data_config_name: str = "default"
+    model_name: ModelName = "external_placefield_1d_structured_additive"
+    spks_type: SpksTypes = "sigrebase"
+    method: str = "preferred"
+    activity_parameters_name: str = "std"
+
+    display_name: ClassVar[str] = "rank_models_sweep"
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {"model_name": list(RANK_MODELS)}
+
+    def validate(self):
+        if self.model_name not in RANK_MODELS:
+            raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(RANK_MODELS)}")
+        if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
+            raise ValueError(
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
+            )
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"{self.model_name}",
+            f"spks={self.spks_type}",
+            f"method={self.method}",
+        ]
+        if self.activity_parameters_name != "default":
+            parts.append(f"ap={self.activity_parameters_name}")
+        parts.append(self.schema_version)
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        """Fit the model once, then score the held-out split at each regression rank."""
+        model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
+        # Every rank is rectified after the offset is added, which only reproduces the model's own
+        # prediction while the model itself rectifies. Every model here does by default; one built
+        # without it would need its own scoring path rather than a silently different curve.
+        if not model.nonnegative:
+            raise ValueError("The rank sweep rectifies the summed prediction, which requires nonnegative=True")
+
+        hyperparameters = model.get_best_hyperparameters(
+            session,
+            spks_type=self.spks_type,
+            method=self.method,
+        )[0]
+
+        if isinstance(model, ReducedRankRegressionModel):
+            basis, prediction, target, offset = self._rrr_pieces(model, session, hyperparameters)
+        else:
+            basis, prediction, target, offset = self._structured_additive_pieces(model, session, hyperparameters)
+
+        ranks = _rank_grid(basis.shape[1])
+        mse_arr, r2_arr = _score_rank_projection(model, basis, prediction, target, ranks, offset=offset)
+        return {
+            **_pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr),
+            "full_rank": float(basis.shape[1]),
+        }
+
+    def _structured_additive_pieces(self, model, session: B2Session, hyperparameters):
+        """Basis, held-out residual prediction, target, and the place-field offset.
+
+        The basis is the *training* prediction's own right singular vectors, so it has to come from
+        the training residuals — the same matrix ``ReducedRankRegression`` built ``V`` from. Both
+        splits are asked for the full-rank residual prediction, which is what the projection then
+        reduces.
+        """
+        target_placefield, source_placefield, residual_model = model.train(
+            session,
+            spks_type=self.spks_type,
+            split="train",
+            hyperparameters=hyperparameters,
+        )
+        regression_rank = int(residual_model.max_rank)
+
+        train_residuals = model.get_residuals(session, target_placefield, source_placefield, spks_type=self.spks_type, split="train")
+        basis = _prediction_basis(model.apply_residual_model(train_residuals, residual_model, regression_rank)[1]["residual_predicted"])
+
+        test_residuals = model.get_residuals(session, target_placefield, source_placefield, spks_type=self.spks_type, split="test")
+        extras = model.apply_residual_model(test_residuals, residual_model, regression_rank)[1]
+        target = model.get_session_data(session, self.spks_type, "test")[1]
+        if extras["predictions_were_filtered"]:
+            target = target[:, extras["idx_valid_predictions"]]
+        return basis, extras["residual_predicted"], target, extras["placefield_prediction"]
+
+    def _rrr_pieces(self, model: ReducedRankRegressionModel, session: B2Session, hyperparameters):
+        """Basis, held-out prediction, target, and ``None`` for the offset.
+
+        The fitted regression is asked for its prediction directly rather than through
+        ``model.predict``, which rectifies: a rectified prediction is not what ``V`` diagonalizes,
+        so projecting it would not reproduce the lower-rank models. Rectification happens once per
+        rank inside :func:`_score_rank_projection` instead, exactly where the model applies it.
+        """
+        rrr_model = model.train(session, spks_type=self.spks_type, split="train", hyperparameters=hyperparameters)
+        full_rank = int(rrr_model.max_rank)
+
+        source_train = model.get_session_data(session, self.spks_type, "train")[0]
+        train_prediction = rrr_model.predict(source_train.T, rank=full_rank).numpy().T
+        # A non-finite training frame would poison the Gram and rotate the whole basis, so those
+        # frames are dropped before the eigendecomposition. The basis spans targets, not frames, so
+        # dropping frames here does not change what the held-out projection is scored against.
+        finite_train = np.all(np.isfinite(train_prediction), axis=0)
+        basis = _prediction_basis(train_prediction[:, finite_train])
+        del train_prediction
+
+        source_test, target, _ = model.get_session_data(session, self.spks_type, "test")
+        prediction = rrr_model.predict(source_test.T, rank=full_rank).numpy().T
+        # Mirrors the NaN filtering ReducedRankRegressionModel.predict applies, which is bypassed
+        # here along with its rectification.
+        finite_test = np.all(np.isfinite(prediction), axis=0)
+        if not np.all(finite_test):
+            prediction = prediction[:, finite_test]
+            target = target[:, finite_test]
+        return basis, prediction, target, None

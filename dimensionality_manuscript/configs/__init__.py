@@ -15,6 +15,7 @@ from .regression import (
     VectorGainRankConfig,
     RegressionDimensionalitySweepConfig,
     StructuredAdditiveRankConfig,
+    RankModelsSweepConfig,
 )
 
 # from .rrr_to_external_latents import RRRToExternalLatentsConfig # Not in use at the moment, might revive later, but import currently broken
@@ -49,6 +50,7 @@ ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
     PlacefieldPredictionConfig,
     PopulationConfig,
     # RRRToExternalLatentsConfig, # see above
+    RankModelsSweepConfig,
     RegressionConfig,
     RegressionPlacefieldResidualConfig,
     RegressionResidualStructureConfig,
@@ -100,6 +102,7 @@ __all__ = [
     "VectorGainRankConfig",
     "RegressionDimensionalitySweepConfig",
     "StructuredAdditiveRankConfig",
+    "RankModelsSweepConfig",
     "SubspaceConfig",
     "StimSpaceConfig",
     "StimSpaceEnvPCAConfig",
