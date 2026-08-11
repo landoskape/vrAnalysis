@@ -108,6 +108,24 @@ def _to_g(x: torch.Tensor) -> torch.Tensor:
     return (x - x.mean(dim=1, keepdim=True)) / (x.shape[1] - 1) ** 0.5
 
 
+def _white_generator(session: B2Session) -> torch.Generator:
+    """Deterministic per-session RNG for the white-noise nulls, isolated from the global RNG."""
+    generator = torch.Generator()
+    generator.manual_seed(int(stable_hash(".".join(session.session_name), "white"), 16) % (2**31))
+    return generator
+
+
+def _white_like(x: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
+    """White-noise surrogate of ``x`` (N, K): independent rows matching its per-neuron variance.
+
+    The covariance of ``x`` across its columns is reduced to its diagonal, so the surrogate keeps
+    each neuron's marginal variance but carries no shared structure across neurons. Feeding it
+    through the same estimator gives the floor a shared-variance spectrum should collapse to when
+    the data carry nothing beyond independent per-neuron fluctuations.
+    """
+    return torch.randn(x.shape, generator=generator, dtype=x.dtype) * x.std(dim=1, keepdim=True)
+
+
 def _cvsvd(stim_train: torch.Tensor, stim_test: torch.Tensor, proj: torch.Tensor) -> torch.Tensor:
     """Cross-validated singular values of stim_train.T @ proj, scored on stim_test.T @ proj.
 
@@ -292,6 +310,10 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
     - ss_direct, sf_direct, ff : direct singular values (all 6 draw pairs)
     - ffres          : direct singular values of held-out residual activity (all 6 draw pairs);
                        for each pair, its PF prediction is fit jointly on the other two folds
+    - ffres_white    : white-noise null for ffres. Each residual fold is replaced by a Gaussian
+                       matrix of the same shape whose per-neuron variance matches (the diagonal
+                       of the fold's covariance, discarding all cross-neuron structure), then run
+                       through the identical normalization and SVD.
 
     Parameters
     ----------
@@ -308,7 +330,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         VR-only frames.
     """
 
-    schema_version: str = "v5"
+    schema_version: str = "v6"
     data_config_name: str = "even"
     activity_parameters_name: str = "raw"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
@@ -508,6 +530,15 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             raise ValueError("Fewer than two valid samples remain in a residual activity fold.")
         g_residual_pairs = {pair: (_to_g(fold_i.func), _to_g(fold_j.func)) for pair, (fold_i, fold_j) in residual_pairs.items()}
 
+        # White-noise null: same shapes and same per-neuron variances as the residual func folds,
+        # but no cross-neuron structure. Built from the pre-_to_g inputs so the surrogate goes
+        # through exactly the same normalization and estimator as ffres.
+        white_generator = _white_generator(session)
+        g_white_pairs = {
+            pair: (_to_g(_white_like(fold_i.func, white_generator)), _to_g(_white_like(fold_j.func, white_generator)))
+            for pair, (fold_i, fold_j) in residual_pairs.items()
+        }
+
         # Randomized SVD n_components is capped at min(T_i, T_j) for each pair's cross matrix.
         # Time splits can differ by a sample or two, so cap by the smallest split up front to
         # keep every ff entry the same length (otherwise torch.stack fails below).
@@ -522,6 +553,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         sf_dir_terms = [_direct_svd(sm_test[i], g_data[j]) for i, j in pairs]
         ff_terms = [_direct_svd(g_data[i], g_data[j], ff_components) for i, j in pairs]
         ffres_terms = [_direct_svd(g_residual_pairs[pair][0], g_residual_pairs[pair][1], ffres_components) for pair in pairs]
+        ffres_white_terms = [_direct_svd(g_white_pairs[pair][0], g_white_pairs[pair][1], ffres_components) for pair in pairs]
 
         ss_cv = torch.mean(torch.stack(ss_cv_terms), dim=0)
         ss_cvpca = torch.mean(torch.stack(ss_cvpca_terms), dim=0)
@@ -530,6 +562,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         sf_dir = torch.mean(torch.stack(sf_dir_terms), dim=0)
         ff = torch.mean(torch.stack(ff_terms), dim=0)
         ffres = torch.mean(torch.stack(ffres_terms), dim=0)
+        ffres_white = torch.mean(torch.stack(ffres_white_terms), dim=0)
 
         result = {
             "ss_cv": ss_cv.cpu().numpy(),
@@ -539,6 +572,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "sf_direct": sf_dir.cpu().numpy(),
             "ff": ff.cpu().numpy(),
             "ffres": ffres.cpu().numpy(),
+            "ffres_white": ffres_white.cpu().numpy(),
             "added_frames": added_frames,
             "original_frames": original_frames,
         }
@@ -563,6 +597,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
                 valid_envs,
                 combos3,
                 pairs,
+                white_generator,
             )
         )
         return result
@@ -588,6 +623,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
         valid_envs: np.ndarray,
         combos3: list[tuple[int, int, int]],
         pairs: list[tuple[int, int]],
+        white_generator: torch.Generator,
     ) -> dict:
         """Per-environment SS / SF / FF / FF-residual spectra, keyed by experience-order slot.
 
@@ -614,6 +650,8 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             "ff_env_full1_fullall",
             "ffres_env_full1",
             "ffres_env_full1_fullall",
+            "ffres_white_env_full1",
+            "ffres_white_env_full1_fullall",
         ]
         per_env: dict[str, dict[int, np.ndarray]] = {k: {} for k in keys}
 
@@ -705,8 +743,15 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
 
             ffres_1_e = None
             ffres_1_all_e = None
+            ffres_white_1_e = None
+            ffres_white_1_all_e = None
             if residual_counts and min(residual_counts) >= 2:
                 g_residual_inputs = {pair: tuple(_to_g(value) for value in values) for pair, values in residual_inputs.items()}
+                # White-noise null on the same residual inputs (see _white_like): variance-matched
+                # per neuron, independent across neurons, run through the identical estimator.
+                g_white_inputs = {
+                    pair: tuple(_to_g(_white_like(value, white_generator)) for value in values) for pair, values in residual_inputs.items()
+                }
                 min_res_1 = min(values[idx].shape[1] for values in g_residual_inputs.values() for idx in (0, 1))
                 min_res_all = min(values[idx].shape[1] for values in g_residual_inputs.values() for idx in (2, 3))
                 ffres_comp_1 = min(n_e, min_res_1)
@@ -717,6 +762,14 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
                 )
                 ffres_1_all_e = torch.mean(
                     torch.stack([_direct_svd(g_residual_inputs[pair][0], g_residual_inputs[pair][3], ffres_comp_mix) for pair in pairs]),
+                    dim=0,
+                )
+                ffres_white_1_e = torch.mean(
+                    torch.stack([_direct_svd(g_white_inputs[pair][0], g_white_inputs[pair][1], ffres_comp_1) for pair in pairs]),
+                    dim=0,
+                )
+                ffres_white_1_all_e = torch.mean(
+                    torch.stack([_direct_svd(g_white_inputs[pair][0], g_white_inputs[pair][3], ffres_comp_mix) for pair in pairs]),
                     dim=0,
                 )
 
@@ -732,6 +785,8 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             if ffres_1_e is not None:
                 per_env["ffres_env_full1"][slot] = ffres_1_e.cpu().numpy()
                 per_env["ffres_env_full1_fullall"][slot] = ffres_1_all_e.cpu().numpy()
+                per_env["ffres_white_env_full1"][slot] = ffres_white_1_e.cpu().numpy()
+                per_env["ffres_white_env_full1_fullall"][slot] = ffres_white_1_all_e.cpu().numpy()
 
         out: dict = {}
         for key, slot_map in per_env.items():
@@ -1119,8 +1174,9 @@ def _svca_fold_metrics(
     n_target: int,
     centered: bool,
     max_components: int,
+    white_generator: torch.Generator,
 ) -> dict[str, torch.Tensor]:
-    """Cross-validated SVCA spectra (``ff``/``ss``/``ff_res``/``ss_pred``) over fold combinations.
+    """Cross-validated SVCA spectra (``ff``/``ss``/``ff_res``/``ss_pred``/``ff_res_white``) over fold combinations.
 
     ``sources``/``targets``/``fbs``/``pf_*`` are one entry per fold -- 2 complementary halves, so
     the ordered pairs below are ``(0, 1)`` and ``(1, 0)``, i.e. 2 terms per estimator. Callers must
@@ -1129,6 +1185,11 @@ def _svca_fold_metrics(
     - ``ff``, ``ss`` : each ordered fold pair, fold ``i`` fit / fold ``j`` scored, averaged.
     - ``ff_res``, ``ss_pred`` : each ordered fold pair, same fit/score structure, on each fold's own
       (in-sample) place field residual and prediction respectively.
+    - ``ff_res_white`` : white-noise null for ``ff_res``. Each fold's residual source/target matrices
+      are replaced by Gaussian matrices of the same shape matching their per-neuron variance -- the
+      diagonal of the residual covariance, with all cross-neuron structure discarded -- then run
+      through the identical SVCA fit/score. It is the floor ``ff_res`` should collapse to if the
+      residual carried no shared variance.
 
     ``ff_res`` and ``ss_pred`` residualize *within* fold -- each fold's activity is decomposed
     against the place field estimated from that same fold -- so ``prediction + residual`` returns
@@ -1196,6 +1257,25 @@ def _svca_fold_metrics(
         dim=0,
     )
 
+    # White-noise null on the same residual folds: same shapes, so ffres_components carries over.
+    white_by_fold = {k: tuple(_white_like(residual, white_generator) for residual in residuals) for k, residuals in residual_by_fold.items()}
+    ff_res_white = torch.mean(
+        torch.stack(
+            [
+                _svca_score(
+                    white_by_fold[i][0],
+                    white_by_fold[i][1],
+                    white_by_fold[j][0],
+                    white_by_fold[j][1],
+                    centered,
+                    ffres_components,
+                )
+                for i, j in pairs
+            ]
+        ),
+        dim=0,
+    )
+
     min_pred_T = min(p[0].shape[1] for p in prediction_by_fold.values())
     sspred_components = min(max_components, n_source, n_target, min_pred_T)
     ss_pred = torch.mean(
@@ -1215,7 +1295,7 @@ def _svca_fold_metrics(
         dim=0,
     )
 
-    return dict(ff=ff, ss=ss, ff_res=ff_res, ss_pred=ss_pred)
+    return dict(ff=ff, ss=ss, ff_res=ff_res, ss_pred=ss_pred, ff_res_white=ff_res_white)
 
 
 @dataclass(frozen=True)
@@ -1239,6 +1319,10 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                     activity. Each half is residualized against its own (in-sample) place field.
     - ``ss_pred`` : SVCA fit on one half's own (in-sample) place field prediction, scored on the
                     other half's own place field prediction.
+    - ``ff_res_white`` : white-noise null for ``ff_res``. Each half's residual activity is replaced
+                    by a Gaussian matrix of the same shape matching its per-neuron variance (the
+                    diagonal of the residual covariance, dropping all cross-neuron structure) and
+                    put through the same fit/score.
 
     ``ff_res`` and ``ss_pred`` share one within-fold decomposition, so per fold
     ``prediction + residual`` reconstructs the observed activity exactly. See
@@ -1251,7 +1335,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
     ``ff_res`` run at their full ``min(n_source, n_target, T)`` rank.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "even"
     activity_parameters_name: str = "std"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
@@ -1338,6 +1422,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
             pf_source_test.append(get_placefield(source_data.T.numpy(), fb, smooth_width=smooth_test, **pf_kwargs))
             pf_target_test.append(get_placefield(target_data.T.numpy(), fb, smooth_width=smooth_test, **pf_kwargs))
 
+        white_generator = _white_generator(session)
         metrics = _svca_fold_metrics(
             sources,
             targets,
@@ -1350,6 +1435,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
             n_target,
             self.centered,
             self.max_components,
+            white_generator,
         )
         result = {key: value.cpu().numpy() for key, value in metrics.items()}
 
@@ -1375,6 +1461,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                 target_idx,
                 source_keep,
                 target_keep,
+                white_generator,
             )
         )
         return result
@@ -1401,8 +1488,9 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
         target_idx: np.ndarray,
         source_keep: np.ndarray,
         target_keep: np.ndarray,
+        white_generator: torch.Generator,
     ) -> dict:
-        """Per-environment ``ff``/``ss``/``ff_res``/``ss_pred``, keyed by experience-order slot.
+        """Per-environment ``ff``/``ss``/``ff_res``/``ss_pred``/``ff_res_white``, keyed by experience-order slot.
 
         Same fold combinatorics as the global spectra, restricted to one environment's frames at a
         time; a fold contributes only if it has at least 2 frames (and, for the place-field sides,
@@ -1415,7 +1503,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
         if mouse_order is not None:
             env_slot_ids[: len(mouse_order)] = mouse_order
 
-        keys = ["ff_env", "ss_env", "ff_res_env", "ss_pred_env"]
+        keys = ["ff_env", "ss_env", "ff_res_env", "ss_pred_env", "ff_res_white_env"]
         per_env: dict[str, dict[int, np.ndarray]] = {k: {} for k in keys}
 
         if mouse_order is None:
@@ -1494,6 +1582,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
                     n_target_e,
                     self.centered,
                     self.max_components,
+                    white_generator,
                 )
             except ValueError:
                 continue
