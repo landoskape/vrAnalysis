@@ -77,11 +77,14 @@ def test_regression_grids_use_only_key_figure_models_and_include_std():
     dimensionality_grid = RegressionDimensionalitySweepConfig._param_grid()
     assert regression_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
     assert residual_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
-    # RegressionConfig no longer sweeps the activity preset ("only using std!"), so its grid has
-    # no such axis. The dimensionality sweep still does.
+    # None of these grids sweep the activity preset any more ("only using std!"), so none has such
+    # an axis; each pins the preset to "std" through its dataclass default instead.
     assert "activity_parameters_name" not in regression_grid
+    assert "activity_parameters_name" not in residual_grid
+    assert "activity_parameters_name" not in dimensionality_grid
     assert dimensionality_grid["model_name"] == EXPECTED_KEY_FIGURE_MODELS
-    assert dimensionality_grid["activity_parameters_name"] == ["default", "preserved", "std"]
+    for cls in (RegressionConfig, RegressionPlacefieldResidualConfig, RegressionDimensionalitySweepConfig):
+        assert {cfg.activity_parameters_name for cfg in cls.generate_variations()} == {"std"}
 
 
 # The rrr_to_external_latents analysis is retired, and the fullregressor models its pairs were

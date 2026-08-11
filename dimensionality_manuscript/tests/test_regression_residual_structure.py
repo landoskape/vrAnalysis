@@ -94,7 +94,8 @@ def test_grid_sweeps_models_only():
     assert set(RegressionResidualStructureConfig._param_grid()) == {"model_name"}
     variations = RegressionResidualStructureConfig.generate_variations()
     assert [cfg.model_name for cfg in variations] == KEY_FIGURE_MODELS
-    assert {cfg.activity_parameters_name for cfg in variations} == {"default"}
+    # The stored matrices are large, so the activity preset is pinned rather than swept.
+    assert {cfg.activity_parameters_name for cfg in variations} == {"std"}
 
 
 def test_config_is_registered_under_its_display_name():

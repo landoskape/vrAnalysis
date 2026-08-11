@@ -38,6 +38,7 @@ DEFAULT_ANALYSES: tuple[str, ...] = (
     "regression_pf_residual",
     "regression_residual_structure",
     "vector_gain_rank",
+    "structured_additive_rank",
     "regression_dim_sweep",
     "cvpca",
     "subspace",

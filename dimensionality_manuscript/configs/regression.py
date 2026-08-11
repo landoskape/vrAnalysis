@@ -1195,6 +1195,7 @@ def _score_rank_projection(
     prediction: np.ndarray,
     target,
     ranks: np.ndarray,
+    offset: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Score a prediction projected onto the leading ``rank`` columns of ``basis``.
 
@@ -1216,6 +1217,10 @@ def _score_rank_projection(
         Held-out target aligned to ``prediction``.
     ranks : np.ndarray
         Increasing projection ranks, each at most ``basis.shape[1]``.
+    offset : np.ndarray or None
+        Rank-independent part of the prediction, of shape (targets, frames), added back before
+        rectifying and scoring. Used by the models whose rank only governs a *correction* to a
+        place-field prediction; None (the default) when the whole prediction is projected.
 
     Returns
     -------
@@ -1231,7 +1236,8 @@ def _score_rank_projection(
         rank = int(rank)
         running = running + basis[:, previous:rank] @ latents[previous:rank]
         previous = rank
-        metrics = model.evaluate(np.clip(running, 0, None), target)
+        total = running if offset is None else offset + running
+        metrics = model.evaluate(np.clip(total, 0, None), target)
         mse_arr[i] = float(metrics["mse"])
         r2_arr[i] = float(metrics["r2"])
     return mse_arr, r2_arr
@@ -1281,7 +1287,8 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
 
     Ranks come from :data:`RANK_VALUES` clipped to ``full_rank``, so sessions do not share an exact
     grid; downstream plotting groups observations by their rank rather than by sweep index. The
-    activity preprocessing preset is swept over ``VALID_ACTIVITY_PARAMETERS``.
+    activity preprocessing preset is pinned to ``"std"`` rather than swept, matching
+    :class:`RegressionConfig`.
 
     Parameters
     ----------
@@ -1457,3 +1464,141 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
             **_pack_sweep("rank", ranks, ranks.astype(float), mse_arr, r2_arr),
             "full_rank": float(max_rank),
         }
+
+
+#: The two structured-additive models, whose residual regression is the thing being swept.
+STRUCTURED_ADDITIVE_MODELS: list[ModelName] = [
+    "external_placefield_1d_structured_additive",
+    "internal_placefield_1d_structured_additive",
+]
+
+
+@dataclass(frozen=True)
+class StructuredAdditiveRankConfig(AnalysisConfigBase):
+    """Score a structured-additive model at every rank of its residual regression.
+
+    The structured-additive counterpart of :class:`VectorGainRankConfig`: one fit, then the
+    held-out prediction re-scored at rank 1…``max_rank`` so the curve shows how much of the
+    non-spatial activity the source→target residual map buys per latent. Only the *offset* is
+    swept -- the place fields are estimated once and enter every rank unchanged, so rank 0 would
+    be the plain place-field model and the curve measures what the second stage adds on top.
+
+    ``PlaceFieldStructuredAdditiveModel`` maps source residuals to target residuals with a
+    reduced-rank regression, so the rank-``r`` predicted residual is the rank-``r`` projection of
+    the full-rank one::
+
+        X @ beta_ols @ V[:, :r] @ V[:, :r].T == (X @ beta_ols @ V @ V.T) @ V[:, :r] @ V[:, :r].T
+
+    where ``V`` holds the right singular vectors of the *training* prediction. So the model is
+    asked for its full-rank residual prediction once on each split, ``V`` is recovered from the
+    training one by :func:`_prediction_basis`, and the sweep accumulates the projection across
+    ranks (:func:`_score_rank_projection`) instead of rebuilding coefficients per rank. That is
+    exact, not an approximation, and it avoids the (targets, targets) rank restraint that
+    ``ReducedRankRegression.predict`` rebuilds on every call.
+
+    Result keys, all indexed by ``rank - 1``::
+
+        mse, r2                          (max_rank,) held-out metrics
+        full_rank                        scalar, the numerical rank of the residual prediction
+
+    The curve runs to ``min(max_rank, full_rank)`` and is NaN past it, rather than repeating the
+    full-rank value, so a session never contributes a flat tail it did not measure. A session whose
+    ``full_rank`` exceeds ``max_rank`` is simply truncated -- the grid, not the data, is the limit
+    there, the same convention :func:`_rank_grid` uses.
+
+    Parameters
+    ----------
+    model_name : ModelName
+        Structured-additive model to sweep (must be in :data:`STRUCTURED_ADDITIVE_MODELS`).
+    spks_type : SpksTypes
+        Spike type to use for the population.
+    method : str
+        Hyperparameter selection method used to fix the place-field and ``alpha`` hyperparameters.
+        The cached ``rank`` is ignored -- it is what this config sweeps.
+    activity_parameters_name : str
+        Named activity preprocessing preset.
+    """
+
+    schema_version: str = "v1"
+
+    data_config_name: str = "default"
+    model_name: ModelName = "external_placefield_1d_structured_additive"
+    spks_type: SpksTypes = "sigrebase"
+    method: str = "preferred"
+    activity_parameters_name: str = "std"
+
+    # Separate this from other parameters
+    max_rank: ClassVar[int] = 200
+    display_name: ClassVar[str] = "structured_additive_rank"
+
+    @staticmethod
+    def _param_grid() -> dict:
+        return {"model_name": list(STRUCTURED_ADDITIVE_MODELS)}
+
+    def validate(self):
+        if self.model_name not in STRUCTURED_ADDITIVE_MODELS:
+            raise ValueError(f"Unknown model_name {self.model_name!r}. Available: {', '.join(STRUCTURED_ADDITIVE_MODELS)}")
+        if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
+            raise ValueError(
+                f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {', '.join(list(ACTIVITY_PARAMETERS_NAMES))}"
+            )
+
+    def summary(self) -> str:
+        parts = [
+            self.display_name,
+            f"{self.model_name}",
+            f"spks={self.spks_type}",
+            f"method={self.method}",
+        ]
+        if self.activity_parameters_name != "default":
+            parts.append(f"ap={self.activity_parameters_name}")
+        parts.append(self.schema_version)
+        return "_".join(parts)
+
+    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+        """Fit the model once, then score the held-out split at each residual-regression rank."""
+        model = get_model(self.model_name, registry, activity_parameters=self.activity_parameters_name)
+        # Every rank is rectified as a sum, which only reproduces the model's own prediction while
+        # the model itself rectifies. It does by default; one built without it would need its own
+        # scoring path rather than a silently different curve.
+        if not model.nonnegative:
+            raise ValueError("The rank sweep rectifies the summed prediction, which requires nonnegative=True")
+
+        hyperparameters = model.get_best_hyperparameters(
+            session,
+            spks_type=self.spks_type,
+            method=self.method,
+        )[0]
+        target_placefield, source_placefield, residual_model = model.train(
+            session,
+            spks_type=self.spks_type,
+            split="train",
+            hyperparameters=hyperparameters,
+        )
+        regression_rank = int(residual_model.max_rank)
+
+        # The basis is the training prediction's own right singular vectors, so it has to come from
+        # the training residuals -- the same matrix ReducedRankRegression built V from.
+        train_residuals = model.get_residuals(session, target_placefield, source_placefield, spks_type=self.spks_type, split="train")
+        basis = _prediction_basis(model.apply_residual_model(train_residuals, residual_model, regression_rank)[1]["residual_predicted"])
+
+        test_residuals = model.get_residuals(session, target_placefield, source_placefield, spks_type=self.spks_type, split="test")
+        extras = model.apply_residual_model(test_residuals, residual_model, regression_rank)[1]
+        target = model.get_session_data(session, self.spks_type, "test")[1]
+        if extras["predictions_were_filtered"]:
+            target = target[:, extras["idx_valid_predictions"]]
+
+        # _prediction_basis truncates at the numerical rank, which can fall below the regression's
+        # own ceiling; the trailing directions carry no signal, so the curve stops there.
+        ranks = np.arange(1, min(self.max_rank, basis.shape[1]) + 1)
+        mse_arr = np.full(self.max_rank, np.nan)
+        r2_arr = np.full(self.max_rank, np.nan)
+        mse_arr[: len(ranks)], r2_arr[: len(ranks)] = _score_rank_projection(
+            model,
+            basis,
+            extras["residual_predicted"],
+            target,
+            ranks,
+            offset=extras["placefield_prediction"],
+        )
+        return {"mse": mse_arr, "r2": r2_arr, "full_rank": float(basis.shape[1])}
