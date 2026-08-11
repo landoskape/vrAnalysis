@@ -332,7 +332,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
 
     schema_version: str = "v6"
     data_config_name: str = "even"
-    activity_parameters_name: str = "raw"
+    activity_parameters_name: str = "std"
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (None, None)
     num_bins: int = 100
     smooth_widths: tuple[Optional[float], Optional[float]] = (None, None)
@@ -348,7 +348,7 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
     @staticmethod
     def _param_grid() -> dict:
         return {
-            "activity_parameters_name": ["raw", "default", "std"],
+            # "activity_parameters_name": ["raw", "default", "std"],
             "smooth_widths": [(None, None), (5.0, 5.0), (5.0, None)],
             "reliability_fraction_active_thresholds": [(None, None), (0.3, 0.1)],
             "include_iti": [False, True],
