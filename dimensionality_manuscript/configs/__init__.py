@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from .behavior_speed_env import BehaviorSpeedEnvConfig
 from .cvpca import CVPCAConfig
 from .data_config import DataConfig, get_data_config, list_data_configs
+from .gain_regression import GainRegressionConfig
 from .pfpred_quality import PFPredQualityConfig
 from .placefield_structure import CrossValidatedPlacefieldsConfig, PlacefieldPredictionConfig, PlaceFieldStructureConfig
 from .population import PopulationConfig
@@ -43,6 +44,7 @@ ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
     CVPCAConfig,
     CrossValidatedPlacefieldsConfig,
     ExpMaxConfig,
+    GainRegressionConfig,
     LocPredConfig,
     LocPredCrossVal,
     PFPredQualityConfig,
@@ -90,6 +92,7 @@ __all__ = [
     "BehaviorSpeedEnvConfig",
     "CVPCAConfig",
     "DataConfig",
+    "GainRegressionConfig",
     "PFPredQualityConfig",
     "CrossValidatedPlacefieldsConfig",
     "PlacefieldPredictionConfig",

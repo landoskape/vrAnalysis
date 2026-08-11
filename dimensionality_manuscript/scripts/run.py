@@ -55,6 +55,7 @@ DEFAULT_ANALYSES: tuple[str, ...] = (
     "tilbury_fit",
     "behavior_speed_env",
     "stimspace_env_pca",
+    "gain_regression",
 )
 
 
