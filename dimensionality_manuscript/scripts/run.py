@@ -36,6 +36,7 @@ DEFAULT_ANALYSES: tuple[str, ...] = (
     "population",
     "regression",
     "regression_pf_residual",
+    "regression_residual_structure",
     "vector_gain_rank",
     "regression_dim_sweep",
     "cvpca",

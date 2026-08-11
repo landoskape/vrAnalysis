@@ -8,7 +8,7 @@ import pytest
 from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASSES
 from dimensionality_manuscript.configs.regression import (
     RESIDUAL_STRUCTURE_KEYS,
-    RESIDUAL_STRUCTURE_MODELS,
+    KEY_FIGURE_MODELS,
     RegressionResidualStructureConfig,
 )
 from dimensionality_manuscript.regression_models.models import least_squares_gain, make_gain_unit_index
@@ -93,7 +93,7 @@ def test_every_returned_key_is_excluded_from_aggregation():
 def test_grid_sweeps_models_only():
     assert set(RegressionResidualStructureConfig._param_grid()) == {"model_name"}
     variations = RegressionResidualStructureConfig.generate_variations()
-    assert [cfg.model_name for cfg in variations] == RESIDUAL_STRUCTURE_MODELS
+    assert [cfg.model_name for cfg in variations] == KEY_FIGURE_MODELS
     assert {cfg.activity_parameters_name for cfg in variations} == {"default"}
 
 

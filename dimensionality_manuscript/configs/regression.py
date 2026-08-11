@@ -834,17 +834,6 @@ class RegressionPlacefieldResidualConfig(AnalysisConfigBase):
         }
 
 
-# Models whose held-out residual structure is worth storing in full. The plain place-field model
-# supplies the raw place-field prediction, so the gain / structured-gain / peer-prediction variants
-# can be read against it without a second denominator.
-RESIDUAL_STRUCTURE_MODELS: list[ModelName] = [
-    "external_placefield_1d",
-    "internal_placefield_1d",
-    "internal_placefield_1d_gain",
-    "internal_placefield_1d_structured_gain",
-    "rrr",
-]
-
 # Every key this config returns. All are excluded from ResultsAggregator stacking: they are
 # per-session matrices meant to be inspected one session at a time, not padded into a grid.
 RESIDUAL_STRUCTURE_KEYS: tuple[str, ...] = (
@@ -887,7 +876,7 @@ class RegressionResidualStructureConfig(AnalysisConfigBase):
     Parameters
     ----------
     model_name : ModelName
-        Name of the regression model (must be in ``RESIDUAL_STRUCTURE_MODELS``).
+        Name of the regression model (must be in ``KEY_FIGURE_MODELS``).
     spks_type : SpksTypes
         Spike type to use for the population.
     method : str
@@ -918,7 +907,7 @@ class RegressionResidualStructureConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        return {"model_name": list(RESIDUAL_STRUCTURE_MODELS)}
+        return {"model_name": list(KEY_FIGURE_MODELS)}
 
     def validate(self):
         if self.model_name not in MODEL_NAMES:
@@ -1324,8 +1313,8 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
-    method: str = "best"
-    activity_parameters_name: str = "default"
+    method: str = "preferred"
+    activity_parameters_name: str = "std"
     high_dim_value: int = 200
     high_dim_width: float = 0.5
 
@@ -1335,7 +1324,7 @@ class RegressionDimensionalitySweepConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {
             "model_name": list(KEY_FIGURE_MODELS),
-            "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS),
+            # "activity_parameters_name": list(VALID_ACTIVITY_PARAMETERS), # Only using std for now, no need to grid over all of them
         }
 
     def validate(self):
