@@ -14,7 +14,8 @@ every mouse, and the aggregator can stack them across mice. A histogram over
 straight from disk without re-measuring any session.
 
 The prediction-quality keys come in two flavours: the top-level ones (``r2``,
-``rms``, ``reliability``, ``r2_kde_mean``, ``rms_kde_mean``, ...) describe the
+``rms``, ``norm_rms``, ``var_total``, ``var_pred``, ``var_residual``,
+``frac_var_pred``, ``reliability``, ``r2_kde_mean``, ``rms_kde_mean``, ...) describe the
 session's *best* environment, while the ``*_slot`` keys repeat the measurement
 for every environment on that same experience-order slot axis, so prediction
 quality can be followed per environment as a mouse gets more familiar with it.
@@ -72,7 +73,9 @@ class PFPredQualityConfig(AnalysisConfigBase):
     # v5: added the per-experience-slot R² keys (r2_slot, reliability_slot, r2_kde_slot,
     # r2_kde_pooled, best_env_slot), so R² vs reliability can be tracked per environment.
     # v6: added per-ROI RMS error and its binned, KDE, and per-slot counterparts.
-    schema_version: str = "v6"
+    # v7: added RMS normalized by each ROI's activity standard deviation.
+    # v8: added total, prediction, and residual variance, plus prediction/total variance.
+    schema_version: str = "v8"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     reliability_threshold: float = 0.7
@@ -130,10 +133,13 @@ class PFPredQualityConfig(AnalysisConfigBase):
             r2[r2 < -1] = np.nan
             cc = vectorCorrelation(pfpred_valid, spks_valid, axis=0)
             rms = _rms_error(pfpred_valid, spks_valid)
+            norm_rms = _normalized_rms_error(pfpred_valid, spks_valid)
+            variance = _variance_components(pfpred_valid, spks_valid)
 
             relia = reliability.values[best_env]  # best env, shape (n_rois,)
 
-            result = {"r2": r2, "cc": cc, "rms": rms, "reliability": relia}
+            result = {"r2": r2, "cc": cc, "rms": rms, "norm_rms": norm_rms, "reliability": relia}
+            result.update(variance)
             result.update(_per_roi_stats(spks_valid, pfpred_valid, r2, relia, self.accuracy_pct))
 
             bin_edges = self.bin_edges
@@ -283,7 +289,9 @@ def _r2_by_slot(
     Returns
     -------
     dict
-        ``r2_slot``, ``rms_slot``, and ``reliability_slot`` ``(MAX_ENV_SLOTS, rois)``;
+        ``r2_slot``, ``rms_slot``, ``norm_rms_slot``, ``var_total_slot``,
+        ``var_pred_slot``, ``var_residual_slot``, ``frac_var_pred_slot``, and ``reliability_slot``
+        ``(MAX_ENV_SLOTS, rois)``;
         ``r2_kde_slot`` and ``rms_kde_slot`` ``(MAX_ENV_SLOTS, n_kde_grid)``; the corresponding
         ``*_kde_pooled`` arrays ``(n_kde_grid,)``; and ``best_env_slot``, the slot of ``best_env``
         (NaN if it has none).
@@ -293,6 +301,11 @@ def _r2_by_slot(
 
     r2_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
     rms_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    norm_rms_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    var_total_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    var_pred_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    var_residual_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    frac_var_pred_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
     reliability_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
     r2_kde_slot = np.full((MAX_ENV_SLOTS, kde_grid.size), np.nan)
     rms_kde_slot = np.full((MAX_ENV_SLOTS, kde_grid.size), np.nan)
@@ -310,9 +323,16 @@ def _r2_by_slot(
         r2 = vectorRSquared(placefield_prediction[idx_keep], spks[idx_keep], axis=0)
         r2[r2 < -1] = np.nan
         rms = _rms_error(placefield_prediction[idx_keep], spks[idx_keep])
+        norm_rms = _normalized_rms_error(placefield_prediction[idx_keep], spks[idx_keep])
+        variance = _variance_components(placefield_prediction[idx_keep], spks[idx_keep])
         relia = reliability.values[idx_env]
         r2_slot[slot] = r2
         rms_slot[slot] = rms
+        norm_rms_slot[slot] = norm_rms
+        var_total_slot[slot] = variance["var_total"]
+        var_pred_slot[slot] = variance["var_pred"]
+        var_residual_slot[slot] = variance["var_residual"]
+        frac_var_pred_slot[slot] = variance["frac_var_pred"]
         reliability_slot[slot] = relia
         r2_kde_slot[slot] = _kde_r2(r2, relia, kde_grid)["r2_kde_mean"]
         rms_kde_slot[slot] = _kde_rms(rms, relia, kde_grid)["rms_kde_mean"]
@@ -327,6 +347,11 @@ def _r2_by_slot(
     return {
         "r2_slot": r2_slot,
         "rms_slot": rms_slot,
+        "norm_rms_slot": norm_rms_slot,
+        "var_total_slot": var_total_slot,
+        "var_pred_slot": var_pred_slot,
+        "var_residual_slot": var_residual_slot,
+        "frac_var_pred_slot": frac_var_pred_slot,
         "reliability_slot": reliability_slot,
         "r2_kde_slot": r2_kde_slot,
         "rms_kde_slot": rms_kde_slot,
@@ -379,6 +404,40 @@ def _per_roi_stats(
 def _rms_error(prediction: np.ndarray, activity: np.ndarray) -> np.ndarray:
     """Root-mean-square prediction error for each ROI (axis 0)."""
     return np.sqrt(np.mean((prediction - activity) ** 2, axis=0))
+
+
+def _normalized_rms_error(prediction: np.ndarray, activity: np.ndarray) -> np.ndarray:
+    """Per-ROI RMS error divided by activity standard deviation (axis 0)."""
+    rms = _rms_error(prediction, activity)
+    activity_std = np.std(activity, axis=0)
+    valid_scale = np.isfinite(activity_std) & (activity_std > np.finfo(float).eps)
+    return np.divide(rms, activity_std, out=np.full_like(rms, np.nan), where=valid_scale)
+
+
+def _variance_components(prediction: np.ndarray, activity: np.ndarray) -> dict[str, np.ndarray]:
+    """Per-ROI activity, prediction, and residual variance over valid frames.
+
+    ``frac_var_pred`` is the prediction variance divided by activity variance. It is
+    undefined for ROIs with zero or non-finite activity variance. The three variances
+    need not be exactly additive because prediction and residual can have non-zero
+    covariance.
+    """
+    var_total = np.var(activity, axis=0)
+    var_pred = np.var(prediction, axis=0)
+    var_residual = np.var(activity - prediction, axis=0)
+    valid_scale = np.isfinite(var_total) & (var_total > np.finfo(float).eps)
+    frac_var_pred = np.divide(
+        var_pred,
+        var_total,
+        out=np.full_like(var_pred, np.nan),
+        where=valid_scale,
+    )
+    return {
+        "var_total": var_total,
+        "var_pred": var_pred,
+        "var_residual": var_residual,
+        "frac_var_pred": frac_var_pred,
+    }
 
 
 def _binned_r2(r2: np.ndarray, relia: np.ndarray, bin_edges: np.ndarray) -> dict:
