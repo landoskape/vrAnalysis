@@ -12,6 +12,7 @@ from dimensionality_manuscript import average_by_mouse
 class _FakeAggregator:
     def __init__(self, arrays, mouse_names):
         self._arrays = arrays
+        self.arrays = arrays
         self.param_axes = {}
         self.mouse_names = np.asarray(mouse_names)
         self.session_ids = [f"session-{i}" for i in range(len(mouse_names))]
@@ -224,3 +225,55 @@ def test_full_svca_source_still_supports_legacy_subspace_key():
     actual = viewer._ff_spectrum({**_state(), "full_source_key": "SVCA_RES"}, cfg)
 
     np.testing.assert_allclose(actual, spectrum)
+
+
+def test_white_svd_source_uses_ffres_white_and_ignores_source_mode():
+    spectrum = np.array(
+        [
+            [8.0, 4.0, 2.0],
+            [2.0, 1.0, 0.5],
+            [10.0, 5.0, 2.0],
+        ]
+    )
+    viewer = _viewer({"ffres_white": spectrum}, ["mouse-a", "mouse-a", "mouse-b"])
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    actual = viewer._white_spectrum(_state(white_source_key="SVD"), cfg)
+
+    np.testing.assert_allclose(actual, [[5.0, 2.5, 1.25], [10.0, 5.0, 2.0]])
+
+
+def test_white_svca_source_uses_ff_res_white():
+    spectrum = np.array(
+        [
+            [8.0, 4.0, 2.0],
+            [2.0, 1.0, 0.5],
+            [10.0, 5.0, 2.0],
+        ]
+    )
+    viewer = _viewer(
+        {},
+        ["stim-mouse"],
+        subspace_arrays={"ff_res_white": spectrum},
+        subspace_mouse_names=["mouse-a", "mouse-a", "mouse-b"],
+    )
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    actual = viewer._white_spectrum(_state(white_source_key="SVCA"), cfg)
+    raw, smoothed, mouse_names, _ = viewer._white_spectrum_sessions(
+        _state(white_source_key="SVCA"),
+        cfg,
+    )
+
+    np.testing.assert_allclose(actual, [[5.0, 2.5, 1.25], [10.0, 5.0, 2.0]])
+    np.testing.assert_allclose(raw, spectrum)
+    np.testing.assert_allclose(smoothed, spectrum)
+    np.testing.assert_array_equal(mouse_names, ["mouse-a", "mouse-a", "mouse-b"])
+
+
+def test_white_none_hides_spectrum_and_sessions():
+    viewer = _viewer({}, ["mouse-a"])
+    cfg = SpectrumSmoothingConfig(smooth_method="none", smooth_width=0.0)
+
+    assert viewer._white_spectrum(_state(white_source_key="none"), cfg) is None
+    assert viewer._white_spectrum_sessions(_state(white_source_key="none"), cfg) is None

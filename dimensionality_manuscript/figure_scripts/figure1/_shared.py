@@ -206,7 +206,7 @@ def draw_colorscale_inset(
 
 def draw_vertical_colorscale(
     ax,
-    cmap_name: str,
+    cmap_name: str | mpl.colors.Colormap,
     *,
     low_label: str,
     high_label: str,
@@ -226,8 +226,8 @@ def draw_vertical_colorscale(
     ----------
     ax : matplotlib.axes.Axes
         Axes the strip fills entirely.
-    cmap_name : str
-        Colormap to sample (255 colors, low at the bottom).
+    cmap_name : str or matplotlib.colors.Colormap
+        Colormap name or object to sample (255 colors, low at the bottom).
     low_label, high_label : str
         Text at the bottom and top of the strip.
     fontsize : float
@@ -239,7 +239,8 @@ def draw_vertical_colorscale(
     low_color, high_color : color-like
         Text colors of the two end labels, chosen against the colormap's own ends.
     """
-    colors = mpl.colormaps[cmap_name](np.linspace(0, 1, 255))[:, None, :]  # (255, 1, 4)
+    cmap = mpl.colormaps[cmap_name] if isinstance(cmap_name, str) else cmap_name
+    colors = cmap(np.linspace(0, 1, 255))[:, None, :]  # (255, 1, 4)
     ax.imshow(colors, aspect="auto", origin="lower")
     ax.set_xticks([])
     ax.set_yticks([])

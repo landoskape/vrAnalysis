@@ -1,4 +1,4 @@
-"""Prediction rasters: many models stacked on one session, and the two-model figure panel."""
+"""Prediction rasters: many models stacked on one session, and the figure comparison panel."""
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -19,7 +19,7 @@ from ._predictions import (
     target_environment_sort,
     transform_raster_rows,
 )
-from .zoo import ModelZooCondensed, ModelZooSchematicConfig
+from .zoo import ModelZooUltraCondensed, ModelZooUltraCondensedConfig
 
 SORT_METHODS = ["environment", "rastermap", "activity"]
 
@@ -509,17 +509,25 @@ class ModelRasterFocus(FigureViewer):
 # Data, internal place-field, and RRR prediction rasters
 # ======================================================================================
 
-PREDICTION_FIGURE_MODELS: tuple[ModelName, ModelName] = (
+PREDICTION_FIGURE_MODELS: tuple[ModelName, ModelName, ModelName] = (
     "internal_placefield_1d_gain",
+    "internal_placefield_1d_structured_additive",
     "rrr",
 )
 
+_PREDICTION_FIGURE_TITLES = {
+    "internal_placefield_1d_gain": "Global Gain",
+    "internal_placefield_1d_structured_additive": "Residual",
+    "rrr": "Peer Prediction",
+}
+
 
 class ModelPredictionsFigureViewer(FigureViewer):
-    """Two-row comparison of held-out data with place-field and RRR predictions.
+    """Two-row comparison of held-out data with gain, residual, and peer predictions.
 
-    The top row contains data and the two fixed model predictions. The bottom row contains the
-    three-model schematic followed by the corresponding residuals (data - prediction).
+    The top row contains data, Global Gain, optional Shared Residual, and Peer Prediction. The
+    bottom row keeps the ultra-condensed four-model schematic followed by the corresponding
+    residuals (data - prediction).
     ``model_name`` is therefore consumed as a fixed comparison axis; the other axes of a
     ``RegressionConfig`` aggregator remain available as Syd selections.
 
@@ -550,8 +558,11 @@ class ModelPredictionsFigureViewer(FigureViewer):
         Figure size in inches.
     fontsize : float
         Font size for the panel titles, axis labels, and scale-bar label.
-    zoo_config : ModelZooSchematicConfig or None
-        Initial style and layout for the embedded model-zoo schematic. All condensed-zoo
+    include_structured_additive : bool
+        Show the Shared Residual prediction and residual between Global Gain and Peer Prediction.
+        The ultra-condensed schematic remains unchanged when this raster column is hidden.
+    zoo_config : ModelZooUltraCondensedConfig or None
+        Initial style and layout for the embedded model-zoo schematic. All ultra-condensed-zoo
         geometry and typography fields are also exposed as controls on this viewer.
     colorscale_inset_rect : tuple[float, float, float, float]
         Shared ``(x, y, width, height)`` for the prediction and residual colormap insets,
@@ -580,7 +591,8 @@ class ModelPredictionsFigureViewer(FigureViewer):
         scale_bar_num_rois: int = 50,
         figsize: tuple[float, float] = (15.0, 7.0),
         fontsize: float = 7,
-        zoo_config: ModelZooSchematicConfig | None = None,
+        include_structured_additive: bool = False,
+        zoo_config: ModelZooUltraCondensedConfig | None = None,
         colorscale_inset_rect: tuple[float, float, float, float] = _PREDICTION_COLOR_INSET_RECT,
         **selection_defaults,
     ):
@@ -589,10 +601,13 @@ class ModelPredictionsFigureViewer(FigureViewer):
         if sort_method not in SORT_METHODS:
             raise ValueError(f"sort_method must be one of {SORT_METHODS}, got {sort_method!r}")
 
-        # The two compared models are fixed by the panel design, so they are checked here rather
+        self.include_structured_additive = include_structured_additive
+        self.model_names = PREDICTION_FIGURE_MODELS if include_structured_additive else (PREDICTION_FIGURE_MODELS[0], PREDICTION_FIGURE_MODELS[-1])
+
+        # The compared models are fixed by the panel design, so they are checked here rather
         # than offered as a widget (syd validates the selectable axes against their own options).
         model_options = results.param_axes.get("model_name", [])
-        missing_models = [name for name in PREDICTION_FIGURE_MODELS if name not in model_options]
+        missing_models = [name for name in self.model_names if name not in model_options]
         if model_options and missing_models:
             raise ValueError("Regression results are missing required model_name values: " + ", ".join(missing_models))
 
@@ -622,7 +637,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
 
         selected_session = results.sessions[self._session_rows[initial_mouse][initial_session]]
         target, _ = get_model_predictions(
-            PREDICTION_FIGURE_MODELS[0],
+            self.model_names[0],
             selected_session,
             self.registry,
             self.state["spks_type"],
@@ -656,7 +671,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
         self.add_float("colorscale_inset_y", value=colorscale_inset_rect[1], min=0.0, max=1.0, step=0.001)
         self.add_float("colorscale_inset_width", value=colorscale_inset_rect[2], min=0.001, max=1.0, step=0.001)
         self.add_float("colorscale_inset_height", value=colorscale_inset_rect[3], min=0.001, max=1.0, step=0.001)
-        self.zoo_config = ModelZooCondensed.add_controls(self, zoo_config)
+        self.zoo_config = ModelZooUltraCondensed.add_controls(self, zoo_config)
 
         self.on_change("mouse", self._update_sessions)
         for name in ("session", *self.selection_names):
@@ -673,7 +688,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
 
     def _update_frame_bounds(self, state) -> None:
         target, _ = get_model_predictions(
-            PREDICTION_FIGURE_MODELS[0],
+            self.model_names[0],
             self._session(state),
             self.registry,
             state["spks_type"],
@@ -696,7 +711,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
     def _get_data(self, state) -> tuple[np.ndarray, dict[ModelName, np.ndarray]]:
         target = None
         predictions = {}
-        for model_name in PREDICTION_FIGURE_MODELS:
+        for model_name in self.model_names:
             model_target, prediction = get_model_predictions(
                 model_name,
                 self._session(state),
@@ -737,21 +752,27 @@ class ModelPredictionsFigureViewer(FigureViewer):
         data_display = self._display("data", target, state)
         prediction_display = {name: self._display(name, prediction, state) for name, prediction in predictions.items()}
 
-        fig, ax = self.new_subplots(2, 3, figsize=(state["figsize_width"], state["figsize_height"]), layout="constrained")
+        num_columns = 1 + len(self.model_names)
+        fig, ax = self.new_subplots(
+            2,
+            num_columns,
+            figsize=(state["figsize_width"], state["figsize_height"]),
+            layout="constrained",
+        )
         raster_kwargs = dict(aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
         residual_kwargs = dict(aspect="auto", cmap="bwr", vmin=-vmax, vmax=vmax)
 
-        top_data = [data_display, *(prediction_display[name] for name in PREDICTION_FIGURE_MODELS)]
-        top_titles = ["Target Data", "PF+Gain", "Peer Prediction"]
+        top_data = [data_display, *(prediction_display[name] for name in self.model_names)]
+        top_titles = ["Target Data", *(_PREDICTION_FIGURE_TITLES[name] for name in self.model_names)]
         for axis, raster, title in zip(ax[0], top_data, top_titles):
             axis.imshow(raster[:, xslice][idx_sort], **raster_kwargs)
             _hide_raster_frame(axis, title, fontsize)
         ax[0, 1].set_ylabel("Prediction", fontsize=fontsize)
 
-        zoo_config = ModelZooCondensed.config_from_state(self.zoo_config, state)
-        ModelZooCondensed.draw(ax[1, 0], zoo_config)
+        zoo_config = ModelZooUltraCondensed.config_from_state(self.zoo_config, state)
+        ModelZooUltraCondensed.draw(ax[1, 0], zoo_config)
         ax[1, 1].set_ylabel("Residual", fontsize=fontsize)
-        for column, model_name in enumerate(PREDICTION_FIGURE_MODELS, start=1):
+        for column, model_name in enumerate(self.model_names, start=1):
             residual = (data_display[:, xslice] - prediction_display[model_name][:, xslice])[idx_sort]
             ax[1, column].imshow(residual, **residual_kwargs)
             _hide_raster_frame(ax[1, column], None, fontsize)

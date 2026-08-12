@@ -1,8 +1,10 @@
-"""Odd-trial place fields across a mouse's sessions, each sorted independently on even trials."""
+"""Cross-validated population place-field maps."""
 
+import matplotlib as mpl
 import numpy as np
 
 from dimensionality_manuscript.configs.behavior_speed_env import REFERENCE_ENV_LENGTH_CM
+from dimensionality_manuscript.configs.placefield_structure import CrossValidatedPlacefieldsConfig
 from dimensionality_manuscript.env_order import _session_sort_key
 from dimensionality_manuscript.figure_scripts.panels import (
     FigureViewer,
@@ -12,6 +14,265 @@ from dimensionality_manuscript.figure_scripts.panels import (
 from dimensionality_manuscript.pipeline import ResultsAggregator
 
 from ._shared import draw_vertical_colorscale, hide_spines
+
+
+# RMS error is nonnegative.  Sampling only bwr's [0.5, 1] interval preserves its exact white-to-red
+# appearance while assigning the full color range to [0, vmax_error].
+_BWR_POSITIVE_CMAP = mpl.colors.ListedColormap(
+    mpl.colormaps["bwr"](np.linspace(0.5, 1.0, 256)),
+    name="bwr_positive",
+)
+_RMS_COLORMAPS = {"bwr_positive": _BWR_POSITIVE_CMAP, "gray_r": mpl.colormaps["gray_r"]}
+
+
+class CrossValidatedPlacefieldFocus(FigureViewer):
+    """One session's held-out place fields and cross-validated RMS prediction error.
+
+    Neurons are filtered using the all-trial reliability and fraction-active metrics stored by
+    :class:`CrossValidatedPlacefieldsConfig`.  The even-trial map supplies both the preferred-
+    position ordering and the prediction; odd trials are held out for display and error
+    measurement.  Thus the two panels are the odd-trial mean and
+    ``sqrt(mean_trials((odd_trial - even_mean) ** 2))`` in a common even-trial neuron order.
+
+    The supplied ``pfpred_quality`` aggregator is used only for its mouse/session metadata and
+    shared :class:`ResultsStore`.  Cross-validated maps are loaded one selected session at a time;
+    they are never materialized through the aggregator.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        A ``pfpred_quality`` aggregator used to populate the mouse and session selectors.  Its
+        store must also contain the cross-validated place-field results.
+    mouse : str or None
+        Initial mouse.  None selects the first mouse with a stored cross-validated result.
+    example_session : str or None
+        Initial printable session label (``mouse/date/id``).  None selects the mouse's first
+        available session.
+    env : int
+        Initial index into the session's stored environments, matching
+        :class:`PlaceFieldPredictionFocus`.
+    vmax : float
+        Upper limit, in units of each neuron's temporal standard deviation, for the held-out map.
+    vmax_error : float
+        Upper limit in the same units for held-out RMS prediction error.
+    reliability_threshold, fraction_active_threshold : float
+        Keep neurons exceeding both all-trial quality thresholds in this environment.
+    rms_colormap : {"bwr_positive", "gray_r"}
+        Colormap for RMS error. ``bwr_positive`` is the white-to-red half of ``bwr``.
+    fontsize : float
+        Font size of labels and ticks.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        *,
+        mouse: str | None = None,
+        example_session: str | None = None,
+        env: int = 0,
+        vmax: float = 5.0,
+        vmax_error: float = 5.0,
+        reliability_threshold: float = 0.7,
+        fraction_active_threshold: float = 0.2,
+        rms_colormap: str = "bwr_positive",
+        fontsize: float = 9.0,
+        figsize: tuple[float, float] = (6.0, 4.0),
+    ):
+        self.results = results
+        self.figsize = figsize
+        self._config = CrossValidatedPlacefieldsConfig()
+        stored_session_ids = {
+            row["session_id"]
+            for row in results.store.summary_table(
+                analysis_type=self._config.display_name,
+                session_ids=list(results.session_ids),
+                schema_version=self._config.schema_version,
+            )
+            if row["analysis_key"] == self._config.key()
+        }
+        mouse_names = np.asarray(results.mouse_names)
+        self.mice = sorted({str(mouse_name) for row, mouse_name in enumerate(mouse_names) if results.sessions[row].session_uid in stored_session_ids})
+        if not self.mice:
+            raise ValueError("No cross-validated place-field results are stored for these sessions.")
+        self._sessions_by_mouse = {
+            mouse_name: {
+                results.sessions[row].session_print(): results.sessions[row]
+                for row in sorted(
+                    np.flatnonzero(mouse_names == mouse_name),
+                    key=lambda row: _session_sort_key(results.sessions[row]),
+                )
+                if results.sessions[row].session_uid in stored_session_ids
+            }
+            for mouse_name in self.mice
+        }
+        initial_mouse = mouse if mouse in self.mice else self.mice[0]
+        session_options = list(self._sessions_by_mouse[initial_mouse])
+        initial_session = example_session if example_session in session_options else session_options[0]
+        self._result_cache: dict[str, dict] = {}
+
+        self.add_selection("mouse", value=initial_mouse, options=self.mice)
+        self.add_selection("example_session", value=initial_session, options=session_options)
+        initial_result = self._load_session_result(initial_mouse, initial_session)
+        self.environments = self._environments(initial_result)
+        initial_env = min(max(int(env), 0), len(self.environments) - 1)
+        self.add_integer("env", value=initial_env, min=0, max=len(self.environments) - 1)
+        self.add_float("vmax", value=vmax, min=0.01, max=20.0)
+        self.add_float("vmax_error", value=vmax_error, min=0.01, max=20.0)
+        self.add_float("reliability_threshold", value=reliability_threshold, min=-1.0, max=1.0)
+        self.add_float("fraction_active_threshold", value=fraction_active_threshold, min=0.0, max=1.0)
+        if rms_colormap not in _RMS_COLORMAPS:
+            raise ValueError(f"Unknown rms_colormap {rms_colormap!r}; choose one of {list(_RMS_COLORMAPS)}.")
+        self.add_selection("rms_colormap", value=rms_colormap, options=list(_RMS_COLORMAPS))
+        self.add_float("fontsize", value=fontsize, min=1.0, max=30.0)
+
+        self.on_change("mouse", self.update_example_session)
+        self.on_change("example_session", self.update_example_environment)
+        self.on_change(["env", "reliability_threshold", "fraction_active_threshold"], self.refresh_data)
+        self.update_example_session(self.state)
+
+    @staticmethod
+    def _validate_result(result: dict) -> None:
+        required = {
+            "even_placefield",
+            "odd_placefield",
+            "odd_rms_error",
+            "reliability",
+            "fraction_active",
+            "env_slot_ids",
+            "spks_std",
+        }
+        missing = required - result.keys()
+        if missing:
+            raise KeyError("Cross-validated place-field result is missing: " + ", ".join(sorted(missing)))
+
+    @staticmethod
+    def _environments(result: dict) -> list[int]:
+        env_slot_ids = np.asarray(result["env_slot_ids"])
+        environments = [int(value) for value in env_slot_ids[np.isfinite(env_slot_ids)]]
+        if not environments:
+            raise ValueError("The selected session has no stored environments.")
+        return environments
+
+    def _load_session_result(self, mouse: str, example_session: str) -> dict:
+        session = self._sessions_by_mouse[mouse][example_session]
+        if session.session_uid not in self._result_cache:
+            result = self.results.store.get(session.session_uid, self._config)
+            if result is None:
+                raise KeyError(f"No {self._config.display_name} result is stored for " f"{session.session_print()} ({session.session_uid}).")
+            self._validate_result(result)
+            self._result_cache[session.session_uid] = result
+        self.session = session
+        self.result = self._result_cache[session.session_uid]
+        return self.result
+
+    def update_example_session(self, state) -> None:
+        """Offer the selected mouse's sessions in chronological order."""
+        options = list(self._sessions_by_mouse[state["mouse"]])
+        current = state["example_session"] if state["example_session"] in options else options[0]
+        self.update_selection("example_session", value=current, options=options)
+        self.update_example_environment({**state, "example_session": current})
+
+    def update_example_environment(self, state) -> None:
+        """Load one session directly and offer its stored environment IDs."""
+        result = self._load_session_result(state["mouse"], state["example_session"])
+        self.environments = self._environments(result)
+        current = min(int(state["env"]), len(self.environments) - 1)
+        self.update_integer("env", value=current, min=0, max=len(self.environments) - 1)
+        self.refresh_data({**state, "env": current})
+
+    def _environment_slot(self, env: int) -> int:
+        matches = np.flatnonzero(np.asarray(self.result["env_slot_ids"]) == env)
+        if matches.size != 1:
+            raise ValueError(f"Expected one slot for environment {env}, found {matches.size}.")
+        return int(matches[0])
+
+    def refresh_data(self, state) -> None:
+        """Filter neurons, normalize maps, and order held-out data using the even fold."""
+        slot = self._environment_slot(self.environments[state["env"]])
+        even = np.asarray(self.result["even_placefield"][slot], dtype=float)
+        odd = np.asarray(self.result["odd_placefield"][slot], dtype=float)
+        rms_error = np.asarray(self.result["odd_rms_error"][slot], dtype=float)
+        reliability = np.asarray(self.result["reliability"][slot], dtype=float)
+        fraction_active = np.asarray(self.result["fraction_active"][slot], dtype=float)
+        scale = np.asarray(self.result["spks_std"], dtype=float)
+
+        idx_keep = (
+            np.isfinite(reliability)
+            & np.isfinite(fraction_active)
+            & np.isfinite(scale)
+            & (scale > 0)
+            & (reliability > state["reliability_threshold"])
+            & (fraction_active > state["fraction_active_threshold"])
+            & np.any(np.isfinite(even), axis=1)
+            & np.any(np.isfinite(odd), axis=1)
+            & np.any(np.isfinite(rms_error), axis=1)
+        )
+        even = even[idx_keep] / scale[idx_keep, None]
+        odd = odd[idx_keep] / scale[idx_keep, None]
+        rms_error = rms_error[idx_keep] / scale[idx_keep, None]
+        order = np.argsort(np.nanargmax(even, axis=1), kind="stable") if even.shape[0] else np.empty(0, dtype=int)
+
+        self.placefield = odd[order]
+        self.rms_error = rms_error[order]
+        self.roi_indices = np.flatnonzero(idx_keep)[order]
+
+    def plot(self, state):
+        """Draw exactly two axes: held-out place fields and held-out RMS errors."""
+        fig, ax = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", squeeze=False)
+        ax = ax[0]
+        extent = (0.0, float(self.session.env_length[0]), self.placefield.shape[0], 0)
+        rms_cmap = _RMS_COLORMAPS[state["rms_colormap"]]
+
+        if self.placefield.shape[0]:
+            ax[0].imshow(
+                self.placefield,
+                aspect="auto",
+                interpolation="none",
+                cmap="gray_r",
+                vmin=0,
+                vmax=state["vmax"],
+                extent=extent,
+            )
+            ax[1].imshow(
+                self.rms_error,
+                aspect="auto",
+                interpolation="none",
+                cmap=rms_cmap,
+                vmin=0,
+                vmax=state["vmax_error"],
+                extent=extent,
+            )
+        else:
+            for axis in ax:
+                axis.text(0.5, 0.5, "No neurons pass\nthresholds", transform=axis.transAxes, ha="center", va="center")
+
+        ax[0].set_title("Held-out place fields", fontsize=state["fontsize"])
+        ax[1].set_title("Held-out RMS error", fontsize=state["fontsize"])
+        ax[0].set_ylabel("Neurons (even-trial PF order)", fontsize=state["fontsize"])
+        for axis in ax:
+            axis.set_xlabel("VR position (cm)", fontsize=state["fontsize"])
+            axis.tick_params(axis="both", labelsize=state["fontsize"])
+            hide_spines(axis)
+
+        draw_vertical_colorscale(
+            ax[0].inset_axes([0.08, 0.15, 0.06, 0.7]),
+            "gray_r",
+            low_label="0",
+            high_label=f"{state['vmax']:g}",
+            fontsize=state["fontsize"],
+            ylabel=r"Activity ($\sigma$)",
+        )
+        draw_vertical_colorscale(
+            ax[1].inset_axes([0.08, 0.15, 0.06, 0.7]),
+            rms_cmap,
+            low_label="0",
+            high_label=f"{state['vmax_error']:g}",
+            fontsize=state["fontsize"],
+            ylabel=r"RMS error ($\sigma$)",
+        )
+        return fig
 
 
 class CrossValidatedPlacefields(FigureViewer):
@@ -98,7 +359,9 @@ class CrossValidatedPlacefields(FigureViewer):
 
         # --- data selection; environment options and the session range follow the mouse ---
         self.add_selection("mouse", value=mouse if mouse in self.mice else self.mice[0], options=self.mice)
-        self.add_selection("environment", value=environment if environment is not None else 0, options=[environment if environment is not None else 0])
+        self.add_selection(
+            "environment", value=environment if environment is not None else 0, options=[environment if environment is not None else 0]
+        )
         self.add_integer_range("session_range", value=(1, 1), min=1, max=1)
         self.add_integer("skip_session", value=skip_session, min=0, max=20)
         self.add_float("reliability_threshold", value=reliability_threshold, min=-1.0, max=1.0)

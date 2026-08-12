@@ -1,10 +1,10 @@
 """Place-field residual RMS, within and outside the target place field.
 
-Three panels over the same models: one summarizing each mouse with a single number
-(:class:`ModelPlacefieldResidualViewer`), one following each mouse across its chronological
-sessions (:class:`ModelPlacefieldResidualFamiliarityViewer`), and one exploratory panel that
-overlays any combination of the residual config's result axes
-(:class:`ModelPlacefieldResidualExplorer`).
+Four panels over the same models: two summarizing each mouse with a single number
+(:class:`ModelPlacefieldResidualViewer` and :class:`ModelPlacefieldResidualInsetViewer`), one
+following each mouse across its chronological sessions
+(:class:`ModelPlacefieldResidualFamiliarityViewer`), and one exploratory panel that overlays any
+combination of the residual config's result axes (:class:`ModelPlacefieldResidualExplorer`).
 """
 
 import itertools
@@ -31,7 +31,13 @@ from ._scores import (
     mouse_session_curves,
 )
 from .model_style import ROLE_COLOR
-from .performance import PERFORMANCE_MODEL_COLORS, PERFORMANCE_MODEL_LABELS
+from .performance import (
+    PERFORMANCE_MODEL_COLORS,
+    PERFORMANCE_MODEL_LABELS,
+    STRUCTURED_ADDITIVE_MODEL_COLOR,
+    STRUCTURED_ADDITIVE_MODEL_NAME,
+    STRUCTURED_ADDITIVE_MODEL_LABEL,
+)
 
 PF_RESIDUAL_MODEL_NAMES: list[ModelName] = [
     "internal_placefield_1d",
@@ -67,15 +73,15 @@ PF_RESIDUAL_METRIC_LABELS = {
 PF_RESIDUAL_METRIC_AXIS_LABELS = {
     "rms": "Residual RMS",
     "normalized_rms": "Normalized residual RMS",
-    "r2_weighted": "Weighted $R^2$",
-    "r2_shared": "Shared-variance $R^2$",
+    "r2_weighted": "$R^2$",
+    "r2_shared": "$R^2$",
 }
 # Two-line variants for the cramped inset axes.
 PF_RESIDUAL_METRIC_SHORT_LABELS = {
     "rms": "Res.\nRMS",
     "normalized_rms": "Norm.\nRes. RMS",
-    "r2_weighted": "Weighted\n$R^2$",
-    "r2_shared": "Shared\n$R^2$",
+    "r2_weighted": "$R^2$",
+    "r2_shared": "$R^2$",
 }
 
 # The familiarity panel names its three curves by role rather than by the models' own roles: the
@@ -123,6 +129,47 @@ def _residual_ylabel(region: str, metric: str, relative: bool) -> str:
     return label
 
 
+def _bounded_ticks(ymin: float, ymax: float, preferred_step: float, max_ticks: int = 10) -> np.ndarray:
+    """Ticks at ``preferred_step`` or an integer multiple of it, capped at ``max_ticks``."""
+    tick_min = np.ceil(ymin / preferred_step) * preferred_step
+    tick_max = np.floor(ymax / preferred_step) * preferred_step
+    if tick_min > tick_max:
+        # Preserve visible ticks even when the entire axis spans less than one preferred step.
+        return np.linspace(ymin, ymax, min(3, max_ticks))
+
+    num_intervals = int(np.floor((tick_max - tick_min) / preferred_step + 1e-9))
+    step_multiple = max(1, int(np.ceil(num_intervals / (max_ticks - 1))))
+    tick_step = preferred_step * step_multiple
+    num_ticks = min(max_ticks, num_intervals // step_multiple + 1)
+    return tick_min + tick_step * np.arange(num_ticks)
+
+
+def _residual_model_styles(model_names: list[ModelName], include_structured_additive: bool) -> tuple[list[ModelName], list[str], list]:
+    """Return aligned names, labels, and colors for a residual summary panel."""
+    names = list(model_names)
+    labels_by_name = dict(zip(PF_RESIDUAL_MODEL_NAMES, PERFORMANCE_MODEL_LABELS))
+    colors_by_name = dict(zip(PF_RESIDUAL_MODEL_NAMES, PERFORMANCE_MODEL_COLORS))
+    labels_by_name[STRUCTURED_ADDITIVE_MODEL_NAME] = STRUCTURED_ADDITIVE_MODEL_LABEL
+    colors_by_name[STRUCTURED_ADDITIVE_MODEL_NAME] = STRUCTURED_ADDITIVE_MODEL_COLOR
+    if include_structured_additive and STRUCTURED_ADDITIVE_MODEL_NAME not in names:
+        names.insert(min(2, len(names)), STRUCTURED_ADDITIVE_MODEL_NAME)
+    return names, [labels_by_name[name] for name in names], [colors_by_name[name] for name in names]
+
+
+def _load_residual_summary_scores(viewer, state, subset: str) -> dict[str, np.ndarray]:
+    """Load both residual regions for one ROI subset, averaged within mouse."""
+    selection = data_selection(state, viewer.results, viewer.selection_names)
+    prefix = _residual_key_prefix(subset, state["fold"], state["statistic"])
+    scores = {}
+    for region in PF_RESIDUAL_REGIONS:
+        key = prefix + _residual_metric_key(region, state["metric"])
+        scores[region] = np.stack(
+            [viewer.results.sel(model_name=model_name, keys=[key], avg_by_mouse=True, **selection)[key] for model_name in viewer.model_names],
+            axis=0,
+        )
+    return scores
+
+
 class ModelPlacefieldResidualViewer(FigureViewer):
     """Within- (ax[0]) and outside-place-field (ax[1]) residual RMS for the residual models.
 
@@ -136,6 +183,8 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         Aggregated ``RegressionPlacefieldResidualConfig`` results.
     model_names : list[ModelName]
         Models to draw, in x order.
+    include_structured_additive : bool
+        Insert the internal structured-additive model between PF+Gain and Peer.
     fold : {"xval", "infold"}
         Membership place field that localized the residual: estimated on the training frames
         (``xval``) or on the held-out frames themselves (``infold``).
@@ -181,6 +230,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         results: ResultsAggregator,
         *,
         model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
+        include_structured_additive: bool = False,
         fold: str = "xval",
         metric: str = "rms",
         statistic: str = "mean",
@@ -214,7 +264,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
     ):
         self.results = results
         self.figsize = figsize
-        self.model_names = list(model_names)
+        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(model_names, include_structured_additive)
         self._scores: dict[str, np.ndarray] = {}
         self._inset_scores: dict[str, np.ndarray] = {}
 
@@ -261,24 +311,8 @@ class ModelPlacefieldResidualViewer(FigureViewer):
 
     def refresh_data(self, state):
         """Load the selected main and inset ROI subsets, averaged within mouse."""
-        selection = data_selection(state, self.results, self.selection_names)
-
-        def load_scores(subset):
-            prefix = _residual_key_prefix(subset, state["fold"], state["statistic"])
-            scores = {}
-            for region in PF_RESIDUAL_REGIONS:
-                key = prefix + _residual_metric_key(region, state["metric"])
-                scores[region] = np.stack(
-                    [
-                        self.results.sel(model_name=model_name, keys=[key], avg_by_mouse=True, **selection)[key]
-                        for model_name in self.model_names
-                    ],
-                    axis=0,
-                )
-            return scores
-
-        self._scores = load_scores(state["main_show"])
-        self._inset_scores = load_scores(state["inset_show"])
+        self._scores = _load_residual_summary_scores(self, state, state["main_show"])
+        self._inset_scores = _load_residual_summary_scores(self, state, state["inset_show"])
 
     def plot(self, state):
         fontsize = state["fontsize"]
@@ -297,7 +331,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             if state["main_relative"]:
                 values = values - values[0]
                 axis.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
-            draw_subject_traces(axis, xvals, values, PERFORMANCE_MODEL_COLORS, state)
+            draw_subject_traces(axis, xvals, values, self.model_colors, state)
             axis.text(
                 text_x,
                 text_y,
@@ -318,7 +352,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
                 if state["inset_relative"]:
                     inset_values = inset_values - inset_values[0]
                     inset.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
-                draw_subject_traces(inset, xvals, inset_values, PERFORMANCE_MODEL_COLORS, state, markersize=3.0)
+                draw_subject_traces(inset, xvals, inset_values, self.model_colors, state, markersize=3.0)
                 inset_label = PF_RESIDUAL_SUBSET_LABELS[state["inset_show"]]
                 if inset_label is not None:
                     inset.text(
@@ -352,17 +386,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         for inset in insets:
             inset_ymin, inset_ymax = inset.get_ylim()
             inset_ytick_step = 0.1 if state["inset_relative"] else 1.0
-            inset_ytick_min = np.ceil(inset_ymin / inset_ytick_step) * inset_ytick_step
-            inset_ytick_max = np.floor(inset_ymax / inset_ytick_step) * inset_ytick_step
-            if inset_ytick_min <= inset_ytick_max:
-                inset_yticks = np.arange(
-                    inset_ytick_min,
-                    inset_ytick_max + inset_ytick_step / 2,
-                    inset_ytick_step,
-                )
-            else:
-                # Preserve visible ticks even when the entire inset spans less than one step.
-                inset_yticks = np.linspace(inset_ymin, inset_ymax, 3)
+            inset_yticks = _bounded_ticks(inset_ymin, inset_ymax, inset_ytick_step)
             style_model_axis(
                 inset,
                 fontsize=fontsize,
@@ -399,24 +423,19 @@ class ModelPlacefieldResidualViewer(FigureViewer):
             shared_secondary = state["main_sharey"] and axis_index == 1
             ymin, ymax = axis.get_ylim()
             ytick_step = 0.1 if state["main_relative"] else 1.0
-            ytick_min = np.ceil(ymin / ytick_step) * ytick_step
-            ytick_max = np.floor(ymax / ytick_step) * ytick_step
-            if ytick_min <= ytick_max:
-                yticks = np.arange(ytick_min, ytick_max + ytick_step / 2, ytick_step)
-            else:
-                yticks = np.linspace(ymin, ymax, 3)
+            yticks = _bounded_ticks(ymin, ymax, ytick_step)
             style_model_axis(
                 axis,
                 fontsize=fontsize,
                 xvals=xvals,
-                labels=PERFORMANCE_MODEL_LABELS,
+                labels=self.model_labels,
                 xbounds=[xvals[0], xvals[-1]],
                 xtick_rotation=0,
                 yticks=yticks,
                 xha="center",
                 spines_visible=("bottom",) if shared_secondary else ("left", "bottom"),
             )
-            for tick_label, color in zip(axis.get_xticklabels(), PERFORMANCE_MODEL_COLORS):
+            for tick_label, color in zip(axis.get_xticklabels(), self.model_colors):
                 tick_label.set_color(color)
             if shared_secondary:
                 axis.yaxis.set_visible(False)
@@ -425,6 +444,198 @@ class ModelPlacefieldResidualViewer(FigureViewer):
                 if state["main_relative"]:
                     ylabel = rf"$\Delta$ {ylabel}"
                 axis.set_ylabel(ylabel, fontsize=fontsize)
+        return fig
+
+
+class ModelPlacefieldResidualInsetViewer(FigureViewer):
+    """Within-PF residuals on one axis, with outside-PF residuals in an inset.
+
+    This is the single-axis counterpart of :class:`ModelPlacefieldResidualViewer`. The two
+    regions use the same ROI subset, y-axis sharing, and relative-mode settings; the outside-PF
+    axis is always inset into the within-PF axis.
+
+    Parameters
+    ----------
+    results : ResultsAggregator
+        Aggregated ``RegressionPlacefieldResidualConfig`` results.
+    model_names : list[ModelName]
+        Models to draw, in x order.
+    include_structured_additive : bool
+        Insert the internal structured-additive model between PF+Gain and Peer.
+    fold, metric, statistic
+        As in :class:`ModelPlacefieldResidualViewer`.
+    show : {"all", "quality", "not quality"}
+        ROI subset displayed in both regions.
+    sharey : bool
+        Give the main and inset axes a common y-axis scale.
+    relative : bool
+        Subtract each mouse's first-model value from all values in both regions.
+    fontsize, markersize, mean_linewidth, subject_linewidth, subject_alpha : float
+        Style knobs for the per-mouse traces and across-mouse means.
+    within_text_x, within_text_y, outside_text_x, outside_text_y : float
+        Axes-fraction coordinates for the region labels on their respective axes.
+    inset_x, inset_y, inset_width, inset_height : float
+        Bounds of the outside-PF inset in main-axis fractions.
+    inset_ylabel_fontsize_scale : float
+        Inset y-label font size as a multiple of ``fontsize``.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    **selection_defaults
+        Starting values for data-selection widgets built from the aggregator's param axes.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        *,
+        model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
+        include_structured_additive: bool = False,
+        fold: str = "xval",
+        metric: str = "rms",
+        statistic: str = "mean",
+        show: str = "all",
+        sharey: bool = True,
+        relative: bool = False,
+        fontsize: float = 12.0,
+        markersize: float = 5.0,
+        mean_linewidth: float = 1.5,
+        subject_linewidth: float = 0.5,
+        subject_alpha: float = 0.3,
+        within_text_x: float = 0.05,
+        within_text_y: float = 0.9,
+        outside_text_x: float = 0.05,
+        outside_text_y: float = 0.9,
+        inset_x: float = 0.6,
+        inset_y: float = 0.55,
+        inset_width: float = 0.35,
+        inset_height: float = 0.35,
+        inset_ylabel_fontsize_scale: float = 1.0,
+        figsize: tuple[float, float] = (3.5, 3.5),
+        **selection_defaults,
+    ):
+        self.results = results
+        self.figsize = figsize
+        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(model_names, include_structured_additive)
+        self._scores: dict[str, np.ndarray] = {}
+
+        self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)
+        self.add_selection("fold", value=fold, options=list(PF_RESIDUAL_FOLDS))
+        self.add_selection("metric", value=metric, options=list(PF_RESIDUAL_METRIC_OPTIONS))
+        self.add_selection("statistic", value=statistic, options=list(PF_RESIDUAL_STATISTICS))
+        self.add_selection("show", value=show, options=list(PF_RESIDUAL_SUBSETS))
+        self.add_boolean("sharey", value=sharey)
+        self.add_boolean("relative", value=relative)
+        self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
+        add_trace_style_widgets(
+            self,
+            markersize=markersize,
+            mean_linewidth=mean_linewidth,
+            subject_linewidth=subject_linewidth,
+            subject_alpha=subject_alpha,
+        )
+        self.add_float("within_text_x", value=within_text_x, min=0.0, max=1.0, step=0.01)
+        self.add_float("within_text_y", value=within_text_y, min=0.0, max=1.0, step=0.01)
+        self.add_float("outside_text_x", value=outside_text_x, min=0.0, max=1.0, step=0.01)
+        self.add_float("outside_text_y", value=outside_text_y, min=0.0, max=1.0, step=0.01)
+        self.add_float("inset_x", value=inset_x, min=0.0, max=1.0, step=0.01)
+        self.add_float("inset_y", value=inset_y, min=0.0, max=1.0, step=0.01)
+        self.add_float("inset_width", value=inset_width, min=0.05, max=1.0, step=0.01)
+        self.add_float("inset_height", value=inset_height, min=0.05, max=1.0, step=0.01)
+        self.add_float(
+            "inset_ylabel_fontsize_scale",
+            value=inset_ylabel_fontsize_scale,
+            min=0.1,
+            max=3.0,
+            step=0.05,
+        )
+        for name in (*self.selection_names, "fold", "metric", "statistic", "show"):
+            self.on_change(name, self.refresh_data)
+        self.refresh_data(self.state)
+
+    def refresh_data(self, state):
+        """Load the selected ROI subset for both regions, averaged within mouse."""
+        self._scores = _load_residual_summary_scores(self, state, state["show"])
+
+    def plot(self, state):
+        fontsize = state["fontsize"]
+        xvals = np.arange(len(self.model_names), dtype=float)
+        fig, axis = self.new_subplots(1, 1, figsize=self.figsize, layout="constrained")
+        inset = axis.inset_axes(
+            [state["inset_x"], state["inset_y"], state["inset_width"], state["inset_height"]],
+            sharey=axis if state["sharey"] else None,
+        )
+
+        for region_axis, region, text, text_x, text_y, trace_markersize in (
+            (axis, "within", "Within PF", state["within_text_x"], state["within_text_y"], None),
+            (inset, "outside", "Outside PF", state["outside_text_x"], state["outside_text_y"], 3.0),
+        ):
+            values = self._scores[region]
+            if state["relative"]:
+                values = values - values[0]
+                region_axis.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
+            draw_subject_traces(
+                region_axis,
+                xvals,
+                values,
+                self.model_colors,
+                state,
+                markersize=trace_markersize,
+            )
+            region_axis.text(
+                text_x,
+                text_y,
+                text,
+                transform=region_axis.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=fontsize,
+            )
+
+        # Both axes must contribute before shared limits and offset spines are finalized.
+        limit_axes = (axis,) if state["sharey"] else (axis, inset)
+        for region_axis in limit_axes:
+            ymin, ymax = region_axis.get_ylim()
+            region_axis.set_ylim(min(ymin, 0.0), max(ymax, 0.0))
+
+        ymin, ymax = axis.get_ylim()
+        ytick_step = 0.1 if state["relative"] else 1.0
+        style_model_axis(
+            axis,
+            fontsize=fontsize,
+            xvals=xvals,
+            labels=self.model_labels,
+            xbounds=[xvals[0], xvals[-1]],
+            xtick_rotation=0,
+            yticks=_bounded_ticks(ymin, ymax, ytick_step),
+            xha="center",
+        )
+        for tick_label, color in zip(axis.get_xticklabels(), self.model_colors):
+            tick_label.set_color(color)
+        ylabel = PF_RESIDUAL_METRIC_AXIS_LABELS[state["metric"]]
+        if state["relative"]:
+            ylabel = rf"$\Delta$ {ylabel}"
+        axis.set_ylabel(ylabel, fontsize=fontsize)
+
+        inset_ymin, inset_ymax = inset.get_ylim()
+        style_model_axis(
+            inset,
+            fontsize=fontsize,
+            xvals=xvals,
+            labels=("",) * len(xvals),
+            xbounds=[xvals[0], xvals[-1]],
+            xtick_rotation=0,
+            yticks=_bounded_ticks(inset_ymin, inset_ymax, ytick_step),
+            xha="center",
+        )
+        inset.tick_params(axis="x", which="major", length=2.0)
+        inset.tick_params(axis="y", which="both", left=True, labelleft=True, length=2.0)
+        inset_ylabel = PF_RESIDUAL_METRIC_SHORT_LABELS[state["metric"]]
+        if state["relative"]:
+            inset_ylabel = f"$\\Delta$ {inset_ylabel}"
+        inset.set_ylabel(
+            inset_ylabel,
+            fontsize=fontsize * state["inset_ylabel_fontsize_scale"],
+        )
         return fig
 
 
@@ -524,10 +735,7 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
         for region in PF_RESIDUAL_REGIONS:
             key = prefix + _residual_metric_key(region, state["metric"])
             self._scores[region] = np.stack(
-                [
-                    self.results.sel(model_name=model_name, keys=[key], avg_by_mouse=False, **selection)[key]
-                    for model_name in self.model_names
-                ],
+                [self.results.sel(model_name=model_name, keys=[key], avg_by_mouse=False, **selection)[key] for model_name in self.model_names],
                 axis=0,
             )
 
@@ -873,9 +1081,7 @@ class ModelPlacefieldResidualExplorer(FigureViewer):
         selection = data_selection(state, self.results, self.selection_names)
         # One call per model with every key at once: the aggregator materializes lazily, so
         # asking key by key would re-walk the same slice once per series.
-        loaded = [
-            self.results.sel(model_name=name, keys=keys, avg_by_mouse=state["avg_by_mouse"], **selection) for name in self._models
-        ]
+        loaded = [self.results.sel(model_name=name, keys=keys, avg_by_mouse=state["avg_by_mouse"], **selection) for name in self._models]
         self._scores = {key: np.stack([result[key] for result in loaded], axis=0) for key in keys}
 
     def plot(self, state):

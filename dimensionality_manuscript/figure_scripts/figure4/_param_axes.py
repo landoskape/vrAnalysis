@@ -82,6 +82,7 @@ SOURCE_OF_KEY = {
     **{k: "cvpca" for k in CVPCA_KEYS},
     FF_KEY: "stimspace",
     "ffres": "stimspace",
+    "ffres_white": "stimspace",
 }
 
 # Fixed color per curve option, used for the per-mouse alpha scatter and the local-exponent curves

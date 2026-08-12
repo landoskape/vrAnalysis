@@ -60,6 +60,13 @@ LEGACY_SVCA_FULL_KEYS = {
     "SVCA_RES": "variance_activity_residual",
 }
 
+WHITE_SOURCE_KEYS = {
+    "SVD": "ffres_white",
+    "SVCA": "ff_res_white",
+}
+WHITE_COLOR = "gray"
+WHITE_LABEL = "White noise"
+
 
 def draw_reliable_spectrum_annotation(
     ax,
@@ -263,6 +270,10 @@ class SpectrumFigureViewer(FigureViewer):
         Source of the FF ("Reliable CA1 Spectrum") curve. ``"SVD"``/``"SVD_RES"`` use the
         StimSpaceSpectra ``ff``/``ffres`` keys; ``"SVCA"``/``"SVCA_RES"`` use StimspaceSVCA
         ``ff``/``ff_res`` and require ``results_svca``.
+    white_source_key : {"none", "SVD", "SVCA"}
+        Optional white-noise residual spectrum. ``"SVD"`` uses ``ffres_white`` from
+        StimSpaceSpectra and ``"SVCA"`` uses ``ff_res_white`` from StimspaceSVCA. The curve and
+        its dimensionality measurement are shown in gray; ``"none"`` hides them.
     fit_key : str or list of str
         Extra ax[0] overlays from the Tilbury-fit aggregator: any of ``eig_tilbury`` (blue, the
         unregularized generalized Gaussian), ``eig_control`` (green, the plain-Gaussian control),
@@ -346,6 +357,7 @@ class SpectrumFigureViewer(FigureViewer):
         source_key: str = "ss_cv",
         source_mode: str = "all",
         full_source_key: str = "SVD",
+        white_source_key: str = "none",
         fit_key: str | list[str] = (),
         source_smooth_method: str = "gaussian",
         source_smooth_width: float = 3.0,
@@ -403,6 +415,14 @@ class SpectrumFigureViewer(FigureViewer):
         if full_source_key not in full_options:
             raise ValueError(f"Unknown full_source_key {full_source_key!r}. Options: {full_options}")
 
+        white_options = ["none"]
+        if "ffres_white" in results.arrays:
+            white_options.append("SVD")
+        if results_svca is not None and "ff_res_white" in results_svca.arrays:
+            white_options.append("SVCA")
+        if white_source_key not in white_options:
+            raise ValueError(f"Unknown or unavailable white_source_key {white_source_key!r}. Options: {white_options}")
+
         fit_keys = [fit_key] if isinstance(fit_key, str) else list(fit_key)
         if fit_keys and results_fit is None:
             raise ValueError("fit_key requires results_fit to be provided.")
@@ -431,6 +451,7 @@ class SpectrumFigureViewer(FigureViewer):
         self.add_selection("source_key", options=pf_options, value=source_key)
         self.add_selection("source_mode", options=["all", "avg_env"], value=source_mode)
         self.add_selection("full_source_key", options=full_options, value=full_source_key)
+        self.add_selection("white_source_key", options=white_options, value=white_source_key)
         if results_fit is not None:
             self.add_multiple_selection("fit_key", options=list(FIT_KEYS), value=fit_keys)
 
@@ -499,6 +520,7 @@ class SpectrumFigureViewer(FigureViewer):
             "source_key",
             "source_mode",
             "full_source_key",
+            "white_source_key",
             "normalize",
             "clip_negative",
             "pr_pre_smooth",
@@ -766,6 +788,53 @@ class SpectrumFigureViewer(FigureViewer):
             spec = spec / np.nansum(spec, axis=1)[:, None]
         return _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
 
+    def _white_spectrum_sessions(
+        self,
+        state: dict,
+        cfg: SpectrumSmoothing,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list] | None:
+        """Per-session raw+smoothed white-noise residual spectrum, or None when hidden."""
+        white_source_key = state.get("white_source_key", "none")
+        if white_source_key == "none":
+            return None
+        if white_source_key == "SVD":
+            return self._spectrum_sessions(
+                state,
+                WHITE_SOURCE_KEYS[white_source_key],
+                cfg,
+                apply_source_mode=False,
+            )
+        if white_source_key == "SVCA" and self.results_svca is not None:
+            return self._svca_spectrum_sessions(state, cfg, key=WHITE_SOURCE_KEYS[white_source_key])
+        raise ValueError(f"Unknown or unavailable white_source_key {white_source_key!r}.")
+
+    def _white_spectrum(self, state: dict, cfg: SpectrumSmoothing) -> np.ndarray | None:
+        """Mouse-averaged white-noise residual spectrum, or None when hidden."""
+        white_source_key = state.get("white_source_key", "none")
+        if white_source_key == "none":
+            return None
+        if white_source_key == "SVD":
+            return self._spectrum(
+                state,
+                WHITE_SOURCE_KEYS[white_source_key],
+                cfg,
+                apply_source_mode=False,
+            )
+        if white_source_key == "SVCA" and self.results_svca is not None:
+            key = WHITE_SOURCE_KEYS[white_source_key]
+            params = sel_params(state, self._tuple_labels, self.results_svca.param_axes)
+            if state.get("clip_negative", False):
+                spec = self.results_svca.sel(keys=[key], avg_by_mouse=False, **params)[key]
+                spec = _clip_at_first_negative(np.atleast_2d(np.asarray(spec, dtype=float)))
+                spec = average_by_mouse({key: spec}, self.results_svca.mouse_names)[key]
+            else:
+                spec = self.results_svca.sel(keys=[key], avg_by_mouse=True, **params)[key]
+            spec = np.atleast_2d(np.asarray(spec, dtype=float))
+            if state["normalize"]:
+                spec = spec / np.nansum(spec, axis=1)[:, None]
+            return _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
+        raise ValueError(f"Unknown or unavailable white_source_key {white_source_key!r}.")
+
     def _ff_plot_style(self, state: dict) -> tuple[str, str]:
         """Return the label and color appropriate for the selected full-CA1 source."""
         if state.get("full_source_key", "SVD").upper().endswith("_RES"):
@@ -916,8 +985,10 @@ class SpectrumFigureViewer(FigureViewer):
 
         pf_spec = self._spectrum(state, pf_key, source_smoothing)
         ff_spec = self._ff_spectrum(state, full_smoothing)
+        white_spec = self._white_spectrum(state, full_smoothing)
         pf_raw = self._spectrum(state, pf_key, raw_smoothing)
         ff_raw = self._ff_spectrum(state, raw_smoothing)
+        white_raw = self._white_spectrum(state, raw_smoothing)
 
         fit_keys = list(state.get("fit_key", []))
         fit_specs = {k: self._fit_spectrum(state, k, source_smoothing) for k in fit_keys}
@@ -940,15 +1011,20 @@ class SpectrumFigureViewer(FigureViewer):
         # normalization precede both choices.
         pf_pr = _signed_participation_ratio(pf_raw if state["pr_pre_smooth"] else pf_spec)
         ff_pr = _signed_participation_ratio(ff_raw if state["pr_pre_smooth"] else ff_spec)
+        white_pr = None
+        if white_spec is not None:
+            white_pr = _signed_participation_ratio(white_raw if state["pr_pre_smooth"] else white_spec)
         fit_pr = {k: _signed_participation_ratio(fit_raw[k] if state["pr_pre_smooth"] else fit_specs[k]) for k in fit_keys}
 
         self._pf_key = pf_key
         self._fit_keys = fit_keys
         self._pf_spec = pf_spec
         self._ff_spec = ff_spec
+        self._white_spec = white_spec
         self._fit_specs = fit_specs
         self._pf_pr = pf_pr
         self._ff_pr = ff_pr
+        self._white_pr = white_pr
         self._fit_pr = fit_pr
 
     def plot(self, state: dict):
@@ -960,6 +1036,7 @@ class SpectrumFigureViewer(FigureViewer):
         pf_label = self.pf_label
         ff_label, ff_color = self._ff_plot_style(state)
         pf_spec, ff_spec = self._pf_spec, self._ff_spec
+        white_spec = self._white_spec
         fit_keys, fit_specs = self._fit_keys, self._fit_specs
         pf_pr, ff_pr, fit_pr = self._pf_pr, self._ff_pr, self._fit_pr
 
@@ -982,6 +1059,17 @@ class SpectrumFigureViewer(FigureViewer):
             ax[0].plot(_xvals(spec), spec_positive.T, color=color, alpha=each_alpha, linewidth=1.0)
             ax[0].plot(_xvals(spec), np.nanmean(spec_positive, axis=0), color=color, label=label, linewidth=2.0)
 
+        if white_spec is not None:
+            spec_positive = np.where(white_spec > 0, white_spec, np.nan)
+            ax[0].plot(_xvals(white_spec), spec_positive.T, color=WHITE_COLOR, alpha=each_alpha, linewidth=1.0)
+            ax[0].plot(
+                _xvals(white_spec),
+                np.nanmean(spec_positive, axis=0),
+                color=WHITE_COLOR,
+                label=WHITE_LABEL,
+                linewidth=2.0,
+            )
+
         # --- ax[0] extra overlays: Tilbury-fit eig spectra (fixed rel/frac-active threshold) ---
         for key in fit_keys:
             spec = fit_specs[key]
@@ -1001,6 +1089,9 @@ class SpectrumFigureViewer(FigureViewer):
         # Participation-ratio groups share one categorical row and the spectrum's x-axis.
         beeswarm_colors = [pf_color] + [FIT_KEY_COLORS.get(k, "gray") for k in fit_keys] + [ff_color]
         pr_values = [pf_pr] + [fit_pr[k] for k in fit_keys] + [ff_pr]
+        if self._white_pr is not None:
+            beeswarm_colors.append(WHITE_COLOR)
+            pr_values.append(self._white_pr)
 
         _horizontal_beeswarm_panel(
             ax[1],
@@ -1047,7 +1138,7 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
     ----------
     results, results_cvpca, results_svca, results_fit : ResultsAggregator or None
         See :class:`SpectrumFigureViewer`.
-    source_key, full_source_key, fit_key : see :class:`SpectrumFigureViewer`.
+    source_key, full_source_key, white_source_key, fit_key : see :class:`SpectrumFigureViewer`.
     source_cfg, full_cfg : AdaptiveAlphaConfig or None
         Independent smoothing and adaptive median-FPD settings for the PF and full-CA1 sides.
         Defaults to :data:`~._alpha_config.ADAPTIVE_ALPHA_CONFIG_REGISTRY`'s ``"placefields"``/
@@ -1089,6 +1180,7 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
         source_key: str = "ss_cv",
         source_mode: str = "all",
         full_source_key: str = "SVD",
+        white_source_key: str = "none",
         fit_key: str | list[str] = (),
         source_cfg: AdaptiveAlphaConfig | None = None,
         full_cfg: AdaptiveAlphaConfig | None = None,
@@ -1130,6 +1222,7 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
             source_key=source_key,
             source_mode=source_mode,
             full_source_key=full_source_key,
+            white_source_key=white_source_key,
             fit_key=fit_key,
             source_smooth_method=self.source_cfg.smooth_method,
             source_smooth_width=self.source_cfg.smooth_width,
@@ -1167,6 +1260,7 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
         # boundaries from ss_cvpca; the FF side borrows them from SVCA when available.
         pf_raw, pf_smooth, pf_mouse_names, pf_session_ids = self._spectrum_sessions(state, pf_key, source_cfg)
         ff_raw, ff_smooth, ff_mouse_names, ff_session_ids = self._ff_spectrum_sessions(state, full_cfg)
+        white = self._white_spectrum_sessions(state, full_cfg)
         cvpca_raw, cvpca_smooth, _, cvpca_session_ids = self._spectrum_sessions(state, "ss_cvpca", source_cfg)
         fit_cvpca_raw, fit_cvpca_smooth, fit_cvpca_session_ids = cvpca_raw, cvpca_smooth, cvpca_session_ids
         if state.get("source_mode", "all") == "avg_env" and fit_keys:
@@ -1212,6 +1306,26 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
             ),
             ff_mouse_names,
         )
+        self._white_alpha = None
+        if white is not None:
+            white_raw, white_smooth, white_mouse_names, white_session_ids = white
+            white_fb_raw, white_fb_smooth = None, None
+            if svca is not None:
+                svca_raw, svca_smooth, _, svca_session_ids = svca
+                white_fb_raw = _align_rows_to_sessions(white_session_ids, svca_session_ids, svca_raw)
+                white_fb_smooth = _align_rows_to_sessions(white_session_ids, svca_session_ids, svca_smooth)
+            self._white_alpha = average_by_mouse(
+                _median_fpd_alpha_per_session(
+                    white_raw,
+                    white_smooth,
+                    full_cfg.fpd_window_size,
+                    full_cfg.adaptive_buffer,
+                    full_cfg.minimum_window_size,
+                    white_fb_raw,
+                    white_fb_smooth,
+                ),
+                white_mouse_names,
+            )
         fit_alpha = {}
         for key in fit_keys:
             fit_raw, fit_smooth, fit_mouse_names, fit_session_ids = self._fit_spectrum_sessions(state, key, source_cfg)
@@ -1237,6 +1351,7 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
         ylim_min = state["ylim_min"]
         ylim_max = state["ylim_max"]
         pf_spec, ff_spec = self._pf_spec, self._ff_spec
+        white_spec = self._white_spec
         fit_keys, fit_specs = self._fit_keys, self._fit_specs
         ff_label, ff_color = self._ff_plot_style(state)
 
@@ -1249,6 +1364,17 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
             spec_positive = np.where(spec > 0, spec, np.nan)
             ax[0].plot(_xvals(spec), spec_positive.T, color=color, alpha=each_alpha, linewidth=1.0)
             ax[0].plot(_xvals(spec), np.nanmean(spec_positive, axis=0), color=color, label=label, linewidth=2.0)
+
+        if white_spec is not None:
+            spec_positive = np.where(white_spec > 0, white_spec, np.nan)
+            ax[0].plot(_xvals(white_spec), spec_positive.T, color=WHITE_COLOR, alpha=each_alpha, linewidth=1.0)
+            ax[0].plot(
+                _xvals(white_spec),
+                np.nanmean(spec_positive, axis=0),
+                color=WHITE_COLOR,
+                label=WHITE_LABEL,
+                linewidth=2.0,
+            )
 
         for key in fit_keys:
             spec = fit_specs[key]
@@ -1285,6 +1411,10 @@ class SpectrumAlphaFigureViewer(SpectrumFigureViewer):
         colors = [self.pf_color] + [FIT_KEY_COLORS.get(key, "gray") for key in fit_keys] + [ff_color]
         labels = ["PF"] + [FIT_KEY_LABELS.get(key, key) for key in fit_keys] + ["CA1"]
         alpha_values = [self._pf_alpha] + [self._fit_alpha[key] for key in fit_keys] + [self._ff_alpha]
+        if self._white_alpha is not None:
+            colors.append(WHITE_COLOR)
+            labels.append("White")
+            alpha_values.append(self._white_alpha)
         _beeswarm_panel(
             ax[1],
             alpha_values,

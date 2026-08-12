@@ -15,13 +15,14 @@ The one function is :func:`vr_schematic_and_speed`, which composes two of the vi
 single aligned figure rather than drawing a panel of its own.
 """
 
-from .crossval import CrossValidatedPlacefields
+from .crossval import CrossValidatedPlacefieldFocus, CrossValidatedPlacefields
 from .familiarity import R2Familiarity
 from .pf_amplitude import PlacefieldPeakAmplitude
 from .placefield import PlaceFieldFocus, PlaceFieldPredictionFocus
 from .r2_placefield import R2PlacefieldFocus, r2_placefield_arrays
 from .rasters import StackedRasterFocus
 from .reliability import ReliabilityHistogramViewer
+from .reliability_prediction import ReliabilityPredictionFamiliarity, ReliabilityPredictionFocus
 from .schematic import (
     VR_REWARD_ZONE_WIDTH_CM,
     VR_SCHEMATIC_ENVS,
@@ -34,6 +35,7 @@ from .traversal import TraversalFocus
 
 __all__ = [
     "CrossValidatedPlacefields",
+    "CrossValidatedPlacefieldFocus",
     "ExperimentTimeline",
     "MouseSpeedFocus",
     "PlaceFieldFocus",
@@ -42,6 +44,8 @@ __all__ = [
     "R2Familiarity",
     "R2PlacefieldFocus",
     "ReliabilityHistogramViewer",
+    "ReliabilityPredictionFamiliarity",
+    "ReliabilityPredictionFocus",
     "StackedRasterFocus",
     "TraversalFocus",
     "VREnvironmentSchematic",

@@ -6,8 +6,10 @@ import numpy as np
 from dimensionality_manuscript.configs.regression import residual_summary_keys
 from dimensionality_manuscript.figure_scripts.figure2.pf_residual import (
     ModelPlacefieldResidualExplorer,
-    ModelPlacefieldResidualViewer,
     ModelPlacefieldResidualFamiliarityViewer,
+    ModelPlacefieldResidualInsetViewer,
+    ModelPlacefieldResidualViewer,
+    _bounded_ticks,
 )
 
 
@@ -115,10 +117,10 @@ def test_pf_residual_summary_main_and_inset_relative_are_independent():
     inset_axis = main_axis.child_axes[0]
 
     assert main_axis.get_ylabel() == r"$\Delta$ Residual RMS"
-    np.testing.assert_allclose(main_axis.lines[1].get_ydata(), np.zeros((3, 2)))
+    np.testing.assert_allclose(main_axis.lines[1].get_ydata(), [0.0, 0.05, 0.1])
     np.testing.assert_allclose(
         inset_axis.lines[0].get_ydata(),
-        [[0.9, 1.0], [0.95, 1.05], [1.0, 1.1]],
+        [0.9, 0.95, 1.0],
     )
     plt.close(fig)
 
@@ -169,6 +171,20 @@ def test_pf_residual_summary_absolute_and_relative_tick_spacing():
         assert ymin <= 0.0 <= ymax
     plt.close(absolute_fig)
     plt.close(relative_fig)
+
+
+def test_pf_residual_summary_ticks_keep_preferred_spacing_but_cap_extreme_ranges():
+    ordinary = _bounded_ticks(-0.31, 0.31, preferred_step=0.1)
+    extreme_absolute = _bounded_ticks(-938.4, 0.2, preferred_step=1.0)
+    extreme_relative = _bounded_ticks(-938.4, 0.2, preferred_step=0.1)
+
+    np.testing.assert_allclose(np.diff(ordinary), 0.1)
+    assert ordinary.size <= 10
+    for extreme, preferred_step in ((extreme_absolute, 1.0), (extreme_relative, 0.1)):
+        assert extreme.size <= 10
+        assert np.all(np.diff(extreme) >= preferred_step)
+        step_multiples = np.diff(extreme) / preferred_step
+        np.testing.assert_allclose(step_multiples, np.round(step_multiples))
 
 
 def test_pf_residual_summary_legacy_relative_alias_controls_both_regions():
@@ -222,6 +238,45 @@ def test_pf_residual_summary_inset_ylabel_tracks_relative_mode_and_font_scale():
     assert relative_inset.get_ylabel() == "$\\Delta$ Res.\nRMS"
     plt.close(absolute_fig)
     plt.close(relative_fig)
+
+
+def test_pf_residual_inset_viewer_uses_one_subset_for_within_and_outside():
+    results = _FakeResidualSummaryResults()
+    viewer = ModelPlacefieldResidualInsetViewer(results, show="not quality")
+
+    assert viewer.state["show"] == "not quality"
+    assert not any(name in viewer.state for name in ("main_show", "inset_show", "main_relative", "inset_relative"))
+    assert "mean_notquality_filtered_xval_within_pf_rms" in results.requested_keys
+    assert "mean_notquality_filtered_xval_outside_pf_rms" in results.requested_keys
+    np.testing.assert_allclose(viewer._scores["within"][:, 0], [1.4, 1.45, 1.5])
+    np.testing.assert_allclose(viewer._scores["outside"][:, 0], [1.4, 1.45, 1.5])
+
+
+def test_pf_residual_inset_viewer_draws_outside_as_an_always_present_inset():
+    viewer = ModelPlacefieldResidualInsetViewer(
+        _FakeResidualSummaryResults(),
+        sharey=True,
+        relative=True,
+    )
+
+    fig = viewer.plot(viewer.state)
+    main = fig.axes[0]
+    (inset,) = main.child_axes
+
+    assert [text.get_text() for text in main.texts] == ["Within PF"]
+    assert [text.get_text() for text in inset.texts] == ["Outside PF"]
+    assert main.get_shared_y_axes().joined(main, inset)
+    assert main.get_ylabel() == r"$\Delta$ Residual RMS"
+    assert inset.get_ylabel() == "$\\Delta$ Res.\nRMS"
+    np.testing.assert_allclose(main.lines[1].get_ydata(), [0.0, 0.05, 0.1])
+    np.testing.assert_allclose(inset.lines[1].get_ydata(), [0.0, 0.05, 0.1])
+    plt.close(fig)
+
+
+def test_pf_residual_inset_viewer_is_exported_from_figure2():
+    from dimensionality_manuscript.figure_scripts.figure2 import ModelPlacefieldResidualInsetViewer as exported
+
+    assert exported is ModelPlacefieldResidualInsetViewer
 
 
 def test_pf_residual_familiarity_within_only_uses_one_axis_and_compact_labels():

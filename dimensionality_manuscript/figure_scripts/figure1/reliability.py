@@ -163,7 +163,7 @@ class ReliabilityHistogramViewer(FigureViewer):
         frac = self.fraction_place_cells
         if state["swarm_mode"] == "pooled":
             vals = average_by_mouse(frac, self.mouse_names)
-            ax.plot(beewidth * self._swarm_offsets(vals), vals, linestyle="none", color="k", marker="o", markersize=2, alpha=0.8)
+            ax.plot(beewidth * self._swarm_offsets(vals), vals, linestyle="none", color="k", marker=".", markersize=2.5, alpha=0.5)
             ax.plot([-0.25, 0.25], [np.nanmean(vals)] * 2, color="k", linewidth=2.0)
             ax.set_xlim(-0.5, 0.5)
             xbounds, xticks = (0, 0), []

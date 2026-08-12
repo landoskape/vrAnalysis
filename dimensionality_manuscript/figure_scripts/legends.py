@@ -72,12 +72,22 @@ def update_legend_widgets(viewer: Viewer, options: dict, prefix: str = "legend")
         viewer.set_parameter_value(f"{prefix}_{knob}", cast(value) if cast else value)
 
 
-def apply_legend(ax, state: dict, fontsize: float, prefix: str = "legend", handles=None, labels=None, auto_loc: str | None = None) -> None:
+def apply_legend(
+    ax,
+    state: dict,
+    fontsize: float,
+    prefix: str = "legend",
+    handles=None,
+    labels=None,
+    auto_loc: str | None = None,
+    offset: tuple[float, float] | None = None,
+) -> None:
     """Draw ``ax``'s legend under the ``{prefix}_*`` widget settings.
 
     ``loc="auto"`` falls back to ``auto_loc`` -- the panel's own default placement, or None for panels
     that show no legend unless asked; ``loc="none"`` never draws one. ``handles``/``labels`` are passed
-    through when given, for panels whose artists carry no labels (e.g. a beeswarm).
+    through when given, for panels whose artists carry no labels (e.g. a beeswarm). ``offset``
+    shifts the legend from its ``loc`` placement by ``(x, y)`` in axes-relative coordinates.
 
     Calling this on a panel that already drew its own legend restyles it: matplotlib replaces the
     previous legend, and the "don't draw one" cases clear it.
@@ -99,6 +109,10 @@ def apply_legend(ax, state: dict, fontsize: float, prefix: str = "legend", handl
     kwargs = {knob: state[f"{prefix}_{knob}"] for knob in LEGEND_KNOBS if knob != "fontsize_scale"}
     kwargs["loc"] = loc
     kwargs["fontsize"] = fontsize * state[f"{prefix}_fontsize_scale"]
+    if offset is not None:
+        x_offset, y_offset = offset
+        kwargs["bbox_to_anchor"] = (x_offset, y_offset, 1.0, 1.0)
+        kwargs["bbox_transform"] = ax.transAxes
     if "visible" in kwargs:
         kwargs.pop("visible")  # matplotlib doesn't accept a visible kwarg, but we use it to hide the legend
     if handles is not None:

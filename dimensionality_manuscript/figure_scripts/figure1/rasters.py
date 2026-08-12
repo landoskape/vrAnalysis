@@ -27,7 +27,7 @@ class StackedRasterFocus(FigureViewer):
     standard deviation in time (the ``spks_std`` stored alongside the prediction), which is what
     makes one ``vmax`` meaningful across ROIs.
 
-    An optional fourth panel draws the mouse's position over the plotted frames, one colored
+    An optional top panel draws the mouse's position over the plotted frames, one colored
     trace per environment (:data:`~dimensionality_manuscript.env_order.ENV_SLOT_COLORS`, shared
     with the VR schematic), so the position structure behind the rasters is visible.
 
@@ -58,7 +58,7 @@ class StackedRasterFocus(FigureViewer):
     vmax : float
         Upper limit (in sigma) of the gray_r rasters; the residual raster uses ``+/- vmax``.
     show_position : bool
-        Add the position panel below the rasters.
+        Add the position panel above the rasters.
     position_height : float
         Height ratio of the position panel relative to each raster.
     env_gap : float
@@ -328,12 +328,14 @@ class StackedRasterFocus(FigureViewer):
 
         fig = self.new_figure(figsize=self.figsize, layout="constrained")
         if show_position:
-            gs = fig.add_gridspec(4, 1, height_ratios=[1, 1, 1, state["position_height"]])
+            gs = fig.add_gridspec(4, 1, height_ratios=[state["position_height"], 1, 1, 1])
+            raster_row = 1
         else:
             gs = fig.add_gridspec(3, 1)
-        ax = [fig.add_subplot(gs[0, 0])]
-        ax.append(fig.add_subplot(gs[1, 0], sharex=ax[0], sharey=ax[0]))
-        ax.append(fig.add_subplot(gs[2, 0], sharex=ax[0], sharey=ax[0]))
+            raster_row = 0
+        ax = [fig.add_subplot(gs[raster_row, 0])]
+        ax.append(fig.add_subplot(gs[raster_row + 1, 0], sharex=ax[0], sharey=ax[0]))
+        ax.append(fig.add_subplot(gs[raster_row + 2, 0], sharex=ax[0], sharey=ax[0]))
 
         ax[0].imshow(activity, aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
         ax[1].imshow(prediction, aspect="auto", cmap="gray_r", vmin=0, vmax=vmax)
@@ -378,7 +380,7 @@ class StackedRasterFocus(FigureViewer):
         )
 
         if show_position:
-            self._draw_position_panel(fig.add_subplot(gs[3, 0], sharex=ax[0]), state, xslice, num_frames)
+            self._draw_position_panel(fig.add_subplot(gs[0, 0], sharex=ax[0]), state, xslice, num_frames)
         if state["show_scalebar"]:
             self._draw_scalebar(ax[2], state, num_frames)
 

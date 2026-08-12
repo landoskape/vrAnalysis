@@ -99,10 +99,15 @@ def test_stimspace_svca_config_runs_and_is_finite(real_sessions, registry):
         elapsed = time.perf_counter() - t0
         print(f"\n[stimspace_svca] {session.session_name}: process() took {elapsed:.2f}s")
 
-        for key in ("ff", "ss", "ff_res", "ss_pred"):
+        for key in ("ff", "ss", "ff_res", "ss_pred", "ff_res_white"):
             spectrum = np.asarray(result[key])
             assert spectrum.size > 0
             assert np.all(np.isfinite(spectrum)), f"{key} contains non-finite values"
+            if key == "ff_res_white":
+                # The white-noise null has no shared structure by construction, so its spectrum is
+                # flat noise; the lead/tail dominance asserted below is exactly what it must lack.
+                assert spectrum.mean() < np.asarray(result["ff_res"]).mean(), "white null exceeds the residual spectrum it is a floor for"
+                continue
             # These are *cross-validated* shared variances, not singular values, so they are not
             # monotonically decreasing and must not be asserted to be. SVCA orders its components
             # by the singular values of the fit fold's gram matrix; the held-out fold's shared
