@@ -175,6 +175,72 @@ def _per_environment_scores(
     return scores
 
 
+def _regression_quality_filter(
+    model,
+    session: B2Session,
+    spks_type: SpksTypes,
+    thresholds: tuple[float, float],
+) -> dict[str, np.ndarray]:
+    """Measure target-ROI quality without changing the population used by the model.
+
+    This follows the quality convention already used later in this module: trial-resolved maps
+    are built from the full split, reliability and fraction-active are measured per environment,
+    and an ROI is retained when it passes each threshold in at least one environment.  The full
+    split is intentional because this is a descriptive grouping applied only after prediction,
+    not feature selection for fitting the model.
+    """
+    if np.unique(session.env_length).size != 1:
+        raise ValueError("All trials must have the same environment length!")
+
+    reliability_threshold, fraction_active_threshold = thresholds
+    _, target_full, frame_behavior_full = model.get_session_data(session, spks_type, "full")
+    dist_edges = np.linspace(0, session.env_length[0], 101)
+    placefield_trials = get_placefield(
+        target_full.T.numpy(),
+        frame_behavior_full,
+        dist_edges=dist_edges,
+        speed_threshold=None,
+        average=False,
+        use_fast_sampling=True,
+        session=session,
+    )
+    environments = np.sort(np.unique(placefield_trials.environment)).astype(int)
+    reliability = np.full((len(environments), target_full.shape[0]), np.nan)
+    fraction_active = np.full_like(reliability, np.nan)
+    for env_idx, environment in enumerate(environments):
+        pf_env = placefield_trials.filter_by_environment(environment)
+        spkmap = np.transpose(pf_env.placefield, (2, 0, 1))
+        if spkmap.shape[1] >= 2:
+            reliability[env_idx] = reliability_loo(spkmap)
+        fraction_active[env_idx] = FractionActive.compute(
+            spkmap,
+            activity_axis=2,
+            fraction_axis=1,
+            activity_method="rms",
+            fraction_method="participation",
+        )
+
+    quality_filtered_roi_mask = np.any(reliability > reliability_threshold, axis=0) & np.any(
+        fraction_active > fraction_active_threshold, axis=0
+    )
+    return {
+        "reliability": reliability,
+        "fraction_active": fraction_active,
+        "quality_environments": environments,
+        "quality_filtered_roi_mask": quality_filtered_roi_mask,
+    }
+
+
+def _pooled_subset_r2(prediction: np.ndarray, target: np.ndarray, roi_mask: np.ndarray) -> float:
+    """Pooled R² over selected ROI rows and all held-out frames; NaN for an empty subset."""
+    roi_mask = np.asarray(roi_mask, dtype=bool)
+    if roi_mask.shape != (target.shape[0],):
+        raise ValueError(f"roi_mask must have shape ({target.shape[0]},), got {roi_mask.shape}")
+    if not np.any(roi_mask):
+        return np.nan
+    return float(measure_r2(prediction[roi_mask], target[roi_mask], reduce="mean", dim=None))
+
+
 @dataclass(frozen=True)
 class RegressionConfig(AnalysisConfigBase):
     """Configuration for regression model scoring.
@@ -194,6 +260,13 @@ class RegressionConfig(AnalysisConfigBase):
         num_frames_env                   (MAX_ENV_SLOTS,) held-out frames scored in each slot
         env_slot_ids                     (MAX_ENV_SLOTS,) environment index behind each slot
 
+    Quality-subset metrics are computed from the same all-cell held-out prediction::
+
+        r2_quality_filtered              scalar, pooled over target ROIs passing the filter
+        r2_notquality_filtered           scalar, pooled over the complementary target ROIs
+        reliability, fraction_active     (environments, rois), quality diagnostics
+        quality_filtered_roi_mask        (rois,), aligned with target/prediction rows
+
     The model itself is unchanged — one fit across all environments, scored once per environment.
     Per-environment R² is measured against each environment's own mean and so does not decompose
     into the whole-split value; see :func:`_per_environment_scores`.
@@ -211,15 +284,17 @@ class RegressionConfig(AnalysisConfigBase):
         one optimization run and the per-environment metrics from another.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     # v3: recompute with numerically improved placefield code
     # v4: add per-env scores (using global session fits)
+    # v5: score the all-cell prediction over quality-filtered and complementary target ROIs
 
     data_config_name: str = "default"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
     method: str = "preferred"
     activity_parameters_name: str = "std"
+    reliability_fraction_active_threshold: tuple[float, float] = (0.3, 0.1)
 
     display_name: ClassVar[str] = "regression"
 
@@ -244,6 +319,13 @@ class RegressionConfig(AnalysisConfigBase):
                 "different criteria, so the whole-split and per-environment metrics could come "
                 "from different optimization runs. Name a single method (e.g. 'preferred')."
             )
+        if len(self.reliability_fraction_active_threshold) != 2:
+            raise ValueError("reliability_fraction_active_threshold must contain (reliability, fraction_active)")
+        reliability_threshold, fraction_active_threshold = self.reliability_fraction_active_threshold
+        if not -1 <= reliability_threshold <= 1:
+            raise ValueError("the reliability threshold must be between -1 and 1")
+        if not 0 <= fraction_active_threshold <= 1:
+            raise ValueError("the fraction-active threshold must be between 0 and 1")
 
     def summary(self) -> str:
         parts = [
@@ -254,6 +336,8 @@ class RegressionConfig(AnalysisConfigBase):
         ]
         if self.activity_parameters_name != "default":
             parts.append(f"ap={self.activity_parameters_name}")
+        reliability_threshold, fraction_active_threshold = self.reliability_fraction_active_threshold
+        parts.extend([f"rel={reliability_threshold:g}", f"fa={fraction_active_threshold:g}"])
         parts.append(self.schema_version)
         return "_".join(parts)
 
@@ -284,7 +368,38 @@ class RegressionConfig(AnalysisConfigBase):
             test_split="test",
             hyperparameters=hyperparameters,
         )
-        return {**score, **_per_environment_scores(model, session, self.spks_type, report)}
+        quality = _regression_quality_filter(
+            model,
+            session,
+            self.spks_type,
+            self.reliability_fraction_active_threshold,
+        )
+        target = np.asarray(report.target_data)
+        prediction = np.asarray(report.predicted_data)
+        quality_mask = quality["quality_filtered_roi_mask"]
+        if prediction.shape != target.shape:
+            raise ValueError(f"Held-out prediction and target are misaligned: {prediction.shape} versus {target.shape}")
+        if quality_mask.shape != (target.shape[0],):
+            raise ValueError(
+                "The quality filter is not aligned with the held-out target rows: "
+                f"mask={quality_mask.shape}, target={target.shape}"
+            )
+
+        # Training and prediction used every source and target ROI. This row selection therefore
+        # leaves coupled models such as RRR untouched and changes only the reported metric.
+        subgroup_scores = {
+            "r2": _pooled_subset_r2(prediction, target, np.ones(target.shape[0], dtype=bool)),
+            "r2_quality_filtered": _pooled_subset_r2(prediction, target, quality_mask),
+            "r2_notquality_filtered": _pooled_subset_r2(prediction, target, ~quality_mask),
+            "num_quality_filtered_rois": int(np.sum(quality_mask)),
+            "num_notquality_filtered_rois": int(np.sum(~quality_mask)),
+        }
+        return {
+            **score,
+            **subgroup_scores,
+            **_per_environment_scores(model, session, self.spks_type, report),
+            **quality,
+        }
 
 
 # Residual localization is reported for two membership place fields: ``xval`` estimates the place
