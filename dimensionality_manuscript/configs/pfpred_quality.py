@@ -19,6 +19,14 @@ The prediction-quality keys come in two flavours: the top-level ones (``r2``,
 session's *best* environment, while the ``*_slot`` keys repeat the measurement
 for every environment on that same experience-order slot axis, so prediction
 quality can be followed per environment as a mouse gets more familiar with it.
+
+Trial-wise activity amplitude is measured separately within every environment and then reduced
+across trials for each cell. The result keys are the Cartesian product
+``{trial_rms, trial_mean, trial_pf_dot, trial_gain}_{mean, variance, cv}``, returned literally by
+:func:`trial_activity_summary_keys`; every array has shape ``(MAX_ENV_SLOTS, rois)``. Finite-only
+across-ROI mean and median summaries are also stored for all cells, quality-filtered cells, and
+their complement using the established ``{mean|median}_{quality_filtered_|notquality_filtered_}``
+naming convention; :func:`trial_activity_population_summary_keys` enumerates them.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from scipy.stats import spearmanr, skew, kurtosis
 
 from vrAnalysis.helpers import vectorRSquared
 from vrAnalysis.helpers.signals import vectorCorrelation
+from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_frame_behavior, get_placefield
 from vrAnalysis.processors.spkmaps import SpkmapProcessor, SpkmapParams
 from vrAnalysis.processors.support import median_zscore
@@ -38,8 +47,31 @@ from vrAnalysis.sessions import B2Session, SpksTypes
 from ..env_order import MAX_ENV_SLOTS, load_env_order
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry
+from .gain_regression import gaussian_gain_matrix
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
+
+# Each trial metric is reduced across trials with each statistic.  The completed result key is
+# ``f"{metric}_{statistic}"``; ``trial_activity_summary_keys()`` returns the literal 12-key list.
+TRIAL_ACTIVITY_METRICS: tuple[str, ...] = ("trial_rms", "trial_mean", "trial_pf_dot", "trial_gain")
+TRIAL_ACTIVITY_STATISTICS: tuple[str, ...] = ("mean", "variance", "cv")
+TRIAL_ACTIVITY_ROI_STATISTICS: tuple[str, ...] = ("mean", "median")
+TRIAL_ACTIVITY_SUBSETS: tuple[str, ...] = ("", "quality_filtered_", "notquality_filtered_")
+
+
+def trial_activity_summary_keys() -> list[str]:
+    """Every per-slot, per-ROI trial-activity summary key emitted by this config."""
+    return [f"{metric}_{statistic}" for metric in TRIAL_ACTIVITY_METRICS for statistic in TRIAL_ACTIVITY_STATISTICS]
+
+
+def trial_activity_population_summary_keys() -> list[str]:
+    """Every finite-only across-ROI summary key emitted by this config."""
+    return [
+        f"{roi_statistic}_{subset}{key}"
+        for roi_statistic in TRIAL_ACTIVITY_ROI_STATISTICS
+        for subset in TRIAL_ACTIVITY_SUBSETS
+        for key in trial_activity_summary_keys()
+    ]
 
 
 @dataclass(frozen=True)
@@ -51,7 +83,9 @@ class PFPredQualityConfig(AnalysisConfigBase):
     spks_type : SpksTypes
         Spike type to use for the place-field prediction.
     reliability_threshold : float
-        Reliability cutoff for the R² histogram of reliable ROIs.
+        Reliability cutoff for the R² histogram and quality-filtered trial summaries.
+    fraction_active_threshold : float
+        Fraction-active cutoff for quality-filtered trial summaries.
     accuracy_pct : float
         Percentile of true activity used as the accuracy threshold for
         fraction_accurate (fraction of frames where |pred - act| < threshold).
@@ -75,10 +109,13 @@ class PFPredQualityConfig(AnalysisConfigBase):
     # v6: added per-ROI RMS error and its binned, KDE, and per-slot counterparts.
     # v7: added RMS normalized by each ROI's activity standard deviation.
     # v8: added total, prediction, and residual variance, plus prediction/total variance.
-    schema_version: str = "v8"
+    # v9: added per-cell summaries of four trial-wise activity-amplitude measurements, per-cell
+    # fraction active and quality masks, and finite-only population summaries by quality subset.
+    schema_version: str = "v9"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
-    reliability_threshold: float = 0.7
+    reliability_threshold: float = 0.3
+    fraction_active_threshold: float = 0.1
     accuracy_pct: float = 5.0
     n_hist_bins: int = 40
     n_kde_grid: int = 200
@@ -94,6 +131,10 @@ class PFPredQualityConfig(AnalysisConfigBase):
     def validate(self):
         if self.spks_type not in VALID_SPKS_TYPES:
             raise ValueError(f"Unknown spks_type {self.spks_type!r}. Available: {VALID_SPKS_TYPES}")
+        if not -1 <= self.reliability_threshold <= 1:
+            raise ValueError("reliability_threshold must be between -1 and 1")
+        if not 0 <= self.fraction_active_threshold <= 1:
+            raise ValueError("fraction_active_threshold must be between 0 and 1")
 
     @property
     def bin_edges(self) -> np.ndarray:
@@ -108,7 +149,10 @@ class PFPredQualityConfig(AnalysisConfigBase):
         return np.linspace(0, self.peak_hist_max, self.n_peak_hist_bins + 1)
 
     def summary(self) -> str:
-        return f"{self.display_name}_spks={self.spks_type}_{self.schema_version}"
+        return (
+            f"{self.display_name}_spks={self.spks_type}_rel={self.reliability_threshold:g}"
+            f"_fa={self.fraction_active_threshold:g}_{self.schema_version}"
+        )
 
     def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
         prev_spks_type = session.params.spks_type
@@ -153,11 +197,234 @@ class PFPredQualityConfig(AnalysisConfigBase):
             result["r2_hist_counts"] = r2_hist_counts.astype(float)
 
             result.update(_placefield_peaks(session, spks, smp, self.peak_bin_edges))
+            result.update(
+                _trial_activity_by_slot(
+                    session,
+                    spks,
+                    smp,
+                    reliability,
+                    env_maps,
+                    best_env,
+                    self.reliability_threshold,
+                    self.fraction_active_threshold,
+                )
+            )
             result.update(_r2_by_slot(session, spks, placefield_prediction, extras, reliability, env_maps, best_env, self.kde_grid))
 
             return result
         finally:
             session.params.spks_type = prev_spks_type
+
+
+def _summarize_trial_activity(trial_values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Reduce per-ROI, per-trial measurements to mean, variance, and coefficient of variation.
+
+    Every input has shape ``(rois, trials)``. Variance and standard deviation use ``ddof=0``.
+    The coefficient of variation is ``std / mean`` and is NaN when the mean is non-finite or
+    effectively zero. Result names follow ``{trial_metric}_{statistic}`` and are enumerated by
+    :func:`trial_activity_summary_keys`.
+    """
+    result: dict[str, np.ndarray] = {}
+    for metric in TRIAL_ACTIVITY_METRICS:
+        values = np.asarray(trial_values[metric], dtype=float)
+        finite = np.isfinite(values)
+        count = np.sum(finite, axis=1)
+        total = np.sum(np.where(finite, values, 0.0), axis=1)
+        mean = np.divide(total, count, out=np.full(values.shape[0], np.nan), where=count > 0)
+        centered = np.where(finite, values - mean[:, None], 0.0)
+        variance = np.divide(
+            np.sum(centered**2, axis=1),
+            count,
+            out=np.full(values.shape[0], np.nan),
+            where=count > 0,
+        )
+        valid_mean = np.isfinite(mean) & (np.abs(mean) > np.finfo(float).eps)
+        cv = np.divide(np.sqrt(variance), mean, out=np.full_like(mean, np.nan), where=valid_mean)
+        result[f"{metric}_mean"] = mean
+        result[f"{metric}_variance"] = variance
+        result[f"{metric}_cv"] = cv
+    return result
+
+
+def _summarize_trial_activity_across_rois(
+    per_roi: dict[str, np.ndarray],
+    quality_filtered_roi_mask: np.ndarray,
+) -> dict[str, float]:
+    """Finite-only mean and median of every per-ROI trial summary for three ROI subsets.
+
+    Naming matches :class:`RegressionPlacefieldResidualConfig`: no subset prefix means all ROIs,
+    ``quality_filtered_`` means cells above both thresholds, and ``notquality_filtered_`` is the
+    complement. In particular, an invalid gain does not poison a subset summary; that cell is
+    omitted for that gain key while remaining available for other finite metrics.
+    """
+    quality_filtered_roi_mask = np.asarray(quality_filtered_roi_mask, dtype=bool)
+    subset_masks = {
+        "": np.ones_like(quality_filtered_roi_mask, dtype=bool),
+        "quality_filtered_": quality_filtered_roi_mask,
+        "notquality_filtered_": ~quality_filtered_roi_mask,
+    }
+    result: dict[str, float] = {}
+    for key in trial_activity_summary_keys():
+        values = np.asarray(per_roi[key], dtype=float)
+        for subset, subset_mask in subset_masks.items():
+            finite_values = values[subset_mask & np.isfinite(values)]
+            result[f"mean_{subset}{key}"] = float(np.mean(finite_values)) if finite_values.size else np.nan
+            result[f"median_{subset}{key}"] = float(np.median(finite_values)) if finite_values.size else np.nan
+    return result
+
+
+def _trial_activity_measurements(spkmap: np.ndarray, bin_centers: np.ndarray) -> dict[str, np.ndarray]:
+    """Measure four activity amplitudes for every ROI and trial in one environment.
+
+    Parameters
+    ----------
+    spkmap : np.ndarray
+        Trial-resolved activity with shape ``(rois, trials, position_bins)``.
+    bin_centers : np.ndarray
+        Position-bin centers used by the Gaussian gain estimator.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        ``trial_rms`` is RMS across position, ``trial_mean`` is the position mean,
+        ``trial_pf_dot`` is the dot product with the unit-L2 place field formed from all trials,
+        and ``trial_gain`` is the all-trial Gaussian place-field gain used by
+        :class:`~dimensionality_manuscript.configs.gain_regression.GainRegressionConfig`.
+        Each array has shape ``(rois, trials)``. No reliability filtering is applied; failed or
+        degenerate Gaussian place-field fits yield NaN gain for that cell.
+    """
+    spkmap = np.asarray(spkmap, dtype=float)
+    finite = np.isfinite(spkmap)
+    bin_count = np.sum(finite, axis=2)
+    trial_sum = np.sum(np.where(finite, spkmap, 0.0), axis=2)
+    trial_square_sum = np.sum(np.where(finite, spkmap**2, 0.0), axis=2)
+    trial_mean = np.divide(trial_sum, bin_count, out=np.full(spkmap.shape[:2], np.nan), where=bin_count > 0)
+    trial_rms = np.sqrt(np.divide(trial_square_sum, bin_count, out=np.full(spkmap.shape[:2], np.nan), where=bin_count > 0))
+
+    pf_count = np.sum(finite, axis=1)
+    mean_pf = np.divide(
+        np.sum(np.where(finite, spkmap, 0.0), axis=1),
+        pf_count,
+        out=np.full((spkmap.shape[0], spkmap.shape[2]), np.nan),
+        where=pf_count > 0,
+    )
+    pf_norm = np.sqrt(np.nansum(mean_pf**2, axis=1))
+    valid_norm = np.isfinite(pf_norm) & (pf_norm > np.finfo(float).eps)
+    unit_pf = np.divide(
+        mean_pf,
+        pf_norm[:, None],
+        out=np.full_like(mean_pf, np.nan),
+        where=valid_norm[:, None],
+    )
+    dot_valid = finite & np.isfinite(unit_pf[:, None, :])
+    trial_pf_dot = np.sum(np.where(dot_valid, spkmap * unit_pf[:, None, :], 0.0), axis=2)
+    trial_pf_dot[~np.any(dot_valid, axis=2)] = np.nan
+
+    trial_gain, _, _ = gaussian_gain_matrix(spkmap, np.asarray(bin_centers, dtype=float))
+    return {
+        "trial_rms": trial_rms,
+        "trial_mean": trial_mean,
+        "trial_pf_dot": trial_pf_dot,
+        "trial_gain": trial_gain,
+    }
+
+
+def _trial_activity_by_slot(
+    session: B2Session,
+    spks: np.ndarray,
+    smp: SpkmapProcessor,
+    reliability,
+    env_maps,
+    best_env: int,
+    reliability_threshold: float,
+    fraction_active_threshold: float,
+) -> dict[str, np.ndarray]:
+    """Per-cell and quality-subset trial summaries on the environment-slot axis.
+
+    A cell is quality filtered within an environment when both its reliability and fraction
+    active are strictly above their thresholds. ``notquality_filtered`` is the complement.
+    Across-ROI summaries explicitly select finite values, so failed trial-gain fits are ignored.
+    """
+    frame_behavior = get_frame_behavior(session)
+    trial_placefields = get_placefield(
+        spks,
+        frame_behavior,
+        smp.dist_edges,
+        smp.params.speed_threshold,
+        average=False,
+        smooth_width=smp.params.smooth_width,
+    )
+    n_rois = spks.shape[1]
+    result = {key: np.full((MAX_ENV_SLOTS, n_rois), np.nan) for key in trial_activity_summary_keys()}
+    result.update({key: np.full(MAX_ENV_SLOTS, np.nan) for key in trial_activity_population_summary_keys()})
+    fraction_active_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
+    quality_filtered_roi_mask_slot = np.zeros((MAX_ENV_SLOTS, n_rois), dtype=bool)
+    num_rois_slot = np.full(MAX_ENV_SLOTS, np.nan)
+    num_quality_filtered_rois_slot = np.full(MAX_ENV_SLOTS, np.nan)
+    num_notquality_filtered_rois_slot = np.full(MAX_ENV_SLOTS, np.nan)
+    best_fraction_active = np.full(n_rois, np.nan)
+    best_quality_filtered_roi_mask = np.zeros(n_rois, dtype=bool)
+    mouse_order = load_env_order().get(session.mouse_name)
+    if mouse_order is None:
+        return {
+            **result,
+            "fraction_active": best_fraction_active,
+            "fraction_active_slot": fraction_active_slot,
+            "quality_filtered_roi_mask": best_quality_filtered_roi_mask,
+            "quality_filtered_roi_mask_slot": quality_filtered_roi_mask_slot,
+            "num_rois_slot": num_rois_slot,
+            "num_quality_filtered_rois_slot": num_quality_filtered_rois_slot,
+            "num_notquality_filtered_rois_slot": num_notquality_filtered_rois_slot,
+        }
+
+    bin_centers = 0.5 * (np.asarray(smp.dist_edges[:-1]) + np.asarray(smp.dist_edges[1:]))
+    env_to_index = {int(env): idx for idx, env in enumerate(env_maps.environments)}
+    for env in sorted(int(value) for value in np.unique(trial_placefields.environment) if value >= 0):
+        if env not in mouse_order or env not in env_to_index:
+            continue
+        slot = mouse_order.index(env)
+        if slot >= MAX_ENV_SLOTS:
+            continue
+        pf_env = trial_placefields.filter_by_environment(env)
+        spkmap = np.transpose(pf_env.placefield, (2, 0, 1))
+        summaries = _summarize_trial_activity(_trial_activity_measurements(spkmap, bin_centers))
+        for key, values in summaries.items():
+            result[key][slot] = values
+
+        fraction_active = FractionActive.compute(
+            spkmap,
+            activity_axis=2,
+            fraction_axis=1,
+            activity_method="rms",
+            fraction_method="participation",
+        )
+        env_index = env_to_index[env]
+        relia = np.asarray(reliability.values[env_index])
+        quality_filtered = np.isfinite(relia) & np.isfinite(fraction_active)
+        quality_filtered &= relia > reliability_threshold
+        quality_filtered &= fraction_active > fraction_active_threshold
+
+        fraction_active_slot[slot] = fraction_active
+        quality_filtered_roi_mask_slot[slot] = quality_filtered
+        num_rois_slot[slot] = n_rois
+        num_quality_filtered_rois_slot[slot] = np.sum(quality_filtered)
+        num_notquality_filtered_rois_slot[slot] = np.sum(~quality_filtered)
+        for key, value in _summarize_trial_activity_across_rois(summaries, quality_filtered).items():
+            result[key][slot] = value
+        if env_index == best_env:
+            best_fraction_active = fraction_active
+            best_quality_filtered_roi_mask = quality_filtered
+
+    return {
+        **result,
+        "fraction_active": best_fraction_active,
+        "fraction_active_slot": fraction_active_slot,
+        "quality_filtered_roi_mask": best_quality_filtered_roi_mask,
+        "quality_filtered_roi_mask_slot": quality_filtered_roi_mask_slot,
+        "num_rois_slot": num_rois_slot,
+        "num_quality_filtered_rois_slot": num_quality_filtered_rois_slot,
+        "num_notquality_filtered_rois_slot": num_notquality_filtered_rois_slot,
+    }
 
 
 def _placefield_peaks(
