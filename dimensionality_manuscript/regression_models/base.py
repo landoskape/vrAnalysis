@@ -267,6 +267,14 @@ class RegressionModel(ABC, Generic[H]):
             If the registry uses no buffer between chunks, in which case adjacent chunks are
             indistinguishable from a single chunk.
         """
+        # TrialRegistry assigns whole trials to folds. Returning one constant chunk makes the
+        # structured-gain model's existing (chunk, trial) grouping reduce exactly to trial, without
+        # changing the ordinary PopulationRegistry path or any existing model behavior.
+        if getattr(self.registry, "gain_unit_mode", None) == "trial":
+            population, _ = self.registry.get_population(session, spks_type)
+            idx = np.array(population.get_split_times(self.registry.time_split[split], within_idx_samples=False))
+            return np.zeros(len(idx), dtype=np.int64)
+
         if self.registry.registry_params.time_split_num_buffer < 1:
             raise ValueError(
                 "Chunk boundaries are only recoverable when time splits leave a buffer between "
