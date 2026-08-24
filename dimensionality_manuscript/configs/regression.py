@@ -47,8 +47,8 @@ KEY_FIGURE_MODELS: list[ModelName] = [
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
-    # "external_placefield_1d_structured_gain",
-    # "internal_placefield_1d_structured_gain",
+    "external_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain",
     "external_placefield_1d_structured_additive",
     "internal_placefield_1d_structured_additive",
     "rrr",
@@ -220,9 +220,7 @@ def _regression_quality_filter(
             fraction_method="participation",
         )
 
-    quality_filtered_roi_mask = np.any(reliability > reliability_threshold, axis=0) & np.any(
-        fraction_active > fraction_active_threshold, axis=0
-    )
+    quality_filtered_roi_mask = np.any(reliability > reliability_threshold, axis=0) & np.any(fraction_active > fraction_active_threshold, axis=0)
     return {
         "reliability": reliability,
         "fraction_active": fraction_active,
@@ -380,10 +378,7 @@ class RegressionConfig(AnalysisConfigBase):
         if prediction.shape != target.shape:
             raise ValueError(f"Held-out prediction and target are misaligned: {prediction.shape} versus {target.shape}")
         if quality_mask.shape != (target.shape[0],):
-            raise ValueError(
-                "The quality filter is not aligned with the held-out target rows: "
-                f"mask={quality_mask.shape}, target={target.shape}"
-            )
+            raise ValueError("The quality filter is not aligned with the held-out target rows: " f"mask={quality_mask.shape}, target={target.shape}")
 
         # Training and prediction used every source and target ROI. This row selection therefore
         # leaves coupled models such as RRR untouched and changes only the reported metric.
