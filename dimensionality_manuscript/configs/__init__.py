@@ -18,7 +18,7 @@ from .regression import (
     StructuredAdditiveRankConfig,
     RankModelsSweepConfig,
 )
-from .trial_regression import TrialSplitRegressionConfig
+from .trial_regression import TrialPlacecellRegressionConfig, TrialSplitRegressionConfig
 
 # from .rrr_to_external_latents import RRRToExternalLatentsConfig # Not in use at the moment, might revive later, but import currently broken
 from .subspace import SubspaceConfig
@@ -70,6 +70,7 @@ ANALYSIS_CONFIG_CLASS_LIST: tuple[type["AnalysisConfigBase"], ...] = (
     TilburyFitConfig,
     TilburySweepConfig,
     TrialSplitRegressionConfig,
+    TrialPlacecellRegressionConfig,
     VectorGainRankConfig,
 )
 
@@ -124,6 +125,7 @@ __all__ = [
     "SmoothGPSweepConfig",
     "TilburySweepConfig",
     "TrialSplitRegressionConfig",
+    "TrialPlacecellRegressionConfig",
     "get_data_config",
     "list_data_configs",
 ]

@@ -31,6 +31,7 @@ from ._shared import (
     style_axis,
     support_length,
 )
+from .timeline import ExperimentTimeline
 
 #: Grid resolution of an ECDF curve. The ECDF is a step function, so this only has to be fine
 #: enough that the steps are not visible at figure scale.
@@ -783,4 +784,203 @@ class R2Familiarity(FigureViewer):
         # Last, because it measures the drawn figure: everything that takes up room must be on it.
         if state["square_panels"]:
             fit_square_panels(fig, ax)
+        return fig
+
+
+class ReliabilityPredictionSummary(FigureViewer):
+    """Experiment timeline and three prediction-quality familiarity summaries.
+
+    ``ax[0]`` is :class:`ExperimentTimeline` for the selected mouse. The remaining panels
+    show, in order, spatial reliability, normalized RMS prediction error, and the fraction of
+    activity variance in the place-field prediction. Each colored curve is an environment in
+    acquisition order and is aggregated across mice.
+
+    ``mode="within"`` counts sessions separately within each environment. ``mode="overall"``
+    retains each mouse's overall session index, leaving gaps where an environment was not run.
+    ``cells`` and ``reliability_threshold`` provide the same all/place-cell/non-place-cell
+    selections as :class:`~.reliability_prediction.ReliabilityPredictionFamiliarity`. All three
+    panels use one shared finite-value ROI mask, so they always summarize the same cells.
+    """
+
+    _METRICS = (
+        ("reliability", "Spatial Reliability"),
+        ("norm_rms", "Normalized Error"),
+        ("fraction_variance", "PF Variance Fraction"),
+    )
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        *,
+        mouse: str | None = None,
+        mode: str = "within",
+        cells: str = "all",
+        reliability_threshold: float = 0.7,
+        summary_stat: str = "mean",
+        plot_style: str = "errorPlot",
+        hide_error: bool = False,
+        show_legend: bool = True,
+        num_training: int = 6,
+        schema_width_ratio: float = 1.5,
+        ylim_01: bool = True,
+        fontsize: float = 8.0,
+        figsize: tuple[float, float] = (9.0, 2.2),
+        **selection_defaults,
+    ):
+        self.results = results
+        self.figsize = figsize
+        self.selection_names = add_data_selection_widgets(self, results, defaults=selection_defaults)
+        self._load_summary_arrays(self.state)
+
+        mouse_names = np.asarray(results.mouse_names)
+        self.mice = sorted({str(name) for name in mouse_names})
+        if not self.mice:
+            raise ValueError("The aggregator contains no mice.")
+        self._rows_by_mouse = {
+            name: np.array(
+                sorted(np.flatnonzero(mouse_names == name), key=lambda row: _session_sort_key(results.sessions[row])),
+                dtype=int,
+            )
+            for name in self.mice
+        }
+        initial_mouse = mouse if mouse in self.mice else self.mice[0]
+
+        self.add_selection("mouse", value=initial_mouse, options=self.mice)
+        self.add_selection("mode", value=mode, options=["within", "overall"])
+        self.add_selection("cells", value=cells, options=["all", "PCs", "non-PCs"])
+        self.add_float("reliability_threshold", value=reliability_threshold, min=-1.0, max=1.0, step=0.05)
+        self.add_selection("summary_stat", value=summary_stat, options=["mean", "median"])
+        self.add_selection("plot_style", value=plot_style, options=["each", "errorPlot"])
+        self.add_boolean("hide_error", value=hide_error)
+        self.add_boolean("show_legend", value=show_legend)
+        self.add_integer("num_training", value=num_training, min=0, max=60)
+        self.add_float("schema_width_ratio", value=schema_width_ratio, min=0.1, max=10.0)
+        self.add_boolean("ylim_01", value=ylim_01)
+        self.add_float("fontsize", value=fontsize, min=3.0, max=30.0)
+
+        # The child owns the canonical timeline defaults and renderer. Its widgets stay hidden;
+        # this summary only overrides the mouse, training-session count, and shared font size.
+        self.timeline = ExperimentTimeline(results.sessions, mouse=initial_mouse, num_training=num_training, fontsize=fontsize)
+
+        self.on_change(list(self.selection_names), self.reload_summary_arrays)
+        self.on_change(
+            ["mouse", "mode", "cells", "reliability_threshold", "summary_stat"],
+            self.refresh_summary_data,
+        )
+        self.refresh_summary_data(self.state)
+
+    def _load_summary_arrays(self, state) -> None:
+        keys = ["reliability_slot", "norm_rms_slot", "frac_var_pred_slot", "env_slot_ids"]
+        out = self.results.sel(keys=keys, squeeze_ones=False, **data_selection(state, self.results, self.selection_names))
+        missing = [key for key in keys if key not in out]
+        if missing:
+            raise KeyError(f"Aggregator is missing {missing} -- rerun the pfpred_quality sweep (schema v8 required).")
+        self.reliability_slot = np.asarray(out["reliability_slot"], dtype=float)
+        self.norm_rms_slot = np.asarray(out["norm_rms_slot"], dtype=float)
+        self.fraction_variance_slot = np.asarray(out["frac_var_pred_slot"], dtype=float)
+        self.env_slot_ids = np.asarray(out["env_slot_ids"], dtype=float)
+        if not (self.reliability_slot.shape == self.norm_rms_slot.shape == self.fraction_variance_slot.shape):
+            raise ValueError("reliability_slot, norm_rms_slot, and frac_var_pred_slot must have matching shapes.")
+        if self.env_slot_ids.shape != self.reliability_slot.shape[:2]:
+            raise ValueError("env_slot_ids must match the session and environment-slot dimensions.")
+        self.num_slots = self.reliability_slot.shape[1]
+
+    def reload_summary_arrays(self, state) -> None:
+        self._load_summary_arrays(state)
+        self.refresh_summary_data(self.state)
+
+    def _summary_values(self, row: int, slot: int, state) -> dict[str, np.ndarray] | None:
+        if not np.isfinite(self.env_slot_ids[row, slot]):
+            return None
+        arrays = {
+            "reliability": self.reliability_slot[row, slot],
+            "norm_rms": self.norm_rms_slot[row, slot],
+            "fraction_variance": self.fraction_variance_slot[row, slot],
+        }
+        keep = np.logical_and.reduce([np.isfinite(values) for values in arrays.values()])
+        reliability = arrays["reliability"]
+        is_placecell = (reliability > state["reliability_threshold"]) | np.isclose(reliability, state["reliability_threshold"])
+        if state["cells"] == "PCs":
+            keep &= is_placecell
+        elif state["cells"] == "non-PCs":
+            keep &= ~is_placecell
+        return {name: values[keep] for name, values in arrays.items()} if np.any(keep) else None
+
+    @staticmethod
+    def _reduce(values: np.ndarray, stat: str) -> float:
+        return float(np.mean(values) if stat == "mean" else np.median(values))
+
+    def refresh_summary_data(self, state) -> None:
+        self.timeline.refresh_data({**self.timeline.state, "mouse": state["mouse"]})
+        self.metric_stacks: dict[str, dict[int, np.ndarray]] = {name: {} for name, _ in self._METRICS}
+        for slot in range(self.num_slots):
+            by_metric = {name: [] for name, _ in self._METRICS}
+            for mouse in self.mice:
+                curves = {name: [] for name, _ in self._METRICS}
+                for row in self._rows_by_mouse[mouse]:
+                    values = self._summary_values(int(row), slot, state)
+                    if values is not None:
+                        for name, _ in self._METRICS:
+                            curves[name].append(self._reduce(values[name], state["summary_stat"]))
+                    elif state["mode"] == "overall":
+                        for name, _ in self._METRICS:
+                            curves[name].append(np.nan)
+                for name, _ in self._METRICS:
+                    by_metric[name].append(np.asarray(curves[name]))
+            for name, _ in self._METRICS:
+                self.metric_stacks[name][slot] = pad_stack(by_metric[name])
+
+    def _draw_summary_panel(self, ax, stacks, state, ylabel: str, *, legend: bool = False) -> None:
+        xmax = 0
+        for slot, stack in stacks.items():
+            length = support_length(stack)
+            if length == 0:
+                continue
+            render_curve_group(
+                ax,
+                np.arange(1, length + 1),
+                stack[:, :length],
+                env_slot_color(slot),
+                state["plot_style"],
+                label=ordinal(slot + 1),
+                hide_error=state["hide_error"],
+                linewidth=1.5,
+            )
+            xmax = max(xmax, length)
+        ax.set_xlabel("Env session #" if state["mode"] == "within" else "Overall session #", fontsize=state["fontsize"])
+        ax.set_ylabel(ylabel, fontsize=state["fontsize"])
+        if state["ylim_01"]:
+            ax.set_ylim(0.0, 1.0)
+        if xmax:
+            ax.set_xlim(1, xmax)
+        style_axis(ax, fontsize=state["fontsize"])
+        if legend:
+            handle = ax.legend(fontsize=state["fontsize"], frameon=False, handlelength=0.8, handletextpad=0.5, title="Env")
+            if handle is not None:
+                handle.get_title().set_fontsize(state["fontsize"])
+
+    def plot(self, state):
+        fig, ax = self.new_subplots(
+            1,
+            4,
+            figsize=self.figsize,
+            layout="constrained",
+            width_ratios=[state["schema_width_ratio"], 1.0, 1.0, 1.0],
+        )
+        timeline_state = {
+            **self.timeline.state,
+            "mouse": state["mouse"],
+            "num_training": state["num_training"],
+            "fontsize": state["fontsize"],
+        }
+        self.timeline.refresh_data(timeline_state)
+        self.timeline.draw(ax[0], timeline_state)
+        for index, (name, ylabel) in enumerate(self._METRICS, start=1):
+            self._draw_summary_panel(
+                ax[index],
+                self.metric_stacks[name],
+                state,
+                ylabel,
+                legend=state["show_legend"] and index == 3,
+            )
         return fig

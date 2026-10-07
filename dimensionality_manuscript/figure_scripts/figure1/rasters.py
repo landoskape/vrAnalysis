@@ -67,9 +67,13 @@ class StackedRasterFocus(FigureViewer):
     show_zero_sigma : bool
         Label the low end of the gray_r colorscale with ``0 sigma``.
     show_scalebar : bool
-        Draw a time scalebar on the residual raster, mirroring the colorscale inset's placement.
+        Draw a time scalebar on the residual raster.
     scalebar_seconds : float
         Duration of the scalebar, in seconds of imaging time.
+    scalebar_xy : tuple[float, float]
+        Left endpoint of the scalebar, in residual-axes coordinates.
+    scalebar_text_yoffset : float
+        Vertical offset of the scalebar label above the bar, in residual-axes coordinates.
     fontsize : float
         Font size of every text element: panel titles, axis labels, colorscale end labels, and
         the scalebar label.
@@ -100,6 +104,8 @@ class StackedRasterFocus(FigureViewer):
         show_zero_sigma: bool = False,
         show_scalebar: bool = False,
         scalebar_seconds: float = 60.0,
+        scalebar_xy: tuple[float, float] = (0.03, 0.2),
+        scalebar_text_yoffset: float = 0.05,
         fontsize: float = 8.0,
         figsize: tuple[float, float] = (12.0, 6.0),
         colorscale_text_y: float = 0.5,
@@ -156,6 +162,9 @@ class StackedRasterFocus(FigureViewer):
         self.add_boolean("show_zero_sigma", value=show_zero_sigma)
         self.add_boolean("show_scalebar", value=show_scalebar)
         self.add_float("scalebar_seconds", value=scalebar_seconds, min=1.0, max=600.0)
+        self.add_float("scalebar_x", value=scalebar_xy[0], min=0.0, max=1.0, step=0.01)
+        self.add_float("scalebar_y", value=scalebar_xy[1], min=0.0, max=1.0, step=0.01)
+        self.add_float("scalebar_text_yoffset", value=scalebar_text_yoffset, min=-1.0, max=1.0, step=0.01)
 
         # --- style ---
         self.add_float("fontsize", value=fontsize, min=1.0, max=30.0)
@@ -295,21 +304,19 @@ class StackedRasterFocus(FigureViewer):
         ax.set_yinverted(True)
 
     def _draw_scalebar(self, ax, state, num_frames):
-        """Time scalebar, mirroring the colorscale inset to the other side of the axes.
+        """Time scalebar positioned in residual-axes coordinates.
 
         Frames are non-contiguous (invalid frames are dropped), so this measures plotted imaging
         time, not the wall-clock time the slice spans.
         """
         seconds = state["scalebar_seconds"]
-        rect = colorscale_inset_rect(state)
         bar_width = (seconds / self.frame_period) / num_frames  # axes fraction
-        x0 = 1.0 - (rect[0] + rect[2])  # same inset from the edge, mirrored to the left
-        ycenter = rect[1] + rect[3] / 2
+        x0, y0 = state["scalebar_x"], state["scalebar_y"]
         label = f"{seconds / 60:g} min" if seconds >= 60 else f"{seconds:g} s"
-        ax.plot([x0, x0 + bar_width], [ycenter, ycenter], transform=ax.transAxes, color="k", linewidth=2.5)
+        ax.plot([x0, x0 + bar_width], [y0, y0], transform=ax.transAxes, color="k", linewidth=2.5)
         ax.text(
             x0 + bar_width / 2,
-            ycenter + 0.05,
+            y0 + state["scalebar_text_yoffset"],
             label,
             transform=ax.transAxes,
             ha="center",
@@ -343,8 +350,8 @@ class StackedRasterFocus(FigureViewer):
 
         panel_titles = (
             "Deconvolved Calcium Activity" if self._config.spks_type == "oasis" else "Fluorescence",
-            "Prediction From Place Field",
-            "Residuals",
+            "Placefield Model",
+            "Placefield Residuals",
         )
         for a, title in zip(ax, panel_titles):
             a.set_xticks([])

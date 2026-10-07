@@ -134,14 +134,14 @@ class PlaceFieldStructureConfig(AnalysisConfigBase):
 
 @dataclass(frozen=True)
 class CrossValidatedPlacefieldsConfig(AnalysisConfigBase):
-    """Precompute even/odd place fields and all-trial quality metrics for every cell.
+    """Precompute even/odd place fields, held-out RMS error, and quality metrics.
 
     Results use the mouse's experience-order environment-slot axis. No reliability or
     fraction-active filtering happens here: the figure applies those thresholds interactively
     without rebuilding place fields.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     num_bins: int = 100
@@ -183,6 +183,7 @@ class CrossValidatedPlacefieldsConfig(AnalysisConfigBase):
             n_neurons = spks.shape[1]
             even_pf = np.full((MAX_ENV_SLOTS, n_neurons, self.num_bins), np.nan)
             odd_pf = np.full_like(even_pf, np.nan)
+            odd_rms_error = np.full_like(even_pf, np.nan)
             reliability = np.full((MAX_ENV_SLOTS, n_neurons), np.nan)
             fraction_active = np.full_like(reliability, np.nan)
 
@@ -208,6 +209,11 @@ class CrossValidatedPlacefieldsConfig(AnalysisConfigBase):
 
                 even_pf[slot] = _mean_selected_trials(spkmap, even_rows)
                 odd_pf[slot] = _mean_selected_trials(spkmap, odd_rows)
+                # Cross-validated counterpart of PlaceFieldPredictionFocus.rms_error:
+                # predict every held-out odd trial from the even-trial place field, square
+                # before averaging trials, then take the root.  This cannot be recovered from
+                # odd_pf - even_pf because trial averaging has already discarded the variance.
+                odd_rms_error[slot] = _rms_prediction_error(spkmap, even_pf[slot], odd_rows)
                 if spkmap.shape[1] >= 2:
                     reliability[slot] = reliability_loo(spkmap)
                 fraction_active[slot] = FractionActive.compute(
@@ -221,6 +227,7 @@ class CrossValidatedPlacefieldsConfig(AnalysisConfigBase):
             return {
                 "even_placefield": even_pf,
                 "odd_placefield": odd_pf,
+                "odd_rms_error": odd_rms_error,
                 "reliability": reliability,
                 "fraction_active": fraction_active,
                 "env_slot_ids": env_slot_ids,
@@ -285,6 +292,12 @@ def _mean_selected_trials(spkmap: np.ndarray, trials: np.ndarray) -> np.ndarray:
     count = np.sum(np.isfinite(selected), axis=1)
     total = np.nansum(selected, axis=1)
     return np.divide(total, count, out=np.full(total.shape, np.nan, dtype=float), where=count > 0)
+
+
+def _rms_prediction_error(spkmap: np.ndarray, prediction: np.ndarray, trials: np.ndarray) -> np.ndarray:
+    """Per-ROI, per-position RMS error when ``prediction`` is applied to selected trials."""
+    squared_error = (spkmap - prediction[:, None, :]) ** 2
+    return np.sqrt(_mean_selected_trials(squared_error, trials))
 
 
 def _compute_pf_features(spkmap: np.ndarray, bin_centers: np.ndarray) -> dict[str, np.ndarray]:

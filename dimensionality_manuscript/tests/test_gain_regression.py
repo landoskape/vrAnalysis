@@ -8,6 +8,7 @@ import torch
 
 from dimensionality_manuscript.configs.gain_regression import (
     CURVE_KEYS,
+    GAIN_ESTIMATORS,
     GAIN_TRANSFORMS,
     MAX_ENV_SLOTS,
     PLACEFIELD_SPLITS,
@@ -17,6 +18,7 @@ from dimensionality_manuscript.configs.gain_regression import (
     apply_gain_transform,
     evaluate_null_rolls,
     gaussian_gain_matrix,
+    least_squares_gain_matrix,
     optimize_rrr,
     roll_gain_rows,
     score_rrr,
@@ -60,6 +62,19 @@ def test_gaussian_gain_recovers_planted_multipliers():
 
     np.testing.assert_allclose(recovered, gain, atol=1e-6)
     np.testing.assert_allclose(fitted, place_fields, atol=1e-5)
+    np.testing.assert_allclose(prediction, place_fields, atol=1e-12)
+
+
+def test_least_squares_gain_recovers_planted_multipliers():
+    rng = np.random.default_rng(8)
+    place_fields = _place_fields(6, rng)
+    gain = rng.uniform(0.2, 2.0, size=(6, 12))
+    # Normalize the planted gain over the template-building trials, since the nonparametric
+    # template absorbs their mean scale by definition.
+    gain /= np.mean(gain, axis=1, keepdims=True)
+    recovered, fitted, prediction = least_squares_gain_matrix(_trial_maps(place_fields, gain))
+    np.testing.assert_allclose(recovered, gain, atol=1e-10)
+    np.testing.assert_allclose(fitted, prediction)
     np.testing.assert_allclose(prediction, place_fields, atol=1e-12)
 
 
@@ -203,9 +218,7 @@ def test_optimize_rrr_finds_a_low_rank_solution_that_generalizes():
     assert mse_test > 0
 
     # The rank curve is the same model scored at every rank, so it must agree at the winning rank.
-    ranks, scores = fit.model.score_curve(
-        *tensors["test"], ranks=list(range(1, fit.max_rank + 1)), nonnegative=True, dim=None, verbose=False
-    )
+    ranks, scores = fit.model.score_curve(*tensors["test"], ranks=list(range(1, fit.max_rank + 1)), nonnegative=True, dim=None, verbose=False)
     assert scores["r2"][ranks.index(fit.rank)] == pytest.approx(r2_test)
     # The planted rank already captures nearly all the predictable structure.
     assert scores["r2"][ranks.index(rank)] > 0.5
@@ -477,8 +490,9 @@ def test_config_validation_and_variations():
 
     variations = GainRegressionConfig.generate_variations()
     assert {variation.placefield_split for variation in variations} == set(PLACEFIELD_SPLITS)
+    assert {variation.gain_estimator for variation in variations} == set(GAIN_ESTIMATORS)
     assert {variation.gain_transform for variation in variations} == set(GAIN_TRANSFORMS)
-    assert len(variations) == len(PLACEFIELD_SPLITS) * len(GAIN_TRANSFORMS)
+    assert len(variations) == len(PLACEFIELD_SPLITS) * len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS)
     assert len({variation.key() for variation in variations}) == len(variations)
     assert len({variation.summary() for variation in variations}) == len(variations)
 
@@ -486,6 +500,8 @@ def test_config_validation_and_variations():
         GainRegressionConfig(placefield_split="nonsense")
     with pytest.raises(ValueError):
         GainRegressionConfig(gain_transform="log")
+    with pytest.raises(ValueError):
+        GainRegressionConfig(gain_estimator="bad")
     with pytest.raises(ValueError):
         GainRegressionConfig(trial_fractions=(1.0, 0.25))
     with pytest.raises(ValueError):

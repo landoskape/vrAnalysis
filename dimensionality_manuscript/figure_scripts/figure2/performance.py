@@ -87,6 +87,14 @@ class ModelPerformanceViewer(FigureViewer):
         aggregator's own param axes and can be seeded here by name.
     """
 
+    base_model_names = tuple(PERFORMANCE_MODEL_NAMES)
+    base_model_labels = PERFORMANCE_MODEL_LABELS
+    base_model_colors = PERFORMANCE_MODEL_COLORS
+    structured_additive_model_name = STRUCTURED_ADDITIVE_MODEL_NAME
+    structured_additive_model_label = STRUCTURED_ADDITIVE_MODEL_LABEL
+    structured_additive_model_color = STRUCTURED_ADDITIVE_MODEL_COLOR
+    performance_metrics = PERFORMANCE_METRICS
+
     def __init__(
         self,
         results: ResultsAggregator,
@@ -116,24 +124,27 @@ class ModelPerformanceViewer(FigureViewer):
         inset_ylim: tuple[float, float] = (-0.02, 0.25),
         **selection_defaults,
     ):
-        if metric not in PERFORMANCE_METRICS:
-            raise ValueError(f"metric must be one of {list(PERFORMANCE_METRICS)}, got {metric!r}")
+        if metric not in self.performance_metrics:
+            raise ValueError(f"metric must be one of {list(self.performance_metrics)}, got {metric!r}")
 
         self.results = results
         self.figsize = figsize
         self.include_structured_additive = include_structured_additive
-        self.model_names = list(PERFORMANCE_MODEL_NAMES)
-        self.model_labels = list(PERFORMANCE_MODEL_LABELS)
-        self.model_colors = list(PERFORMANCE_MODEL_COLORS)
+        self.model_names = list(self.base_model_names)
+        self.model_labels = list(self.base_model_labels)
+        self.model_colors = list(self.base_model_colors)
         if include_structured_additive:
-            self.model_names.insert(2, STRUCTURED_ADDITIVE_MODEL_NAME)
-            self.model_labels.insert(2, STRUCTURED_ADDITIVE_MODEL_LABEL)
-            self.model_colors.insert(2, STRUCTURED_ADDITIVE_MODEL_COLOR)
+            # Shared Residual belongs immediately before Peer Prediction. This also keeps the
+            # insertion correct for subclasses that add another gain model before Peer.
+            insert_at = len(self.model_names) - 1
+            self.model_names.insert(insert_at, self.structured_additive_model_name)
+            self.model_labels.insert(insert_at, self.structured_additive_model_label)
+            self.model_colors.insert(insert_at, self.structured_additive_model_color)
         self._scores = np.empty((len(self.model_names), 0))
 
         # --- data selection (model_name is fixed by self.model_names) ---
         self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)
-        self.add_selection("metric", value=metric, options=list(PERFORMANCE_METRICS))
+        self.add_selection("metric", value=metric, options=list(self.performance_metrics))
         self.add_boolean("avg_by_mouse", value=avg_by_mouse)
 
         # --- main axis style ---
@@ -180,7 +191,7 @@ class ModelPerformanceViewer(FigureViewer):
 
     def plot(self, state):
         fontsize = state["fontsize"]
-        metric_label = PERFORMANCE_METRICS[state["metric"]]
+        metric_label = self.performance_metrics[state["metric"]]
 
         xvals = np.arange(len(self.model_names), dtype=float)
         scores = self._scores

@@ -225,7 +225,7 @@ class MouseSpeedFocus(FigureViewer):
         environments: list[int] | None = None,
         show_first: bool = True,
         show_reward: bool = True,
-        reward_style: str = "patch",
+        reward_style: str = "vlines",
         reward_width_cm: float = 20.0,
         reward_alpha: float = 0.2,
         show_legend: bool = True,
@@ -424,7 +424,7 @@ class MouseSpeedFocus(FigureViewer):
                         )
                     )
                 else:
-                    ax.vlines(start, 0, ymax, color=ENV_NUM_COLORS[env], linestyle=":", linewidth=1.0)
+                    ax.vlines(start, 0, ymax, color=ENV_NUM_COLORS[env], linestyle="-", linewidth=0.8)
 
         # Keep y-ticks at physical speeds (>= 0); the negative margin is legend space only.
         yticks = [t for t in ax.get_yticks() if 0 <= t <= ymax]
@@ -452,7 +452,7 @@ class MouseSpeedFocus(FigureViewer):
         # Patches are self-explanatory in place (colored by environment, at each reward zone), so
         # only the dotted-line style earns a legend entry.
         if state["show_reward"] and state["reward_style"] == "vlines":
-            handles.append(Line2D([0], [0], color="0.3", linewidth=1.0, linestyle=":"))
+            handles.append(Line2D([0], [0], color="0.3", linewidth=1.0, linestyle="-"))
             labels.append("reward zones")
         if state["show_legend"] and handles:
             # pad=0 packs the env segments flush against each other (one continuous swatch).

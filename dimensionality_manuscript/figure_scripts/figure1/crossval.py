@@ -3,9 +3,9 @@
 import matplotlib as mpl
 import numpy as np
 
-from dimensionality_manuscript.configs.behavior_speed_env import REFERENCE_ENV_LENGTH_CM
+from dimensionality_manuscript.configs.behavior_speed_env import ENV_REWARD_MAP, REFERENCE_ENV_LENGTH_CM
 from dimensionality_manuscript.configs.placefield_structure import CrossValidatedPlacefieldsConfig
-from dimensionality_manuscript.env_order import _session_sort_key
+from dimensionality_manuscript.env_order import ENV_NUM_COLORS, _session_sort_key
 from dimensionality_manuscript.figure_scripts.panels import (
     FigureViewer,
     add_data_selection_widgets,
@@ -13,8 +13,7 @@ from dimensionality_manuscript.figure_scripts.panels import (
 )
 from dimensionality_manuscript.pipeline import ResultsAggregator
 
-from ._shared import draw_vertical_colorscale, hide_spines
-
+from ._shared import draw_vertical_colorscale, hide_spines, style_axis
 
 # RMS error is nonnegative.  Sampling only bwr's [0.5, 1] interval preserves its exact white-to-red
 # appearance while assigning the full color range to [0, vmax_error].
@@ -59,8 +58,21 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
         Keep neurons exceeding both all-trial quality thresholds in this environment.
     rms_colormap : {"bwr_positive", "gray_r"}
         Colormap for RMS error. ``bwr_positive`` is the white-to-red half of ``bwr``.
+    show_reward : bool
+        Draw the selected environment's reward-zone start on both maps when it is present in
+        ``ENV_REWARD_MAP``.
+    reward_linewidth : float
+        Width of the reward-zone vertical line.
+    reward_linestyle : {"-", "--", ":", "-."}
+        Style of the reward-zone vertical line.
+    reward_alpha : float
+        Opacity of the reward-zone vertical line.
+    show_reward_legend : bool
+        Add a reward-zone legend to the first map.
     fontsize : float
         Font size of labels and ticks.
+    text_xy : tuple[float, float]
+        Shared axes-fraction position of the two top-right panel labels.
     figsize : tuple[float, float]
         Figure size in inches.
     """
@@ -77,7 +89,13 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
         reliability_threshold: float = 0.7,
         fraction_active_threshold: float = 0.2,
         rms_colormap: str = "bwr_positive",
+        show_reward: bool = True,
+        reward_linewidth: float = 0.8,
+        reward_linestyle: str = "-",
+        reward_alpha: float = 1.0,
+        show_reward_legend: bool = False,
         fontsize: float = 9.0,
+        text_xy: tuple[float, float] = (0.95, 0.95),
         figsize: tuple[float, float] = (6.0, 4.0),
     ):
         self.results = results
@@ -125,7 +143,14 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
         if rms_colormap not in _RMS_COLORMAPS:
             raise ValueError(f"Unknown rms_colormap {rms_colormap!r}; choose one of {list(_RMS_COLORMAPS)}.")
         self.add_selection("rms_colormap", value=rms_colormap, options=list(_RMS_COLORMAPS))
+        self.add_boolean("show_reward", value=show_reward)
+        self.add_float("reward_linewidth", value=reward_linewidth, min=0.1, max=10.0)
+        self.add_selection("reward_linestyle", value=reward_linestyle, options=["-", "--", ":", "-."])
+        self.add_float("reward_alpha", value=reward_alpha, min=0.0, max=1.0)
+        self.add_boolean("show_reward_legend", value=show_reward_legend)
         self.add_float("fontsize", value=fontsize, min=1.0, max=30.0)
+        self.add_float("text_x", value=text_xy[0], min=0.0, max=1.0, step=0.01)
+        self.add_float("text_y", value=text_xy[1], min=0.0, max=1.0, step=0.01)
 
         self.on_change("mouse", self.update_example_session)
         self.on_change("example_session", self.update_example_environment)
@@ -248,24 +273,56 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
             for axis in ax:
                 axis.text(0.5, 0.5, "No neurons pass\nthresholds", transform=axis.transAxes, ha="center", va="center")
 
-        ax[0].set_title("Held-out place fields", fontsize=state["fontsize"])
-        ax[1].set_title("Held-out RMS error", fontsize=state["fontsize"])
-        ax[0].set_ylabel("Neurons (even-trial PF order)", fontsize=state["fontsize"])
-        for axis in ax:
-            axis.set_xlabel("VR position (cm)", fontsize=state["fontsize"])
-            axis.tick_params(axis="both", labelsize=state["fontsize"])
-            hide_spines(axis)
+        for axis, label, spines_visible in zip(
+            ax,
+            ("Placefields", "RMS error"),
+            (("left", "bottom"), ("bottom",)),
+        ):
+            axis.text(
+                state["text_x"],
+                state["text_y"],
+                label,
+                transform=axis.transAxes,
+                ha="right",
+                va="top",
+                fontsize=state["fontsize"],
+            )
+            axis.set_xlim(0, REFERENCE_ENV_LENGTH_CM)
+            axis.set_xlabel("VR Position (cm)", labelpad=-10, fontsize=state["fontsize"])
+            style_axis(
+                axis,
+                fontsize=state["fontsize"],
+                xbounds=(0, REFERENCE_ENV_LENGTH_CM),
+                xticks=(0, REFERENCE_ENV_LENGTH_CM),
+                yticks=(),
+                spines_visible=spines_visible,
+            )
+        ax[0].set_ylabel("ROIs", fontsize=state["fontsize"])
+
+        environment = self.environments[state["env"]]
+        if state["show_reward"] and environment in ENV_REWARD_MAP and environment in ENV_NUM_COLORS:
+            for index, axis in enumerate(ax):
+                axis.axvline(
+                    ENV_REWARD_MAP[environment],
+                    color=ENV_NUM_COLORS[environment],
+                    linewidth=state["reward_linewidth"],
+                    linestyle=state["reward_linestyle"],
+                    alpha=state["reward_alpha"],
+                    label="Reward zone" if index == 0 else None,
+                )
+            if state["show_reward_legend"]:
+                ax[0].legend(loc="lower right", frameon=True, fontsize=state["fontsize"])
 
         draw_vertical_colorscale(
-            ax[0].inset_axes([0.08, 0.15, 0.06, 0.7]),
+            ax[0].inset_axes([0.12, 0.15, 0.06, 0.7]),
             "gray_r",
             low_label="0",
             high_label=f"{state['vmax']:g}",
             fontsize=state["fontsize"],
-            ylabel=r"Activity ($\sigma$)",
+            ylabel=r"Fluorescence ($\sigma$)",
         )
         draw_vertical_colorscale(
-            ax[1].inset_axes([0.08, 0.15, 0.06, 0.7]),
+            ax[1].inset_axes([0.12, 0.15, 0.06, 0.7]),
             rms_cmap,
             low_label="0",
             high_label=f"{state['vmax_error']:g}",

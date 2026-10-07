@@ -21,6 +21,8 @@ EXPECTED_KEY_FIGURE_MODELS = [
     "internal_placefield_1d",
     "external_placefield_1d_gain",
     "internal_placefield_1d_gain",
+    "external_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain",
     "external_placefield_1d_structured_additive",
     "internal_placefield_1d_structured_additive",
     "rrr",

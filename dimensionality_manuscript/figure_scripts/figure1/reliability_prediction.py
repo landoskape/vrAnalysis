@@ -295,10 +295,10 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
 
     ``ax[0]`` is a per-ROI scatter from one selected session and environment. ``ax[1]`` and
     ``ax[2]`` use the experience-slot presentation of :class:`R2Familiarity`'s final panel:
-    each color is an environment in acquisition order, x is the number of sessions the mouse
-    has experienced that environment, and curves are aggregated across mice. The same ROI mask
-    is used in all panels, so enabling either filter keeps the reliability and prediction-quality
-    summaries paired.
+    each color is an environment in acquisition order, and curves are aggregated across mice.
+    The x-axis can count sessions within each environment or retain each mouse's overall session
+    index. The same ROI mask is used in all panels, so enabling either filter keeps the reliability
+    and prediction-quality summaries paired.
 
     Parameters
     ----------
@@ -311,8 +311,13 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
         Prediction-quality value shown on the scatter y-axis and in ``ax[2]``.
         ``pf_peak`` is the peak place-field amplitude in activity-standard-deviation units.
         ``fraction_variance`` is prediction variance divided by activity variance.
-    filter_by_reliability, reliability_threshold
-        Optionally retain only ROIs above the spatial-reliability threshold.
+    mode : {"within", "overall"}
+        Index curves by session number within each environment or by overall session number.
+    cells : {"all", "PCs", "non-PCs"}
+        Select all ROIs, place cells at or above ``reliability_threshold``, or
+        non-place cells below it.
+    reliability_threshold : float
+        Spatial-reliability threshold used to separate PCs from non-PCs.
     filter_by_metric, r2_filter_range, rms_filter_range, norm_rms_filter_range,
     pf_peak_filter_range, fraction_variance_filter_range
         Optionally retain only ROIs in the selected metric's inclusive range.
@@ -338,7 +343,8 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
         example_session: str | None = None,
         env: int = 0,
         metric: str = "rms",
-        filter_by_reliability: bool = False,
+        mode: str = "within",
+        cells: str = "all",
         reliability_threshold: float = 0.7,
         filter_by_metric: bool = False,
         r2_filter_range: tuple[float, float] = (-1.0, 1.0),
@@ -389,8 +395,9 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
         self.environments = self._row_environments(self._example_rows_by_mouse[initial_mouse][initial_session])
         self.add_integer("env", value=min(max(int(env), 0), len(self.environments) - 1), min=0, max=len(self.environments) - 1)
         self.add_selection("metric", value=metric, options=["rms", "norm_rms", "r2", "pf_peak", "fraction_variance"])
+        self.add_selection("mode", value=mode, options=["within", "overall"])
 
-        self.add_boolean("filter_by_reliability", value=filter_by_reliability)
+        self.add_selection("cells", value=cells, options=["all", "PCs", "non-PCs"])
         self.add_float("reliability_threshold", value=reliability_threshold, min=-1.0, max=1.0, step=0.05)
         self.add_boolean("filter_by_metric", value=filter_by_metric)
         self.add_float_range("r2_filter_range", value=tuple(r2_filter_range), min=-1.0, max=1.0, step=0.05)
@@ -416,7 +423,8 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
             [
                 "env",
                 "metric",
-                "filter_by_reliability",
+                "mode",
+                "cells",
                 "reliability_threshold",
                 "filter_by_metric",
                 "r2_filter_range",
@@ -512,8 +520,10 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
             "fraction_variance": self.fraction_variance_slot,
         }[state["metric"]][row, slot]
         keep = np.isfinite(reliability) & np.isfinite(metric)
-        if state["filter_by_reliability"]:
+        if state["cells"] == "PCs":
             keep &= reliability >= state["reliability_threshold"]
+        elif state["cells"] == "non-PCs":
+            keep &= reliability < state["reliability_threshold"]
         if state["filter_by_metric"]:
             low, high = state[f"{state['metric']}_filter_range"]
             keep &= (metric >= low) & (metric <= high)
@@ -540,6 +550,9 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
                     if reliability.size:
                         reliability_curve.append(self._summarize(reliability, state["summary_stat"]))
                         metric_curve.append(self._summarize(metric, state["summary_stat"]))
+                    elif state["mode"] == "overall":
+                        reliability_curve.append(np.nan)
+                        metric_curve.append(np.nan)
                 reliability_by_mouse.append(np.asarray(reliability_curve))
                 metric_by_mouse.append(np.asarray(metric_curve))
             self.reliability_stacks[slot] = pad_stack(reliability_by_mouse)
@@ -562,7 +575,8 @@ class ReliabilityPredictionFamiliarity(FigureViewer):
                 linewidth=1.5,
             )
             xmax = max(xmax, length)
-        ax.set_xlabel("Env session #", fontsize=state["fontsize"])
+        xlabel = "Env session #" if state["mode"] == "within" else "Overall session #"
+        ax.set_xlabel(xlabel, fontsize=state["fontsize"])
         ax.set_ylabel(ylabel, fontsize=state["fontsize"])
         if xmax:
             ax.set_xlim(1, xmax)

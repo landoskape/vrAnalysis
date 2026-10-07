@@ -232,7 +232,12 @@ class ExperimentTimeline(FigureViewer):
             cumulative += height
         return edges
 
-    def plot(self, state):
+    def draw(self, ax, state) -> None:
+        """Draw the timeline into an existing axes.
+
+        Keeping the renderer separate from :meth:`plot` lets summary viewers embed the same
+        timeline panel without copying its layout logic or creating a temporary figure.
+        """
         fontsize = state["fontsize"]
         num_training = state["num_training"]
         num_envs = len(self.env_order)
@@ -243,9 +248,6 @@ class ExperimentTimeline(FigureViewer):
             """Session units -> [0, 1] across the panel width."""
             return session_units / num_sessions
 
-        fig = self.new_figure(figsize=(state["fig_width"], state["fig_height"]))
-        # One bare axes filling the figure: data coordinates are the relative layout itself.
-        ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
         ax.set_xlim(-state["margin_x"], 1.0 + state["margin_x"])
         ax.set_ylim(edges["axis_label"][1] - state["margin_y"], 1.0 + state["margin_y"])
         ax.set_axis_off()
@@ -326,35 +328,41 @@ class ExperimentTimeline(FigureViewer):
 
         # ----------------------------------------------------------------- session axis --
         top, bottom = edges["axis_label"]
-        ax.annotate(
-            "",
-            xy=(1.0, top),
-            xytext=(0.0, top),
-            arrowprops=dict(
-                arrowstyle=state["axis_arrowstyle"],
-                color="k",
-                linewidth=1.0,
-                shrinkA=0,
-                shrinkB=0,
-                mutation_scale=fontsize * 1.2,
-            ),
-            zorder=4,
-        )
+        # ax.annotate(
+        #     "",
+        #     xy=(1.0, top),
+        #     xytext=(0.0, top),
+        #     arrowprops=dict(
+        #         arrowstyle=state["axis_arrowstyle"],
+        #         color="k",
+        #         linewidth=1.0,
+        #         shrinkA=0,
+        #         shrinkB=0,
+        #         mutation_scale=fontsize * 1.2,
+        #     ),
+        #     zorder=4,
+        # )
 
-        if state["show_session_ticks"]:
-            # One tick per imaging session, at the center of its slot.
-            tick_height = (top - bottom) * 0.25
-            for isession in range(self.num_imaging):
-                xt = x(num_training + isession + 0.5)
-                ax.plot([xt, xt], [top, top + tick_height], color="k", linewidth=0.8, zorder=4)
+        # if state["show_session_ticks"]:
+        #     # One tick per imaging session, at the center of its slot.
+        #     tick_height = (top - bottom) * 0.25
+        #     for isession in range(self.num_imaging):
+        #         xt = x(num_training + isession + 0.5)
+        #         ax.plot([xt, xt], [top, top + tick_height], color="k", linewidth=0.8, zorder=4)
 
-        ax.text(
-            0.5,
-            (top + bottom) / 2,
-            f"{self.num_imaging} imaging sessions",
-            ha="center",
-            va="center",
-            fontsize=fontsize * state["axis_label_scale"],
-            zorder=4,
-        )
+        # ax.text(
+        #     0.5,
+        #     (top + bottom) / 2,
+        #     f"{self.num_imaging} imaging sessions",
+        #     ha="center",
+        #     va="center",
+        #     fontsize=fontsize * state["axis_label_scale"],
+        #     zorder=4,
+        # )
+
+    def plot(self, state):
+        fig = self.new_figure(figsize=(state["fig_width"], state["fig_height"]))
+        # One bare axes filling the figure: data coordinates are the relative layout itself.
+        ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+        self.draw(ax, state)
         return fig

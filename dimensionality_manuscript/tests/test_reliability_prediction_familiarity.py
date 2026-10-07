@@ -22,6 +22,7 @@ from dimensionality_manuscript.figure_scripts.figure1.reliability_prediction imp
     ReliabilityPredictionFocus,
     _prediction_quality_by_region,
 )
+from dimensionality_manuscript.figure_scripts.figure1.familiarity import ReliabilityPredictionSummary
 
 
 class _Results:
@@ -107,7 +108,7 @@ def test_example_selection_metric_switch_and_paired_filters():
         mouse="M1",
         example_session="M1/2020-01-01/1",
         metric="r2",
-        filter_by_reliability=True,
+        cells="PCs",
         reliability_threshold=0.7,
         filter_by_metric=True,
         r2_filter_range=(0.3, 0.6),
@@ -169,6 +170,38 @@ def test_by_env_curves_match_r2_familiarity_experience_indexing_and_plot_three_a
     assert [axis.get_xlabel() for axis in fig.axes] == ["Spatial reliability", "Env session #", "Env session #"]
     assert fig.axes[0].get_ylabel() == "RMS error"
     assert fig.axes[2].get_legend().get_title().get_text() == "Env"
+
+
+def test_summary_combines_timeline_with_three_fixed_by_env_metrics():
+    results = _Results()
+    for session, environments in zip(results.sessions, ([1], [1, 2], [3], [3, 4])):
+        session.environments = environments
+
+    viewer = ReliabilityPredictionSummary(results, cells="PCs", reliability_threshold=0.7)
+
+    np.testing.assert_allclose(viewer.metric_stacks["reliability"][0], [[0.85, 0.85], [0.75, 0.9]])
+    np.testing.assert_allclose(viewer.metric_stacks["norm_rms"][0], [[0.375, 0.3], [0.45, 0.3]])
+    np.testing.assert_allclose(viewer.metric_stacks["fraction_variance"][0], [[0.6, 0.85], [0.75, 0.7]])
+
+    fig = viewer.plot(viewer.state)
+    assert len(fig.axes) == 4
+    assert not fig.axes[0].axison
+    assert [axis.get_ylabel() for axis in fig.axes[1:]] == [
+        "Spatial Reliability",
+        "Normalized Error",
+        "PF Variance Fraction",
+    ]
+    assert all(axis.get_xlabel() == "Env session #" for axis in fig.axes[1:])
+
+    overall = {**viewer.state, "mode": "overall", "cells": "all"}
+    viewer.refresh_summary_data(overall)
+    np.testing.assert_allclose(
+        viewer.metric_stacks["reliability"][1],
+        [[np.nan, 0.55], [np.nan, 0.55]],
+        equal_nan=True,
+    )
+    fig = viewer.plot(overall)
+    assert all(axis.get_xlabel() == "Overall session #" for axis in fig.axes[1:])
 
 
 def test_prediction_quality_regions_preserve_overall_definition_and_soft_weight_regions():

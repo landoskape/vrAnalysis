@@ -4,6 +4,8 @@ Run this locally after MYRIAD jobs finish. It:
 1. rsyncs blob .pkl files from MYRIAD into the local blobs directory.
 2. Downloads the MYRIAD results.db and merges new rows into the local DB.
 3. Optionally rsyncs self-cached model joblib files (regression/subspace scores) when --include-model-caches is passed.
+4. Optionally rsyncs population-registry caches, including nested trial registries,
+   when --include-population-cache is passed.
 
 After syncing, ResultsStore and ResultsAggregator work transparently — they
 see the merged results exactly as if everything had run locally.
@@ -21,6 +23,9 @@ Usage
 
     # Also pull back regression/subspace joblib caches:
     python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad --include-model-caches
+
+    # Also pull back ordinary and trial-based population splits:
+    python -m dimensionality_manuscript.scripts.sync_from_myriad --host myriad --include-population-cache
 
 The --host value is whatever SSH alias you use (myriad, ucl-myriad, etc.).
 Set up ~/.ssh/config with a Host entry to avoid typing the full hostname.
@@ -82,6 +87,27 @@ def _remote_file_listing(host: str, remote_path: str, pattern: str = "*") -> lis
         if len(parts) >= 2:
             try:
                 entries.append((parts[0], int(parts[-1])))
+            except ValueError:
+                pass
+    return entries
+
+
+def _remote_recursive_file_listing(host: str, remote_path: str, pattern: str = "*") -> list[tuple[str, int]]:
+    """Return (relative_path, size_bytes) for matching files below a remote dir."""
+    result = subprocess.run(
+        ["ssh", host, f"find {remote_path} -type f -name '{pattern}' -printf '%P %s\\n' 2>/dev/null || true"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  SSH listing failed for {remote_path}: {result.stderr.strip()}", file=sys.stderr)
+        return []
+    entries = []
+    for line in result.stdout.splitlines():
+        parts = line.rsplit(maxsplit=1)
+        if len(parts) == 2:
+            try:
+                entries.append((parts[0], int(parts[1])))
             except ValueError:
                 pass
     return entries
@@ -184,6 +210,7 @@ def preview_sync(
     remote_blobs: str,
     remote_cache: str = _DEFAULT_REMOTE_CACHE,
     include_model_caches: bool = False,
+    include_population_cache: bool = False,
 ) -> None:
     """Print a summary of what sync would transfer without making any changes."""
     local_db = REGISTRY_PATHS.pipeline_v2_db_path
@@ -223,6 +250,21 @@ def preview_sync(
                 skipped = len({f for f, _ in remote_entries} & local_names)
                 total_new = sum(s for _, s in new_entries)
                 print(f"  {name + '/':38} {len(new_entries):>5}  {_format_size(total_new):>10}  {skipped:>5}")
+
+        if include_population_cache:
+            local_path = RegistryPaths().registry_path
+            remote_path = f"{remote_cache.rstrip('/')}/population-registry"
+            remote_entries = _remote_recursive_file_listing(host, remote_path, "*.joblib")
+            local_names = (
+                {p.relative_to(local_path).as_posix() for p in local_path.rglob("*.joblib")}
+                if local_path.exists()
+                else set()
+            )
+            new_entries = [(f, s) for f, s in remote_entries if f not in local_names]
+            skipped = len({f for f, _ in remote_entries} & local_names)
+            print()
+            print("Population registry (recursive; includes trial/):")
+            print(f"  remote={len(remote_entries)}  new={len(new_entries)} ({_format_size(sum(s for _, s in new_entries))})  skip={skipped}")
 
 
 # ── Overwrite check ───────────────────────────────────────────────────────────
@@ -296,12 +338,33 @@ def _check_file_collisions(label: str, local_dir: Path, host: str, remote_path: 
         print("  Note: same filename = same result_uid = same computation, content should be identical")
 
 
+def _check_recursive_file_collisions(label: str, local_dir: Path, host: str, remote_path: str, pattern: str) -> None:
+    """Report collisions by relative path for recursively stored cache files."""
+    print(f"{label}:")
+    remote_entries = _remote_recursive_file_listing(host, remote_path, pattern)
+    remote_names = {f for f, _ in remote_entries}
+    local_names = (
+        {p.relative_to(local_dir).as_posix() for p in local_dir.rglob(pattern)}
+        if local_dir.exists()
+        else set()
+    )
+    shared = remote_names & local_names
+    new_only = remote_names - local_names
+    print(f"  remote={len(remote_names)}  local={len(local_names)}  shared={len(shared)}  new={len(new_only)}")
+    if not shared:
+        print("  union == remote+local — no overlaps")
+    else:
+        print(f"  union < remote+local — {len(shared)} file(s) skipped by --ignore-existing")
+        print("  Relative paths are preserved, including the trial/ subdirectory")
+
+
 def check_overwrite(
     host: str,
     remote_db: str,
     remote_blobs: str,
     remote_cache: str = _DEFAULT_REMOTE_CACHE,
     include_model_caches: bool = False,
+    include_population_cache: bool = False,
 ) -> None:
     """Report local/remote collisions without making any changes."""
     local_db = REGISTRY_PATHS.pipeline_v2_db_path
@@ -335,6 +398,16 @@ def check_overwrite(
                     f"{remote_base}/{name}",
                     "*.joblib",
                 )
+
+        if include_population_cache:
+            print()
+            _check_recursive_file_collisions(
+                "population-registry",
+                RegistryPaths().registry_path,
+                host,
+                f"{remote_cache.rstrip('/')}/population-registry",
+                "*.joblib",
+            )
 
 
 # ── Real sync ─────────────────────────────────────────────────────────────────
@@ -497,6 +570,24 @@ def sync_model_caches(host: str, remote_cache: str) -> None:
         print()
 
 
+def sync_population_cache(host: str, remote_cache: str) -> None:
+    """Recursively rsync population splits from MYRIAD without overwriting local caches.
+
+    The whole population-registry directory is transferred so nested registries such as
+    population-registry/trial retain their relative paths.
+    """
+    local_path = RegistryPaths().registry_path
+    local_path.mkdir(parents=True, exist_ok=True)
+    remote_src = f"{host}:{remote_cache.rstrip('/')}/population-registry/"
+    rsync_shell_cmd = f"rsync -a --info=progress2 --partial --ignore-existing {remote_src} {_posix(local_path)}/"
+    print("Syncing population-registry/ recursively (including trial/)...")
+    result = subprocess.run([_find_bash() or "bash", "-c", rsync_shell_cmd])
+    if result.returncode != 0:
+        print("rsync failed for population-registry/.", file=sys.stderr)
+        raise SystemExit(1)
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Merge MYRIAD results into local store",
@@ -531,9 +622,14 @@ def main():
         help="Include regression/subspace joblib caches (scores, hyperparameters)",
     )
     parser.add_argument(
+        "--include-population-cache",
+        action="store_true",
+        help="Recursively include ordinary and trial population-registry caches",
+    )
+    parser.add_argument(
         "--remote-cache",
         default=_DEFAULT_REMOTE_CACHE,
-        help=f"Remote cache root for model caches (default: {_DEFAULT_REMOTE_CACHE})",
+        help=f"Remote cache root for model and population caches (default: {_DEFAULT_REMOTE_CACHE})",
     )
     args = parser.parse_args()
 
@@ -543,6 +639,7 @@ def main():
         remote_blobs=args.remote_blobs,
         remote_cache=args.remote_cache,
         include_model_caches=args.include_model_caches,
+        include_population_cache=args.include_population_cache,
     )
 
     if args.dry_run:
@@ -556,6 +653,8 @@ def main():
     sync(host=args.host, remote_db=args.remote_db, remote_blobs=args.remote_blobs)
     if args.include_model_caches:
         sync_model_caches(args.host, args.remote_cache)
+    if args.include_population_cache:
+        sync_population_cache(args.host, args.remote_cache)
 
 
 if __name__ == "__main__":

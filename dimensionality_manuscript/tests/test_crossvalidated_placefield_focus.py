@@ -118,11 +118,55 @@ def test_focus_loads_one_session_and_cross_validates_sort_and_rms_error():
 
 def test_focus_plot_has_two_main_population_axes():
     store = _Store(_result())
-    viewer = CrossValidatedPlacefieldFocus(_results(store), mouse="M1", example_session="M1/2020-01-01/1", env=0)
+    viewer = CrossValidatedPlacefieldFocus(
+        _results(store),
+        mouse="M1",
+        example_session="M1/2020-01-01/1",
+        env=0,
+        text_xy=(0.9, 0.85),
+    )
 
     fig = viewer.plot(viewer.state)
 
-    assert [axis.get_title() for axis in fig.axes[:2]] == ["Held-out place fields", "Held-out RMS error"]
+    main_axes = fig.axes[:2]
+    assert [axis.get_title() for axis in main_axes] == ["", ""]
+    assert [axis.texts[0].get_text() for axis in main_axes] == ["Placefields", "RMS error"]
+    assert [axis.texts[0].get_position() for axis in main_axes] == [(0.9, 0.85), (0.9, 0.85)]
+    assert all(axis.texts[0].get_ha() == "right" and axis.texts[0].get_va() == "top" for axis in main_axes)
+    assert main_axes[0].get_ylabel() == "ROIs"
+    assert [axis.get_xlabel() for axis in main_axes] == ["VR Position (cm)", "VR Position (cm)"]
+    assert all(list(axis.get_xticks()) == [0, 200] for axis in main_axes)
+    assert all(list(axis.get_yticks()) == [] for axis in main_axes)
+    assert main_axes[0].spines["left"].get_visible()
+    assert not main_axes[1].spines["left"].get_visible()
+    assert all(axis.spines["bottom"].get_visible() for axis in main_axes)
+    assert main_axes[0].child_axes[0].get_ylabel() == r"Fluorescence ($\sigma$)"
+
+
+def test_focus_reward_zone_uses_environment_style_controls_and_optional_legend():
+    result = _result()
+    result["env_slot_ids"] = np.array([3.0, np.nan])
+    viewer = CrossValidatedPlacefieldFocus(
+        _results(_Store(result)),
+        reward_linewidth=2.5,
+        reward_linestyle="--",
+        reward_alpha=0.4,
+        show_reward_legend=True,
+    )
+
+    fig = viewer.plot(viewer.state)
+    main_axes = fig.axes[:2]
+
+    for axis in main_axes:
+        reward_line = axis.lines[0]
+        np.testing.assert_allclose(reward_line.get_xdata(), [100, 100])
+        assert reward_line.get_color() == "blue"
+        assert reward_line.get_linewidth() == 2.5
+        assert reward_line.get_linestyle() == "--"
+        assert reward_line.get_alpha() == 0.4
+    assert main_axes[0].get_legend() is not None
+    assert [text.get_text() for text in main_axes[0].get_legend().get_texts()] == ["Reward zone"]
+    assert main_axes[1].get_legend() is None
 
 
 def test_rms_error_squares_each_heldout_trial_before_averaging():

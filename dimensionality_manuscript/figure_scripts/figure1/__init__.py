@@ -16,12 +16,12 @@ single aligned figure rather than drawing a panel of its own.
 """
 
 from .crossval import CrossValidatedPlacefieldFocus, CrossValidatedPlacefields
-from .familiarity import R2Familiarity
+from .familiarity import R2Familiarity, ReliabilityPredictionSummary
 from .pf_amplitude import PlacefieldPeakAmplitude
-from .placefield import PlaceFieldFocus, PlaceFieldPredictionFocus
+from .placefield import PlaceFieldFocus, PlaceFieldPredictionFocus, SpatialAmplitudeReliability
 from .r2_placefield import R2PlacefieldFocus, r2_placefield_arrays
 from .rasters import StackedRasterFocus
-from .reliability import ReliabilityHistogramViewer
+from .reliability import DataOverviewViewer, ReliabilityHistogramViewer
 from .reliability_prediction import ReliabilityPredictionFamiliarity, ReliabilityPredictionFocus
 from .schematic import (
     VR_REWARD_ZONE_WIDTH_CM,
@@ -36,16 +36,19 @@ from .traversal import TraversalFocus
 __all__ = [
     "CrossValidatedPlacefields",
     "CrossValidatedPlacefieldFocus",
+    "DataOverviewViewer",
     "ExperimentTimeline",
     "MouseSpeedFocus",
     "PlaceFieldFocus",
     "PlaceFieldPredictionFocus",
+    "SpatialAmplitudeReliability",
     "PlacefieldPeakAmplitude",
     "R2Familiarity",
     "R2PlacefieldFocus",
     "ReliabilityHistogramViewer",
     "ReliabilityPredictionFamiliarity",
     "ReliabilityPredictionFocus",
+    "ReliabilityPredictionSummary",
     "StackedRasterFocus",
     "TraversalFocus",
     "VREnvironmentSchematic",

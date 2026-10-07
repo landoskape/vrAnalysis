@@ -50,6 +50,9 @@ PLACEFIELD_SPLITS: tuple[str, ...] = ("train", "all")
 #: Legal values for ``GainRegressionConfig.gain_transform``.
 GAIN_TRANSFORMS: tuple[str, ...] = ("raw", "sqrt")
 
+#: Place-field gain estimators compared by ``GainRegressionConfig``.
+GAIN_ESTIMATORS: tuple[str, ...] = ("gaussian", "least_squares")
+
 #: Fold order returned by ``cross_validate_trials`` given ``trial_fractions``.
 SPLIT_NAMES: tuple[str, ...] = ("train", "val", "test")
 
@@ -220,6 +223,38 @@ def gaussian_gain_matrix(
     numerator = _weighted_row_mean(trial_maps, weights)
     denominator = _weighted_row_mean(fitted[:, None, :], weights)[:, 0]
     return _safe_gain(numerator, denominator), fitted, prediction
+
+
+def least_squares_gain_matrix(
+    trial_maps: np.ndarray,
+    prediction_trials: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project each trial map onto a nonparametric trial-averaged place field.
+
+    For each ROI and trial this computes ``(y @ p) / (p @ p)`` over bins finite in both the
+    trial map ``y`` and template ``p``.  The template uses either ``prediction_trials`` or all
+    trials, matching ``placefield_split``.  No intercept is fitted: gain is the multiplicative
+    scale of the place-field prediction, identical to the temporal structured-gain estimator.
+    """
+    trial_maps = np.asarray(trial_maps, dtype=float)
+    if trial_maps.ndim != 3:
+        raise ValueError("trial_maps must have shape (rois, trials, bins)")
+    subset = trial_maps if prediction_trials is None else trial_maps[:, np.asarray(prediction_trials, dtype=int)]
+    if subset.shape[1] == 0:
+        raise ValueError("prediction_trials must select at least one trial")
+    placefield = np.nanmean(subset, axis=1)
+    valid = np.isfinite(trial_maps) & np.isfinite(placefield[:, None, :])
+    y = np.where(valid, trial_maps, 0.0)
+    p = np.where(valid, placefield[:, None, :], 0.0)
+    numerator = np.sum(y * p, axis=2)
+    denominator = np.sum(p * p, axis=2)
+    gain = np.divide(
+        numerator,
+        denominator,
+        out=np.full(numerator.shape, np.nan, dtype=float),
+        where=denominator > np.finfo(float).eps,
+    )
+    return gain, placefield.copy(), placefield
 
 
 def apply_gain_transform(gain: np.ndarray, transform: str) -> np.ndarray:
@@ -667,12 +702,16 @@ class GainRegressionConfig(AnalysisConfigBase):
     trial_fractions : tuple of float
         Relative train/validation/test trial fractions, stratified within each environment.
     placefield_split : str
-        ``"train"`` builds the trial-averaged place field, its Gaussian fit, and the neuron screen
+        ``"train"`` builds the trial-averaged place field, its estimator template, and the neuron screen
         from training trials only, then measures every trial's gain against that fit. ``"all"`` uses
         every trial, reproducing ``PlacefieldGainViewer``. ``"train"`` is the default because an
         all-trial denominator lets a held-out trial contribute to its own gain, and injects the same
         all-trial mean into every neuron -- a shared component that inflates cross-neuron
         predictability.
+    gain_estimator : str
+        ``"gaussian"`` preserves the original Gaussian-bump weighted estimator.
+        ``"least_squares"`` projects each trial map onto the nonparametric place field, matching
+        the gain definition used by the temporal Trial Gain model.
     gain_transform : str
         ``"raw"`` regresses gain as measured. ``"sqrt"`` takes its square root first, which pulls in
         the heavy upper tail without displacing the many zero-activity trials the way a log would.
@@ -750,7 +789,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     ``max_rank`` and ``n_trials_train`` before reading it as a dimensionality estimate.
     """
 
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
@@ -762,6 +801,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     fraction_active_threshold: float = 0.1
     trial_fractions: tuple[float, float, float] = (1.0, 0.25, 0.25)
     placefield_split: str = "train"
+    gain_estimator: str = "gaussian"
     gain_transform: str = "raw"
     split_seed: int = 0
     n_null_rolls: int = 10
@@ -792,13 +832,19 @@ class GainRegressionConfig(AnalysisConfigBase):
         # viewer's all-trial place field, and both transforms run so the skew correction can be
         # judged against untransformed gain. Thresholds are deliberately not swept -- they change
         # which neurons exist, and the counts stored here already support post-hoc filtering.
-        return {"placefield_split": list(PLACEFIELD_SPLITS), "gain_transform": list(GAIN_TRANSFORMS)}
+        return {
+            "placefield_split": list(PLACEFIELD_SPLITS),
+            "gain_estimator": list(GAIN_ESTIMATORS),
+            "gain_transform": list(GAIN_TRANSFORMS),
+        }
 
     def validate(self) -> None:
         if self.spks_type not in VALID_SPKS_TYPES:
             raise ValueError(f"Unknown spks_type {self.spks_type!r}. Available: {VALID_SPKS_TYPES}")
         if self.placefield_split not in PLACEFIELD_SPLITS:
             raise ValueError(f"Unknown placefield_split {self.placefield_split!r}. Available: {PLACEFIELD_SPLITS}")
+        if self.gain_estimator not in GAIN_ESTIMATORS:
+            raise ValueError(f"Unknown gain_estimator {self.gain_estimator!r}. Available: {GAIN_ESTIMATORS}")
         if self.gain_transform not in GAIN_TRANSFORMS:
             raise ValueError(f"Unknown gain_transform {self.gain_transform!r}. Available: {GAIN_TRANSFORMS}")
         if len(self.trial_fractions) != len(SPLIT_NAMES):
@@ -819,6 +865,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             f"rel={self.reliability_threshold}",
             f"frac={self.fraction_active_threshold}",
             f"pf={self.placefield_split}",
+            f"estimator={self.gain_estimator}",
             f"gain={self.gain_transform}",
             f"seed={self.split_seed}",
             f"null={self.n_null_rolls}",
@@ -942,7 +989,10 @@ class GainRegressionConfig(AnalysisConfigBase):
         if np.sum(idx_keep) < 2 * self.MIN_NEURONS_PER_GROUP:
             return None
 
-        gain, _, _ = gaussian_gain_matrix(trial_maps[idx_keep], data["positions"], prediction_trials)
+        if self.gain_estimator == "gaussian":
+            gain, _, _ = gaussian_gain_matrix(trial_maps[idx_keep], data["positions"], prediction_trials)
+        else:
+            gain, _, _ = least_squares_gain_matrix(trial_maps[idx_keep], prediction_trials)
         gain = apply_gain_transform(gain, self.gain_transform)
         # The regression needs complete matrices, so a neuron with any degenerate trial is dropped.
         # Screening after the transform also catches anything the transform sent to NaN.

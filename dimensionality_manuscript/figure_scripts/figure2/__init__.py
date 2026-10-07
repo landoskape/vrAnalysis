@@ -21,6 +21,7 @@ from .familiarity import RegressionFamiliarityByEnvViewer, RegressionFamiliarity
 # from .latents import DimSweepLatentsViewer, RRRExternalLatentsViewer
 from .model_style import ARCH_LABELS, ARCH_LINESTYLE, MODEL_STYLE, ROLE_COLOR, ROLE_LABELS
 from .performance import PERFORMANCE_MODEL_NAMES, ModelPerformanceViewer
+from .trial_performance import TRIAL_PERFORMANCE_MODEL_NAMES, TrialModelPerformanceViewer
 from .placefield_gain import PlacefieldGainViewer
 from .pf_residual import (
     PF_RESIDUAL_MODEL_NAMES,
@@ -46,6 +47,7 @@ __all__ = [
     "DIM_SWEEP_MODEL_NAMES",
     "MODEL_STYLE",
     "ModelPerformanceViewer",
+    "TrialModelPerformanceViewer",
     "PlacefieldGainViewer",
     "ModelPlacefieldResidualExplorer",
     "ModelPlacefieldResidualFamiliarityViewer",
@@ -60,6 +62,7 @@ __all__ = [
     "ModelZooUltraCondensed",
     "ModelZooUltraCondensedConfig",
     "PERFORMANCE_MODEL_NAMES",
+    "TRIAL_PERFORMANCE_MODEL_NAMES",
     "PF_RESIDUAL_MODEL_NAMES",
     "ROLE_COLOR",
     "ROLE_LABELS",

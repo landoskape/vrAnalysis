@@ -5,6 +5,7 @@ from matplotlib.lines import Line2D
 
 from vrAnalysis.helpers import edge2center
 from vrAnalysis.helpers.plotting import beeswarm
+from vrAnalysis.sessions import B2Session
 
 from dimensionality_manuscript.figure_scripts.panels import (
     FigureViewer,
@@ -205,4 +206,122 @@ class ReliabilityHistogramViewer(FigureViewer):
         fig, ax = self.new_subplots(1, 2, figsize=self.figsize, layout="constrained", width_ratios=width_ratios)
         self._draw_histograms(ax[0], state, fontsize)
         self._draw_swarm(ax[1], state, fontsize)
+        return fig
+
+
+class DataOverviewViewer(FigureViewer):
+    """Pooled per-mouse overview of the sessions, ROIs, and place cells in a dataset.
+
+    The provided ``sessions`` are the source of truth: this viewer does no experiment-type or
+    other session filtering. Each point is one mouse. ``ax[0]`` shows its number of sessions;
+    ``ax[1]`` its mean number of filtered ROIs per session; and ``ax[2]`` its mean number of
+    place cells per session. ROI filtering is evaluated using ``sigrebase``. Place-cell counts
+    reuse the aggregator's stored per-ROI reliability rather than recomputing spatial maps.
+
+    A place cell is an ROI whose reliability in the session's most-sampled environment exceeds
+    ``place_cell_threshold``. The supplied aggregator must therefore contain ``PFPredQualityConfig``
+    results for every supplied session.
+    """
+
+    def __init__(
+        self,
+        sessions: list[B2Session],
+        results: ResultsAggregator,
+        *,
+        fraction_place_cells: bool = True,
+        place_cell_threshold: float = 0.3,
+        beewidth: float = 0.2,
+        fontsize: float = 9.0,
+        mouse_average: bool = False,
+        figsize: tuple[float, float] = (4.5, 2.5),
+    ):
+        if not sessions:
+            raise ValueError("DataOverviewViewer requires at least one session")
+
+        self.sessions = list(sessions)
+        self.results = results
+        self.figsize = figsize
+        self.mouse_names = np.asarray([session.mouse_name for session in self.sessions])
+        result_rows = {session_id: idx for idx, session_id in enumerate(results.session_ids)}
+        missing = [session.session_uid for session in self.sessions if session.session_uid not in result_rows]
+        if missing:
+            raise ValueError(f"PFPredQuality results are missing {len(missing)} supplied session(s): {missing}")
+        self.result_rows = np.asarray([result_rows[session.session_uid] for session in self.sessions])
+
+        self.mice = np.asarray(sorted(set(self.mouse_names)))
+        self.num_sessions = np.asarray([np.sum(self.mouse_names == mouse) for mouse in self.mice], dtype=float)
+
+        self.selection_names = add_data_selection_widgets(self, results)
+        self.add_boolean("fraction_place_cells", value=fraction_place_cells)
+        self.add_float("place_cell_threshold", value=place_cell_threshold, min=-1.0, max=1.0, step=0.05)
+        self.add_float("beewidth", value=beewidth, min=0.0, max=1.0, step=0.01)
+        self.add_boolean("mouse_average", value=mouse_average)
+        self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
+
+        self.on_change([*self.selection_names, "place_cell_threshold", "mouse_average"], self.refresh_data)
+        self.refresh_data(self.state)
+
+    def refresh_data(self, state):
+        """Read stored ROI shapes and reliability, then pool the session counts by mouse."""
+        selection = data_selection(state, self.results, self.selection_names)
+        reliability = np.asarray(
+            self.results.sel(keys=["reliability"], squeeze_ones=False, **selection)["reliability"],
+            dtype=float,
+        )[self.result_rows]
+
+        # Padded result arrays cannot reveal how many ROIs a session originally held when some
+        # reliability values are NaN. ResultsAggregator records that unpadded length explicitly.
+        shape_index = (slice(None),) + tuple(self.results.param_axes[name].index(selection[name]) for name in self.results.param_axes) + (0,)
+        session_rois = np.asarray(self.results.result_shapes["reliability"][shape_index], dtype=float)[self.result_rows]
+        session_rois[session_rois == 0] = np.nan
+        if state["mouse_average"]:
+            self.num_rois = np.asarray([np.nanmean(session_rois[self.mouse_names == mouse]) for mouse in self.mice])
+        else:
+            self.num_rois = np.asarray(session_rois, dtype=float)
+
+        finite = np.isfinite(reliability)
+        session_place_cells = np.sum(finite & (reliability > state["place_cell_threshold"]), axis=1).astype(float)
+        session_place_cells[~finite.any(axis=1)] = np.nan
+
+        if state["mouse_average"]:
+            self.num_place_cells = np.asarray([np.nanmean(session_place_cells[self.mouse_names == mouse]) for mouse in self.mice])
+        else:
+            self.num_place_cells = np.asarray(session_place_cells, dtype=float)
+
+    @staticmethod
+    def _draw_pooled_swarm(ax, values: np.ndarray, ylabel: str, state) -> None:
+        """Draw one pooled swarm with a horizontal across-mouse mean."""
+        finite = np.isfinite(values)
+        offsets = np.zeros_like(values, dtype=float)
+        if finite.any():
+            offsets[finite] = beeswarm(values[finite])
+        ax.plot(
+            state["beewidth"] * offsets[finite],
+            values[finite],
+            linestyle="none",
+            color="k",
+            marker=".",
+            markersize=5.0,
+            alpha=0.5,
+        )
+        # if finite.any():
+        #     ax.plot([-0.25, 0.25], [np.mean(values[finite])] * 2, color="k", linewidth=2.0)
+
+        ymax = float(np.max(values[finite])) if finite.any() else 1.0
+        upper = max(ymax * 1.05, 1.0)
+        ax.set_xlim(-0.5, 0.5)
+        ax.set_ylim(0, upper)
+        ax.set_ylabel(ylabel, fontsize=state["fontsize"])
+        style_axis(ax, fontsize=state["fontsize"], xbounds=(0, 0), ybounds=(0, upper))
+        ax.set_xticks([])
+
+    def plot(self, state):
+        fig, ax = self.new_subplots(1, 3, figsize=self.figsize, layout="constrained")
+        self._draw_pooled_swarm(ax[0], self.num_sessions, "# Sessions / Mouse", state)
+        self._draw_pooled_swarm(ax[1], self.num_rois, "# ROIs / Session", state)
+
+        if state["fraction_place_cells"]:
+            self._draw_pooled_swarm(ax[2], 100 * self.num_place_cells / self.num_rois, "Place Cells %", state)
+        else:
+            self._draw_pooled_swarm(ax[2], self.num_place_cells, "# Place Cells / Session", state)
         return fig
