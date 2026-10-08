@@ -2807,11 +2807,21 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         # Get the source activity data for the requested split
         source_data, _, _ = self.get_session_data(session, spks_type, split)
 
+        # A cached/requested rank can outlive the exact population used to fit this
+        # model (notably for environment-specific place-cell subsets).  The fitted
+        # model is authoritative about the rank it can support, just as it is for
+        # the structured gain and additive RRR stages above.
+        requested_rank = int(hyperparameters.rank)
+        effective_rank = min(requested_rank, int(rrr_model.max_rank))
+
         # Predict the target activity with the trained model
-        prediction = rrr_model.predict(source_data.T, rank=hyperparameters.rank, nonnegative=self.nonnegative).T
-        latents = rrr_model.predict_latent(source_data.T, rank=hyperparameters.rank)
+        prediction = rrr_model.predict(source_data.T, rank=effective_rank, nonnegative=self.nonnegative).T
+        latents = rrr_model.predict_latent(source_data.T, rank=effective_rank)
         extras = {
             "latents": np.array(latents).T,
+            "requested_rank": requested_rank,
+            "effective_rank": effective_rank,
+            "max_rank": int(rrr_model.max_rank),
         }
 
         prediction = np.array(prediction)
