@@ -42,7 +42,14 @@ def trial_performance_scores(results, model_names, metric, selection, environmen
     """Reduce environment slots within session before optionally reducing sessions by mouse."""
     per_model = []
     for model_name in model_names:
-        values = np.asarray(results.sel(model_name=model_name, avg_by_mouse=False, **selection)[metric], dtype=float)
+        selected = results.sel(model_name=model_name, avg_by_mouse=False, **selection)
+        if metric not in selected:
+            raise ValueError(
+                f"No {metric!r} results are available for {model_name!r}. "
+                "TrialModelPerformanceViewer requires results aggregated from "
+                "TrialPlacecellRegressionConfig; also check that transferred results use its current schema."
+            )
+        values = np.asarray(selected[metric], dtype=float)
         if values.ndim != 2:
             raise ValueError(f"{metric!r} must have shape (sessions, environment slots), got {values.shape}")
         if environment == "Average":
@@ -72,6 +79,11 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
     def __init__(self, results: ResultsAggregator, *, metric: str = "r2", environment: str = "Average", **kwargs):
         if environment not in ENVIRONMENT_OPTIONS:
             raise ValueError(f"environment must be one of {ENVIRONMENT_OPTIONS}")
+        analysis_name = getattr(getattr(results, "config_class", None), "display_name", None)
+        if analysis_name is not None and analysis_name != "trial_placecell_regression":
+            raise ValueError(
+                "TrialModelPerformanceViewer requires a ResultsAggregator built from " f"TrialPlacecellRegressionConfig, not {analysis_name!r}."
+            )
         self._initial_environment = environment
         super().__init__(results, metric=metric, **kwargs)
         self.add_selection("environment", value=environment, options=list(ENVIRONMENT_OPTIONS))

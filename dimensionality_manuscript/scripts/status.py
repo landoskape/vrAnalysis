@@ -37,9 +37,9 @@ from collections import Counter, defaultdict
 
 import pandas as pd
 from dimensionality_manuscript.registry import RegistryPaths
-from dimensionality_manuscript import ResultsStore
 from dimensionality_manuscript.configs import ANALYSIS_CONFIG_CLASS_LIST
 from dimensionality_manuscript.pipeline.base import AnalysisConfigBase
+from dimensionality_manuscript.pipeline.store import ResultsStore
 from dimensionality_manuscript.scripts.run import build_analysis_configs
 from dimensionality_manuscript.scripts.run_simulations import _MAPPING as _SWEEP_MAPPING
 
@@ -113,6 +113,18 @@ def _param_grid_labels(atypes, svers) -> list[str]:
     return labels
 
 
+def _error_type_label(row: dict) -> str:
+    """Return a printable first-line error label, including for blank exceptions."""
+    message_lines = [line.strip() for line in (row.get("error_message") or "").splitlines() if line.strip()]
+    if message_lines:
+        return message_lines[0]
+
+    traceback_lines = [line.strip() for line in (row.get("traceback") or "").splitlines() if line.strip()]
+    if traceback_lines:
+        return traceback_lines[-1]
+    return "<no error message>"
+
+
 def print_error_summary(
     store: ResultsStore,
     include_error_types: bool = False,
@@ -149,7 +161,7 @@ def print_error_summary(
         schema = rows[0].get("schema_version") or ""
         print(f"  [{i:>3}] {atype} {schema} | {summary} | {n_sessions} sessions")
         if include_error_types:
-            counts = Counter(r.get("error_message", "").splitlines()[0] for r in rows)
+            counts = Counter(_error_type_label(r) for r in rows)
             for msg, n in counts.most_common():
                 print(f"           {n}x  {msg}")
 

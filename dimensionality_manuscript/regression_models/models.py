@@ -2953,7 +2953,8 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
     ) -> tuple[dict, float, pd.DataFrame]:
         """Optimize hyperparameters using golden section search.
 
-        First optimizes alpha (with rank=200 fixed), then optimizes rank (with best alpha).
+        First optimizes alpha at rank ``min(200, max_rank)``, then optimizes rank
+        (with best alpha).
 
         Parameters
         ----------
@@ -2980,13 +2981,19 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
         # Get data to determine max rank
         source_data, target_data, _ = self.get_session_data(session, spks_type, train_split)
         max_rank = int(min(*source_data.shape, *target_data.shape))
+        if max_rank < 1:
+            raise ValueError("Reduced-rank regression requires at least one feature, target, and training sample")
+        alpha_search_rank = min(200, max_rank)
 
         results: list[dict] = []
 
-        # Step 1: Optimize alpha with rank=200 fixed
+        # Step 1: Optimize alpha at a high but achievable fixed rank. Place-cell
+        # subsets can have fewer than 200 source cells, target cells, or training
+        # samples, so requesting rank 200 unconditionally makes the fit fail before
+        # the session-specific rank search begins.
         def evaluate_alpha(alpha: float) -> float:
-            """Evaluate alpha with rank=200."""
-            hyperparameters = ReducedRankRegressionHyperparameters(alpha=alpha, rank=200)
+            """Evaluate alpha at the largest requested rank supported by this fit."""
+            hyperparameters = ReducedRankRegressionHyperparameters(alpha=alpha, rank=alpha_search_rank)
             trained_model = self.train(
                 session,
                 spks_type=spks_type,
@@ -3005,7 +3012,7 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
                 score = float("inf")
 
             # Record result
-            result = {"alpha": alpha, "rank": 200, "score": score}
+            result = {"alpha": alpha, "rank": alpha_search_rank, "score": score}
             results.append(result)
 
             return score
@@ -3049,17 +3056,17 @@ class ReducedRankRegressionModel(RegressionModel[ReducedRankRegressionHyperparam
 
             return score
 
-        best_rank, best_rank_score, rank_history = golden_section_search(
-            func=evaluate_rank,
-            a=1.0,
-            b=float(max_rank),
-            tolerance_param=1.0,  # Tolerance of 1 rank unit
-            tolerance_score=1e-3,
-            max_iterations=25,
-            minimize=True,
-            logspace=False,
-        )
-        best_rank = int(best_rank)
+        if max_rank > 1:
+            golden_section_search(
+                func=evaluate_rank,
+                a=1.0,
+                b=float(max_rank),
+                tolerance_param=1.0,  # Tolerance of 1 rank unit
+                tolerance_score=1e-3,
+                max_iterations=25,
+                minimize=True,
+                logspace=False,
+            )
 
         # Find overall best from all results
         best_result = min(results, key=lambda x: x["score"])

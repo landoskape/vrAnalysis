@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from dimensionality_manuscript.figure_scripts.figure2.trial_performance import (
     TRIAL_PERFORMANCE_MODEL_NAMES,
@@ -62,3 +63,10 @@ def test_trial_performance_uses_temporal_trial_model_comparison():
     assert [label.get_text() for label in fig.axes[0].get_xticklabels()] == viewer.model_labels
     assert len(fig.axes[0].child_axes) == 1  # absolute-score inset
     plt.close(fig)
+
+
+def test_trial_performance_rejects_all_cell_results():
+    results = _FakeTrialResults()
+    results.config_class = SimpleNamespace(display_name="trial_split_regression")
+    with pytest.raises(ValueError, match="TrialPlacecellRegressionConfig"):
+        TrialModelPerformanceViewer(results)

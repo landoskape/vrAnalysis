@@ -7,11 +7,18 @@ from collections import defaultdict
 import numpy as np
 from scipy.optimize import curve_fit
 
-from dimensionality_manuscript.configs.gain_regression import GAIN_TRANSFORMS, PLACEFIELD_SPLITS, GainRegressionConfig, apply_gain_transform
+from dimensionality_manuscript.configs.gain_regression import (
+    GAIN_ESTIMATORS,
+    GAIN_TRANSFORMS,
+    PLACEFIELD_SPLITS,
+    GainRegressionConfig,
+    apply_gain_transform,
+    split_trials,
+)
 from dimensionality_manuscript.env_order import ENV_SLOT_COLORS, MAX_ENV_SLOTS, _session_sort_key
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer
 from dimensionality_manuscript.pipeline import ResultsAggregator
-from vrAnalysis.helpers import reliability_loo
+from vrAnalysis.helpers import reliability_loo, stable_hash
 from vrAnalysis.helpers.plotting import beeswarm, format_spines
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_frame_behavior
@@ -176,6 +183,26 @@ def gaussian_gain_matrix(
     return _safe_gain(numerator, denominator), fitted
 
 
+def least_squares_gain_matrix(trial_maps: np.ndarray, prediction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Project each trial map onto a supplied nonparametric place-field template."""
+    trial_maps = np.asarray(trial_maps, dtype=float)
+    prediction = np.asarray(prediction, dtype=float)
+    if trial_maps.ndim != 3 or prediction.shape != (trial_maps.shape[0], trial_maps.shape[2]):
+        raise ValueError("trial_maps and prediction must have shapes (rois, trials, bins) and (rois, bins)")
+    valid = np.isfinite(trial_maps) & np.isfinite(prediction[:, None, :])
+    observed = np.where(valid, trial_maps, 0.0)
+    template = np.where(valid, prediction[:, None, :], 0.0)
+    numerator = np.sum(observed * template, axis=2)
+    denominator = np.sum(template * template, axis=2)
+    gain = np.divide(
+        numerator,
+        denominator,
+        out=np.full(numerator.shape, np.nan, dtype=float),
+        where=denominator > np.finfo(float).eps,
+    )
+    return gain, prediction.copy()
+
+
 def _masked_row_mean(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
     valid = np.isfinite(values) & mask[:, None, :]
     return np.divide(
@@ -249,11 +276,10 @@ class PlacefieldGainViewer(FigureViewer):
     columns; by-mouse mode shows the observed session/environment swarm and marks each mouse's
     roll-null mean with a red horizontal line.
 
-    Gain always uses the four-parameter Gaussian control curve used by ``GainRegressionConfig``;
-    its baseline-free bump supplies weights for both the trial numerator and fitted-curve
-    denominator. The reliability and fraction-active cutoffs likewise come directly from that
-    config and are not viewer controls. ``gain_transform`` is shared by every panel, while
-    ``placefield_split`` applies only to stored regression results.
+    ``gain_estimator`` selects the original four-parameter Gaussian estimator or the nonparametric
+    least-squares projection used by the temporal Trial Gain model. ``placefield_split`` controls
+    the direct-session template and ROI screen as well as the stored regression selection, using
+    the config's reproducible trial split. ``gain_transform`` is likewise shared by every panel.
     """
 
     def __init__(
@@ -264,6 +290,7 @@ class PlacefieldGainViewer(FigureViewer):
         mouse: str | None = None,
         session: str | None = None,
         environment: int | None = None,
+        gain_estimator: str = "gaussian",
         gain_transform: str = "raw",
         placefield_split: str = "train",
         swarm_mode: str = "pooled",
@@ -290,6 +317,8 @@ class PlacefieldGainViewer(FigureViewer):
             raise ValueError(f"sort_method must be one of {GAIN_SORT_METHODS}")
         if gain_transform not in GAIN_TRANSFORMS:
             raise ValueError(f"gain_transform must be one of {GAIN_TRANSFORMS}")
+        if gain_estimator not in GAIN_ESTIMATORS:
+            raise ValueError(f"gain_estimator must be one of {GAIN_ESTIMATORS}")
         if placefield_split not in PLACEFIELD_SPLITS:
             raise ValueError(f"placefield_split must be one of {PLACEFIELD_SPLITS}")
         if swarm_mode not in ("pooled", "by_mouse"):
@@ -311,6 +340,8 @@ class PlacefieldGainViewer(FigureViewer):
         config = results.config_class if isinstance(results.config_class, GainRegressionConfig) else GainRegressionConfig()
         self.reliability_threshold = config.reliability_threshold
         self.fraction_active_threshold = config.fraction_active_threshold
+        self.trial_fractions = config.trial_fractions
+        self.split_seed = config.split_seed
         self._loaded: dict[str, dict] = {}
         self._gain_cache: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
         self._sort_cache: dict[tuple, np.ndarray] = {}
@@ -334,7 +365,8 @@ class PlacefieldGainViewer(FigureViewer):
         self.add_selection("mouse", value=initial_mouse, options=list(self._sessions_by_mouse))
         self.add_selection("session", value=initial_session, options=session_options)
         self.add_selection("environment", value=initial_environment, options=env_options)
-        # One transform controls both direct-session images and the matching stored regression.
+        # Estimator, transform, and template split control both direct images and stored results.
+        self.add_selection("gain_estimator", value=gain_estimator, options=list(GAIN_ESTIMATORS))
         self.add_selection("gain_transform", value=gain_transform, options=list(GAIN_TRANSFORMS))
         self.add_selection("placefield_split", value=placefield_split, options=list(PLACEFIELD_SPLITS))
         self.add_selection("swarm_mode", value=swarm_mode, options=["pooled", "by_mouse"])
@@ -354,12 +386,14 @@ class PlacefieldGainViewer(FigureViewer):
         self.on_change(
             [
                 "environment",
+                "gain_estimator",
                 "gain_transform",
+                "placefield_split",
                 "sort_method",
             ],
             self.refresh_data,
         )
-        self.on_change(["placefield_split", "min_trial"], self.refresh_summary)
+        self.on_change("min_trial", self.refresh_summary)
         self._select_session(initial_mouse, initial_session, initial_environment)
         self.refresh_data(self.state)
 
@@ -410,6 +444,7 @@ class PlacefieldGainViewer(FigureViewer):
             "frame_behavior": frame_behavior,
             "env_maps": env_maps,
             "trials_by_environment": trials_by_environment,
+            "full_trials": full_trials,
             "positions": np.asarray(env_maps.distcenters),
             "environments": environments,
         }
@@ -448,9 +483,24 @@ class PlacefieldGainViewer(FigureViewer):
     def refresh_data(self, state) -> None:
         self._select_session(state["mouse"], state["session"], state["environment"])
         trial_maps, positions, trials = self._environment_maps(state["environment"])
-        reliability = reliability_loo(trial_maps)
+        prediction_trials = None
+        if state["placefield_split"] == "train":
+            full_trials = self.data["full_trials"]
+            folds = split_trials(
+                np.asarray(self.session.trial_environment)[full_trials],
+                self.trial_fractions,
+                int(stable_hash(self.session.session_uid, self.split_seed, "trials"), 16),
+            )
+            train_trials = full_trials[folds[0]]
+            prediction_trials = np.flatnonzero(np.isin(trials, train_trials))
+            if prediction_trials.size == 0:
+                raise ValueError(f"Environment {state['environment']} has no training trials")
+        screen_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
+        if screen_maps.shape[1] < 2:
+            raise ValueError(f"Environment {state['environment']} has fewer than two template trials")
+        reliability = reliability_loo(screen_maps)
         fraction_active = FractionActive.compute(
-            trial_maps,
+            screen_maps,
             activity_axis=2,
             fraction_axis=1,
             activity_method="rms",
@@ -463,14 +513,20 @@ class PlacefieldGainViewer(FigureViewer):
             raise ValueError("No ROI passes the reliability and fraction-active thresholds")
 
         trial_maps = trial_maps[idx_keep]
-        prediction = np.nanmean(trial_maps, axis=1)
+        template_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
+        prediction = np.nanmean(template_maps, axis=1)
         gain_key = (
             self.session.session_uid,
             state["environment"],
+            state["gain_estimator"],
+            state["placefield_split"],
             idx_keep.tobytes(),
         )
         if gain_key not in self._gain_cache:
-            gain, fitted = gaussian_gain_matrix(trial_maps, prediction, positions)
+            if state["gain_estimator"] == "gaussian":
+                gain, fitted = gaussian_gain_matrix(trial_maps, prediction, positions)
+            else:
+                gain, fitted = least_squares_gain_matrix(trial_maps, prediction)
             self._gain_cache[gain_key] = gain, fitted
         gain, fitted = self._gain_cache[gain_key]
 
@@ -503,6 +559,7 @@ class PlacefieldGainViewer(FigureViewer):
     def refresh_summary(self, state) -> None:
         """Select and trial-filter held-out gain-prediction scores for ax[2:4]."""
         selection = {
+            "gain_estimator": state["gain_estimator"],
             "gain_transform": state["gain_transform"],
             "placefield_split": state["placefield_split"],
         }

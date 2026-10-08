@@ -21,6 +21,7 @@ from dimensionality_manuscript.figure_scripts.figure2.placefield_gain import (
     _full_trial_indices,
     _values_by_mouse,
     gaussian_gain_matrix,
+    least_squares_gain_matrix,
     standardize_by_std,
     threshold_gain_matrix,
 )
@@ -56,11 +57,20 @@ def test_summary_selection_filters_trials_and_locates_selected_result():
     viewer = object.__new__(PlacefieldGainViewer)
     viewer.results = Results()
     viewer.session = SimpleNamespace(session_uid="s1")
-    viewer.refresh_summary({"gain_transform": "sqrt", "placefield_split": "all", "min_trial": 10, "environment": 1})
+    viewer.refresh_summary(
+        {
+            "gain_estimator": "least_squares",
+            "gain_transform": "sqrt",
+            "placefield_split": "all",
+            "min_trial": 10,
+            "environment": 1,
+        }
+    )
 
     assert viewer.results.selection == {
         "keys": ["r2_test", "r2_test_null", "n_trials_env", "env_slot_ids"],
         "squeeze_ones": False,
+        "gain_estimator": "least_squares",
         "gain_transform": "sqrt",
         "placefield_split": "all",
     }
@@ -166,7 +176,7 @@ def test_pooled_summary_averages_envs_then_sessions_then_mice():
         np.testing.assert_allclose(ax.lines[1].get_ydata(), [0.575, 0.575])
         np.testing.assert_allclose(ax.lines[2].get_ydata(), [-0.35, -0.8])
         np.testing.assert_allclose(ax.lines[3].get_ydata(), [-0.575, -0.575])
-        assert [tick.get_text() for tick in ax.get_xticklabels()] == ["Data", "Roll Null"]
+        assert [tick.get_text() for tick in ax.get_xticklabels()] == ["Data", "Shuffle"]
     finally:
         plt.close(fig)
 
@@ -234,3 +244,12 @@ def test_gaussian_gain_recovers_multipliers():
     gain, fitted = gaussian_gain_matrix(trial_maps[None, :, :], prediction[None, :], positions)
     np.testing.assert_allclose(fitted[0], prediction, atol=1e-5)
     np.testing.assert_allclose(gain[0], multipliers, atol=1e-5)
+
+
+def test_least_squares_gain_recovers_multipliers():
+    prediction = np.array([[0.0, 1.0, 3.0, 2.0]])
+    multipliers = np.array([0.25, 1.0, 2.5])
+    trial_maps = prediction[:, None, :] * multipliers[None, :, None]
+    gain, fitted = least_squares_gain_matrix(trial_maps, prediction)
+    np.testing.assert_allclose(gain[0], multipliers)
+    np.testing.assert_allclose(fitted, prediction)
