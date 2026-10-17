@@ -7,6 +7,7 @@ import pytest
 from dimensionality_manuscript.figure_scripts.figure2.trial_performance import (
     TRIAL_PERFORMANCE_MODEL_NAMES,
     TrialModelPerformanceViewer,
+    trial_performance_scores,
 )
 
 
@@ -49,7 +50,9 @@ def test_trial_performance_uses_temporal_trial_model_comparison():
     assert [call[0] for call in results.calls] == list(TRIAL_PERFORMANCE_MODEL_NAMES)
     assert viewer.state["metric"] == "r2"
     assert viewer.state["environment"] == "Average"
+    assert viewer.state["aggregation"] == "mean"
     assert viewer.parameters["metric"].options == ["r2", "mse"]
+    assert viewer.parameters["aggregation"].options == ["mean", "median"]
     # Environment mean is within session first: m1 = mean([.15, .50]), not a mean over all
     # five finite environment/session cells for m1.
     np.testing.assert_allclose(viewer._scores[0], [0.325, 0.9])
@@ -63,6 +66,50 @@ def test_trial_performance_uses_temporal_trial_model_comparison():
     assert [label.get_text() for label in fig.axes[0].get_xticklabels()] == viewer.model_labels
     assert len(fig.axes[0].child_axes) == 1  # absolute-score inset
     plt.close(fig)
+
+
+def test_trial_performance_median_reduces_environments_then_sessions_per_mouse():
+    results = _FakeTrialResults()
+    results.mouse_names = np.array(["m1", "m1", "m1", "m2"])
+
+    def sel(*, model_name, avg_by_mouse, **selection):
+        model_index = TRIAL_PERFORMANCE_MODEL_NAMES.index(model_name)
+        base = np.array(
+            [
+                [0.10, 0.20, np.nan],
+                [0.30, 0.50, 0.70],
+                [-9.00, 0.80, 1.00],
+                [0.80, np.nan, 1.00],
+            ]
+        )
+        return {"r2": base + 0.01 * model_index}
+
+    results.sel = sel
+    scores = trial_performance_scores(
+        results,
+        TRIAL_PERFORMANCE_MODEL_NAMES,
+        "r2",
+        {},
+        "Average",
+        True,
+        "median",
+    )
+
+    # Session medians for m1 are .15, .50, and .80; their mouse median is .50.
+    # m2 has a single session median of .90.
+    np.testing.assert_allclose(scores[0], [0.50, 0.90])
+
+    viewer = TrialModelPerformanceViewer(results, aggregation="median")
+    fig = viewer.plot(viewer.state)
+    # The thick center trace is also the across-mouse median, not a mean of median-reduced mice.
+    center_line = next(line for line in fig.axes[0].lines if line.get_linewidth() == viewer.state["mean_linewidth"])
+    np.testing.assert_allclose(center_line.get_ydata(), np.nanmedian(viewer._scores - viewer._scores[0], axis=1))
+    plt.close(fig)
+
+
+def test_trial_performance_rejects_unknown_aggregation():
+    with pytest.raises(ValueError, match="aggregation"):
+        TrialModelPerformanceViewer(_FakeTrialResults(), aggregation="trimmed")
 
 
 def test_trial_performance_rejects_all_cell_results():

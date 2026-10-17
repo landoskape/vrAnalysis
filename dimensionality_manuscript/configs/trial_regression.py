@@ -15,6 +15,8 @@ from ..registry import ACTIVITY_PARAMETERS_NAMES, MODEL_NAMES, ModelName, Popula
 from ..regression_models.models import make_gain_unit_index
 from ..trial_registry import (
     EnvironmentTrialRegistry,
+    FIXED_VALIDATION_FOLD,
+    ROTATING_TEST_FOLDS,
     TrialRegistry,
     TrialRegistryParameters,
     split_trials_by_environment,
@@ -298,9 +300,15 @@ def _placecell_mask(
 
 @dataclass(frozen=True)
 class TrialPlacecellRegressionConfig(AnalysisConfigBase):
-    """Optimize and score temporal models separately in each environment's place cells."""
+    """Optimize and cross-validate temporal models in each environment's place cells.
 
-    schema_version: str = "v1"
+    Version 2 preserves the original validation quarter and its one expensive hyperparameter
+    optimization.  The other three quarter-folds rotate through test, with the remaining two
+    used to refit the model.  The environment/session score is the median of the three test-fold
+    scores.  Version 1 retains the original single 50/25/25 train/validation/test evaluation.
+    """
+
+    schema_version: str = "v2"
     data_config_name: str = "even"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
@@ -315,6 +323,7 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
         "source_roi_indices": "skip",
         "target_roi_indices": "skip",
         "selected_hyperparameters": "skip",
+        "cv_trial_folds": "skip",
     }
 
     @staticmethod
@@ -322,6 +331,8 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
         return {"model_name": list(PLACECELL_TRIAL_MODELS)}
 
     def validate(self):
+        if self.schema_version not in ("v1", "v2"):
+            raise ValueError("TrialPlacecellRegressionConfig supports schema_version='v1' or 'v2'")
         if self.data_config_name != "even":
             raise ValueError("TrialPlacecellRegressionConfig requires data_config_name='even'")
         if self.model_name not in PLACECELL_TRIAL_MODELS:
@@ -374,10 +385,22 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
             "structured_gain_max_trial_rank",
         )
         output = {name: np.full(MAX_ENV_SLOTS, np.nan) for name in scalar_names}
+        fold_output = {
+            name: np.full((MAX_ENV_SLOTS, len(ROTATING_TEST_FOLDS)), np.nan)
+            for name in (
+                "mse_folds",
+                "r2_folds",
+                "n_trials_train_folds",
+                "n_trials_test_folds",
+                "structured_gain_effective_rank_folds",
+                "structured_gain_max_trial_rank_folds",
+            )
+        }
         selected_rois = [None] * MAX_ENV_SLOTS
         source_rois = [None] * MAX_ENV_SLOTS
         target_rois = [None] * MAX_ENV_SLOTS
         selected_hyperparameters = [None] * MAX_ENV_SLOTS
+        cv_trial_folds = [None] * MAX_ENV_SLOTS
 
         for environment in sorted(int(env) for env in np.asarray(session.environments) if env >= 0):
             if mouse_order is None or environment not in mouse_order:
@@ -387,10 +410,11 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
                 continue
             environment_trials = np.flatnonzero(np.asarray(session.trial_environment) == environment)
             try:
+                split_seed = int(stable_hash(session.session_uid, environment, self.trial_split_seed, "trial-split"), 16)
                 local_folds = split_trials_by_environment(
                     np.full(environment_trials.size, environment),
                     (2, 1, 1),
-                    int(stable_hash(session.session_uid, environment, self.trial_split_seed, "trial-split"), 16),
+                    split_seed,
                 )
             except ValueError:
                 continue
@@ -437,6 +461,40 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
                     test_split="test",
                     hyperparameters=hyperparameters,
                 )
+
+                fold_models = [model]
+                fold_reports = [report]
+                if self.schema_version == "v2":
+                    atomic_folds = split_trials_by_environment(
+                        np.full(environment_trials.size, environment),
+                        (1, 1, 1, 1),
+                        split_seed,
+                    )
+                    cv_trial_folds[slot] = tuple(environment_trials[fold] for fold in atomic_folds)
+                    # Fold 3 is the historical test quarter and was already fit above.  Rotate
+                    # folds 0 and 1 through test while retaining fold 2 as validation.
+                    for test_fold in ROTATING_TEST_FOLDS[1:]:
+                        cv_registry = EnvironmentTrialRegistry(
+                            registry,
+                            environment,
+                            selection["roi_indices"],
+                            TrialRegistryParameters(
+                                relative_size=(2, 1, 1),
+                                split_seed=self.trial_split_seed,
+                                speed_threshold=registry.registry_params.speed_threshold,
+                            ),
+                            cv_test_fold=test_fold,
+                        )
+                        cv_model = get_model(self.model_name, cv_registry, activity_parameters=self.activity_parameters_name)
+                        cv_report = cv_model.process(
+                            session,
+                            self.spks_type,
+                            train_split="train",
+                            test_split="test",
+                            hyperparameters=hyperparameters,
+                        )
+                        fold_models.append(cv_model)
+                        fold_reports.append(cv_report)
             except ValueError as error:
                 # Sparse environments are expected omissions; programming/alignment errors should
                 # remain loud rather than turning into plausible-looking missing data.
@@ -454,24 +512,52 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
                     raise
                 continue
 
-            prediction = np.asarray(report.predicted_data)
-            target = np.asarray(report.target_data)
-            output["mse"][slot] = float(mse(prediction, target, reduce="mean", dim=None))
-            output["r2"][slot] = float(measure_r2(prediction, target, reduce="mean", dim=None))
+            if self.schema_version == "v1":
+                fold_models = [model]
+                fold_reports = [report]
+
+            for fold_index, (fold_model, fold_report) in enumerate(zip(fold_models, fold_reports)):
+                prediction = np.asarray(fold_report.predicted_data)
+                target = np.asarray(fold_report.target_data)
+                fold_output["mse_folds"][slot, fold_index] = float(mse(prediction, target, reduce="mean", dim=None))
+                fold_output["r2_folds"][slot, fold_index] = float(measure_r2(prediction, target, reduce="mean", dim=None))
+                train_trials = _assert_one_gain_unit_per_trial(fold_model, session, self.spks_type, "train") if self.model_name in STRUCTURED_GAIN_MODELS else int(
+                    np.unique(fold_model.get_session_data(session, self.spks_type, "train")[2].trial).size
+                )
+                test_trials = _assert_one_gain_unit_per_trial(fold_model, session, self.spks_type, "test") if self.model_name in STRUCTURED_GAIN_MODELS else int(
+                    np.unique(fold_model.get_session_data(session, self.spks_type, "test")[2].trial).size
+                )
+                fold_output["n_trials_train_folds"][slot, fold_index] = train_trials
+                fold_output["n_trials_test_folds"][slot, fold_index] = test_trials
+                if self.model_name in STRUCTURED_GAIN_MODELS:
+                    gain_model = fold_report.trained_model[2]
+                    fold_output["structured_gain_max_trial_rank_folds"][slot, fold_index] = float(gain_model.max_rank)
+                    fold_output["structured_gain_effective_rank_folds"][slot, fold_index] = float(min(hyperparameters.rank, gain_model.max_rank))
+
+            num_scored_folds = len(fold_reports)
+            output["mse"][slot] = float(np.median(fold_output["mse_folds"][slot, :num_scored_folds]))
+            output["r2"][slot] = float(np.median(fold_output["r2_folds"][slot, :num_scored_folds]))
+            output["n_trials_train"][slot] = float(np.median(fold_output["n_trials_train_folds"][slot, :num_scored_folds]))
+            output["n_trials_test"][slot] = float(np.median(fold_output["n_trials_test_folds"][slot, :num_scored_folds]))
             selected_hyperparameters[slot] = vars(hyperparameters).copy()
             if self.model_name in STRUCTURED_GAIN_MODELS:
-                _assert_one_gain_unit_per_trial(model, session, self.spks_type, "train")
-                _assert_one_gain_unit_per_trial(model, session, self.spks_type, "test")
-                gain_model = report.trained_model[2]
                 output["structured_gain_requested_rank"][slot] = float(hyperparameters.rank)
-                output["structured_gain_max_trial_rank"][slot] = float(gain_model.max_rank)
-                output["structured_gain_effective_rank"][slot] = float(min(hyperparameters.rank, gain_model.max_rank))
+                output["structured_gain_max_trial_rank"][slot] = float(
+                    np.median(fold_output["structured_gain_max_trial_rank_folds"][slot, :num_scored_folds])
+                )
+                output["structured_gain_effective_rank"][slot] = float(
+                    np.median(fold_output["structured_gain_effective_rank_folds"][slot, :num_scored_folds])
+                )
 
         return {
             **output,
+            **fold_output,
             "env_slot_ids": env_slot_ids,
+            "cv_test_folds": np.asarray(ROTATING_TEST_FOLDS, dtype=int),
+            "fixed_validation_fold": FIXED_VALIDATION_FOLD,
             "selected_roi_indices": selected_rois,
             "source_roi_indices": source_rois,
             "target_roi_indices": target_rois,
             "selected_hyperparameters": selected_hyperparameters,
+            "cv_trial_folds": cv_trial_folds,
         }

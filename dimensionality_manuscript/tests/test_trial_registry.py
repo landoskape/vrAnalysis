@@ -19,9 +19,12 @@ from dimensionality_manuscript.registry import RegistryParameters
 from dimensionality_manuscript.regression_models.models import ReducedRankRegressionModel, make_gain_unit_index
 from dimensionality_manuscript.trial_registry import (
     EnvironmentTrialRegistry,
+    FIXED_VALIDATION_FOLD,
+    ROTATING_TEST_FOLDS,
     TrialRegistry,
     TrialRegistryParameters,
     TrialTimeSplit,
+    fixed_validation_cv_folds,
     split_trials_by_environment,
 )
 
@@ -71,6 +74,29 @@ def test_three_way_trial_split_is_disjoint_exhaustive_reproducible_and_stratifie
     assert all(not np.intersect1d(a, b).size for i, a in enumerate(folds) for b in folds[i + 1 :])
     for environment in np.unique(trial_environment):
         assert [np.sum(trial_environment[fold] == environment) for fold in folds] == [4, 2, 2]
+
+
+def test_fixed_validation_cv_preserves_original_split_and_tests_each_nonvalidation_trial_once():
+    trial_environment = np.repeat([1, 2], 12)
+    original_train, original_validation, original_test = split_trials_by_environment(trial_environment, (2, 1, 1), seed=13)
+
+    rotations = [fixed_validation_cv_folds(trial_environment, seed=13, test_fold=fold) for fold in ROTATING_TEST_FOLDS]
+    first_train, first_validation, first_test = rotations[0]
+    np.testing.assert_array_equal(first_train, original_train)
+    np.testing.assert_array_equal(first_validation, original_validation)
+    np.testing.assert_array_equal(first_test, original_test)
+    assert FIXED_VALIDATION_FOLD == 2
+
+    for train, validation, test in rotations:
+        np.testing.assert_array_equal(validation, original_validation)
+        assert not np.intersect1d(train, validation).size
+        assert not np.intersect1d(train, test).size
+        assert not np.intersect1d(validation, test).size
+        np.testing.assert_array_equal(np.sort(np.concatenate([train, validation, test])), np.arange(trial_environment.size))
+
+    tested = np.sort(np.concatenate([test for _, _, test in rotations]))
+    expected_tested = np.setdiff1d(np.arange(trial_environment.size), original_validation)
+    np.testing.assert_array_equal(tested, expected_tested)
 
 
 def test_placecell_mask_requires_both_metrics_in_the_same_environment():
@@ -194,6 +220,84 @@ def test_trial_regression_config_is_even_only_and_grids_only_models():
     assert ANALYSIS_CONFIG_CLASSES[TrialPlacecellRegressionConfig.display_name] is TrialPlacecellRegressionConfig
     with pytest.raises(ValueError, match="data_config_name='even'"):
         TrialSplitRegressionConfig(data_config_name="default")
+
+
+def test_placecell_trial_v2_reuses_one_optimization_and_medians_three_test_rotations(monkeypatch):
+    config = TrialPlacecellRegressionConfig(model_name="external_placefield_1d")
+    base_registry = SimpleNamespace(registry_params=config.data_config.to_registry_params())
+    session = SimpleNamespace(
+        mouse_name="mouse",
+        session_uid="mouse.date.1",
+        environments=np.array([1]),
+        trial_environment=np.ones(8, dtype=int),
+    )
+    counters = {"optimized": 0, "fit": 0}
+    hyperparameters = SimpleNamespace(alpha=1.0)
+
+    class FakeEnvironmentRegistry:
+        def __init__(self, cv_test_fold):
+            self.cv_test_fold = cv_test_fold
+
+    class FakeModel:
+        def __init__(self, registry):
+            self.registry = registry
+
+        def get_best_hyperparameters(self, *args, **kwargs):
+            counters["optimized"] += 1
+            return hyperparameters, 0.0, None
+
+        def process(self, *args, **kwargs):
+            counters["fit"] += 1
+            fold_value = {None: 3.0, 0: 0.0, 1: 1.0}[self.registry.cv_test_fold]
+            return SimpleNamespace(
+                predicted_data=np.array([[fold_value]]),
+                target_data=np.array([[0.0]]),
+                trained_model=object(),
+            )
+
+        def get_session_data(self, session, spks_type, split):
+            num_trials = 4 if split == "train" else 2
+            behavior = SimpleNamespace(trial=np.arange(num_trials))
+            return np.zeros((2, num_trials)), np.zeros((2, num_trials)), behavior
+
+    def fake_environment_registry(base_registry, environment, selected_rois, registry_params, cv_test_fold=None):
+        return FakeEnvironmentRegistry(cv_test_fold)
+
+    monkeypatch.setattr("dimensionality_manuscript.configs.trial_regression.load_env_order", lambda: {"mouse": [1]})
+    monkeypatch.setattr(
+        "dimensionality_manuscript.configs.trial_regression._environment_placecell_rois",
+        lambda *args, **kwargs: {
+            "roi_indices": np.array([0, 1, 2, 3]),
+            "source_roi_indices": np.array([0, 1]),
+            "target_roi_indices": np.array([2, 3]),
+        },
+    )
+    monkeypatch.setattr("dimensionality_manuscript.configs.trial_regression.EnvironmentTrialRegistry", fake_environment_registry)
+    monkeypatch.setattr(
+        "dimensionality_manuscript.configs.trial_regression.get_model",
+        lambda model_name, registry, activity_parameters: FakeModel(registry),
+    )
+    monkeypatch.setattr(
+        "dimensionality_manuscript.configs.trial_regression.measure_r2",
+        lambda prediction, target, **kwargs: float(np.asarray(prediction)[0, 0]),
+    )
+    monkeypatch.setattr(
+        "dimensionality_manuscript.configs.trial_regression.mse",
+        lambda prediction, target, **kwargs: float(np.asarray(prediction)[0, 0]),
+    )
+
+    result = config.process(session, base_registry)
+
+    assert counters == {"optimized": 1, "fit": 3}
+    np.testing.assert_array_equal(result["cv_test_folds"], ROTATING_TEST_FOLDS)
+    np.testing.assert_allclose(result["r2_folds"][0], [3.0, 0.0, 1.0])
+    assert result["r2"][0] == 1.0
+    assert result["n_trials_train"][0] == 4
+    assert result["n_trials_validation"][0] == 2
+    assert result["n_trials_test"][0] == 2
+    tested = np.sort(np.concatenate([result["cv_trial_folds"][0][fold] for fold in ROTATING_TEST_FOLDS]))
+    validation = result["cv_trial_folds"][0][FIXED_VALIDATION_FOLD]
+    np.testing.assert_array_equal(tested, np.setdiff1d(np.arange(8), validation))
 
 
 def test_legacy_trial_regression_inherits_even_hyperparameters_without_trial_optimization(monkeypatch):

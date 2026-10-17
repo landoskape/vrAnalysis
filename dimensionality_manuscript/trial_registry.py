@@ -22,6 +22,12 @@ from vrAnalysis.sessions import B2Session
 from .registry import PopulationRegistry
 
 
+# Four equal atomic folds are shuffled once.  Fold 2 remains the validation fold used for
+# hyperparameter selection; each of the other folds is tested once while the remaining two train.
+FIXED_VALIDATION_FOLD = 2
+ROTATING_TEST_FOLDS = (3, 0, 1)
+
+
 @dataclass(frozen=True)
 class TrialTimeSplit:
     """Named indices for one 50/50 train/test split made from whole trials.
@@ -110,6 +116,25 @@ class EnvironmentTrialRegistryParameters(TrialRegistryParameters):
             raise ValueError("selected_roi_indices must contain at least four ROIs")
 
 
+@dataclass(frozen=True)
+class EnvironmentTrialCVRegistryParameters(EnvironmentTrialRegistryParameters):
+    """Distinct cache identity for a rotated test fold.
+
+    Keeping this separate from :class:`EnvironmentTrialRegistryParameters` preserves the exact
+    legacy identity when ``cv_test_fold`` is absent, allowing the expensive original
+    hyperparameter optimization to be reused.
+    """
+
+    cv_test_fold: int = 3
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.cv_test_fold not in ROTATING_TEST_FOLDS:
+            raise ValueError(f"cv_test_fold must be one of {ROTATING_TEST_FOLDS}")
+        if self.relative_size != (2, 1, 1):
+            raise ValueError("fixed-validation CV requires relative_size=(2, 1, 1)")
+
+
 def split_trials_by_environment(
     trial_environment: np.ndarray,
     relative_size: tuple[int, ...] = (1, 1),
@@ -123,8 +148,8 @@ def split_trials_by_environment(
     trial_environment = np.asarray(trial_environment)
     if trial_environment.ndim != 1:
         raise ValueError("trial_environment must be one-dimensional")
-    if len(relative_size) not in (2, 3) or any(size <= 0 for size in relative_size):
-        raise ValueError("relative_size must contain two or three positive values")
+    if len(relative_size) not in (2, 3, 4) or any(size <= 0 for size in relative_size):
+        raise ValueError("relative_size must contain two, three, or four positive values")
 
     state = np.random.get_state()
     np.random.seed(seed % (2**32))
@@ -144,6 +169,25 @@ def split_trials_by_environment(
                 f"Environment {environment} has {num_trials} trial(s), too few to appear in all " f"{len(result)} folds of the requested trial split"
             )
     return result
+
+
+def fixed_validation_cv_folds(
+    trial_environment: np.ndarray,
+    seed: int,
+    test_fold: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return train/validation/test folds for one fixed-validation CV rotation.
+
+    The validation set is atomic fold 2.  ``test_fold`` rotates over folds 3, 0, and 1; training
+    is the union of the other two non-validation folds.  With ``test_fold=3`` this is exactly the
+    same partition produced by the historical ``relative_size=(2, 1, 1)`` split.
+    """
+    if test_fold not in ROTATING_TEST_FOLDS:
+        raise ValueError(f"test_fold must be one of {ROTATING_TEST_FOLDS}")
+    atomic_folds = split_trials_by_environment(trial_environment, (1, 1, 1, 1), seed)
+    train_folds = [fold for index, fold in enumerate(atomic_folds) if index not in (FIXED_VALIDATION_FOLD, test_fold)]
+    train = np.sort(np.concatenate(train_folds))
+    return train, atomic_folds[FIXED_VALIDATION_FOLD], atomic_folds[test_fold]
 
 
 class TrialRegistry(PopulationRegistry):
@@ -259,11 +303,13 @@ class EnvironmentTrialRegistry(TrialRegistry):
         environment: int,
         selected_roi_indices: np.ndarray,
         registry_params: TrialRegistryParameters = TrialRegistryParameters(relative_size=(2, 1, 1)),
+        cv_test_fold: int | None = None,
         autosave: bool = True,
     ):
         self.environment = int(environment)
         self.selected_roi_indices = np.sort(np.asarray(selected_roi_indices, dtype=np.int64))
-        identity_params = EnvironmentTrialRegistryParameters(
+        params_class = EnvironmentTrialRegistryParameters if cv_test_fold is None else EnvironmentTrialCVRegistryParameters
+        identity_kwargs = dict(
             name=registry_params.name,
             relative_size=registry_params.relative_size,
             split_seed=registry_params.split_seed,
@@ -272,6 +318,9 @@ class EnvironmentTrialRegistry(TrialRegistry):
             environment=self.environment,
             selected_roi_indices=tuple(int(roi) for roi in self.selected_roi_indices),
         )
+        if cv_test_fold is not None:
+            identity_kwargs["cv_test_fold"] = cv_test_fold
+        identity_params = params_class(**identity_kwargs)
         super().__init__(base_registry, registry_params=identity_params, autosave=autosave)
 
     def _make_population(self, session: B2Session) -> tuple[Population, FrameBehavior]:
@@ -302,7 +351,15 @@ class EnvironmentTrialRegistry(TrialRegistry):
         trial_environment = np.asarray(session.trial_environment)
         environment_trials = np.flatnonzero(trial_environment == self.environment)
         split_seed = int(stable_hash(session.session_uid, self.environment, self.registry_params.split_seed, "trial-split"), 16)
-        local_folds = split_trials_by_environment(trial_environment[environment_trials], self.registry_params.relative_size, split_seed)
+        cv_test_fold = getattr(self.registry_params, "cv_test_fold", None)
+        if cv_test_fold is None:
+            local_folds = split_trials_by_environment(trial_environment[environment_trials], self.registry_params.relative_size, split_seed)
+        else:
+            local_folds = fixed_validation_cv_folds(
+                trial_environment[environment_trials],
+                split_seed,
+                cv_test_fold,
+            )
         trial_folds = tuple(environment_trials[fold] for fold in local_folds)
         frame_trial = np.asarray(frame_behavior.trial, dtype=np.int64)
         time_split_indices = [torch.as_tensor(np.flatnonzero(np.isin(frame_trial, fold)), dtype=torch.long) for fold in trial_folds]

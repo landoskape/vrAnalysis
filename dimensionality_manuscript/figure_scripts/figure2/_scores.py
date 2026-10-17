@@ -59,7 +59,7 @@ def draw_subject_traces(
     state,
     markersize: float | None = None,
 ) -> None:
-    """Draw one faint line per subject, the across-subject mean, and colored mean dots.
+    """Draw one faint line per subject, an across-subject center, and colored center dots.
 
     Reads ``mean_linewidth`` / ``subject_linewidth`` / ``subject_alpha`` / ``markersize`` from
     ``state`` (see :func:`~dimensionality_manuscript.figure_scripts.panels.add_trace_style_widgets`).
@@ -67,10 +67,11 @@ def draw_subject_traces(
     drawing the same traces smaller in an inset.
     """
     ax.plot(xvals, values, color=("k", state["subject_alpha"]), linewidth=state["subject_linewidth"])
-    mean_values = np.nanmean(values, axis=1)
-    ax.plot(xvals, mean_values, color="k", linewidth=state["mean_linewidth"])
+    reducer = np.nanmedian if state.get("aggregation", "mean") == "median" else np.nanmean
+    center_values = reducer(values, axis=1)
+    ax.plot(xvals, center_values, color="k", linewidth=state["mean_linewidth"])
     markersize = state["markersize"] if markersize is None else markersize
-    for x, value, color in zip(xvals, mean_values, colors):
+    for x, value, color in zip(xvals, center_values, colors):
         ax.plot(x, value, color=color, marker="o", markersize=markersize, linestyle="none")
 
 
