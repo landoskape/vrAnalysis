@@ -330,9 +330,11 @@ class RegressionModel(ABC, Generic[H]):
         # If nan_safe=False, filter target_data to match filtered predictions
         if not nan_safe and extras.get("predictions_were_filtered", False):
             idx_valid = extras["idx_valid_predictions"]
-            if (len(idx_valid) / len(target_data)) < MINIMUM_NON_NAN_FRACTION:
+            num_samples = target_data.shape[1]
+            if (len(idx_valid) / num_samples) < MINIMUM_NON_NAN_FRACTION:
+                num_nan = num_samples - len(idx_valid)
                 raise ValueError(
-                    f"Too many NaN values in predictions! {len(idx_valid)} / {len(target_data)} samples have NaN values in predictions!!!"
+                    f"Too many NaN values in predictions! {num_nan} / {num_samples} samples have NaN values in predictions!!!"
                 )
             target_data = target_data[:, idx_valid]
 

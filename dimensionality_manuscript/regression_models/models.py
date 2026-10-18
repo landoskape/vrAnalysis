@@ -360,6 +360,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
         # Track original number of samples for idx_valid_predictions
         num_samples_prediction = len(frame_behavior)
         idx_valid_prediction = np.arange(num_samples_prediction, dtype=np.int64)  # Track which original indices are still valid
+        predictions_were_filtered = False
 
         extras = {"frame_behavior": copy(frame_behavior)}
 
@@ -381,6 +382,7 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             else:
                 # Filter out NaN samples before computing gain
                 idx_valid_gain = ~idx_nan_gain
+                predictions_were_filtered |= bool(torch.any(idx_nan_gain))
                 source_prediction = source_prediction[:, idx_valid_gain]
                 source_data = source_data[:, idx_valid_gain]
                 frame_behavior = frame_behavior.filter(np.where(idx_valid_gain.numpy())[0])
@@ -444,21 +446,21 @@ class PlaceFieldModel(RegressionModel[PlaceFieldHyperparameters]):
             idx_valid_final = ~idx_nan_samples
             if np.any(idx_nan_samples):
                 # Filtering occurred
+                predictions_were_filtered = True
                 prediction = prediction[:, idx_valid_final]
-                if "frame_behavior" in extras:
-                    extras["frame_behavior"] = extras["frame_behavior"].filter(np.where(idx_valid_final)[0])
-                if "frame_behavior_internal" in extras:
-                    extras["frame_behavior_internal"] = extras["frame_behavior_internal"].filter(np.where(idx_valid_final)[0])
                 if "gain" in extras:
                     # Filter gain to match filtered prediction
                     extras["gain"] = extras["gain"][idx_valid_final]
 
                 # Update tracking: idx_valid_final is relative to current data, map back to original
-                extras["idx_valid_predictions"] = idx_valid_prediction[idx_valid_final]
-                extras["predictions_were_filtered"] = True
-            else:
-                # No NaNs, no filtering needed
-                extras["predictions_were_filtered"] = False
+                idx_valid_prediction = idx_valid_prediction[idx_valid_final]
+
+            extras["predictions_were_filtered"] = predictions_were_filtered
+            if predictions_were_filtered:
+                extras["idx_valid_predictions"] = idx_valid_prediction
+                extras["frame_behavior"] = extras["frame_behavior"].filter(idx_valid_prediction)
+                if "frame_behavior_internal" in extras:
+                    extras["frame_behavior_internal"] = extras["frame_behavior_internal"].filter(idx_valid_prediction)
 
         return prediction, extras
 
