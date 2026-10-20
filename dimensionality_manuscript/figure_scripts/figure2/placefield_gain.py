@@ -536,10 +536,11 @@ class PlacefieldGainViewer(FigureViewer):
         gain = gain[informative]
         fitted = fitted[informative]
         kept_indices = np.flatnonzero(idx_keep)[informative]
+        peak = np.argmax(np.where(np.isfinite(fitted), fitted, -np.inf), axis=1)
+        placefield_positions = positions[peak]
         sort_key = gain_key + (state["sort_method"], informative.tobytes())
         if sort_key not in self._sort_cache:
             if state["sort_method"] == "environment":
-                peak = np.argmax(np.where(np.isfinite(fitted), fitted, -np.inf), axis=1)
                 order = np.lexsort((kept_indices, positions[peak]))
             elif state["sort_method"] == "rastermap_activity":
                 fb = self.data["frame_behavior"]
@@ -553,6 +554,7 @@ class PlacefieldGainViewer(FigureViewer):
         self.gain = apply_gain_transform(gain[order], state["gain_transform"])
         self.covariance = _pairwise_nan_covariance(self.gain)
         self.roi_indices = kept_indices[order]
+        self.placefield_positions = placefield_positions[order]
         self.trials = trials
         self.refresh_summary(state)
 
@@ -596,6 +598,28 @@ class PlacefieldGainViewer(FigureViewer):
         ax.text(1.0, 1.0, title, transform=ax.transAxes, ha="right", va="top", fontsize=fontsize)
         for spine in ax.spines.values():
             spine.set_visible(False)
+
+    @staticmethod
+    def _draw_trial_image(ax, values: np.ndarray, **imshow_kwargs) -> None:
+        """Draw an ROI-by-trial matrix with interpolation confined to the ROI axis.
+
+        Matplotlib applies an image's interpolation kernel in both dimensions. Drawing
+        each trial as a separate one-column image leaves the kernel free to smooth
+        vertically across sorted ROIs without blending adjacent, discrete trials.
+        """
+        values = np.asarray(values)
+        if values.ndim != 2:
+            raise ValueError("trial image values must be a two-dimensional matrix")
+        num_rois, num_trials = values.shape
+        for trial in range(num_trials):
+            ax.imshow(
+                values[:, trial : trial + 1],
+                aspect="auto",
+                extent=(trial - 0.5, trial + 0.5, num_rois - 0.5, -0.5),
+                **imshow_kwargs,
+            )
+        ax.set_xlim(-0.5, num_trials - 0.5)
+        ax.set_ylim(num_rois - 0.5, -0.5)
 
     def _draw_summary(self, ax, state) -> None:
         """Draw pooled mouse averages or per-mouse session/environment swarms."""
@@ -749,7 +773,14 @@ class PlacefieldGainViewer(FigureViewer):
 
         if state["include_covariance"]:
             ax[0].set_box_aspect(0.5)
-        ax[0].imshow(self.gain, aspect="auto", cmap="coolwarm", interpolation=state["interpolation"], vmin=0.0, vmax=state["gain_vmax"])
+        self._draw_trial_image(
+            ax[0],
+            self.gain,
+            cmap="coolwarm",
+            interpolation=state["interpolation"],
+            vmin=0.0,
+            vmax=state["gain_vmax"],
+        )
         self._style_image_axis(ax[0], "", state["fontsize"])
         ax[0].set_xlabel("Trials", fontsize=state["fontsize"])
         ax[0].set_ylabel("ROIs", fontsize=state["fontsize"])
@@ -775,4 +806,153 @@ class PlacefieldGainViewer(FigureViewer):
         next_axis += 1
         if state["include_familiarity"]:
             self._draw_familiarity(ax[next_axis], state)
+        return fig
+
+
+class PlacefieldGainSortViewer(PlacefieldGainViewer):
+    """Compare fixed environment and Rastermap gain orderings for one gain matrix.
+
+    The top row sorts ROIs by fitted place-field position and the bottom row sorts
+    the same ROIs with Rastermap applied to their trial gains. Each heatmap has a
+    narrow companion axis showing the fitted place-field position of every ROI in
+    that row's ordering. Unlike :class:`PlacefieldGainViewer`, the sort methods are
+    fixed by the layout and therefore are not exposed as a viewer parameter.
+
+    Only controls relevant to selecting, computing, and styling these two rows are
+    exposed; the summary and covariance controls from ``PlacefieldGainViewer`` are
+    intentionally omitted.
+    """
+
+    _SORT_METHODS = ("environment", "rastermap_gain")
+    _SORT_TITLES = {
+        "environment": "Place-field position sort",
+        "rastermap_gain": "Rastermap gain sort",
+    }
+
+    def __init__(
+        self,
+        sessions: list[B2Session],
+        results: ResultsAggregator,
+        *,
+        mouse: str | None = None,
+        session: str | None = None,
+        environment: int | None = None,
+        gain_estimator: str = "least_squares",
+        gain_transform: str = "raw",
+        placefield_split: str = "train",
+        spks_type: SpksTypes = "sigrebase",
+        num_bins: int = 100,
+        speed_threshold: float = 1.0,
+        smooth_width: float | None = 1.0,
+        full_trial_flexibility: float | None = 3.0,
+        gain_vmax: float = 2.0,
+        interpolation: str = "none",
+        markersize: float = 3.0,
+        fontsize: float = 8.0,
+        figsize: tuple[float, float] = (16.0, 5.0),
+    ):
+        super().__init__(
+            sessions,
+            results,
+            mouse=mouse,
+            session=session,
+            environment=environment,
+            gain_estimator=gain_estimator,
+            gain_transform=gain_transform,
+            placefield_split=placefield_split,
+            swarm_mode="pooled",
+            include_covariance=False,
+            include_familiarity=False,
+            by_env=False,
+            min_trial=10,
+            sort_method="environment",
+            spks_type=spks_type,
+            num_bins=num_bins,
+            speed_threshold=speed_threshold,
+            smooth_width=smooth_width,
+            full_trial_flexibility=full_trial_flexibility,
+            gain_vmax=gain_vmax,
+            covariance_vmax=0.5,
+            beewidth=0.2,
+            interpolation=interpolation,
+            fontsize=fontsize,
+            figsize=figsize,
+        )
+        irrelevant_parameters = (
+            "swarm_mode",
+            "include_covariance",
+            "include_familiarity",
+            "by_env",
+            "min_trial",
+            "sort_method",
+            "covariance_vmax",
+            "beewidth",
+        )
+        for name in irrelevant_parameters:
+            self.remove_parameter(name)
+            self.callbacks.pop(name, None)
+        self.add_float("markersize", value=markersize, min=0.5, max=20.0, step=0.5)
+
+    def refresh_summary(self, state) -> None:
+        """Skip result-summary loading; this viewer only displays session data."""
+
+    def refresh_data(self, state) -> None:
+        """Compute and retain both fixed orderings of the selected gain matrix."""
+        self.sorted_gains = {}
+        self.sorted_placefield_positions = {}
+        self.sorted_roi_indices = {}
+        for sort_method in self._SORT_METHODS:
+            PlacefieldGainViewer.refresh_data(self, {**state, "sort_method": sort_method})
+            self.sorted_gains[sort_method] = self.gain.copy()
+            self.sorted_placefield_positions[sort_method] = self.placefield_positions.copy()
+            self.sorted_roi_indices[sort_method] = self.roi_indices.copy()
+
+    def plot(self, state):
+        fig, ax = self.new_subplots(
+            2,
+            2,
+            figsize=self.figsize,
+            layout="constrained",
+            width_ratios=[1.0, 0.18],
+            sharex="col",
+            squeeze=False,
+        )
+        position_limits = [0, self.data["session"].env_length[0]]
+
+        for row, sort_method in enumerate(self._SORT_METHODS):
+            gain = self.sorted_gains[sort_method]
+            positions = self.sorted_placefield_positions[sort_method]
+            num_rois = gain.shape[0]
+
+            gain_ax = ax[row, 0]
+            self._draw_trial_image(
+                gain_ax,
+                gain,
+                cmap="coolwarm",
+                interpolation=state["interpolation"],
+                vmin=0.0,
+                vmax=state["gain_vmax"],
+            )
+            self._style_image_axis(gain_ax, self._SORT_TITLES[sort_method], state["fontsize"])
+            gain_ax.set_ylabel("ROIs", fontsize=state["fontsize"])
+
+            position_ax = ax[row, 1]
+            position_ax.scatter(
+                positions,
+                np.arange(num_rois),
+                color="k",
+                s=state["markersize"] ** 2,
+                linewidths=0,
+            )
+            position_ax.set_xlim(*position_limits)
+            position_ax.set_ylim(num_rois - 0.5, -0.5)
+            position_ax.set_xticks(position_limits)
+            position_ax.set_yticks([])
+            position_ax.tick_params(axis="x", labelsize=state["fontsize"], length=2)
+            for side in ("top", "right", "left"):
+                position_ax.spines[side].set_visible(False)
+
+        ax[-1, 0].set_xlabel("Trials", fontsize=state["fontsize"])
+        ax[-1, 1].set_xlabel("PF Pos (cm)", fontsize=state["fontsize"])
+
         return fig

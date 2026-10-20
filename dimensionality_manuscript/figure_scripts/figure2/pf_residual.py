@@ -144,7 +144,9 @@ def _bounded_ticks(ymin: float, ymax: float, preferred_step: float, max_ticks: i
     return tick_min + tick_step * np.arange(num_ticks)
 
 
-def _residual_model_styles(model_names: list[ModelName], include_structured_additive: bool) -> tuple[list[ModelName], list[str], list]:
+def _residual_model_styles(
+    model_names: list[ModelName], include_structured_additive: bool, include_external_placefield: bool = False
+) -> tuple[list[ModelName], list[str], list]:
     """Return aligned names, labels, and colors for a residual summary panel."""
     names = list(model_names)
     labels_by_name = dict(zip(PF_RESIDUAL_MODEL_NAMES, PERFORMANCE_MODEL_LABELS))
@@ -152,7 +154,16 @@ def _residual_model_styles(model_names: list[ModelName], include_structured_addi
     labels_by_name[STRUCTURED_ADDITIVE_MODEL_NAME] = STRUCTURED_ADDITIVE_MODEL_LABEL
     colors_by_name[STRUCTURED_ADDITIVE_MODEL_NAME] = STRUCTURED_ADDITIVE_MODEL_COLOR
     if include_structured_additive and STRUCTURED_ADDITIVE_MODEL_NAME not in names:
-        names.insert(min(2, len(names)), STRUCTURED_ADDITIVE_MODEL_NAME)
+        insert_at = names.index("rrr") if "rrr" in names else len(names)
+        names.insert(insert_at, STRUCTURED_ADDITIVE_MODEL_NAME)
+    if include_external_placefield:
+        if "external_placefield_1d" in names:
+            names.remove("external_placefield_1d")
+        names.insert(0, "external_placefield_1d")
+    if "external_placefield_1d" in names:
+        labels_by_name["external_placefield_1d"] = "Placefield"
+        colors_by_name["external_placefield_1d"] = "#666666"
+        labels_by_name["internal_placefield_1d"] = "Internal\nPlacefield"
     return names, [labels_by_name[name] for name in names], [colors_by_name[name] for name in names]
 
 
@@ -185,6 +196,10 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         Models to draw, in x order.
     include_structured_additive : bool
         Insert the internal structured-additive model between PF+Gain and Peer.
+    include_external_placefield : bool
+        Prepend external PF in gray and label internal PF "Internal Placefield".
+        In relative mode, external PF becomes the baseline; otherwise the first supplied
+        model (internal PF by default) is the baseline.
     fold : {"xval", "infold"}
         Membership place field that localized the residual: estimated on the training frames
         (``xval``) or on the held-out frames themselves (``infold``).
@@ -231,6 +246,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
         *,
         model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
         include_structured_additive: bool = False,
+        include_external_placefield: bool = False,
         fold: str = "xval",
         metric: str = "rms",
         statistic: str = "mean",
@@ -264,7 +280,10 @@ class ModelPlacefieldResidualViewer(FigureViewer):
     ):
         self.results = results
         self.figsize = figsize
-        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(model_names, include_structured_additive)
+        self.include_external_placefield = include_external_placefield
+        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(
+            model_names, include_structured_additive, include_external_placefield
+        )
         self._scores: dict[str, np.ndarray] = {}
         self._inset_scores: dict[str, np.ndarray] = {}
 
@@ -462,6 +481,10 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         Models to draw, in x order.
     include_structured_additive : bool
         Insert the internal structured-additive model between PF+Gain and Peer.
+    include_external_placefield : bool
+        Prepend external PF in gray and label internal PF "Internal Placefield".
+        In relative mode, external PF becomes the baseline; otherwise the first supplied
+        model (internal PF by default) is the baseline.
     fold, metric, statistic
         As in :class:`ModelPlacefieldResidualViewer`.
     show : {"all", "quality", "not quality"}
@@ -490,6 +513,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         *,
         model_names: list[ModelName] = PF_RESIDUAL_MODEL_NAMES,
         include_structured_additive: bool = False,
+        include_external_placefield: bool = False,
         fold: str = "xval",
         metric: str = "rms",
         statistic: str = "mean",
@@ -515,7 +539,10 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
     ):
         self.results = results
         self.figsize = figsize
-        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(model_names, include_structured_additive)
+        self.include_external_placefield = include_external_placefield
+        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(
+            model_names, include_structured_additive, include_external_placefield
+        )
         self._scores: dict[str, np.ndarray] = {}
 
         self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)

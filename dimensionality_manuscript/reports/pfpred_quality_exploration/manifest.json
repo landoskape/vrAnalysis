@@ -1,0 +1,19 @@
+{
+  "sessions": 149,
+  "mice": 14,
+  "session_environments": 267,
+  "roi_environment_observations": 1730449,
+  "figures": 27,
+  "configuration": "pfpred_quality_spks=sigrebase_rel=0.3_fa=0.1_v9",
+  "example": {
+    "sid": "ATL027.2023-07-27.701",
+    "slot": 0,
+    "env": 3
+  },
+  "findings": [
+    "Spatial reliability vs RMS: CV: median within-mouse rho -0.36 across 14 mice (sessions and slots combined within mouse).",
+    "Spatial reliability vs Mean activity: CV: median within-mouse rho -0.38 across 14 mice (sessions and slots combined within mouse).",
+    "Spatial reliability vs PF projection: CV: median within-mouse rho -0.42 across 14 mice (sessions and slots combined within mouse).",
+    "Spatial reliability vs Gaussian gain: CV: median within-mouse rho -0.62 across 14 mice (sessions and slots combined within mouse)."
+  ]
+}

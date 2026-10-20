@@ -116,15 +116,8 @@ class SVCA:
         """
         assert self.fitted, "Model must be fitted before scoring data."
 
-        self._validate_data(source, target)
-
-        if self.centered:
-            source = source - source.mean(dim=1, keepdim=True)
-            target = target - target.mean(dim=1, keepdim=True)
-
         num_timepoints = source.shape[1]
-        source_proj = self.U.T @ source
-        target_proj = self.V.T @ target
+        source_proj, target_proj = self.transform(source, target)
 
         # measure shared variance across source and target neurons on fitted model
         norm_value = num_timepoints if normalize else 1
@@ -136,6 +129,16 @@ class SVCA:
         total_variance = (source_proj_var + target_proj_var) / 2
 
         return shared_variance, total_variance
+
+    @torch.no_grad()
+    def transform(self, source: torch.Tensor, target: torch.Tensor):
+        """Return paired (components, samples) U/V projections with score's centering."""
+        assert self.fitted, "Model must be fitted before transforming data."
+        self._validate_data(source, target)
+        if self.centered:
+            source = source - source.mean(dim=1, keepdim=True)
+            target = target - target.mean(dim=1, keepdim=True)
+        return self.U.T @ source, self.V.T @ target
 
     @torch.no_grad()
     def get_components(self, left: bool = True):

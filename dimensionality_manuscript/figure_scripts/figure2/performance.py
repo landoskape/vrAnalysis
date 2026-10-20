@@ -1,4 +1,4 @@
-"""Performance of the PF, gain, and peer models, relative to PF."""
+"""Performance of the PF, gain, and peer models, relative to the first placefield model."""
 
 import numpy as np
 
@@ -16,9 +16,8 @@ from dimensionality_manuscript.figure_scripts.panels import (
 
 from ._scores import draw_subject_traces, performance_scores
 
-# The panel's model set is fixed by design: it is the slice of the zoo this figure argues about,
-# laid out along the x-axis in a deliberate order. The labels and colors are panel-specific and
-# deliberately do not inherit the obsolete external/internal/neural role taxonomy.
+# The base model set is laid out along the x-axis in a deliberate order. Optional models
+# extend this set; labels and colors remain panel-specific.
 PERFORMANCE_MODEL_NAMES: list[ModelName] = [
     "internal_placefield_1d",
     "internal_placefield_1d_gain",
@@ -40,28 +39,31 @@ PERFORMANCE_METRICS: dict[str, str] = {
 
 
 class ModelPerformanceViewer(FigureViewer):
-    """One score each for PF, PF+Gain, optionally StructuredAdditive, and Peer, relative to PF.
+    """One score per model, relative to the first placefield model.
 
     Each model contributes a single number per subject (a mouse when ``avg_by_mouse``, else a
     session): its optimized-hyperparameter test score from ``RegressionConfig``. The main axis
-    plots that score minus the PF score, so the panel reads as "what each extra ingredient buys
-    over a plain placefield model", with one faint line per subject behind the across-subject
-    mean. PF, PF+Gain, and Peer are consistently colored black, red, and blue; the optional
-    StructuredAdditive point is orange.
+    plots that score minus the first model's score, with one faint line per subject behind
+    the across-subject mean. The reference is internal PF, or external PF when included.
+    Internal PF, PF+Gain, and Peer are colored black, red, and blue; optional external PF is
+    gray and StructuredAdditive is orange.
 
-    An inset repeats the same traces without the PF subtraction, so the absolute scale of the
+    An inset repeats the same traces without the reference subtraction, so the absolute scale of the
     scores stays visible next to the differences.
 
     Parameters
     ----------
     results : ResultsAggregator
         Aggregated ``RegressionConfig`` results, with ``model_name`` as a param axis covering
-        PF, PF+Gain, and Peer, plus StructuredAdditive when requested.
+        PF, PF+Gain, and Peer, plus external PF and StructuredAdditive when requested.
     metric : {"r2", "mse"}
         Fit metric, plotted in its stored units: R^2 as a fraction (<= 1), MSE in its own units.
         Every y knob below is in those units too.
     avg_by_mouse : bool
         Average sessions within a mouse before plotting, so one trace is one mouse.
+    include_external_placefield : bool
+        Prepend external PF as "Placefield" and label internal PF "Internal Placefield".
+        External PF becomes the reference when included; otherwise internal PF is used.
     include_structured_additive : bool
         Insert the internal structured-additive model between PF+Gain and Peer.
     fontsize : float
@@ -102,6 +104,7 @@ class ModelPerformanceViewer(FigureViewer):
         metric: str = "r2",
         avg_by_mouse: bool = True,
         include_structured_additive: bool = False,
+        include_external_placefield: bool = False,
         fontsize: float = 12.0,
         xtick_rotation: float = 45.0,
         ytick_max: float = 0.1,
@@ -130,9 +133,16 @@ class ModelPerformanceViewer(FigureViewer):
         self.results = results
         self.figsize = figsize
         self.include_structured_additive = include_structured_additive
+        self.include_external_placefield = include_external_placefield
         self.model_names = list(self.base_model_names)
         self.model_labels = list(self.base_model_labels)
         self.model_colors = list(self.base_model_colors)
+        if include_external_placefield and "external_placefield_1d" not in self.model_names:
+            self.model_names.insert(0, "external_placefield_1d")
+            self.model_labels.insert(0, "Placefield")
+            self.model_colors.insert(0, "#666666")
+            internal_index = self.model_names.index("internal_placefield_1d")
+            self.model_labels[internal_index] = "Internal\nPlacefield"
         if include_structured_additive:
             # Shared Residual belongs immediately before Peer Prediction. This also keeps the
             # insertion correct for subclasses that add another gain model before Peer.

@@ -147,6 +147,7 @@ def test_trial_activity_summaries_and_completed_key_names():
         "trial_mean": np.array([[-1.0, 1.0, np.nan], [1.0, 3.0, 5.0]]),
         "trial_pf_dot": np.array([[2.0, 4.0, 6.0], [1.0, 1.0, 1.0]]),
         "trial_gain": np.array([[0.5, 1.0, 1.5], [np.nan, np.nan, np.nan]]),
+        "trial_gain_least_squares": np.array([[0.5, 1.0, 1.5], [np.nan, np.nan, np.nan]]),
     }
     result = _summarize_trial_activity(metric_values)
 
@@ -163,6 +164,9 @@ def test_trial_activity_summaries_and_completed_key_names():
         "trial_gain_mean",
         "trial_gain_variance",
         "trial_gain_cv",
+        "trial_gain_least_squares_mean",
+        "trial_gain_least_squares_variance",
+        "trial_gain_least_squares_cv",
     ]
     assert set(result) == set(trial_activity_summary_keys())
     np.testing.assert_allclose(result["trial_rms_mean"], [2.0, 2.0])
@@ -173,6 +177,10 @@ def test_trial_activity_summaries_and_completed_key_names():
     assert np.isnan(result["trial_gain_mean"][1])
     assert np.isnan(result["trial_gain_variance"][1])
     assert np.isnan(result["trial_gain_cv"][1])
+    np.testing.assert_allclose(result["trial_gain_least_squares_mean"][0], 1.0)
+    np.testing.assert_allclose(result["trial_gain_least_squares_variance"][0], 1 / 6)
+    np.testing.assert_allclose(result["trial_gain_least_squares_cv"][0], np.sqrt(1 / 6))
+    assert np.isnan(result["trial_gain_least_squares_cv"][1])
 
 
 def test_trial_activity_population_summaries_match_quality_naming_and_ignore_nans():
@@ -183,7 +191,7 @@ def test_trial_activity_population_summaries_match_quality_naming_and_ignore_nan
     result = _summarize_trial_activity_across_rois(per_roi, quality_filtered)
 
     assert set(result) == set(trial_activity_population_summary_keys())
-    assert len(result) == 2 * 3 * 12
+    assert len(result) == 2 * 3 * 15
     assert result["mean_trial_gain_mean"] == pytest.approx(5.0)
     assert result["mean_quality_filtered_trial_gain_mean"] == pytest.approx(3.0)
     assert result["mean_notquality_filtered_trial_gain_mean"] == pytest.approx(7.0)
@@ -194,7 +202,7 @@ def test_trial_activity_population_summaries_match_quality_naming_and_ignore_nan
 def test_pfpred_quality_defaults_and_threshold_validation():
     config = PFPredQualityConfig()
 
-    assert config.schema_version == "v9"
+    assert config.schema_version == "v10"
     assert config.reliability_threshold == pytest.approx(0.3)
     assert config.fraction_active_threshold == pytest.approx(0.1)
     assert "rel=0.3_fa=0.1" in config.summary()
@@ -255,3 +263,26 @@ def test_trial_activity_by_slot_stores_fraction_active_masks_and_subset_summarie
     assert result["mean_quality_filtered_trial_rms_mean"][0] == pytest.approx(result["trial_rms_mean"][0, 0])
     assert result["mean_notquality_filtered_trial_rms_mean"][0] == pytest.approx(result["trial_rms_mean"][0, 1])
     assert np.isnan(result["mean_quality_filtered_trial_rms_mean"][1])
+    key = "trial_gain_least_squares_mean"
+    assert result[key].shape == (pfpred_quality.MAX_ENV_SLOTS, 2)
+    assert np.all(np.isnan(result[key][2:]))
+    assert result[f"mean_quality_filtered_{key}"][0] == pytest.approx(result[key][0, 0])
+    assert result[f"median_notquality_filtered_{key}"][0] == pytest.approx(result[key][0, 1])
+    assert np.isnan(result[f"mean_quality_filtered_{key}"][1])
+
+
+def test_least_squares_trial_gain_uses_non_gaussian_template_and_handles_missing_bins(monkeypatch):
+    # Non-Gaussian shape and differing trial occupancy exercise the finite-bin denominator.
+    spkmap = np.array([
+        [[1.0, 2.0, 0.0], [3.0, np.nan, 0.0]],
+        [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ])
+    monkeypatch.setattr(
+        pfpred_quality, "gaussian_gain_matrix",
+        lambda maps, positions: (np.full(maps.shape[:2], 7.0), None, None),
+    )
+    result = _trial_activity_measurements(spkmap, np.arange(3.0))
+    # All-trial template is [2, 2, 0]. First trial uses energy 8, second uses energy 4.
+    np.testing.assert_allclose(result["trial_gain_least_squares"][0], [0.75, 1.5])
+    assert np.all(np.isnan(result["trial_gain_least_squares"][1]))
+    np.testing.assert_allclose(result["trial_gain"], 7.0)

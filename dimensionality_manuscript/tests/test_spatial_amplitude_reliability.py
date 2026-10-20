@@ -7,6 +7,7 @@ import types
 
 import matplotlib
 import numpy as np
+import pytest
 
 matplotlib.use("Agg")
 
@@ -93,3 +94,30 @@ def test_changing_amplitude_selection_reloads_the_stored_key(monkeypatch):
 
     assert viewer.amplitude_key == "trial_mean_variance"
     np.testing.assert_allclose(viewer.amplitude_summaries["trial_mean_variance"], [2.0, 3.0])
+
+
+@pytest.mark.parametrize("padded_key", ["trial_rms_cv", "reliability_slot", "fraction_active_slot"])
+def test_load_arrays_trims_only_surplus_nan_padding(monkeypatch, padded_key):
+    viewer = _viewer(monkeypatch)
+    values = np.array([[[0.8, np.nan, 0.2]], [[0.4, np.nan, 0.6]]])
+    arrays = {key: values.copy() for key in ("trial_rms_cv", "reliability_slot", "fraction_active_slot")}
+    arrays[padded_key] = np.pad(values, ((0, 0), (0, 0), (0, 4)), constant_values=np.nan)
+    arrays["env_slot_ids"] = np.array([[7.0], [7.0]])
+    viewer.results.sel = lambda **kwargs: arrays
+
+    viewer._load_arrays(viewer.state)
+
+    for array in (viewer.amplitude_slot, viewer.reliability_slot, viewer.fraction_active_slot):
+        np.testing.assert_allclose(array, values)
+    assert arrays[padded_key].shape == (2, 1, 7)
+
+
+def test_load_arrays_rejects_surplus_non_nan_rois(monkeypatch):
+    viewer = _viewer(monkeypatch)
+    original_sel = viewer.results.sel
+    arrays = original_sel(keys=["trial_rms_cv", "reliability_slot", "fraction_active_slot", "env_slot_ids"])
+    arrays["reliability_slot"] = np.array([[[0.8, 0.25, 0.9]]])
+    viewer.results.sel = lambda **kwargs: arrays
+
+    with pytest.raises(ValueError, match="matching shapes"):
+        viewer._load_arrays(viewer.state)

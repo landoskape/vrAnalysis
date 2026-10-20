@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from dimensionality_manuscript.configs.regression import residual_summary_keys
 from dimensionality_manuscript.figure_scripts.figure2.pf_residual import (
@@ -460,3 +461,74 @@ def test_pf_residual_familiarity_two_axis_layout_has_one_legend():
     assert fig.axes[0].get_legend() is not None
     assert fig.axes[1].get_legend() is None
     plt.close(fig)
+
+
+@pytest.mark.parametrize("viewer_class", [ModelPlacefieldResidualViewer, ModelPlacefieldResidualInsetViewer])
+@pytest.mark.parametrize("include_external", [False, True])
+@pytest.mark.parametrize("include_structured", [False, True])
+@pytest.mark.parametrize("relative", [False, True])
+def test_pf_residual_summary_optional_external_placefield(viewer_class, include_external, include_structured, relative):
+    class Results(_FakeResidualSummaryResults):
+        param_axes = {"model_name": [
+            "external_placefield_1d",
+            "internal_placefield_1d",
+            "internal_placefield_1d_gain",
+            "internal_placefield_1d_structured_additive",
+            "rrr",
+        ]}
+
+    supplied_models = ["internal_placefield_1d", "internal_placefield_1d_gain", "rrr"]
+    viewer = viewer_class(
+        Results(),
+        model_names=supplied_models,
+        include_external_placefield=include_external,
+        include_structured_additive=include_structured,
+        relative=relative,
+    )
+    expected_models = list(supplied_models)
+    expected_labels = ["Placefield", "Global\nGain", "Peer\nPrediction"]
+    expected_colors = ["#000000", "#c00000", "#0000cd"]
+    if include_structured:
+        expected_models.insert(-1, "internal_placefield_1d_structured_additive")
+        expected_labels.insert(-1, "Shared\nResidual")
+        expected_colors.insert(-1, "#c06000")
+    if include_external:
+        expected_models.insert(0, "external_placefield_1d")
+        expected_labels[0] = "Internal\nPlacefield"
+        expected_labels.insert(0, "Placefield")
+        expected_colors.insert(0, "#666666")
+    assert viewer.model_names == expected_models
+    assert viewer.model_labels == expected_labels
+    assert viewer.model_colors == expected_colors
+    assert supplied_models == ["internal_placefield_1d", "internal_placefield_1d_gain", "rrr"]
+
+    fig = viewer.plot(viewer.state)
+    assert [label.get_text() for label in fig.axes[0].get_xticklabels()] == expected_labels
+    for axis in fig.axes:
+        for plotted in (axis, *axis.child_axes):
+            center = next(line for line in plotted.lines if line.get_linewidth() == viewer.state["mean_linewidth"])
+            # Model offsets are distinct, so this also checks which model supplies the baseline.
+            values = np.array([Results.param_axes["model_name"].index(name) * 0.05 for name in expected_models])
+            if relative:
+                values -= values[0]
+            else:
+                values += 0.45
+                if viewer_class is ModelPlacefieldResidualViewer and plotted is not axis:
+                    values += 0.5  # This viewer's inset defaults to quality-filtered ROIs.
+            np.testing.assert_allclose(center.get_ydata(), values, atol=1e-12)
+    plt.close(fig)
+
+
+def test_pf_residual_external_placefield_already_supplied_is_not_duplicated():
+    from dimensionality_manuscript.figure_scripts.figure2.pf_residual import _residual_model_styles
+
+    names, labels, colors = _residual_model_styles(
+        ["internal_placefield_1d", "external_placefield_1d", "rrr"],
+        include_structured_additive=True,
+        include_external_placefield=True,
+    )
+    assert names == [
+        "external_placefield_1d", "internal_placefield_1d", "internal_placefield_1d_structured_additive", "rrr",
+    ]
+    assert labels[:2] == ["Placefield", "Internal\nPlacefield"]
+    assert colors[:2] == ["#666666", "#000000"]

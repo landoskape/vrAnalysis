@@ -1,0 +1,29 @@
+{
+  "sessions": 149,
+  "mice": 14,
+  "session_environments": 267,
+  "figures": 8,
+  "max_identity_error": 8.488593197242267e-07,
+  "example_correlations": [
+    {
+      "metric": "trial_rms_cv",
+      "rho": -0.999862070394912,
+      "n": 6921
+    },
+    {
+      "metric": "trial_mean_cv",
+      "rho": -0.9898457408345699,
+      "n": 6921
+    },
+    {
+      "metric": "trial_pf_dot_cv",
+      "rho": -0.978559229242121,
+      "n": 6921
+    },
+    {
+      "metric": "trial_gain_cv",
+      "rho": -0.884125980146697,
+      "n": 6921
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 """Focused tests for the direct-session place-field gain viewer helpers."""
 
 from pathlib import Path
+import inspect
 import sys
 import types
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ if package_name not in sys.modules:
     sys.modules[package_name] = package
 
 from dimensionality_manuscript.figure_scripts.figure2.placefield_gain import (
+    PlacefieldGainSortViewer,
     PlacefieldGainViewer,
     _full_trial_indices,
     _values_by_mouse,
@@ -122,6 +124,63 @@ def test_plot_adds_summary_and_optional_familiarity_panels():
         assert fig.axes[2].lines[2].get_color() == "red"
         assert fig.axes[2].lines[-1].get_color() == "red"
         assert fig.axes[3].get_xlabel() == "Overall Session #"
+    finally:
+        plt.close(fig)
+
+
+def test_gain_image_interpolates_each_discrete_trial_separately():
+    values = np.arange(12, dtype=float).reshape(3, 4)
+    fig, ax = plt.subplots()
+    try:
+        PlacefieldGainViewer._draw_trial_image(ax, values, cmap="coolwarm", interpolation="bilinear")
+        assert len(ax.images) == values.shape[1]
+        assert all(image.get_array().shape == (values.shape[0], 1) for image in ax.images)
+        np.testing.assert_allclose([image.get_extent() for image in ax.images], [
+            (-0.5, 0.5, 2.5, -0.5),
+            (0.5, 1.5, 2.5, -0.5),
+            (1.5, 2.5, 2.5, -0.5),
+            (2.5, 3.5, 2.5, -0.5),
+        ])
+        np.testing.assert_allclose(ax.get_xlim(), (-0.5, 3.5))
+        np.testing.assert_allclose(ax.get_ylim(), (2.5, -0.5))
+    finally:
+        plt.close(fig)
+
+
+def test_sort_viewer_draws_two_fixed_orderings_with_aligned_positions():
+    viewer = object.__new__(PlacefieldGainSortViewer)
+    viewer.figsize = (5.0, 3.0)
+    viewer.data = {
+        "positions": np.linspace(0.0, 100.0, 11),
+        "session": SimpleNamespace(env_length=np.array([100.0])),
+    }
+    viewer.sorted_gains = {
+        "environment": np.arange(12, dtype=float).reshape(3, 4),
+        "rastermap_gain": np.arange(12, dtype=float).reshape(3, 4)[[2, 0, 1]],
+    }
+    viewer.sorted_placefield_positions = {
+        "environment": np.array([10.0, 40.0, 80.0]),
+        "rastermap_gain": np.array([80.0, 10.0, 40.0]),
+    }
+
+    fig = viewer.plot({"gain_vmax": 4.0, "interpolation": "bilinear", "markersize": 4.0, "fontsize": 8.0})
+    try:
+        assert len(fig.axes) == 4
+        assert [text.get_text() for text in fig.axes[0].texts] == ["Place-field position sort"]
+        assert [text.get_text() for text in fig.axes[2].texts] == ["Rastermap gain sort"]
+        np.testing.assert_allclose(fig.axes[1].collections[0].get_offsets(), [[10.0, 0.0], [40.0, 1.0], [80.0, 2.0]])
+        np.testing.assert_allclose(fig.axes[3].collections[0].get_offsets(), [[80.0, 0.0], [10.0, 1.0], [40.0, 2.0]])
+        assert len(fig.axes[0].images) == 4
+        assert len(fig.axes[2].images) == 4
+        assert "sort_method" not in inspect.signature(PlacefieldGainSortViewer).parameters
+        assert "include_covariance" not in inspect.signature(PlacefieldGainSortViewer).parameters
+        np.testing.assert_allclose(fig.axes[1].collections[0].get_sizes(), [16.0])
+        assert fig.axes[0].get_xlabel() == ""
+        assert fig.axes[1].get_xlabel() == ""
+        assert fig.axes[2].get_xlabel() == "Trials"
+        assert fig.axes[3].get_xlabel() == "PF Pos (cm)"
+        assert fig.axes[0].get_shared_x_axes().joined(fig.axes[0], fig.axes[2])
+        assert fig.axes[1].get_shared_x_axes().joined(fig.axes[1], fig.axes[3])
     finally:
         plt.close(fig)
 

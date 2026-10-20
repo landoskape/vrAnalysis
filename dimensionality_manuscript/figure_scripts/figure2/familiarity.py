@@ -17,6 +17,8 @@ from dimensionality_manuscript.figure_scripts.panels import (
 
 from ._scores import (
     SESSION_XLABEL,
+    _pad_stack,
+    _supported_length,
     add_familiarity_curve_widgets,
     chronological_mouse_sessions,
     draw_familiarity_series,
@@ -84,8 +86,8 @@ class RegressionFamiliarityViewer(FigureViewer):
 
     The counterpart of figure3's familiarity panel for regression scores: each mouse's sessions
     are ordered chronologically and renumbered from 0, then the per-mouse curves are averaged
-    across mice. A ``RegressionConfig`` score is a whole-session number, so the x-axis is the
-    mouse's own session index -- there is nothing per-environment to align to.
+    across mice. This viewer uses whole-session scores; ``RegressionFamiliarityByEnvViewer``
+    uses the config's per-environment scores instead.
 
     Parameters
     ----------
@@ -441,11 +443,17 @@ class RegressionFamiliarityViewer(FigureViewer):
 
 
 class RegressionFamiliarityByEnvViewer(FigureViewer):
-    """Per-environment R^2 and improvement over the internal place-field control.
+    """Per-environment baseline R^2 and reference-minus-baseline improvement.
 
     Each curve is one experience-order environment slot, using the shared black/blue/green
-    palette.  The left axis shows ``r2_env`` for the model selected by ``model_name``; the right
-    axis shows that score minus ``internal_placefield_1d`` for the same session and slot.
+    palette. The left axis shows ``r2_env`` for ``baseline_model`` (default external PF); the
+    right shows ``reference_model`` (default RRR) minus that baseline for the same session
+    and slot. Both models are selectable in the viewer. These scores evaluate a global
+    session fit on each environment's held-out frames, without fitting separate models.
+
+    ``show_reference_mean`` adds the across-mouse reference mean for each environment to the
+    absolute panel as a thin dashed line without error bars, using the same alignment and
+    ``min_mice`` threshold as the baseline curves.
 
     When ``within_env_session`` is true, each mouse and slot is compacted to the sessions in
     which that environment has a finite score.  Otherwise values retain their position in the
@@ -459,7 +467,9 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         self,
         results: ResultsAggregator,
         *,
-        model_name: ModelName = FAMILIARITY_PF_GAIN_MODEL,
+        baseline_model: ModelName = "external_placefield_1d",
+        reference_model: ModelName = FAMILIARITY_PEER_MODEL,
+        show_reference_mean: bool = False,
         within_env_session: bool = True,
         auto_ylim: bool = True,
         ylim: tuple[float, float] = (0.0, 0.3),
@@ -471,15 +481,14 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         **curve_and_selection,
     ):
         available_models = list(results.param_axes["model_name"])
-        if model_name not in available_models:
-            raise ValueError(f"model_name must be one of {available_models}, got {model_name!r}")
-        if FAMILIARITY_IMPROVEMENT_CONTROL not in available_models:
-            raise ValueError(f"Results must include the {FAMILIARITY_IMPROVEMENT_CONTROL!r} control model")
+        for name, value in (("baseline_model", baseline_model), ("reference_model", reference_model)):
+            if value not in available_models:
+                raise ValueError(f"{name} must be one of {available_models}, got {value!r}")
 
         self.results = results
         self.figsize = figsize
-        self._model_scores = np.empty((0, 0))
-        self._control_scores = np.empty((0, 0))
+        self._baseline_scores = np.empty((0, 0))
+        self._reference_scores = np.empty((0, 0))
 
         curve_kwargs = {name: curve_and_selection.pop(name) for name in self._CURVE_KNOBS if name in curve_and_selection}
         self.selection_names = add_data_selection_widgets(
@@ -488,7 +497,9 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
             skip=("model_name",),
             defaults=curve_and_selection,
         )
-        self.add_selection("model_name", value=model_name, options=available_models)
+        self.add_selection("baseline_model", value=baseline_model, options=available_models)
+        self.add_selection("reference_model", value=reference_model, options=available_models)
+        self.add_boolean("show_reference_mean", value=show_reference_mean)
         self.add_boolean("within_env_session", value=within_env_session)
         add_familiarity_curve_widgets(self, results, **curve_kwargs)
 
@@ -500,28 +511,33 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         add_legend_widgets(self)
         update_legend_widgets(self, legend_options or {})
 
-        for name in (*self.selection_names, "model_name"):
+        for name in (*self.selection_names, "baseline_model", "reference_model"):
             self.on_change(name, self.refresh_data)
         self.refresh_data(self.state)
 
     def _select_scores(self, model_name: ModelName, selection: dict) -> np.ndarray:
-        scores = self.results.sel(
+        selected = self.results.sel(
             model_name=model_name,
             avg_by_mouse=False,
             **selection,
-        )["r2_env"]
-        scores = np.asarray(scores, dtype=float)
+        )
+        if "r2_env" not in selected:
+            raise ValueError(
+                "RegressionFamiliarityByEnvViewer requires r2_env results from "
+                "RegressionConfig schema v4 or newer; recompute or load current results."
+            )
+        scores = np.asarray(selected["r2_env"], dtype=float)
         if scores.ndim != 2:
             raise ValueError(f"Expected r2_env with shape (sessions, environment slots), got {scores.shape}")
         return scores
 
     def refresh_data(self, state):
-        """Select the current model and its session-matched PF control scores."""
+        """Select baseline and reference scores matched by session and environment slot."""
         selection = data_selection(state, self.results, self.selection_names)
-        self._model_scores = self._select_scores(state["model_name"], selection)
-        self._control_scores = self._select_scores(FAMILIARITY_IMPROVEMENT_CONTROL, selection)
-        if self._model_scores.shape != self._control_scores.shape:
-            raise ValueError("Selected model and internal_placefield_1d r2_env arrays must have matching shapes")
+        self._baseline_scores = self._select_scores(state["baseline_model"], selection)
+        self._reference_scores = self._select_scores(state["reference_model"], selection)
+        if self._baseline_scores.shape != self._reference_scores.shape:
+            raise ValueError("Baseline and reference r2_env arrays must have matching shapes")
 
     def _slot_curves(self, values: np.ndarray, slot: int, within_env_session: bool) -> dict[str, np.ndarray]:
         """Return one slot's curves in within-environment or overall-session coordinates."""
@@ -572,6 +588,29 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
             extents.append(extent)
             visible_values.append(visible[np.isfinite(visible)])
 
+            if not improvement and state["show_reference_mean"]:
+                stack = _pad_stack(self._slot_curves(self._reference_scores, slot, state["within_env_session"]))
+                length = _supported_length(stack, state["min_mice"])
+                if length:
+                    supported = stack[:, :length]
+                    counts = np.sum(np.isfinite(supported), axis=0)
+                    mean = np.divide(
+                        np.nansum(supported, axis=0),
+                        counts,
+                        out=np.full(length, np.nan),
+                        where=counts > 0,
+                    )
+                    ax.plot(
+                        np.arange(length),
+                        mean,
+                        color=ENV_SLOT_COLORS[slot],
+                        linewidth=0.5 * state["linewidth"],
+                        linestyle="--",
+                        label=f"Env #{slot + 1} reference",
+                    )
+                    extents.append(length)
+                    visible_values.append(mean[np.isfinite(mean)])
+
         finite = np.concatenate(visible_values) if visible_values else np.array([])
         self._fit_axis(
             ax,
@@ -592,8 +631,8 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
             layout="constrained",
             squeeze=False,
         )
-        absolute = self._model_scores
-        improvement = self._model_scores - self._control_scores
+        absolute = self._baseline_scores
+        improvement = self._reference_scores - self._baseline_scores
         self._draw_panel(axes[0, 0], absolute, state, improvement=False)
         self._draw_panel(axes[0, 1], improvement, state, improvement=True)
         return fig

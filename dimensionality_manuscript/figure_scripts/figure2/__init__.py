@@ -22,7 +22,8 @@ from .familiarity import RegressionFamiliarityByEnvViewer, RegressionFamiliarity
 from .model_style import ARCH_LABELS, ARCH_LINESTYLE, MODEL_STYLE, ROLE_COLOR, ROLE_LABELS
 from .performance import PERFORMANCE_MODEL_NAMES, ModelPerformanceViewer
 from .trial_performance import TRIAL_PERFORMANCE_MODEL_NAMES, TrialModelPerformanceViewer
-from .placefield_gain import PlacefieldGainViewer
+from .trial_gain import TrialGainFocus
+from .placefield_gain import PlacefieldGainSortViewer, PlacefieldGainViewer
 from .pf_residual import (
     PF_RESIDUAL_MODEL_NAMES,
     ModelPlacefieldResidualExplorer,
@@ -31,7 +32,7 @@ from .pf_residual import (
     ModelPlacefieldResidualViewer,
 )
 from .prediction import RegressionPredictionViewer
-from .rasters import PREDICTION_FIGURE_MODELS, ModelPredictionsFigureViewer, ModelRasterFocus
+from .rasters import PREDICTION_FIGURE_MODELS, ModelPredictionsFigureViewer, ModelPredictionsZoomFigureViewer, ModelRasterFocus
 from .residual_structure import RegressionResidualStructureViewer
 from .zoo import (
     ModelZooCondensed,
@@ -48,12 +49,15 @@ __all__ = [
     "MODEL_STYLE",
     "ModelPerformanceViewer",
     "TrialModelPerformanceViewer",
+    "TrialGainFocus",
     "PlacefieldGainViewer",
+    "PlacefieldGainSortViewer",
     "ModelPlacefieldResidualExplorer",
     "ModelPlacefieldResidualFamiliarityViewer",
     "ModelPlacefieldResidualInsetViewer",
     "ModelPlacefieldResidualViewer",
     "ModelPredictionsFigureViewer",
+    "ModelPredictionsZoomFigureViewer",
     "ModelRasterFocus",
     "PREDICTION_FIGURE_MODELS",
     "ModelZooCondensed",

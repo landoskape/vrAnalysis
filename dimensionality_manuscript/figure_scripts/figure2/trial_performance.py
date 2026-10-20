@@ -10,26 +10,19 @@ from dimensionality_manuscript.figure_scripts.panels import data_selection
 
 from .performance import ModelPerformanceViewer
 
-
 TRIAL_PERFORMANCE_MODEL_NAMES: tuple[ModelName, ...] = (
-    "external_placefield_1d",
-    "external_placefield_1d_gain",
     "internal_placefield_1d",
     "internal_placefield_1d_gain",
     "internal_placefield_1d_structured_gain",
     "rrr",
 )
 TRIAL_PERFORMANCE_MODEL_LABELS = (
-    "External\nPF",
-    "External\nGlobal Gain",
-    "Internal\nPF",
-    "Internal\nGlobal Gain",
+    "Placefield",
+    "Global\nGain",
     "Trial\nGain",
     "Peer\nPrediction",
 )
 TRIAL_PERFORMANCE_MODEL_COLORS = (
-    "#666666",
-    "#e07070",
     "#000000",
     "#c00000",
     "#008000",
@@ -83,7 +76,12 @@ def trial_performance_scores(results, model_names, metric, selection, environmen
 
 
 class TrialModelPerformanceViewer(ModelPerformanceViewer):
-    """Compare six environment-specific PC models on temporal held-out-trial predictions.
+    """Compare environment-specific PC models on temporal held-out-trial predictions.
+
+    External PF is optional via ``include_external_placefield`` (default False). The main
+    axis subtracts internal PF, or external PF when included. The inset shows absolute scores.
+    Style parameters match :class:`ModelPerformanceViewer`; ``selection_defaults`` seeds
+    data-selection widgets from the results aggregator.
 
     ``aggregation`` controls every nested summary: environment slots within each session,
     sessions within each mouse, and the across-subject center drawn on both axes.
@@ -101,7 +99,30 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
         metric: str = "r2",
         environment: str = "Average",
         aggregation: str = "mean",
-        **kwargs,
+        avg_by_mouse: bool = True,
+        include_structured_additive: bool = False,
+        include_external_placefield: bool = False,
+        fontsize: float = 12.0,
+        xtick_rotation: float = 45.0,
+        ytick_max: float = 0.1,
+        ylim: tuple[float, float] = (-0.03, 0.12),
+        show_zero_line: bool = True,
+        zero_line_pad: float = 0.5,
+        figsize: tuple[float, float] = (7.0, 5.0),
+        markersize: float = 5.0,
+        mean_linewidth: float = 1.5,
+        subject_linewidth: float = 0.5,
+        subject_alpha: float = 0.3,
+        show_inset: bool = True,
+        inset_x: float = 0.1,
+        inset_y: float = 0.5,
+        inset_width: float = 0.35,
+        inset_height: float = 0.45,
+        inset_markersize: float = 3.0,
+        inset_fontsize: float = 10.0,
+        inset_ytick_max: float = 0.2,
+        inset_ylim: tuple[float, float] = (-0.02, 0.25),
+        **selection_defaults,
     ):
         if environment not in ENVIRONMENT_OPTIONS:
             raise ValueError(f"environment must be one of {ENVIRONMENT_OPTIONS}")
@@ -114,7 +135,34 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
             )
         self._initial_environment = environment
         self._initial_aggregation = aggregation
-        super().__init__(results, metric=metric, **kwargs)
+        super().__init__(
+            results,
+            metric=metric,
+            avg_by_mouse=avg_by_mouse,
+            include_structured_additive=include_structured_additive,
+            include_external_placefield=include_external_placefield,
+            fontsize=fontsize,
+            xtick_rotation=xtick_rotation,
+            ytick_max=ytick_max,
+            ylim=ylim,
+            show_zero_line=show_zero_line,
+            zero_line_pad=zero_line_pad,
+            figsize=figsize,
+            markersize=markersize,
+            mean_linewidth=mean_linewidth,
+            subject_linewidth=subject_linewidth,
+            subject_alpha=subject_alpha,
+            show_inset=show_inset,
+            inset_x=inset_x,
+            inset_y=inset_y,
+            inset_width=inset_width,
+            inset_height=inset_height,
+            inset_markersize=inset_markersize,
+            inset_fontsize=inset_fontsize,
+            inset_ytick_max=inset_ytick_max,
+            inset_ylim=inset_ylim,
+            **selection_defaults,
+        )
         self.add_selection("environment", value=environment, options=list(ENVIRONMENT_OPTIONS))
         self.add_selection("aggregation", value=aggregation, options=list(AGGREGATION_OPTIONS))
         self.on_change("environment", self.refresh_data)

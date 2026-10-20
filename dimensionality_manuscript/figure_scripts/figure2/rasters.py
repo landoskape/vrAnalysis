@@ -2,6 +2,7 @@
 
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib.patches import Rectangle
 from rastermap import Rastermap
 
 from vrAnalysis.helpers.plotting import format_spines
@@ -505,6 +506,16 @@ class ModelRasterFocus(FigureViewer):
         return fig
 
 
+def _bounded_raster_window(window: slice | None, start: int, stop: int) -> tuple[int, int]:
+    """Clamp a half-open, unit-step window to a nonempty raster interval."""
+    if window is not None and window.step not in (None, 1):
+        raise ValueError("Raster windows must have unit steps")
+    first = start if window is None or window.start is None else int(window.start)
+    last = stop if window is None or window.stop is None else int(window.stop)
+    first = min(max(first, start), stop - 1)
+    return first, min(max(last, first + 1), stop)
+
+
 # ======================================================================================
 # Data, internal place-field, and RRR prediction rasters
 # ======================================================================================
@@ -516,6 +527,7 @@ PREDICTION_FIGURE_MODELS: tuple[ModelName, ModelName, ModelName] = (
 )
 
 _PREDICTION_FIGURE_TITLES = {
+    "external_placefield_1d": "External Placefield",
     "internal_placefield_1d_gain": "Global Gain",
     "internal_placefield_1d_structured_additive": "Residual",
     "rrr": "Peer Prediction",
@@ -561,6 +573,8 @@ class ModelPredictionsFigureViewer(FigureViewer):
     include_structured_additive : bool
         Show the Shared Residual prediction and residual between Global Gain and Peer Prediction.
         The ultra-condensed schematic remains unchanged when this raster column is hidden.
+    include_external_pf : bool
+        Include ``external_placefield_1d`` immediately after Target Data.
     zoo_config : ModelZooUltraCondensedConfig or None
         Initial style and layout for the embedded model-zoo schematic. All ultra-condensed-zoo
         geometry and typography fields are also exposed as controls on this viewer.
@@ -592,6 +606,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
         figsize: tuple[float, float] = (15.0, 7.0),
         fontsize: float = 7,
         include_structured_additive: bool = False,
+        include_external_pf: bool = False,
         zoo_config: ModelZooUltraCondensedConfig | None = None,
         colorscale_inset_rect: tuple[float, float, float, float] = _PREDICTION_COLOR_INSET_RECT,
         **selection_defaults,
@@ -602,7 +617,10 @@ class ModelPredictionsFigureViewer(FigureViewer):
             raise ValueError(f"sort_method must be one of {SORT_METHODS}, got {sort_method!r}")
 
         self.include_structured_additive = include_structured_additive
+        self.include_external_pf = include_external_pf
         self.model_names = PREDICTION_FIGURE_MODELS if include_structured_additive else (PREDICTION_FIGURE_MODELS[0], PREDICTION_FIGURE_MODELS[-1])
+        if include_external_pf:
+            self.model_names = ("external_placefield_1d", *self.model_names)
 
         # The compared models are fixed by the panel design, so they are checked here rather
         # than offered as a widget (syd validates the selectable axes against their own options).
@@ -671,11 +689,14 @@ class ModelPredictionsFigureViewer(FigureViewer):
         self.add_float("colorscale_inset_y", value=colorscale_inset_rect[1], min=0.0, max=1.0, step=0.001)
         self.add_float("colorscale_inset_width", value=colorscale_inset_rect[2], min=0.001, max=1.0, step=0.001)
         self.add_float("colorscale_inset_height", value=colorscale_inset_rect[3], min=0.001, max=1.0, step=0.001)
-        self.zoo_config = ModelZooUltraCondensed.add_controls(self, zoo_config)
+        self._add_schematic_controls(zoo_config)
 
         self.on_change("mouse", self._update_sessions)
         for name in ("session", *self.selection_names):
             self.on_change(name, self._update_frame_bounds)
+
+    def _add_schematic_controls(self, config) -> None:
+        self.zoo_config = ModelZooUltraCondensed.add_controls(self, config)
 
     def _session(self, state) -> B2Session:
         return self.results.sessions[self._session_rows[state["mouse"]][state["session"]]]
@@ -810,5 +831,157 @@ class ModelPredictionsFigureViewer(FigureViewer):
             x=state["scale_bar_x"],
             y=state["scale_bar_y"],
             fontsize=fontsize,
+        )
+        return fig
+
+
+class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
+    """Stacked target and model rasters with their boxed zooms in the right column.
+
+    Shares data selection, display transforms, sorting, figure sizing, color inset,
+    and joint scale-bar controls with :class:`ModelPredictionsFigureViewer`.
+    Global Gain and Peer Prediction are always included; ``include_structured_additive``
+    optionally adds the third model. ``include_external_pf`` adds ``external_placefield_1d``
+    immediately after Target Data. There are no residual panels or schematic controls.
+
+    ``zoom_xslice`` uses absolute frame indices within ``xslice`` (both half-open).
+    It defaults to the middle third of the overview. ``zoom_yslice`` indexes rows
+    *after sorting*, defaults to all cells, and is half-open too. Windows are clamped
+    to the available data and overview when selections change. ``zoom_all_cells``
+    lets the interactive viewer restore all cells without resetting the cell window.
+    The zoom reuses the overview's data and color limits, with no extra scale bar.
+    ``x_ratio`` sets the overview/zoom column widths (default ``(1, 0.3)``).
+    The Syd ``x_ratio`` slider controls zoom width relative to overview width,
+    so its default value is 0.3; a scalar constructor value uses the same convention.
+    """
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        registry: PopulationRegistry | None = None,
+        *,
+        mouse: str | None = None,
+        session: str | None = None,
+        sort_method: str = "environment",
+        zscore: bool = False,
+        subtract_median: bool = False,
+        xslice: slice | None = None,
+        zoom_xslice: slice | None = None,
+        zoom_yslice: slice | None = None,
+        x_ratio: tuple[float, float] | float = (1.0, 0.3),
+        vmax: float = 6,
+        scale_bar_seconds: float = 10.0,
+        scale_bar_x: float = 0.05,
+        scale_bar_y: float = 0.08,
+        scale_bar_num_rois: int = 50,
+        figsize: tuple[float, float] = (15.0, 7.0),
+        fontsize: float = 7,
+        include_structured_additive: bool = False,
+        include_external_pf: bool = False,
+        colorscale_inset_rect: tuple[float, float, float, float] = _PREDICTION_COLOR_INSET_RECT,
+        **selection_defaults,
+    ):
+        super().__init__(
+            results, registry, mouse=mouse, session=session, sort_method=sort_method,
+            zscore=zscore, subtract_median=subtract_median, xslice=xslice, vmax=vmax,
+            scale_bar_seconds=scale_bar_seconds, scale_bar_x=scale_bar_x,
+            scale_bar_y=scale_bar_y, scale_bar_num_rois=scale_bar_num_rois,
+            figsize=figsize, fontsize=fontsize,
+            include_structured_additive=include_structured_additive,
+            include_external_pf=include_external_pf,
+            colorscale_inset_rect=colorscale_inset_rect, **selection_defaults,
+        )
+        if np.isscalar(x_ratio):
+            zoom_width = float(x_ratio)
+        else:
+            widths = np.asarray(x_ratio, dtype=float)
+            if widths.shape != (2,) or not np.all(np.isfinite(widths)) or np.any(widths <= 0):
+                raise ValueError("x_ratio must contain two finite positive column widths")
+            zoom_width = float(widths[1] / widths[0])
+        if not np.isfinite(zoom_width) or zoom_width <= 0:
+            raise ValueError("x_ratio must be finite and positive")
+        self.add_float("x_ratio", value=zoom_width, min=min(0.01, zoom_width), max=max(5.0, zoom_width), step=0.01)
+        target, _ = self._get_data(self.state)
+        start, stop = self.state["xslice_start"], self.state["xslice_stop"]
+        if zoom_xslice is None:
+            width = stop - start
+            zoom_xslice = slice(start + width // 3, start + max(2 * width // 3, 1))
+        xstart, xstop = _bounded_raster_window(zoom_xslice, start, stop)
+        ystart, ystop = _bounded_raster_window(zoom_yslice, 0, target.shape[0])
+        self.add_integer("zoom_xslice_start", value=xstart, min=start, max=stop - 1)
+        self.add_integer("zoom_xslice_stop", value=xstop, min=start + 1, max=stop)
+        self.add_boolean("zoom_all_cells", value=zoom_yslice is None)
+        self.add_integer("zoom_yslice_start", value=ystart, min=0, max=target.shape[0] - 1)
+        self.add_integer("zoom_yslice_stop", value=ystop, min=1, max=target.shape[0])
+        for name in ("xslice_start", "xslice_stop"):
+            self.on_change(name, self._update_zoom_bounds)
+
+    def _add_schematic_controls(self, config) -> None:
+        """The zoom occupies the schematic's former panel."""
+
+    def _update_frame_bounds(self, state) -> None:
+        super()._update_frame_bounds(state)
+        if "zoom_xslice_start" in self.state:
+            self._update_zoom_bounds(self.state)
+
+    def _zoom_windows(self, state, num_rois):
+        start = state["xslice_start"]
+        stop = max(start + 1, state["xslice_stop"])
+        xwindow = _bounded_raster_window(slice(state["zoom_xslice_start"], state["zoom_xslice_stop"]), start, stop)
+        yslice = None if state["zoom_all_cells"] else slice(state["zoom_yslice_start"], state["zoom_yslice_stop"])
+        return xwindow, _bounded_raster_window(yslice, 0, num_rois)
+
+    def _update_zoom_bounds(self, state) -> None:
+        target, _ = self._get_data(state)
+        (xstart, xstop), _ = self._zoom_windows(state, target.shape[0])
+        start, stop = state["xslice_start"], max(state["xslice_start"] + 1, state["xslice_stop"])
+        self.update_integer("zoom_xslice_start", value=xstart, min=start, max=stop - 1)
+        self.update_integer("zoom_xslice_stop", value=xstop, min=start + 1, max=stop)
+        ystart, ystop = _bounded_raster_window(
+            slice(state["zoom_yslice_start"], state["zoom_yslice_stop"]), 0, target.shape[0],
+        )
+        self.update_integer("zoom_yslice_start", value=ystart, max=target.shape[0] - 1)
+        self.update_integer("zoom_yslice_stop", value=ystop, max=target.shape[0])
+
+    def plot(self, state):
+        target, predictions = self._get_data(state)
+        idx_sort = self._get_sort(state, target)
+        start, stop = _bounded_raster_window(slice(state["xslice_start"], state["xslice_stop"]), 0, target.shape[1])
+        (xstart, xstop), (ystart, ystop) = self._zoom_windows(
+            {**state, "xslice_start": start, "xslice_stop": stop}, target.shape[0],
+        )
+        fig, axes = self.new_subplots(
+            1 + len(self.model_names), 2, width_ratios=[1, state["x_ratio"]],
+            figsize=(state["figsize_width"], state["figsize_height"]), layout="constrained",
+        )
+        names = ["data", *self.model_names]
+        titles = ["Target Data", *(_PREDICTION_FIGURE_TITLES[name] for name in self.model_names)]
+        for row, (name, title) in enumerate(zip(names, titles)):
+            raw = target if name == "data" else predictions[name]
+            raster = self._display(name, raw, state)[idx_sort, start:stop]
+            for column in range(2):
+                axis = axes[row, column]
+                axis.imshow(
+                    raster, aspect="auto", cmap="gray_r", vmin=0, vmax=state["vmax"],
+                    extent=(start - 0.5, stop - 0.5, target.shape[0] - 0.5, -0.5),
+                )
+                _hide_raster_frame(axis, title if column == 0 else None, state["fontsize"])
+            axes[row, 0].add_patch(Rectangle(
+                (xstart - 0.5, ystart - 0.5), xstop - xstart, ystop - ystart,
+                fill=False, edgecolor="black", linewidth=1, clip_on=False,
+            ))
+            axes[row, 1].set_xlim(xstart - 0.5, xstop - 0.5)
+            axes[row, 1].set_ylim(ystop - 0.5, ystart - 0.5)
+        _draw_colorscale_inset(
+            axes[1, 0], "gray_r", left_label=None, right_label=rf"${state['vmax']:g}\,\sigma$",
+            left_color="black", right_color="white", fontsize=state["fontsize"],
+            rect=_colorscale_inset_rect(state),
+        )
+        times = self._session(state).loadone("mpci.times")
+        _draw_joint_scale_bar(
+            axes[0, 0], seconds=state["scale_bar_seconds"], num_rois=state["scale_bar_num_rois"],
+            frame_duration=float(np.median(np.diff(times))), num_shown_frames=stop - start,
+            total_rois=target.shape[0], x=state["scale_bar_x"], y=state["scale_bar_y"],
+            fontsize=state["fontsize"],
         )
         return fig

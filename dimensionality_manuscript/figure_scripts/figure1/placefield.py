@@ -30,6 +30,7 @@ _AMPLITUDE_METRIC_LABELS = {
     "trial_mean": "Trial Mean",
     "trial_pf_dot": "PF Projection",
     "trial_gain": "Gaussian Gain",
+    "trial_gain_least_squares": "Least-Squares Gain",
 }
 _AMPLITUDE_STATISTIC_LABELS = {"mean": "Mean", "variance": "Variance", "cv": "CV"}
 
@@ -79,7 +80,7 @@ class SpatialAmplitudeReliability(FigureViewer):
         Initial session label, in ``"mouse/date/id"`` form. None takes the mouse's first.
     env : int
         Index into ``env_maps.environments``.
-    amplitude_metric : {"trial_rms", "trial_mean", "trial_pf_dot", "trial_gain"}
+    amplitude_metric : {"trial_rms", "trial_mean", "trial_pf_dot", "trial_gain", "trial_gain_least_squares"}
         Trial-wise activity-amplitude measurement.
     amplitude_statistic : {"mean", "variance", "cv"}
         Statistic reducing that measurement across trials for each ROI.
@@ -178,6 +179,15 @@ class SpatialAmplitudeReliability(FigureViewer):
         self.reliability_slot = np.asarray(out["reliability_slot"], dtype=float)
         self.fraction_active_slot = np.asarray(out["fraction_active_slot"], dtype=float)
         self.env_slot_ids = np.asarray(out["env_slot_ids"], dtype=float)
+        slot_arrays = (self.amplitude_slot, self.reliability_slot, self.fraction_active_slot)
+        if all(array.ndim == 3 for array in slot_arrays) and len({array.shape[:2] for array in slot_arrays}) == 1:
+            # Lazy aggregation retains each key's largest previously loaded ROI width.
+            # Remove only surplus NaN padding; keep internal NaNs and ROI positions.
+            n_rois = min(array.shape[2] for array in slot_arrays)
+            if all(np.isnan(array[..., n_rois:]).all() for array in slot_arrays):
+                self.amplitude_slot, self.reliability_slot, self.fraction_active_slot = (
+                    array[..., :n_rois] for array in slot_arrays
+                )
         if not (self.amplitude_slot.shape == self.reliability_slot.shape == self.fraction_active_slot.shape):
             raise ValueError("Amplitude, reliability, and fraction-active slot arrays must have matching shapes.")
 
@@ -456,7 +466,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         Draw the place-field prediction column.
     include_amplitude_summary : bool
         Draw the trial-amplitude column immediately after spatial reliability.
-    amplitude_metric : {"trial_rms", "trial_mean", "trial_pf_dot", "trial_gain"}
+    amplitude_metric : {"trial_rms", "trial_mean", "trial_pf_dot", "trial_gain", "trial_gain_least_squares"}
         Trial-wise measurement drawn in the top row.
     amplitude_statistic : {"mean", "variance", "cv"}
         Across-trial summary drawn in the bottom row.

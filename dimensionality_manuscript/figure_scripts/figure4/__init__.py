@@ -25,6 +25,7 @@ from ._alpha_config import (
 from .familiarity import DimensionalityFamiliarityViewer
 from .placefield_fits import PlacefieldExampleFitViewer, PlacefieldFitFigureViewer
 from .placefield_population import PlacefieldPopulationViewer
+from .placefield_projections import PlacefieldProjectionViewer
 from .placefield_sessions_mse import PlacefieldParameterSessionsViewer, PlacefieldSpectrumMSEViewer
 from .spectra_diagnostics import (
     AdaptiveSpectraEstimationViewer,
@@ -33,6 +34,7 @@ from .spectra_diagnostics import (
 )
 from .spectrum_by_familiarity import SpectrumCurvesByFamiliarityViewer, SpectrumDimFamiliarityViewer
 from .spectrum_figure import SpectrumAlphaFigureViewer, SpectrumFigureViewer
+from .spectrum_negative import SpectrumNegativeViewer
 
 __all__ = [
     "ADAPTIVE_ALPHA_CONFIG_NAMES",
@@ -44,6 +46,7 @@ __all__ = [
     "PlacefieldFitFigureViewer",
     "PlacefieldParameterSessionsViewer",
     "PlacefieldPopulationViewer",
+    "PlacefieldProjectionViewer",
     "PlacefieldSpectraViewer",
     "PlacefieldSpectrumMSEViewer",
     "SessionSpectraViewer",
@@ -51,6 +54,7 @@ __all__ = [
     "SpectrumCurvesByFamiliarityViewer",
     "SpectrumDimFamiliarityViewer",
     "SpectrumFigureViewer",
+    "SpectrumNegativeViewer",
     "SpectrumSmoothing",
     "SpectrumSmoothingConfig",
     "get_adaptive_alpha_config",
