@@ -126,15 +126,32 @@ def _white_like(x: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
     return torch.randn(x.shape, generator=generator, dtype=x.dtype) * x.std(dim=1, keepdim=True)
 
 
+def _cvsvd_basis(stim_train: torch.Tensor, proj: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+    """Paired spatial U/V bases for the original cross-validated cross-matrix SVD."""
+    U, _, Vt = np.linalg.svd((stim_train.T @ proj).numpy(), full_matrices=False)
+    return U, Vt.T
+
+
 def _cvsvd(stim_train: torch.Tensor, stim_test: torch.Tensor, proj: torch.Tensor) -> torch.Tensor:
     """Cross-validated singular values of stim_train.T @ proj, scored on stim_test.T @ proj.
 
     Inputs should be pre-normalized via _to_g.
     """
-    cross_train = (stim_train.T @ proj).numpy()
     cross_test = (stim_test.T @ proj).numpy()
-    U, _, Vt = np.linalg.svd(cross_train, full_matrices=False)
-    return torch.from_numpy(np.sum(U * (cross_test @ Vt.T), axis=0).copy())
+    U, V = _cvsvd_basis(stim_train, proj)
+    return torch.from_numpy(np.sum(U * (cross_test @ V), axis=0).copy())
+
+
+def _cvpca_spatial_basis(pf_train: torch.Tensor) -> torch.Tensor:
+    """Spatial basis used by ss_cvpca, with its original per-position centering."""
+    train = pf_train - pf_train.mean(dim=0, keepdim=True)
+    _, _, Vt = torch.linalg.svd(train, full_matrices=False)
+    return Vt.transpose(0, 1)
+
+
+def _cvpca_project(pf: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    """Project an aligned (neurons, positions) fold exactly as ss_cvpca does."""
+    return (pf - pf.mean(dim=0, keepdim=True)) @ basis
 
 
 def _cvpca_svd(pf_train: torch.Tensor, pf_test1: torch.Tensor, pf_test2: torch.Tensor) -> torch.Tensor:
@@ -147,14 +164,9 @@ def _cvpca_svd(pf_train: torch.Tensor, pf_test1: torch.Tensor, pf_test2: torch.T
     than the per-neuron centering of ``_to_g``.
     """
 
-    def _center_neurons(x: torch.Tensor) -> torch.Tensor:
-        return x - x.mean(dim=0, keepdim=True)
-
-    train = _center_neurons(pf_train)  # (N, K)
-    _, _, Vt = torch.linalg.svd(train, full_matrices=False)
-    v = Vt.transpose(0, 1)  # (K, k) spatial eigenvectors
-    proj1 = _center_neurons(pf_test1) @ v  # (N, k) per-neuron scores
-    proj2 = _center_neurons(pf_test2) @ v
+    v = _cvpca_spatial_basis(pf_train)
+    proj1 = _cvpca_project(pf_test1, v)
+    proj2 = _cvpca_project(pf_test2, v)
     return vector_correlation(proj1, proj2, covariance=True, dim=0, center=True)
 
 
@@ -441,7 +453,12 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
             )
         return residual_pairs
 
-    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+    def process(self, session: B2Session, registry: PopulationRegistry, *, placefields_only: bool = False, environment: int | None = None) -> dict:
+        """Compute spectra, or return aligned train/test PF folds before fitting any spectra.
+
+        ``placefields_only`` is for on-demand projection diagnostics. It uses precisely the
+        same scaling, ROI selection, smoothing and shared position mask as the spectrum path.
+        """
         population, frame_behavior = registry.get_population(session, spks_type=self.spks_type)
         dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
         ap = get_activity_parameters(self.activity_parameters_name)
@@ -503,10 +520,17 @@ class StimSpaceSpectraConfig(AnalysisConfigBase):
                 )
             )
 
+        if environment is not None:
+            if not placefields_only:
+                raise ValueError("environment is supported only for placefields_only diagnostics.")
+            pf_train_list = [pf.filter_by_environment(environment) for pf in pf_train_list]
+            pf_test_list = [pf.filter_by_environment(environment) for pf in pf_test_list]
         valid_envs, valid_bins = _pf_position_filter(pf_train_list + pf_test_list)
 
         raw_train = [_pf_to_matrix(pf, valid_envs, valid_bins) for pf in pf_train_list]
         raw_test = [_pf_to_matrix(pf, valid_envs, valid_bins) for pf in pf_test_list]
+        if placefields_only:
+            return {"train": raw_train, "test": raw_test}
         sm_train = [_to_g(m) for m in raw_train]
         sm_test = [_to_g(m) for m in raw_test]
         func_folds = self._build_func_folds(session, registry, population, neuron_data, activities, ap)
@@ -1144,6 +1168,11 @@ def _filter_placefield_neurons(placefield: Placefield, keep: np.ndarray) -> Plac
     return replace(placefield, placefield=placefield.placefield[:, :, keep])
 
 
+def _fit_svca(source_train: torch.Tensor, target_train: torch.Tensor, centered: bool, num_components: int) -> SVCA:
+    """Fit the original truncated SVCA model, retaining its paired neuron bases."""
+    return SVCA(centered=centered, num_components=num_components, truncated=True).fit(source_train, target_train)
+
+
 def _svca_score(
     source_train: torch.Tensor,
     target_train: torch.Tensor,
@@ -1158,8 +1187,34 @@ def _svca_score(
     rather than the full LAPACK routine: only the top ``num_components`` are ever kept, so the
     accuracy loss is negligible against a large speedup.
     """
-    model = SVCA(centered=centered, num_components=num_components, truncated=True).fit(source_train, target_train)
+    model = _fit_svca(source_train, target_train, centered, num_components)
     return model.score(source_test, target_test)[0]
+
+
+def _svca_placefield_folds(pf_source_train, pf_target_train, pf_source_test, pf_target_test, n_source, n_target, max_components):
+    """Prepare the same within-fold aligned source/target PF matrices for spectra and viewers."""
+    train = [
+        _paired_placefield_matrices(source, target, n_source, n_target, nan_safe=False)
+        for source, target in zip(pf_source_train, pf_target_train)
+    ]
+    test = [
+        _paired_placefield_matrices(source, target, n_source, n_target, nan_safe=False)
+        for source, target in zip(pf_source_test, pf_target_test)
+    ]
+    components = min(max_components, n_source, n_target, *(p[0].shape[1] for p in train + test))
+    # Retain the position axis through the same shared NaN mask used above. A neuronal
+    # U/V projection preserves these columns, so viewers can show its spatial profile.
+    test_positions = []
+    for source, target in zip(pf_source_test, pf_target_test):
+        valid = ~np.isnan(source.flattened()).any(axis=1) & ~np.isnan(target.flattened()).any(axis=1)
+        centers = (source.dist_edges[:-1] + source.dist_edges[1:]) / 2
+        bins = np.tile(source.idx_positions, len(source.environment))
+        test_positions.append({
+            "position": centers[bins][valid],
+            "environment": np.repeat(source.environment, source.shape[1])[valid],
+            "bin_index": bins[valid],
+        })
+    return {"train": train, "test": test, "num_components": components, "test_positions": test_positions}
 
 
 def _svca_fold_metrics(
@@ -1208,19 +1263,17 @@ def _svca_fold_metrics(
     # used once as the fit side and once as the score side and the average stays symmetric.
     pairs = list(itertools.permutations(range(num_folds), 2))
 
-    pf_pair_train = [
-        _paired_placefield_matrices(pf_source_train[k], pf_target_train[k], n_source, n_target, nan_safe=False) for k in range(num_folds)
-    ]
-    pf_pair_test = [_paired_placefield_matrices(pf_source_test[k], pf_target_test[k], n_source, n_target, nan_safe=False) for k in range(num_folds)]
+    pf_folds = _svca_placefield_folds(
+        pf_source_train, pf_target_train, pf_source_test, pf_target_test, n_source, n_target, max_components,
+    )
+    pf_pair_train, pf_pair_test = pf_folds["train"], pf_folds["test"]
 
     min_T = min(s.shape[1] for s in sources)
-    min_bins_train = min(p[0].shape[1] for p in pf_pair_train)
-    min_bins_test = min(p[0].shape[1] for p in pf_pair_test)
 
     ff_components = min(n_source, n_target, min_T)
     ff = torch.mean(torch.stack([_svca_score(sources[i], targets[i], sources[j], targets[j], centered, ff_components) for i, j in pairs]), dim=0)
 
-    ss_components = min(max_components, n_source, n_target, min_bins_train, min_bins_test)
+    ss_components = pf_folds["num_components"]
     ss = torch.mean(
         torch.stack(
             [_svca_score(pf_pair_train[i][0], pf_pair_train[i][1], pf_pair_test[j][0], pf_pair_test[j][1], centered, ss_components) for i, j in pairs]
@@ -1369,7 +1422,7 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
         ]
         return "_".join(parts)
 
-    def process(self, session: B2Session, registry: PopulationRegistry) -> dict:
+    def process(self, session: B2Session, registry: PopulationRegistry, *, placefields_only: bool = False, environment: int | None = None) -> dict:
         population, frame_behavior = registry.get_population(session, spks_type=self.spks_type)
         dist_edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
         ap = get_activity_parameters(self.activity_parameters_name)
@@ -1421,6 +1474,16 @@ class StimspaceSVCAConfig(AnalysisConfigBase):
             pf_target_train.append(get_placefield(target_data.T.numpy(), fb, smooth_width=smooth_train, **pf_kwargs))
             pf_source_test.append(get_placefield(source_data.T.numpy(), fb, smooth_width=smooth_test, **pf_kwargs))
             pf_target_test.append(get_placefield(target_data.T.numpy(), fb, smooth_width=smooth_test, **pf_kwargs))
+
+        if placefields_only:
+            if environment is not None:
+                pf_source_train = [pf.filter_by_environment(environment) for pf in pf_source_train]
+                pf_target_train = [pf.filter_by_environment(environment) for pf in pf_target_train]
+                pf_source_test = [pf.filter_by_environment(environment) for pf in pf_source_test]
+                pf_target_test = [pf.filter_by_environment(environment) for pf in pf_target_test]
+            return _svca_placefield_folds(
+                pf_source_train, pf_target_train, pf_source_test, pf_target_test, n_source, n_target, self.max_components,
+            )
 
         white_generator = _white_generator(session)
         metrics = _svca_fold_metrics(

@@ -80,13 +80,33 @@ class CVPCAConfig(AnalysisConfigBase):
         ]
         return "_".join(parts)
 
-    def process(self, session: B2Session, registry: PopulationRegistry, return_data: bool = False, return_models: bool = False) -> dict:
+    def fit_fixed_model(self, placefield: torch.Tensor, dist_centers: np.ndarray, full_dist_centers: np.ndarray) -> CVPCA:
+        """Fit the fixed-smoothing reference model shared by spectra and projection viewers."""
+        smoothed = gaussian_filter(
+            placefield,
+            self.fixed_smooth_width,
+            axis=1,
+            stimulus_positions=dist_centers,
+            full_stimulus_positions=full_dist_centers,
+        )
+        return CVPCA(center=self.center, on_stimuli=self.use_spatial_eigenvectors).fit(smoothed)
+
+    def process(
+        self, session: B2Session, registry: PopulationRegistry,
+        return_data: bool = False, return_models: bool = False, *, placefields_only: bool = False, environment: int | None = None,
+    ) -> dict:
         """Run CVPCA analysis on a session.
 
         Ports logic from ``measure_cvpca.process_session()``.
         """
         num_per_env = {i: np.sum(session.trial_environment == i) for i in session.environments}
         best_env = max(num_per_env, key=num_per_env.get)
+        if environment is not None:
+            if not placefields_only:
+                raise ValueError("environment is supported only for placefields_only diagnostics.")
+            if environment not in session.environments:
+                raise ValueError(f"Environment {environment} is absent from this session.")
+            best_env = environment
         best_env_idx = np.where(session.environments == best_env)[0][0]
 
         env_length = session.env_length[0]
@@ -167,6 +187,9 @@ class CVPCAConfig(AnalysisConfigBase):
         if any(torch.any(torch.isnan(pf)) for pf in torch_pfs):
             raise ValueError("Some placefields have NaNs!")
 
+        if placefields_only:
+            return {"torch_pfs": torch_pfs, "dist_centers": dist_centers, "full_dist_centers": full_dist_centers}
+
         # Run CVPCA/PCA variants across folds
         pca_covariances = []
         pca_smooth_covariances = []
@@ -231,7 +254,7 @@ class CVPCAConfig(AnalysisConfigBase):
             )
 
             # R-CVPCA with fixed smoothing on fit data only
-            cvpca_fixed_fit = CVPCA(**_cvpca_args).fit(c0_fixed)
+            cvpca_fixed_fit = self.fit_fixed_model(c0, dist_centers, full_dist_centers)
             reg_fixed_smooth_covariances.append(cvpca_fixed_fit.score(c1, c2))
             reg_fixed_smooth_variances_train.append(torch.var(cvpca_fixed_fit.pca.transform(_opt_transpose(c0_fixed)), dim=1))
             reg_fixed_smooth_variances_test.append(torch.var(cvpca_fixed_fit.pca.transform(_opt_transpose(c1)), dim=1))

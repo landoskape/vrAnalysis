@@ -521,11 +521,15 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
                 target = np.asarray(fold_report.target_data)
                 fold_output["mse_folds"][slot, fold_index] = float(mse(prediction, target, reduce="mean", dim=None))
                 fold_output["r2_folds"][slot, fold_index] = float(measure_r2(prediction, target, reduce="mean", dim=None))
-                train_trials = _assert_one_gain_unit_per_trial(fold_model, session, self.spks_type, "train") if self.model_name in STRUCTURED_GAIN_MODELS else int(
-                    np.unique(fold_model.get_session_data(session, self.spks_type, "train")[2].trial).size
+                train_trials = (
+                    _assert_one_gain_unit_per_trial(fold_model, session, self.spks_type, "train")
+                    if self.model_name in STRUCTURED_GAIN_MODELS
+                    else int(np.unique(fold_model.get_session_data(session, self.spks_type, "train")[2].trial).size)
                 )
-                test_trials = _assert_one_gain_unit_per_trial(fold_model, session, self.spks_type, "test") if self.model_name in STRUCTURED_GAIN_MODELS else int(
-                    np.unique(fold_model.get_session_data(session, self.spks_type, "test")[2].trial).size
+                test_trials = (
+                    _assert_one_gain_unit_per_trial(fold_model, session, self.spks_type, "test")
+                    if self.model_name in STRUCTURED_GAIN_MODELS
+                    else int(np.unique(fold_model.get_session_data(session, self.spks_type, "test")[2].trial).size)
                 )
                 fold_output["n_trials_train_folds"][slot, fold_index] = train_trials
                 fold_output["n_trials_test_folds"][slot, fold_index] = test_trials
