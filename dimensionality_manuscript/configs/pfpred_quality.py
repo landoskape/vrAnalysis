@@ -22,7 +22,7 @@ quality can be followed per environment as a mouse gets more familiar with it.
 
 Trial-wise activity amplitude is measured separately within every environment and then reduced
 across trials for each cell. The result keys are the Cartesian product
-``{trial_rms, trial_mean, trial_pf_dot, trial_gain}_{mean, variance, cv}``, returned literally by
+``{trial_rms, trial_mean, trial_pf_dot, trial_gain, trial_gain_least_squares}_{mean, variance, cv}``, returned literally by
 :func:`trial_activity_summary_keys`; every array has shape ``(MAX_ENV_SLOTS, rois)``. Finite-only
 across-ROI mean and median summaries are also stored for all cells, quality-filtered cells, and
 their complement using the established ``{mean|median}_{quality_filtered_|notquality_filtered_}``
@@ -47,13 +47,13 @@ from vrAnalysis.sessions import B2Session, SpksTypes
 from ..env_order import MAX_ENV_SLOTS, load_env_order
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry
-from .gain_regression import gaussian_gain_matrix
+from .gain_regression import gaussian_gain_matrix, least_squares_gain_matrix
 
 VALID_SPKS_TYPES: list[SpksTypes] = ["oasis", "sigrebase"]
 
 # Each trial metric is reduced across trials with each statistic.  The completed result key is
-# ``f"{metric}_{statistic}"``; ``trial_activity_summary_keys()`` returns the literal 12-key list.
-TRIAL_ACTIVITY_METRICS: tuple[str, ...] = ("trial_rms", "trial_mean", "trial_pf_dot", "trial_gain")
+# ``f"{metric}_{statistic}"``; ``trial_activity_summary_keys()`` returns the literal 15-key list.
+TRIAL_ACTIVITY_METRICS: tuple[str, ...] = ("trial_rms", "trial_mean", "trial_pf_dot", "trial_gain", "trial_gain_least_squares")
 TRIAL_ACTIVITY_STATISTICS: tuple[str, ...] = ("mean", "variance", "cv")
 TRIAL_ACTIVITY_ROI_STATISTICS: tuple[str, ...] = ("mean", "median")
 TRIAL_ACTIVITY_SUBSETS: tuple[str, ...] = ("", "quality_filtered_", "notquality_filtered_")
@@ -111,7 +111,8 @@ class PFPredQualityConfig(AnalysisConfigBase):
     # v8: added total, prediction, and residual variance, plus prediction/total variance.
     # v9: added per-cell summaries of four trial-wise activity-amplitude measurements, per-cell
     # fraction active and quality masks, and finite-only population summaries by quality subset.
-    schema_version: str = "v9"
+    # v10: added least-squares trial gain and its per-cell / population summaries.
+    schema_version: str = "v10"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     reliability_threshold: float = 0.3
@@ -274,7 +275,7 @@ def _summarize_trial_activity_across_rois(
 
 
 def _trial_activity_measurements(spkmap: np.ndarray, bin_centers: np.ndarray) -> dict[str, np.ndarray]:
-    """Measure four activity amplitudes for every ROI and trial in one environment.
+    """Measure five activity amplitudes for every ROI and trial in one environment.
 
     Parameters
     ----------
@@ -290,7 +291,12 @@ def _trial_activity_measurements(spkmap: np.ndarray, bin_centers: np.ndarray) ->
         ``trial_pf_dot`` is the dot product with the unit-L2 place field formed from all trials,
         and ``trial_gain`` is the all-trial Gaussian place-field gain used by
         :class:`~dimensionality_manuscript.configs.gain_regression.GainRegressionConfig`.
-        Each array has shape ``(rois, trials)``. No reliability filtering is applied; failed or
+        ``trial_gain_least_squares`` uses the nonparametric least-squares projection from
+        :func:`~.gain_regression.least_squares_gain_matrix`, with all trials building the template
+        (the descriptive equivalent of ``placefield_split="all"``). It fits no intercept or
+        Gaussian and is NaN for degenerate template energy. These summaries are not held-out
+        gain-regression targets. Each array has shape ``(rois, trials)``.
+        No reliability filtering is applied; failed or
         degenerate Gaussian place-field fits yield NaN gain for that cell.
     """
     spkmap = np.asarray(spkmap, dtype=float)
@@ -321,11 +327,13 @@ def _trial_activity_measurements(spkmap: np.ndarray, bin_centers: np.ndarray) ->
     trial_pf_dot[~np.any(dot_valid, axis=2)] = np.nan
 
     trial_gain, _, _ = gaussian_gain_matrix(spkmap, np.asarray(bin_centers, dtype=float))
+    trial_gain_least_squares, _, _ = least_squares_gain_matrix(spkmap)
     return {
         "trial_rms": trial_rms,
         "trial_mean": trial_mean,
         "trial_pf_dot": trial_pf_dot,
         "trial_gain": trial_gain,
+        "trial_gain_least_squares": trial_gain_least_squares,
     }
 
 
