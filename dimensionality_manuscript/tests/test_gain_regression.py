@@ -12,6 +12,7 @@ from dimensionality_manuscript.configs.gain_regression import (
     GAIN_TRANSFORMS,
     MAX_ENV_SLOTS,
     PLACEFIELD_SPLITS,
+    TRIAL_SHIFTS,
     GainRegressionConfig,
     _full_trial_indices,
     _stack_curves,
@@ -265,6 +266,45 @@ def test_roll_gain_rows_shifts_every_neuron_by_its_own_nonzero_offset():
     np.testing.assert_array_equal(roll_gain_rows(single, np.random.default_rng(2)), single)
 
 
+@pytest.mark.parametrize("trial_shift", TRIAL_SHIFTS)
+def test_split_tensors_shifts_in_original_trial_order(trial_shift):
+    gain = np.arange(40).reshape(4, 10)
+    # Nonconsecutive fold columns must not become adjacent in the lagged pairing.
+    columns = {"train": np.array([3, 5]), "val": np.array([4]), "test": np.array([6])}
+    tensors = split_tensors(gain, np.array([0, 1]), np.array([2, 3]), columns, trial_shift=trial_shift)
+    for name, (x, y) in tensors.items():
+        np.testing.assert_array_equal(x.numpy(), gain[:2, columns[name] - trial_shift].T)
+        np.testing.assert_array_equal(y.numpy(), gain[2:, columns[name]].T)
+
+
+@pytest.mark.parametrize("trial_shift, columns", [(1, [0]), (-1, [9])])
+def test_split_tensors_rejects_wraparound(trial_shift, columns):
+    with pytest.raises(ValueError, match="out-of-bounds"):
+        split_tensors(np.ones((4, 10)), np.array([0, 1]), np.array([2, 3]), {"test": np.array(columns)}, trial_shift=trial_shift)
+
+
+def test_lag_curve_recovers_planted_next_trial_prediction():
+    source, target = _low_rank_gain(n_trials=300, n_source=8, n_target=8, rank=2, seed=40)
+    # The target population on T+1 carries the source population's latent on T.
+    target[1:] = target[:-1].copy()
+    gain = np.concatenate((source.T, target.T))
+    columns = {"train": np.arange(3, 190), "val": np.arange(190, 240), "test": np.arange(240, 297)}
+    scores = {}
+    for shift in TRIAL_SHIFTS:
+        tensors = split_tensors(gain, np.arange(8), np.arange(8, 16), columns, trial_shift=shift)
+        fit = optimize_rrr(*tensors["train"], *tensors["val"], alpha_bounds=(1e-2, 1e6), max_iterations=25)
+        _, scores[shift] = score_rrr(fit.model, fit.rank, *tensors["test"])
+        if shift == 1:
+            null = evaluate_null_rolls(
+                gain, np.arange(8), np.arange(8, 16), columns,
+                alpha=fit.alpha, rank=fit.rank, ranks=fit.ranks,
+                n_rolls=3, rng=np.random.default_rng(0), trial_shift=shift,
+            )
+            assert null.r2_test < 0.1
+    assert scores[1] > 0.5
+    assert max(score for shift, score in scores.items() if shift != 1) < 0.1
+
+
 def _null_inputs(n_trials: int = 180, n_source: int = 15, n_target: int = 15, rank: int = 3, seed: int = 21):
     """A ``(neurons, trials)`` gain matrix with shared low-rank structure, plus its partitions."""
     source, target = _low_rank_gain(n_trials, n_source, n_target, rank, seed)
@@ -364,8 +404,8 @@ def _environment_inputs(n_rois: int, n_trials: int, seed: int, silent_rois: tupl
 
 
 def test_environment_gain_applies_the_configured_transform():
-    session, data = _environment_inputs(n_rois=12, n_trials=18, seed=4)
-    folds = [np.arange(0, 12), np.arange(12, 15), np.arange(15, 18)]
+    session, data = _environment_inputs(n_rois=12, n_trials=36, seed=4)
+    folds = [np.arange(0, 24), np.arange(24, 30), np.arange(30, 36)]
 
     raw = GainRegressionConfig(gain_transform="raw")._environment_gain(session, data, env=1, folds=folds)
     root = GainRegressionConfig(gain_transform="sqrt")._environment_gain(session, data, env=1, folds=folds)
@@ -378,17 +418,17 @@ def test_environment_gain_applies_the_configured_transform():
 
 def test_environment_gain_partitions_neurons_and_trials():
     config = GainRegressionConfig()
-    session, data = _environment_inputs(n_rois=12, n_trials=18, seed=4)
-    folds = [np.arange(0, 12), np.arange(12, 15), np.arange(15, 18)]
+    session, data = _environment_inputs(n_rois=12, n_trials=36, seed=4)
+    folds = [np.arange(0, 24), np.arange(24, 30), np.arange(30, 36)]
 
     gain_data = config._environment_gain(session, data, env=1, folds=folds)
 
     assert gain_data is not None
-    np.testing.assert_array_equal(gain_data.columns["train"], np.arange(0, 12))
-    np.testing.assert_array_equal(gain_data.columns["val"], np.arange(12, 15))
-    np.testing.assert_array_equal(gain_data.columns["test"], np.arange(15, 18))
+    np.testing.assert_array_equal(gain_data.columns["train"], np.arange(3, 24))
+    np.testing.assert_array_equal(gain_data.columns["val"], np.arange(24, 30))
+    np.testing.assert_array_equal(gain_data.columns["test"], np.arange(30, 33))
     assert gain_data.n_neurons_env == 12
-    assert gain_data.gain.shape == (gain_data.n_neurons_kept, 18)
+    assert gain_data.gain.shape == (gain_data.n_neurons_kept, 36)
 
     # The two halves partition the surviving rows exactly once each.
     combined = np.concatenate((gain_data.source_rows, gain_data.target_rows))
@@ -401,8 +441,8 @@ def test_environment_gain_partitions_neurons_and_trials():
 
 def test_environment_gain_screens_out_silent_rois():
     config = GainRegressionConfig()
-    session, data = _environment_inputs(n_rois=12, n_trials=18, seed=4, silent_rois=(0, 5))
-    folds = [np.arange(0, 12), np.arange(12, 15), np.arange(15, 18)]
+    session, data = _environment_inputs(n_rois=12, n_trials=36, seed=4, silent_rois=(0, 5))
+    folds = [np.arange(0, 24), np.arange(24, 30), np.arange(30, 36)]
 
     gain_data = config._environment_gain(session, data, env=1, folds=folds)
 
@@ -425,16 +465,17 @@ def test_environment_gain_declines_a_split_with_too_few_trials():
 
 def test_environment_gain_declines_too_few_neurons():
     config = GainRegressionConfig()
-    session, data = _environment_inputs(n_rois=3, n_trials=18, seed=6)
-    folds = [np.arange(0, 12), np.arange(12, 15), np.arange(15, 18)]
+    session, data = _environment_inputs(n_rois=3, n_trials=36, seed=6)
+    folds = [np.arange(0, 24), np.arange(24, 30), np.arange(30, 36)]
 
     assert config._environment_gain(session, data, env=1, folds=folds) is None
 
 
-def test_process_assembles_results_on_the_experience_order_axis(monkeypatch):
+@pytest.mark.parametrize("trial_shift", TRIAL_SHIFTS)
+def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, trial_shift):
     rng = np.random.default_rng(8)
     n_rois = 14
-    trial_counts = {1: 24, 3: 20}
+    trial_counts = {1: 60, 3: 48}
     trial_environment = np.concatenate([np.full(count, env) for env, count in trial_counts.items()])
     full_trials = np.arange(trial_environment.size)
 
@@ -452,7 +493,7 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch):
     }
     session = SimpleNamespace(session_uid="uid", mouse_name="mouse", trial_environment=trial_environment)
 
-    config = GainRegressionConfig(n_null_rolls=3)
+    config = GainRegressionConfig(n_null_rolls=3, trial_shift=trial_shift)
     monkeypatch.setattr(GainRegressionConfig, "_load_session", lambda self, _session: data)
     # This mouse met environment 3 first, so env 3 owns slot 0 and env 1 owns slot 1. Results must
     # follow experience order, not environment-index order.
@@ -462,8 +503,13 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch):
 
     np.testing.assert_array_equal(result["env_slot_ids"][:2], [3, 1])
     assert np.isnan(result["env_slot_ids"][2])
-    np.testing.assert_array_equal(result["n_trials_env"][:2], [20, 24])
-    np.testing.assert_array_equal(result["n_trials_train"][:2], [13, 16])
+    np.testing.assert_array_equal(result["n_trials_env"][:2], [48, 60])
+    for slot, count in enumerate((48, 60)):
+        columns = result["trial_columns"][slot]
+        np.testing.assert_array_equal(np.sort(np.concatenate(list(columns.values()))), np.arange(3, count - 3))
+        for name in ("train", "val", "test"):
+            np.testing.assert_array_equal(result["source_trial_columns"][slot][name], columns[name] - trial_shift)
+            assert result[f"n_trials_{name}"][slot] == len(columns[name])
 
     scalar_keys = ("rrr_alpha", "rrr_rank", "rrr_rank_gss", "max_rank", "r2_test", "mse_test", "r2_val", "mse_val")
     null_keys = ("rrr_rank_null", "r2_test_null", "mse_test_null", "r2_val_null", "mse_val_null")
@@ -480,7 +526,7 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch):
         assert np.all(np.isnan(result[key][2]))
 
     assert [matrix is None for matrix in result["gain_matrices"]] == [False, False, True]
-    assert result["gain_matrices"][0].shape[1] == 20
+    assert result["gain_matrices"][0].shape[1] == 48
     np.testing.assert_array_equal(result["trial_columns"][0]["test"].size, result["n_trials_test"][0])
     assert set(GainRegressionConfig._result_handling) <= set(result)
 
@@ -492,7 +538,9 @@ def test_config_validation_and_variations():
     assert {variation.placefield_split for variation in variations} == set(PLACEFIELD_SPLITS)
     assert {variation.gain_estimator for variation in variations} == set(GAIN_ESTIMATORS)
     assert {variation.gain_transform for variation in variations} == set(GAIN_TRANSFORMS)
-    assert len(variations) == len(PLACEFIELD_SPLITS) * len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS)
+    assert {variation.trial_shift for variation in variations} == set(TRIAL_SHIFTS)
+    assert GainRegressionConfig().schema_version == "v4"
+    assert len(variations) == len(PLACEFIELD_SPLITS) * len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS) * len(TRIAL_SHIFTS)
     assert len({variation.key() for variation in variations}) == len(variations)
     assert len({variation.summary() for variation in variations}) == len(variations)
 
@@ -510,3 +558,9 @@ def test_config_validation_and_variations():
         GainRegressionConfig(spks_type="not_a_spks_type")
     with pytest.raises(ValueError):
         GainRegressionConfig(n_null_rolls=-1)
+
+
+@pytest.mark.parametrize("trial_shift", [-4, 4, 1.0, True])
+def test_config_rejects_invalid_trial_shift(trial_shift):
+    with pytest.raises(ValueError, match="trial_shift"):
+        GainRegressionConfig(trial_shift=trial_shift)

@@ -56,6 +56,9 @@ GAIN_ESTIMATORS: tuple[str, ...] = ("gaussian", "least_squares")
 #: Fold order returned by ``cross_validate_trials`` given ``trial_fractions``.
 SPLIT_NAMES: tuple[str, ...] = ("train", "val", "test")
 
+#: Positive shifts predict target T+k from source T, within retained environment trials.
+TRIAL_SHIFTS: tuple[int, ...] = tuple(range(-3, 4))
+
 #: Curve keys emitted per slot, NaN-padded to the widest rank range in the session.
 CURVE_KEYS: tuple[str, ...] = (
     "rank_values",
@@ -490,11 +493,19 @@ def split_tensors(
     source_rows: np.ndarray,
     target_rows: np.ndarray,
     columns: dict[str, np.ndarray],
+    *,
+    trial_shift: int = 0,
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """Slice a gain matrix into per-split ``(trials, neurons)`` source/target tensor pairs."""
+    """Build pairs source T -> target T+shift; ``columns`` indexes target trials.
+
+    Columns must already exclude out-of-bounds pairs. Shifts are applied in the original
+    environment trial order, never within the randomly selected fold or with wraparound.
+    """
+    if any(np.any((cols - trial_shift < 0) | (cols - trial_shift >= gain.shape[1])) for cols in columns.values()):
+        raise ValueError("Trial shift produces out-of-bounds source columns")
     return {
         name: (
-            torch.tensor(gain[source_rows][:, cols].T, dtype=torch.float64),
+            torch.tensor(gain[source_rows][:, cols - trial_shift].T, dtype=torch.float64),
             torch.tensor(gain[target_rows][:, cols].T, dtype=torch.float64),
         )
         for name, cols in columns.items()
@@ -566,6 +577,7 @@ def evaluate_null_rolls(
     ranks: list[int],
     n_rolls: int,
     rng: np.random.Generator,
+    trial_shift: int = 0,
 ) -> _NullFit:
     """Refit and rescore the regression on trial-permuted gain, averaged over rolls.
 
@@ -598,6 +610,9 @@ def evaluate_null_rolls(
         Number of independent rolls to average. Zero returns all-NaN.
     rng : np.random.Generator
         Source of the roll offsets.
+    trial_shift : int
+        Target minus source trial index, applied after independently rolling neurons.
+        Uses the real fit's lag and target columns for training and scoring alike.
 
     Returns
     -------
@@ -611,7 +626,7 @@ def evaluate_null_rolls(
     points: dict[str, list[float]] = {f"{metric}_{split}": [] for metric in ("mse", "r2") for split in ("val", "test")}
     curves: dict[str, list[np.ndarray]] = {key: [] for key in points}
     for _ in range(n_rolls):
-        tensors = split_tensors(roll_gain_rows(gain, rng), source_rows, target_rows, columns)
+        tensors = split_tensors(roll_gain_rows(gain, rng), source_rows, target_rows, columns, trial_shift=trial_shift)
         model = ReducedRankRegression(alpha=float(alpha), fit_intercept=True).fit(*tensors["train"])
         for split in ("val", "test"):
             mse_point, r2_point = score_rrr(model, rank, *tensors[split])
@@ -664,11 +679,23 @@ def _stack_curves(curves: dict[int, dict[str, np.ndarray]]) -> dict[str, np.ndar
 class GainRegressionConfig(AnalysisConfigBase):
     """Reduced-rank regression from source-neuron to target-neuron place-field gain.
 
-    One model is fit per environment. Within an environment the neurons that survive the
-    reliability and fraction-active screen are split 50/50 into source and target halves, the full
+    One model is fit per environment and ``trial_shift``. Within an environment the neurons that
+    survive the reliability and fraction-active screen are split 50/50 into source and target halves, the full
     trials are split into train/validation/test, and a reduced-rank regression maps source gain to
     target gain. Ridge alpha and rank are optimized on validation, and performance is reported on
     test. Results are indexed by the mouse's environment experience-order slot.
+
+    The grid measures seven shifts, -3 through +3. Positive k predicts target T+k from
+    source T, fitting and scoring at that same lag. Target trials retain their original
+    fold assignments and all shifts use the same interior targets (three trials trimmed
+    from either end), so target values and sample counts match across lags. There is no
+    wraparound. A trial step means the next retained full trial of this environment,
+    which can span incomplete trials or intervening trials in other environments.
+    The gain templates, neuron screen, and source/target neuron split are shared across
+    shifts. With ``placefield_split="train"``, templates use the original target-training
+    fold; shifted source inputs can come from other folds, but target-training and
+    target-test observations remain disjoint at every lag. This is a lag-prediction
+    curve, not a calibrated shift-test p-value.
 
     Gain is not centered and predictions are rectified (``nonnegative=True``) exactly as
     ``ReducedRankRegressionModel`` does; the intercept carries the per-neuron mean gain.
@@ -722,6 +749,10 @@ class GainRegressionConfig(AnalysisConfigBase):
     n_null_rolls : int
         Number of trial-permuted null repetitions scored per environment, or 0 to skip the null and
         leave every ``*_null`` key NaN. See :func:`evaluate_null_rolls`.
+    trial_shift : int
+        Target minus source trial index, one of -3 through +3. Alpha and rank are
+        optimized independently for each lag. The independent-neuron null is fit
+        and scored at the same lag using that lag's real-fit hyperparameters.
 
     Result keys
     -----------
@@ -748,7 +779,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     mse_val_curve_null, r2_val_curve_null    (S, R)      null validation score at every rank
     mse_test_curve_null, r2_test_curve_null  (S, R)      null test score at every rank
     n_trials_env                             (S,)        full trials in the environment
-    n_trials_train/_val/_test                (S,)        trials per split
+    n_trials_train/_val/_test                (S,)        interior target/source pairs per split
     n_neurons_env                            (S,)        ROIs before the reliability screen
     n_neurons_kept                           (S,)        ROIs passing the screen
     n_neurons_finite                         (S,)        ROIs with a finite gain on every trial
@@ -757,7 +788,8 @@ class GainRegressionConfig(AnalysisConfigBase):
     gain_matrices                            per slot    (neurons, trials) gain, object list
     gain_roi_indices                         per slot    session ROI index per gain row, object list
     source_rows, target_rows                 per slot    gain row indices per half, object list
-    trial_columns                            per slot    {split: gain column indices}, object list
+    trial_columns                            per slot    {split: target gain columns}, object list
+    source_trial_columns                     per slot    {split: source gain columns}, object list
     roi_lookup                               (N,)        session ROI index per metric-array column
     =======================================  ==========  ============================================
 
@@ -789,7 +821,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     ``max_rank`` and ``n_trials_train`` before reading it as a dimensionality estimate.
     """
 
-    schema_version: str = "v3"
+    schema_version: str = "v4"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
@@ -805,6 +837,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     gain_transform: str = "raw"
     split_seed: int = 0
     n_null_rolls: int = 10
+    trial_shift: int = 0
 
     display_name: ClassVar[str] = "gain_regression"
 
@@ -823,6 +856,7 @@ class GainRegressionConfig(AnalysisConfigBase):
         "source_rows": "skip",
         "target_rows": "skip",
         "trial_columns": "skip",
+        "source_trial_columns": "skip",
         "roi_lookup": "skip",
     }
 
@@ -836,6 +870,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             "placefield_split": list(PLACEFIELD_SPLITS),
             "gain_estimator": list(GAIN_ESTIMATORS),
             "gain_transform": list(GAIN_TRANSFORMS),
+            "trial_shift": list(TRIAL_SHIFTS),
         }
 
     def validate(self) -> None:
@@ -855,6 +890,12 @@ class GainRegressionConfig(AnalysisConfigBase):
             raise ValueError("num_bins must be at least 4")
         if self.n_null_rolls < 0:
             raise ValueError("n_null_rolls must be non-negative")
+        if (
+            isinstance(self.trial_shift, (bool, np.bool_))
+            or not isinstance(self.trial_shift, (int, np.integer))
+            or self.trial_shift not in TRIAL_SHIFTS
+        ):
+            raise ValueError(f"trial_shift must be an integer in {TRIAL_SHIFTS}")
 
     def summary(self) -> str:
         parts = [
@@ -869,6 +910,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             f"gain={self.gain_transform}",
             f"seed={self.split_seed}",
             f"null={self.n_null_rolls}",
+            f"shift={self.trial_shift:+d}",
             self.schema_version,
         ]
         return "_".join(parts)
@@ -973,6 +1015,16 @@ class GainRegressionConfig(AnalysisConfigBase):
         if any(columns[name].size < self.MIN_TRIALS_PER_SPLIT for name in SPLIT_NAMES):
             return None
 
+        # Keep exactly the same targets at all seven lags, including zero. Templates
+        # still use the original training fold so their definition is lag-independent.
+        margin = max(abs(shift) for shift in TRIAL_SHIFTS)
+        pair_columns = {
+            name: cols[(cols >= margin) & (cols < trial_maps.shape[1] - margin)]
+            for name, cols in columns.items()
+        }
+        if any(cols.size < self.MIN_TRIALS_PER_SPLIT for cols in pair_columns.values()):
+            return None
+
         prediction_trials = columns["train"] if self.placefield_split == "train" else None
         screen_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
         reliability = reliability_loo(screen_maps)
@@ -1015,7 +1067,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             fraction_active=fraction_active,
             source_rows=source_rows,
             target_rows=target_rows,
-            columns=columns,
+            columns=pair_columns,
             n_neurons_env=int(trial_maps.shape[0]),
             n_neurons_kept=int(np.sum(idx_keep)),
         )
@@ -1076,6 +1128,7 @@ class GainRegressionConfig(AnalysisConfigBase):
         source_rows: list[Optional[np.ndarray]] = [None] * MAX_ENV_SLOTS
         target_rows: list[Optional[np.ndarray]] = [None] * MAX_ENV_SLOTS
         trial_columns: list[Optional[dict]] = [None] * MAX_ENV_SLOTS
+        source_trial_columns: list[Optional[dict]] = [None] * MAX_ENV_SLOTS
 
         for env in sorted(int(e) for e in np.asarray(data["env_maps"].environments) if e >= 0):
             if mouse_order is None or env not in mouse_order:
@@ -1103,8 +1156,15 @@ class GainRegressionConfig(AnalysisConfigBase):
             source_rows[slot] = gain_data.source_rows
             target_rows[slot] = gain_data.target_rows
             trial_columns[slot] = dict(gain_data.columns)
+            source_trial_columns[slot] = {name: cols - self.trial_shift for name, cols in gain_data.columns.items()}
 
-            tensors = split_tensors(gain_data.gain, gain_data.source_rows, gain_data.target_rows, gain_data.columns)
+            tensors = split_tensors(
+                gain_data.gain,
+                gain_data.source_rows,
+                gain_data.target_rows,
+                gain_data.columns,
+                trial_shift=self.trial_shift,
+            )
             fit = optimize_rrr(
                 *tensors["train"],
                 *tensors["val"],
@@ -1133,6 +1193,7 @@ class GainRegressionConfig(AnalysisConfigBase):
                 ranks=fit.ranks,
                 n_rolls=self.n_null_rolls,
                 rng=np.random.default_rng(_seed(session.session_uid, env, self.split_seed, "null")),
+                trial_shift=self.trial_shift,
             )
             scalars["rrr_rank_null"][slot] = null.rank
             scalars["mse_val_null"][slot], scalars["r2_val_null"][slot] = null.mse_val, null.r2_val
@@ -1161,5 +1222,6 @@ class GainRegressionConfig(AnalysisConfigBase):
             "source_rows": source_rows,
             "target_rows": target_rows,
             "trial_columns": trial_columns,
+            "source_trial_columns": source_trial_columns,
             "roi_lookup": data["roi_lookup"],
         }
