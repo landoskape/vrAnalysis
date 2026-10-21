@@ -15,6 +15,7 @@ The one function is :func:`vr_schematic_and_speed`, which composes two of the vi
 single aligned figure rather than drawing a panel of its own.
 """
 
+from .behavior_decoding import SpeedEnvironmentDecoding
 from .crossval import CrossValidatedPlacefieldFocus, CrossValidatedPlacefields
 from .familiarity import R2Familiarity, ReliabilityPredictionSummary
 from .pf_amplitude import PlacefieldPeakAmplitude
@@ -49,6 +50,7 @@ __all__ = [
     "ReliabilityPredictionFamiliarity",
     "ReliabilityPredictionFocus",
     "ReliabilityPredictionSummary",
+    "SpeedEnvironmentDecoding",
     "StackedRasterFocus",
     "TraversalFocus",
     "VREnvironmentSchematic",

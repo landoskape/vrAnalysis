@@ -83,6 +83,12 @@ def test_summary_selection_filters_trials_and_locates_selected_result():
     np.testing.assert_allclose(viewer.summary_null_values[1], [-0.2, -0.3])
     assert viewer.selected_result == (0, 0, 0.1)
 
+    viewer.results.param_axes = {"trial_shift": list(range(-3, 4))}
+    viewer.refresh_summary(
+        {"gain_estimator": "least_squares", "gain_transform": "sqrt", "placefield_split": "all", "min_trial": 10, "environment": 1}
+    )
+    assert viewer.results.selection["trial_shift"] == 0
+
 
 def test_plot_adds_summary_and_optional_familiarity_panels():
     sessions = [
@@ -162,8 +168,9 @@ def test_sort_viewer_draws_two_fixed_orderings_with_aligned_positions():
         "environment": np.array([10.0, 40.0, 80.0]),
         "rastermap_gain": np.array([80.0, 10.0, 40.0]),
     }
+    viewer._refresh_trial_order({"sort_trials": False})
 
-    fig = viewer.plot({"gain_vmax": 4.0, "interpolation": "bilinear", "markersize": 4.0, "fontsize": 8.0})
+    fig = viewer.plot({"gain_vmax": 4.0, "interpolation": "bilinear", "markersize": 4.0, "fontsize": 8.0, "sort_trials": False})
     try:
         assert len(fig.axes) == 4
         assert [text.get_text() for text in fig.axes[0].texts] == ["Place-field position sort"]

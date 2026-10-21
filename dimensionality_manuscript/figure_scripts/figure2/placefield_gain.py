@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+import matplotlib as mpl
 import numpy as np
 from scipy.optimize import curve_fit
 
@@ -565,6 +566,9 @@ class PlacefieldGainViewer(FigureViewer):
             "gain_transform": state["gain_transform"],
             "placefield_split": state["placefield_split"],
         }
+        # This viewer summarizes same-trial performance; do not pool the lag grid.
+        if "trial_shift" in getattr(self.results, "param_axes", {}):
+            selection["trial_shift"] = 0
         selected = self.results.sel(
             keys=["r2_test", "r2_test_null", "n_trials_env", "env_slot_ids"],
             squeeze_ones=False,
@@ -818,6 +822,9 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
     that row's ordering. Unlike :class:`PlacefieldGainViewer`, the sort methods are
     fixed by the layout and therefore are not exposed as a viewer parameter.
 
+    ``sort_trials=True`` also sorts trials with Rastermap using their gain profiles
+    across ROIs, applying one shared trial ordering to both rows.
+
     Only controls relevant to selecting, computing, and styling these two rows are
     exposed; the summary and covariance controls from ``PlacefieldGainViewer`` are
     intentionally omitted.
@@ -848,6 +855,7 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
         gain_vmax: float = 2.0,
         interpolation: str = "none",
         markersize: float = 3.0,
+        sort_trials: bool = False,
         fontsize: float = 8.0,
         figsize: tuple[float, float] = (16.0, 5.0),
     ):
@@ -892,6 +900,9 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
             self.remove_parameter(name)
             self.callbacks.pop(name, None)
         self.add_float("markersize", value=markersize, min=0.5, max=20.0, step=0.5)
+        self.add_boolean("sort_trials", value=sort_trials)
+        self.on_change("sort_trials", self._refresh_trial_order)
+        self._refresh_trial_order(self.state)
 
     def refresh_summary(self, state) -> None:
         """Skip result-summary loading; this viewer only displays session data."""
@@ -906,6 +917,12 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
             self.sorted_gains[sort_method] = self.gain.copy()
             self.sorted_placefield_positions[sort_method] = self.placefield_positions.copy()
             self.sorted_roi_indices[sort_method] = self.roi_indices.copy()
+        self._refresh_trial_order(state)
+
+    def _refresh_trial_order(self, state) -> None:
+        """Fit one trial ordering and share it across the two ROI orderings."""
+        gain = self.sorted_gains[self._SORT_METHODS[0]]
+        self.trial_order = _rastermap_sort(gain.T) if state.get("sort_trials", False) else np.arange(gain.shape[1])
 
     def plot(self, state):
         fig, ax = self.new_subplots(
@@ -920,7 +937,7 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
         position_limits = [0, self.data["session"].env_length[0]]
 
         for row, sort_method in enumerate(self._SORT_METHODS):
-            gain = self.sorted_gains[sort_method]
+            gain = self.sorted_gains[sort_method][:, self.trial_order]
             positions = self.sorted_placefield_positions[sort_method]
             num_rois = gain.shape[0]
 
@@ -935,6 +952,34 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
             )
             self._style_image_axis(gain_ax, self._SORT_TITLES[sort_method], state["fontsize"])
             gain_ax.set_ylabel("ROIs", fontsize=state["fontsize"])
+
+            if row == 0:
+                gain_vmax = state["gain_vmax"]
+                colorscale = gain_ax.inset_axes([0.9, 0.15, 0.045, 0.7])
+                colors = mpl.colormaps["coolwarm"](np.linspace(0, 1, 255))[:, None, :]
+                colorscale.imshow(colors, aspect="auto", origin="lower")
+                colorscale.set_xticks([])
+                colorscale.set_yticks([])
+                labels = [
+                    (0.02, "0", "bottom", "w"),
+                    (0.98, f"{gain_vmax:g}+", "top", "w"),
+                ]
+                if gain_vmax > 1:
+                    labels.append((1 / gain_vmax, "1", "center", "k"))
+                for y, label, va, color in labels:
+                    colorscale.text(
+                        0.5,
+                        y,
+                        label,
+                        transform=colorscale.transAxes,
+                        ha="center",
+                        va=va,
+                        color=color,
+                        fontsize=state["fontsize"],
+                    )
+                colorscale.set_ylabel("Gain", fontsize=state["fontsize"])
+                for spine in colorscale.spines.values():
+                    spine.set_visible(False)
 
             position_ax = ax[row, 1]
             position_ax.scatter(
@@ -952,7 +997,7 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
             for side in ("top", "right", "left"):
                 position_ax.spines[side].set_visible(False)
 
-        ax[-1, 0].set_xlabel("Trials", fontsize=state["fontsize"])
+        ax[-1, 0].set_xlabel("Rastermap-sorted trials" if state["sort_trials"] else "Trials", fontsize=state["fontsize"])
         ax[-1, 1].set_xlabel("PF Pos (cm)", fontsize=state["fontsize"])
 
         return fig

@@ -13,6 +13,8 @@ from dimensionality_manuscript.figure_scripts.figure3._ratios import (
     spectrum_display_arrays,
 )
 from dimensionality_manuscript.figure_scripts.figure3.concise_spectrum import ConciseSpectrumViewer
+from dimensionality_manuscript.figure_scripts.figure3 import ConciseSpectrumDimensionalityViewer
+from dimensionality_manuscript.figure_scripts.figure4._spectrum_math import _signed_participation_ratio
 
 
 class _Session:
@@ -362,4 +364,52 @@ def test_spectrum_indicator_uses_leading_dimension_label():
     )
 
     assert any(text.get_text() == "Leading 7" for text in axis.texts)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("pr_pre_smooth", [True, False])
+@pytest.mark.parametrize("clip_negative", [True, False])
+@pytest.mark.parametrize("include_beeswarm", [True, False])
+def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
+    monkeypatch, pr_pre_smooth, clip_negative, include_beeswarm,
+):
+    arrays = {
+        "sf_cv": np.array([[4., 1., -0.2, 0.5], [2., 1., 0.4, 0.2], [3., 2., 1., 0.5]]),
+        "ff": np.array([[8., 4., 1., -0.5], [6., 2., 1., 0.5], [8., 3., 2., 1.]]),
+    }
+    results = _FakeAggregator(arrays, ["a", "a", "b"])
+    results.param_axes = {}
+    monkeypatch.setattr(
+        ConciseSpectrumDimensionalityViewer, "_env_curves",
+        lambda self, state, max_dims: {
+            "Env #1": {"svr": {"a": np.array([0.2, 0.4])}, "total": {"a": np.ones(2)}}
+        },
+    )
+    viewer = ConciseSpectrumDimensionalityViewer(
+        results, show_slope_panel=False, include_beeswarm=include_beeswarm,
+        pr_pre_smooth=pr_pre_smooth, clip_negative=clip_negative,
+        pf_smooth_method="gaussian", full_smooth_method="gaussian",
+        pf_smooth_width=1.0, full_smooth_width=1.0,
+    )
+    assert all(name not in viewer.state for name in viewer._head_controls)
+    viewer.refresh_data(viewer.state)  # Removed Head controls must not break later callbacks.
+    fig = viewer.plot(viewer.state)
+    spectrum_axis, pr_axis = fig.axes[:2]
+    expected = spectrum_display_arrays(
+        viewer._ratios_arrays, "none" if pr_pre_smooth else "gaussian", 1.0,
+        "none" if pr_pre_smooth else "gaussian", 1.0,
+        clip_negative=clip_negative, normalize=True,
+    )
+    np.testing.assert_allclose(pr_axis.lines[0].get_xdata(), _signed_participation_ratio(expected["sf_cv"]))
+    np.testing.assert_allclose(pr_axis.lines[2].get_xdata(), _signed_participation_ratio(expected["ff"]))
+    assert pr_axis.get_shared_x_axes().joined(spectrum_axis, pr_axis)
+    assert pr_axis.get_xscale() == "log"
+    assert len(fig.axes) == (4 if include_beeswarm else 3)
+    assert not any(text.get_text() == "Head" for axis in fig.axes for text in axis.texts)
+    if include_beeswarm:
+        svr_axis = fig.axes[2]
+        assert len(svr_axis.get_xticks()) == 0
+        assert len(svr_axis.lines) == 2
+        np.testing.assert_allclose(svr_axis.lines[0].get_ydata(), viewer._ratios_arrays["sf_cv_total"])
+    fig.canvas.draw()
     plt.close(fig)

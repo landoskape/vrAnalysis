@@ -1,6 +1,11 @@
 """Concise spectrum composite using a first-10-versus-all comparison."""
 
+import numpy as np
 import pandas as pd
+
+from vrAnalysis.helpers.plotting import format_spines
+from dimensionality_manuscript.figure_scripts.figure4._spectrum_math import _signed_participation_ratio
+from dimensionality_manuscript.figure_scripts.figure4._stats import _horizontal_beeswarm_panel
 
 from dimensionality_manuscript.figure_scripts.legends import add_legend_widgets, apply_legend, update_legend_widgets
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer
@@ -302,13 +307,7 @@ class ConciseSpectrumViewer(FigureViewer):
         width_ratios.append(state["ax23_width_ratio"])
         if self.show_slope_panel:
             width_ratios.append(1.0)
-        fig, ax = self.new_subplots(
-            1,
-            len(width_ratios),
-            figsize=self.figsize,
-            layout="constrained",
-            width_ratios=tuple(width_ratios),
-        )
+        fig, ax = self._new_composite_axes(state, width_ratios)
 
         display_arrays = spectrum_display_arrays(
             self._ratios_arrays,
@@ -458,4 +457,113 @@ class ConciseSpectrumViewer(FigureViewer):
                 axis.tick_params(axis="y", left=False, labelleft=False)
                 axis.spines["bottom"].set_position(("data", COMPOSITE_SPINE_OFFSET))
 
+        return fig
+
+    def _new_composite_axes(self, state, width_ratios):
+        """Create the spectrum and summary axes in display order."""
+        return self.new_subplots(
+            1,
+            len(width_ratios),
+            figsize=self.figsize,
+            layout="constrained",
+            width_ratios=tuple(width_ratios),
+        )
+
+
+class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
+    """Concise spectra with dimensionality below and Full-only SVR panels to the right.
+
+    Accepts the same selection, spectrum, annotation, legend, environment, and slope options as
+    :class:`ConciseSpectrumViewer`. Head-only controls are omitted: both the SVR swarm and
+    environment curves always use all dimensions. ``include_beeswarm`` still controls the SVR
+    swarm, and ``show_slope_panel`` still controls the final slope panel.
+
+    Dimensionality uses Figure 4's signed participation ratio of each mouse's spectrum, after
+    optional per-session negative clipping and mouse averaging. ``pr_pre_smooth=True`` measures
+    it before display smoothing; False measures the displayed spectra. Neither choice changes
+    the raw cumulative SVRs. The horizontal dimensionality swarms share the spectrum's log axis.
+    ``height_ratios`` sets the relative heights of the spectrum and dimensionality rows.
+    """
+
+    _head_controls = (
+        "first10", "include_first10_beeswarm", "include_first10_by_env", "by_env_layout",
+        "first10_text_x", "first10_text_y", "first10_text_ha", "first10_text_va",
+    )
+
+    def __init__(
+        self,
+        results: ResultsAggregator,
+        *,
+        pr_pre_smooth: bool = True,
+        beewidth: float = 0.15,
+        point_alpha: float = 0.6,
+        markersize: float = 3.0,
+        mean_linewidth: float = 2.0,
+        height_ratios: tuple[float, float] = (4.0, 1.0),
+        figsize: tuple[float, float] = (14.0, 4.0),
+        **options,
+    ):
+        self.height_ratios = height_ratios
+        options.update(include_first10_beeswarm=False, include_first10_by_env=False)
+        super().__init__(results, figsize=figsize, **options)
+        for name in self._head_controls:
+            self.remove_parameter(name)
+        self.add_boolean("pr_pre_smooth", value=pr_pre_smooth)
+        self.add_float("beewidth", value=beewidth, min=0.0, max=0.5, step=0.01)
+        self.add_float("point_alpha", value=point_alpha, min=0.0, max=1.0, step=0.05)
+        self.add_float("markersize", value=markersize, min=1.0, max=12.0, step=0.5)
+        self.add_float("mean_linewidth", value=mean_linewidth, min=0.5, max=6.0, step=0.5)
+
+    @staticmethod
+    def _full_state(state):
+        return {**state, "first10": 10, "include_first10_beeswarm": False,
+                "include_first10_by_env": False, "by_env_layout": "separate"}
+
+    def refresh_data(self, state):
+        super().refresh_data(self._full_state(state))
+
+    def _new_composite_axes(self, state, width_ratios):
+        fig = self.new_figure(figsize=self.figsize, layout="constrained")
+        grid = fig.add_gridspec(2, len(width_ratios), width_ratios=width_ratios, height_ratios=self.height_ratios)
+        spectrum_axis = fig.add_subplot(grid[0, 0])
+        self._dimensionality_axis = fig.add_subplot(grid[1, 0], sharex=spectrum_axis)
+        axes = [spectrum_axis] + [fig.add_subplot(grid[:, i]) for i in range(1, len(width_ratios))]
+        return fig, axes
+
+    def plot(self, state: dict):
+        state = self._full_state(state)
+        fig = super().plot(state)
+        spectrum_axis = fig.axes[0]
+        dim_axis = self._dimensionality_axis
+        pr_arrays = spectrum_display_arrays(
+            self._ratios_arrays,
+            "none" if state["pr_pre_smooth"] else state["pf_smooth_method"],
+            state["pf_smooth_width"],
+            "none" if state["pr_pre_smooth"] else state["full_smooth_method"],
+            state["full_smooth_width"],
+            clip_negative=state["clip_negative"],
+            normalize=state["normalize"],
+        )
+        values = [_signed_participation_ratio(pr_arrays[key]) for key in ("sf_cv", "ff")]
+        _horizontal_beeswarm_panel(
+            dim_axis, values, [CONDITION_COLORS["behaving"], "black"],
+            beewidth=state["beewidth"], each_alpha=state["point_alpha"],
+            markersize=state["markersize"], mean_linewidth=state["mean_linewidth"],
+        )
+        # Include measured dimensionalities even when the spectrum's visible tail ends earlier.
+        finite = np.concatenate(values)
+        finite = finite[np.isfinite(finite) & (finite > 0)]
+        xmax = max(spectrum_axis.get_xlim()[1], 1.1 * finite.max()) if finite.size else spectrum_axis.get_xlim()[1]
+        spectrum_axis.set_xlim(1, xmax)
+        spectrum_axis.spines["bottom"].set_bounds(1, xmax)
+        spectrum_axis.set_xlabel("")
+        spectrum_axis.tick_params(axis="x", which="both", labelbottom=False)
+        dim_axis.set_xlabel("Dimension", fontsize=state["fontsize"])
+        dim_axis.set_ylabel("PR", fontsize=state["fontsize"])
+        format_spines(
+            dim_axis, x_pos=-0.02, y_pos=-0.02, spines_visible=["bottom"],
+            xbounds=[1, xmax], tick_fontsize=state["fontsize"],
+        )
+        decades = 10.0 ** np.arange(0, np.floor(np.log10(xmax)) + 1)
+        dim_axis.set_xticks(decades, labels=[str(int(value)) for value in decades], fontsize=state["fontsize"])
         return fig
