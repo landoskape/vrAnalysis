@@ -6,6 +6,7 @@ widgets) live in :mod:`dimensionality_manuscript.figure_scripts.panels` instead.
 """
 
 import matplotlib as mpl
+from matplotlib.patches import Polygon
 import numpy as np
 import seaborn as sns
 from syd import Viewer
@@ -514,3 +515,28 @@ __all__ = [
     "style_axis",
     "support_length",
 ]
+
+
+def draw_reward_location(ax, x, bottom, top, *, color, fontsize, transform=None, head_above=False):
+    """Draw an upward reward arrow; head_above puts the triangle's base at top.
+
+    The schematic uses head_above so the head sits on its track and the stem hangs below.
+    Its head and stem have equal heights in layout units. With equal axes aspect, the head
+    has a 90-degree tip and a base width twice its height.
+    """
+    coordinates = ax.transData if transform is None else transform
+    if head_above:
+        stem, = ax.plot([x, x], [bottom, top], transform=coordinates, color=color,
+                        linewidth=1.2, solid_capstyle="butt", zorder=5)
+        height = top - bottom
+        head = Polygon([(x - height, top), (x + height, top), (x, top + height)],
+                       transform=coordinates, facecolor=color, edgecolor="none", zorder=5)
+        ax.add_patch(head)
+        return stem, head
+    return ax.annotate(
+        "", xy=(x, top), xytext=(x, bottom),
+        xycoords=ax.transData if transform is None else transform,
+        arrowprops=dict(arrowstyle="-|>", color=color, linewidth=1.2,
+                        shrinkA=0, shrinkB=0, mutation_scale=fontsize * 0.8),
+        zorder=5,
+    )

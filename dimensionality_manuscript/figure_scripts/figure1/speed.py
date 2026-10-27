@@ -4,9 +4,9 @@ from collections import defaultdict
 from itertools import combinations
 
 import numpy as np
-from matplotlib.legend_handler import HandlerTuple
+from matplotlib.legend_handler import HandlerPatch, HandlerTuple
 from matplotlib.lines import Line2D
-from matplotlib.patches import Rectangle
+from matplotlib.patches import FancyArrowPatch
 from scipy.stats import chi2, norm
 from statsmodels.regression.mixed_linear_model import MixedLM
 
@@ -21,12 +21,19 @@ from dimensionality_manuscript.figure_scripts.panels import (
 )
 from dimensionality_manuscript.pipeline import ResultsAggregator
 
-from ._shared import style_axis
+from ._shared import draw_reward_location, style_axis
 
 # Result keys of BehaviorSpeedEnvConfig this panel draws, and the human-readable name of each
 # trial set for the printed statistics report.
 SPEED_CURVE_KEYS: dict[str, str] = {"all": "speed_curve_all", "first": "speed_curve_first"}
 SPEED_TRIAL_SET_LABELS: dict[str, str] = {"all": "all trials", "first": "1st trial of block"}
+
+
+def _reward_legend_arrow(legend, orig_handle, xdescent, ydescent, width, height, fontsize):
+    return FancyArrowPatch((width / 2 - xdescent, -ydescent),
+                           (width / 2 - xdescent, height - ydescent),
+                           arrowstyle="-|>", mutation_scale=fontsize * 0.8,
+                           linewidth=1.2, color="black", shrinkA=0, shrinkB=0)
 
 
 def _significance_label(pvalue: float) -> str:
@@ -166,9 +173,8 @@ class MouseSpeedFocus(FigureViewer):
 
     For each selected environment the mouse-average speed curve is drawn with a shaded
     ±standard-error band, colored per environment. Both trial sets are drawn: all trials (solid)
-    and the first trial of each block (dashed). Each environment's reward zone (from
-    :data:`ENV_REWARD_MAP`) is marked either by a dotted line at its start or by a shaded patch
-    spanning the zone, colored to match.
+    and the first trial of each block (dashed, or solid in a separate row). Upward arrows mark
+    reward locations at the zone starts in :data:`ENV_REWARD_MAP`, colored to match.
 
     Windowed statistics (:meth:`compute_stats`) fit ``speed ~ env + (1 | mouse)`` to the per-mouse
     mean speed over a fixed position window, separately for each trial set, and compare that
@@ -182,15 +188,14 @@ class MouseSpeedFocus(FigureViewer):
     environments : list[int] or None
         Environments to draw and to include in the statistics. None uses all available.
     show_first : bool
-        Draw the first-trial-of-block curve (dashed, no band).
+        Draw the first-trial-of-block curve (dashed when overlaid; solid with an SE band when split).
+    split_speed : bool
+        Draw all trials and first in block in separate rows sharing x, with row labels instead
+        of a legend. If show_first is False, only the all-trials row is drawn.
     show_reward : bool
-        Mark each environment's reward zone.
-    reward_style : {"patch", "vlines"}
-        Shade the whole zone, or draw a dotted line at its start.
-    reward_width_cm : float
-        Drawn width of the reward patch, from the zone start.
-    reward_alpha : float
-        Opacity of the reward patch.
+        Mark each environment's reward location with a short upward arrow.
+    reward_style, reward_width_cm, reward_alpha
+        Legacy inputs accepted for notebook compatibility. Rewards always use arrows.
     show_legend : bool
         Draw the legend at all.
     show_env_legend : bool
@@ -224,8 +229,9 @@ class MouseSpeedFocus(FigureViewer):
         *,
         environments: list[int] | None = None,
         show_first: bool = True,
+        split_speed: bool = False,
         show_reward: bool = True,
-        reward_style: str = "vlines",
+        reward_style: str = "arrow",
         reward_width_cm: float = 20.0,
         reward_alpha: float = 0.2,
         show_legend: bool = True,
@@ -259,10 +265,8 @@ class MouseSpeedFocus(FigureViewer):
 
         # --- what is drawn ---
         self.add_boolean("show_first", value=show_first)
+        self.add_boolean("split_speed", value=split_speed)
         self.add_boolean("show_reward", value=show_reward)
-        self.add_selection("reward_style", options=["patch", "vlines"], value=reward_style)
-        self.add_float("reward_width_cm", value=reward_width_cm, min=1.0, max=100.0)
-        self.add_float("reward_alpha", value=reward_alpha, min=0.0, max=1.0)
         self.add_boolean("show_legend", value=show_legend)
         self.add_boolean("show_env_legend", value=show_env_legend)
         self.add_boolean("extra_y_space", value=extra_y_space)
@@ -359,13 +363,18 @@ class MouseSpeedFocus(FigureViewer):
             stats[name] = env_speed_mixedlm(window_speed, envs)
         return stats
 
-    def draw(self, state, ax):
+    def draw(self, state, ax, *, ax_first=None, show_reward_label=True):
         """Draw the speed curves onto ``ax``.
 
         Split out of :meth:`plot` so the combined schematic+speed figure
         (:func:`~.schematic.vr_schematic_and_speed`) can draw onto an externally placed axes
-        instead of a standalone figure.
+        instead of a standalone figure. With split_speed enabled, pass the second row as
+        ax_first. Set show_reward_label=False when a schematic already explains the arrows.
         """
+        split = state.get("split_speed", False) and state["show_first"]
+        if split and ax_first is None:
+            raise ValueError("split_speed=True requires ax_first; use plot() to create both rows")
+        axes = [ax, ax_first] if split else [ax]
         selected = [int(env) for env in state["environments"]]
         xvals = self.dist_centers
         env_length = REFERENCE_ENV_LENGTH_CM
@@ -383,60 +392,55 @@ class MouseSpeedFocus(FigureViewer):
             # All trials: mouse-average with a shaded ±SE band (average over the mouse axis).
             errorPlot(xvals, self.speed[all_key][:, e, :], axis=0, se=True, ax=ax, color=color, alpha=state["alpha_band"], linewidth=lw)
             if state["show_first"]:
-                # First trial of each block: mouse-average only (dashed), no band -- keeps the
-                # panel readable when both trial sets are shown together.
-                ax.plot(xvals, np.nanmean(self.speed[first_key][:, e, :], axis=0), color=color, linewidth=lw, linestyle="--")
-        xticks = np.arange(0, env_length + 1, 50)
-        ax.set_xlabel("Position (cm)", fontsize=fontsize)
-        ax.set_ylabel("Speed (cm/s)", fontsize=fontsize)
-        ax.set_xlim(0, env_length)
-        ax.set_xticks(xticks)
-        _, ymax = ax.get_ylim()
-
-        # Significance of the omnibus environment effect over the statistics window, at the window
-        # center, top-aligned with the reward-zone patches (which span 0 to ymax).
-        if state["show_significance"] and len(drawn_envs) > 1:
-            stats = self.compute_stats(state)[state["significance_trial_set"]]
-            window_center = 0.5 * (float(state["stat_window_start"]) + float(state["stat_window_end"]))
-            ax.text(window_center, ymax, _significance_label(stats["lr_pvalue"]), ha="center", va="top", fontsize=fontsize)
-
-        # Optionally drop the lower limit below 0, making room for a legend under the curves.
-        ax.set_ylim(-10 if state["extra_y_space"] else 0, ymax)
-
-        # Reward markers: drawn after ymax is known so they span only the data range [0, ymax],
-        # not the negative legend margin. ``patch`` shades the whole reward zone, ``vlines``
-        # marks only its start.
-        if state["show_reward"]:
-            for env in drawn_envs:
-                start = self.reward_position[env]
-                if state["reward_style"] == "patch":
-                    width = min(state["reward_width_cm"], env_length - start)
-                    # zorder=0 keeps the patch behind the speed curves and their error bands.
-                    ax.add_patch(
-                        Rectangle(
-                            (start, 0),
-                            width,
-                            ymax,
-                            facecolor=ENV_NUM_COLORS[env],
-                            edgecolor="none",
-                            alpha=state["reward_alpha"],
-                            zorder=0,
-                        )
-                    )
+                if split:
+                    errorPlot(xvals, self.speed[first_key][:, e, :], axis=0, se=True, ax=ax_first,
+                              color=color, alpha=state["alpha_band"], linewidth=lw)
                 else:
-                    ax.vlines(start, 0, ymax, color=ENV_NUM_COLORS[env], linestyle="-", linewidth=0.8)
-
-        # Keep y-ticks at physical speeds (>= 0); the negative margin is legend space only.
-        yticks = [t for t in ax.get_yticks() if 0 <= t <= ymax]
-        style_axis(ax, fontsize=fontsize, xbounds=[0, env_length], ybounds=[0, ymax], xticks=xticks, yticks=yticks)
-
-        self._draw_legend(ax, state, drawn_envs, lw, fontsize)
+                    # Keep the overlaid first-trial curves dashed without a band.
+                    ax.plot(xvals, np.nanmean(self.speed[first_key][:, e, :], axis=0),
+                            color=color, linewidth=lw, linestyle="--")
+        xticks = np.arange(0, env_length + 1, 50)
+        for row, axis in enumerate(axes):
+            axis.set_xlabel("Position (cm)" if row == len(axes) - 1 else "", fontsize=fontsize)
+            axis.set_ylabel("Speed (cm/s)", fontsize=fontsize)
+            axis.set_xlim(0, env_length)
+            axis.set_xticks(xticks)
+            _, ymax = axis.get_ylim()
+            if split:
+                ymax *= 1.18  # Leave space for the trial-set label above the curves.
+            if state["show_significance"] and len(drawn_envs) > 1:
+                trial_set = ("all" if row == 0 else "first") if split else state["significance_trial_set"]
+                stats = self.compute_stats(state)[trial_set]
+                window_center = 0.5 * (float(state["stat_window_start"]) + float(state["stat_window_end"]))
+                if stats is not None:
+                    axis.text(window_center, ymax, _significance_label(stats["lr_pvalue"]), ha="center", va="top", fontsize=fontsize)
+            axis.set_ylim(-10 if state["extra_y_space"] else 0, ymax)
+            if state["show_reward"]:
+                for env in drawn_envs:
+                    draw_reward_location(axis, self.reward_position[env], 0.0, 0.14,
+                                         color=ENV_NUM_COLORS[env], fontsize=fontsize,
+                                         transform=axis.get_xaxis_transform())
+            yticks = [t for t in axis.get_yticks() if 0 <= t <= ymax]
+            style_axis(axis, fontsize=fontsize, xbounds=[0, env_length], ybounds=[0, ymax], xticks=xticks, yticks=yticks)
+            if split:
+                axis.annotate("All Trials" if row == 0 else "1st in Block",
+                              xy=(0, 0.98), xycoords=axis.get_xaxis_transform(),
+                              xytext=(4, 0), textcoords="offset points",
+                              ha="left", va="top", fontsize=fontsize)
+        if split:
+            ax.spines["bottom"].set_visible(False)
+            ax.tick_params(axis="x", bottom=False, labelbottom=False)
+            if show_reward_label and state["show_reward"]:
+                ax_first.text(0.98, 0.04, "reward location", transform=ax_first.transAxes,
+                              ha="right", va="bottom", fontsize=fontsize)
+        else:
+            self._draw_legend(ax, state, drawn_envs, lw, fontsize, show_reward_label=show_reward_label)
 
         if state["print_stats"]:
             window = (float(state["stat_window_start"]), float(state["stat_window_end"]))
             print(format_speed_stats(self.compute_stats(state), window))
 
-    def _draw_legend(self, ax, state, drawn_envs, lw, fontsize):
+    def _draw_legend(self, ax, state, drawn_envs, lw, fontsize, *, show_reward_label=True):
         """Custom legend: the optional multi-colored "Envs" swatch, plus the line styles in use.
 
         The "Envs" entry is one handle whose segments run over the environment colors;
@@ -446,26 +450,28 @@ class MouseSpeedFocus(FigureViewer):
         if state["show_env_legend"] and drawn_envs:
             handles.append(tuple(Line2D([0], [0], color=ENV_NUM_COLORS[env], linewidth=lw) for env in drawn_envs))
             labels.append("Envs")
+        handles.append(Line2D([0], [0], color="0.3", linewidth=lw))
+        labels.append("All Trials")
         if state["show_first"]:
             handles.append(Line2D([0], [0], color="0.3", linewidth=lw, linestyle="--"))
-            labels.append("1st of block")
-        # Patches are self-explanatory in place (colored by environment, at each reward zone), so
-        # only the dotted-line style earns a legend entry.
-        if state["show_reward"] and state["reward_style"] == "vlines":
-            handles.append(Line2D([0], [0], color="0.3", linewidth=1.0, linestyle="-"))
-            labels.append("reward zones")
+            labels.append("1st in Block")
+        if state["show_reward"] and show_reward_label:
+            handles.append(FancyArrowPatch((0, 0), (0, 1), color="black"))
+            labels.append("reward location")
         if state["show_legend"] and handles:
             # pad=0 packs the env segments flush against each other (one continuous swatch).
             ax.legend(
                 handles,
                 labels,
-                handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
+                handler_map={tuple: HandlerTuple(ndivide=None, pad=0),
+                             FancyArrowPatch: HandlerPatch(patch_func=_reward_legend_arrow)},
                 loc="lower right",
                 frameon=True,
                 fontsize=fontsize,
             )
 
     def plot(self, state):
-        fig, ax = self.new_subplots(1, 1, figsize=self.figsize, layout="constrained")
-        self.draw(state, ax)
+        split = state.get("split_speed", False) and state["show_first"]
+        fig, axes = self.new_subplots(2 if split else 1, 1, sharex=True, figsize=self.figsize, layout="constrained")
+        self.draw(state, axes[0] if split else axes, ax_first=axes[1] if split else None)
         return fig

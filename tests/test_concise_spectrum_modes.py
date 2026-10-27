@@ -379,12 +379,10 @@ def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
     }
     results = _FakeAggregator(arrays, ["a", "a", "b"])
     results.param_axes = {}
-    monkeypatch.setattr(
-        ConciseSpectrumDimensionalityViewer, "_env_curves",
-        lambda self, state, max_dims: {
-            "Env #1": {"svr": {"a": np.array([0.2, 0.4])}, "total": {"a": np.ones(2)}}
-        },
-    )
+    def unexpected_env_curves(*args, **kwargs):
+        pytest.fail("The dimensionality viewer should not load environment curves")
+
+    monkeypatch.setattr(ConciseSpectrumDimensionalityViewer, "_env_curves", unexpected_env_curves)
     viewer = ConciseSpectrumDimensionalityViewer(
         results, show_slope_panel=False, include_beeswarm=include_beeswarm,
         pr_pre_smooth=pr_pre_smooth, clip_negative=clip_negative,
@@ -392,6 +390,7 @@ def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
         pf_smooth_width=1.0, full_smooth_width=1.0,
     )
     assert all(name not in viewer.state for name in viewer._head_controls)
+    assert not any(name.startswith(("annotation_", "env_legend_")) for name in viewer.state)
     viewer.refresh_data(viewer.state)  # Removed Head controls must not break later callbacks.
     fig = viewer.plot(viewer.state)
     spectrum_axis, pr_axis = fig.axes[:2]
@@ -404,12 +403,24 @@ def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
     np.testing.assert_allclose(pr_axis.lines[2].get_xdata(), _signed_participation_ratio(expected["ff"]))
     assert pr_axis.get_shared_x_axes().joined(spectrum_axis, pr_axis)
     assert pr_axis.get_xscale() == "log"
-    assert len(fig.axes) == (4 if include_beeswarm else 3)
-    assert not any(text.get_text() == "Head" for axis in fig.axes for text in axis.texts)
+    assert len(fig.axes) == (3 if include_beeswarm else 2)
+    assert not spectrum_axis.texts
+    assert spectrum_axis.get_xlabel() == "Dimension"
+    assert pr_axis.get_xlabel() == "Dimensionality (PR)"
+    assert pr_axis.get_ylabel() == ""
+    assert pr_axis.get_xticklabels()[0].get_text() == r"$\mathdefault{10^{0}}$"
+    assert spectrum_axis.get_xticklabels()[0].get_text() == r"$\mathdefault{10^{0}}$"
     if include_beeswarm:
         svr_axis = fig.axes[2]
         assert len(svr_axis.get_xticks()) == 0
         assert len(svr_axis.lines) == 2
+        assert all(line.get_color() == "black" for line in svr_axis.lines)
         np.testing.assert_allclose(svr_axis.lines[0].get_ydata(), viewer._ratios_arrays["sf_cv_total"])
     fig.canvas.draw()
+    if include_beeswarm:
+        spectrum_bounds = spectrum_axis.get_position()
+        svr_bounds = svr_axis.get_position()
+        assert svr_bounds.y0 == pytest.approx(spectrum_bounds.y0)
+        assert svr_bounds.y1 == pytest.approx(spectrum_bounds.y1)
+        assert svr_bounds.width == pytest.approx(0.3 * spectrum_bounds.width)
     plt.close(fig)

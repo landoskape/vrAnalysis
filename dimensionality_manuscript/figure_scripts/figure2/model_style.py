@@ -30,6 +30,7 @@ ARCH_LINESTYLE = {
     "highd_pos_speed_reward": "-.",
     "placefield_gain": (0, (3, 1, 1, 1, 1, 1)),
     "placefield_structured_gain": (0, (5, 1, 1, 1)),
+    "placefield_structured_gain_sqrt": (0, (5, 2)),
 }
 
 # Legend text for each architecture, in the order the entries are listed.
@@ -40,6 +41,7 @@ ARCH_LABELS = {
     "highd_pos_speed_reward": "+reward",
     "placefield_gain": "+gain",
     "placefield_structured_gain": "+struct. gain",
+    "placefield_structured_gain_sqrt": "+struct. sqrt gain",
 }
 
 MODEL_STYLE: dict[ModelName, dict] = {
@@ -55,6 +57,8 @@ MODEL_STYLE: dict[ModelName, dict] = {
     "internal_placefield_1d_gain": dict(role="internal", arch="placefield_gain"),
     "external_placefield_1d_structured_gain": dict(role="external", arch="placefield_structured_gain"),
     "internal_placefield_1d_structured_gain": dict(role="internal", arch="placefield_structured_gain"),
+    "external_placefield_1d_structured_gain_sqrt": dict(role="external", arch="placefield_structured_gain_sqrt"),
+    "internal_placefield_1d_structured_gain_sqrt": dict(role="internal", arch="placefield_structured_gain_sqrt"),
     "rrr": dict(role="neural", arch="placefield"),
     "rrr_no_intercept": dict(role="neural", arch="placefield"),
     "fullregressor_decoder_only_1dspeed_predreward": dict(role="external", arch="highd_pos_speed_reward"),

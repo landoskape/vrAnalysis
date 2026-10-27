@@ -75,13 +75,8 @@ import subprocess
 from pathlib import Path
 
 from dimensionality_manuscript.registry import RegistryPaths
-from dimensionality_manuscript.pipeline import AnalysisPlan, JobQueue, ResultsStore
-from dimensionality_manuscript.scripts.run import (
-    build_analysis_configs,
-    collect_sessions,
-    collect_sessions_from_file,
-    _parse_param_filters,
-)
+from dimensionality_manuscript.scripts.run import _parse_param_filters
+from dimensionality_manuscript.scripts.submit_common import prepare_batch
 
 REGISTRY_PATHS = RegistryPaths()
 
@@ -151,39 +146,9 @@ def submit(
         The batch_id created, or None if there was nothing to do.
     """
     db_path = REGISTRY_PATHS.pipeline_v2_db_path
-    store = ResultsStore(db_path)
-    queue = JobQueue(db_path)
-
-    if sessions_file is not None:
-        sessions = collect_sessions_from_file(sessions_file)
-    else:
-        sessions = collect_sessions()
-
-    analysis_configs = build_analysis_configs(include=analyses, param_filters=param_filters)
-    plan = AnalysisPlan(analysis_configs=analysis_configs)
-    pending_jobs, n_skipped = plan._collect_jobs(sessions, store, force_remake=False, skip_errors=skip_errors)
-
-    skip_suffix = f" ({n_skipped} skipped — recorded errors)" if n_skipped else ""
-    print(f"Sessions:         {len(sessions)}")
-    print(f"Analysis configs: {len(analysis_configs)}")
-    print(f"Pending jobs:     {len(pending_jobs)}{skip_suffix}")
-    print(f"Database:         {db_path}")
-    print()
-
-    if pending_jobs:
-        plan.print_job_groups(pending_jobs, label="Pending")
-        print()
-
-    if not pending_jobs:
-        print("Nothing to do — all results already computed.")
-        _print_batch_summary(queue)
+    batch_id = prepare_batch(db_path, analyses, sessions_file, skip_errors, param_filters)
+    if batch_id is None:
         return None
-
-    batch_id = queue.create_batch(analyses)
-    n_added = queue.populate(pending_jobs, batch_id)
-    summary = queue.status_summary(batch_id)
-    print(f"\nBatch:        {batch_id}")
-    print(f"Jobs added:   {n_added} | {summary}")
 
     if dry_run:
         print("\n[dry-run] Batch populated. Run smoke_test to validate, then re-run without --dry-run to submit.")
@@ -237,14 +202,6 @@ def _build_qsub_command(
 def _print_queue_preview(n_workers, walltime, mem, cores_per_worker, gpu_type, n_gpus, gpu_nodes, db_path, sessions_file, batch_id):
     qsub_cmd = _build_qsub_command(n_workers, walltime, mem, cores_per_worker, gpu_type, n_gpus, gpu_nodes, db_path, sessions_file, batch_id)
     print(f"qsub command: {' '.join(qsub_cmd)}")
-
-
-def _print_batch_summary(queue: JobQueue) -> None:
-    batches = queue.list_batches()
-    if batches:
-        print("\nExisting batches (newest first):")
-        for b in batches[:5]:
-            print(f"  {b['batch_id']}  pending={b['pending']} running={b['running']} done={b['done']} failed={b['failed']}")
 
 
 def main():

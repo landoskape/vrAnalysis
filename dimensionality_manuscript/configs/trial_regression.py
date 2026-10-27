@@ -32,6 +32,8 @@ from .regression import (
 STRUCTURED_GAIN_MODELS: tuple[ModelName, ...] = (
     "external_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain",
+    "external_placefield_1d_structured_gain_sqrt",
+    "internal_placefield_1d_structured_gain_sqrt",
 )
 
 ALL_CELL_TRIAL_MODELS: tuple[ModelName, ...] = (
@@ -45,6 +47,7 @@ ALL_CELL_TRIAL_MODELS: tuple[ModelName, ...] = (
 PLACECELL_TRIAL_MODELS: tuple[ModelName, ...] = (
     *ALL_CELL_TRIAL_MODELS[:-1],
     "internal_placefield_1d_structured_gain",
+    "internal_placefield_1d_structured_gain_sqrt",
     "rrr",
 )
 
@@ -306,6 +309,10 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
     optimization.  The other three quarter-folds rotate through test, with the remaining two
     used to refit the model.  The environment/session score is the median of the three test-fold
     scores.  Version 1 retains the original single 50/25/25 train/validation/test evaluation.
+
+    The structured-gain grid includes raw and square-root variants. Both are selected and
+    evaluated on reconstructed activity; the sqrt variant regresses square-root gains and
+    squares its nonnegative output before scaling the target place field.
     """
 
     schema_version: str = "v2"

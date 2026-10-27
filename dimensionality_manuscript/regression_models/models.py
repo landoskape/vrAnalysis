@@ -794,7 +794,8 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
     1. Place fields for source and target cells, exactly as in :class:`PlaceFieldModel`.
     2. Frames are grouped into gain units -- one contiguous time chunk intersected with one trial.
     3. A least-squares gain per cell per unit (:func:`least_squares_gain`).
-    4. A reduced-rank regression from source gains to target gains, over units.
+    4. A reduced-rank regression from source gains to target gains, over units, optionally
+       in square-root gain space. Predictions are squared back to gain before scaling activity.
 
     Prediction (on a held-out split): gains of the *source* cells are measured on that split's own
     frames, mapped through the regression to predicted target gains, and each target cell's place
@@ -827,6 +828,10 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         per unit (see :func:`least_squares_gain`). Without it the ratio diverges for cells whose
         place field predicts nothing over a unit -- observed above 1e30 in real sessions, which is
         enough to make the gain regression non-finite. Default is 0.01.
+    gain_transform : {"raw", "sqrt"}
+        Transform source and target gains for regression. The sqrt variant predicts nonnegative
+        square roots and squares them before scaling the target place field. Optimization and
+        final evaluation use reconstructed activity in either case. Default is "raw".
     hyperparameters : PlaceFieldStructuredGainHyperparameters
         Place-field and gain-regression hyperparameters.
     activity_parameters : ActivityParameters
@@ -847,7 +852,11 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         hyperparameters: PlaceFieldStructuredGainHyperparameters = PlaceFieldStructuredGainHyperparameters(),
         activity_parameters: ActivityParameters = ActivityParameters(),
         autosave: bool = True,
+        gain_transform: str = "raw",
     ):
+        if gain_transform not in ("raw", "sqrt"):
+            raise ValueError(f"Unknown gain_transform {gain_transform!r}; expected raw or sqrt")
+        self.gain_transform = gain_transform
         super().__init__(
             registry,
             internal=internal,
@@ -860,6 +869,14 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         self.fit_intercept = fit_intercept
         self.min_frames_per_unit = min_frames_per_unit
         self.gain_regularization = gain_regularization
+
+    def _transform_gain(self, gain: np.ndarray) -> np.ndarray:
+        """Transform measured gains while keeping prediction extras in raw gain units."""
+        if self.gain_transform == "raw":
+            return gain
+        if np.any(gain < 0):
+            raise ValueError("Square-root gain requires nonnegative measured gains")
+        return np.sqrt(gain)
 
     def train(
         self,
@@ -959,8 +976,8 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         # precision has been enough to make the solve non-finite.
         gain_model = ReducedRankRegression(alpha=alpha, fit_intercept=self.fit_intercept)
         return gain_model.fit(
-            torch.tensor(source_gain[:, idx_fit].T, dtype=torch.float64),
-            torch.tensor(target_gain[:, idx_fit].T, dtype=torch.float64),
+            torch.tensor(self._transform_gain(source_gain[:, idx_fit]).T, dtype=torch.float64),
+            torch.tensor(self._transform_gain(target_gain[:, idx_fit]).T, dtype=torch.float64),
         )
 
     def prediction_inputs(
@@ -1078,7 +1095,7 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         source_gain = inputs["source_gain"]
         predicted_gain = (
             gain_model.predict(
-                torch.tensor(source_gain.T, dtype=torch.float64),
+                torch.tensor(self._transform_gain(source_gain).T, dtype=torch.float64),
                 rank=min(int(rank), int(gain_model.max_rank)),
                 nonnegative=True,
             )
@@ -1086,6 +1103,8 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
             .T
         )
 
+        if self.gain_transform == "sqrt":
+            predicted_gain = np.square(predicted_gain)
         gain_applied = predicted_gain[:, unit_index]
         prediction = inputs["target_prediction"] * gain_applied
 
@@ -1193,6 +1212,8 @@ class PlaceFieldStructuredGainModel(PlaceFieldModel):
         """
         model_type = "internal" if self.internal else "external"
         model_name = f"{model_type}_placefield_1d_structured_gain"
+        if self.gain_transform == "sqrt":
+            model_name += "_sqrt"
         if not self.fit_intercept:
             model_name += "_no_intercept"
         return model_name

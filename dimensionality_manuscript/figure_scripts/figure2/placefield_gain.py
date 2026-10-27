@@ -11,15 +11,13 @@ from scipy.optimize import curve_fit
 from dimensionality_manuscript.configs.gain_regression import (
     GAIN_ESTIMATORS,
     GAIN_TRANSFORMS,
-    PLACEFIELD_SPLITS,
     GainRegressionConfig,
     apply_gain_transform,
-    split_trials,
 )
 from dimensionality_manuscript.env_order import ENV_SLOT_COLORS, MAX_ENV_SLOTS, _session_sort_key
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer
 from dimensionality_manuscript.pipeline import ResultsAggregator
-from vrAnalysis.helpers import reliability_loo, stable_hash
+from vrAnalysis.helpers import reliability_loo
 from vrAnalysis.helpers.plotting import beeswarm, format_spines
 from vrAnalysis.metrics import FractionActive
 from vrAnalysis.processors.placefields import get_frame_behavior
@@ -272,15 +270,15 @@ class PlacefieldGainViewer(FigureViewer):
     The first two panels consume the selected session directly. Activity is loaded as
     ``spks_type`` (``sigrebase`` by default), restricted to the session's filtered ROIs, and
     divided by each ROI's full-session standard deviation before any place fields or selection
-    metrics are computed. The third panel reads ``r2_test`` from a ``GainRegressionConfig``
+    metrics are computed. The third panel reads ``r2_test_raw`` from a ``GainRegressionConfig``
     results aggregator. Pooled mode compares mouse-level data and roll-null scores in adjacent
     columns; by-mouse mode shows the observed session/environment swarm and marks each mouse's
     roll-null mean with a red horizontal line.
 
     ``gain_estimator`` selects the original four-parameter Gaussian estimator or the nonparametric
-    least-squares projection used by the temporal Trial Gain model. ``placefield_split`` controls
-    the direct-session template and ROI screen as well as the stored regression selection, using
-    the config's reproducible trial split. ``gain_transform`` is likewise shared by every panel.
+    least-squares projection used by the temporal Trial Gain model. Templates and ROI screening
+    always use all retained trials. ``gain_transform`` controls the displayed gain and the
+    regression fit; regression performance is always scored in raw gain units.
     """
 
     def __init__(
@@ -293,7 +291,6 @@ class PlacefieldGainViewer(FigureViewer):
         environment: int | None = None,
         gain_estimator: str = "gaussian",
         gain_transform: str = "raw",
-        placefield_split: str = "train",
         swarm_mode: str = "pooled",
         include_covariance: bool = True,
         include_familiarity: bool = True,
@@ -320,8 +317,6 @@ class PlacefieldGainViewer(FigureViewer):
             raise ValueError(f"gain_transform must be one of {GAIN_TRANSFORMS}")
         if gain_estimator not in GAIN_ESTIMATORS:
             raise ValueError(f"gain_estimator must be one of {GAIN_ESTIMATORS}")
-        if placefield_split not in PLACEFIELD_SPLITS:
-            raise ValueError(f"placefield_split must be one of {PLACEFIELD_SPLITS}")
         if swarm_mode not in ("pooled", "by_mouse"):
             raise ValueError("swarm_mode must be 'pooled' or 'by_mouse'")
         if min_trial < 0:
@@ -341,8 +336,6 @@ class PlacefieldGainViewer(FigureViewer):
         config = results.config_class if isinstance(results.config_class, GainRegressionConfig) else GainRegressionConfig()
         self.reliability_threshold = config.reliability_threshold
         self.fraction_active_threshold = config.fraction_active_threshold
-        self.trial_fractions = config.trial_fractions
-        self.split_seed = config.split_seed
         self._loaded: dict[str, dict] = {}
         self._gain_cache: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
         self._sort_cache: dict[tuple, np.ndarray] = {}
@@ -366,10 +359,9 @@ class PlacefieldGainViewer(FigureViewer):
         self.add_selection("mouse", value=initial_mouse, options=list(self._sessions_by_mouse))
         self.add_selection("session", value=initial_session, options=session_options)
         self.add_selection("environment", value=initial_environment, options=env_options)
-        # Estimator, transform, and template split control both direct images and stored results.
+        # Estimator and transform control both direct images and stored results.
         self.add_selection("gain_estimator", value=gain_estimator, options=list(GAIN_ESTIMATORS))
         self.add_selection("gain_transform", value=gain_transform, options=list(GAIN_TRANSFORMS))
-        self.add_selection("placefield_split", value=placefield_split, options=list(PLACEFIELD_SPLITS))
         self.add_selection("swarm_mode", value=swarm_mode, options=["pooled", "by_mouse"])
         self.add_boolean("include_covariance", value=include_covariance)
         self.add_boolean("include_familiarity", value=include_familiarity)
@@ -389,7 +381,6 @@ class PlacefieldGainViewer(FigureViewer):
                 "environment",
                 "gain_estimator",
                 "gain_transform",
-                "placefield_split",
                 "sort_method",
             ],
             self.refresh_data,
@@ -484,19 +475,7 @@ class PlacefieldGainViewer(FigureViewer):
     def refresh_data(self, state) -> None:
         self._select_session(state["mouse"], state["session"], state["environment"])
         trial_maps, positions, trials = self._environment_maps(state["environment"])
-        prediction_trials = None
-        if state["placefield_split"] == "train":
-            full_trials = self.data["full_trials"]
-            folds = split_trials(
-                np.asarray(self.session.trial_environment)[full_trials],
-                self.trial_fractions,
-                int(stable_hash(self.session.session_uid, self.split_seed, "trials"), 16),
-            )
-            train_trials = full_trials[folds[0]]
-            prediction_trials = np.flatnonzero(np.isin(trials, train_trials))
-            if prediction_trials.size == 0:
-                raise ValueError(f"Environment {state['environment']} has no training trials")
-        screen_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
+        screen_maps = trial_maps
         if screen_maps.shape[1] < 2:
             raise ValueError(f"Environment {state['environment']} has fewer than two template trials")
         reliability = reliability_loo(screen_maps)
@@ -514,13 +493,11 @@ class PlacefieldGainViewer(FigureViewer):
             raise ValueError("No ROI passes the reliability and fraction-active thresholds")
 
         trial_maps = trial_maps[idx_keep]
-        template_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
-        prediction = np.nanmean(template_maps, axis=1)
+        prediction = np.nanmean(trial_maps, axis=1)
         gain_key = (
             self.session.session_uid,
             state["environment"],
             state["gain_estimator"],
-            state["placefield_split"],
             idx_keep.tobytes(),
         )
         if gain_key not in self._gain_cache:
@@ -564,20 +541,19 @@ class PlacefieldGainViewer(FigureViewer):
         selection = {
             "gain_estimator": state["gain_estimator"],
             "gain_transform": state["gain_transform"],
-            "placefield_split": state["placefield_split"],
         }
         # This viewer summarizes same-trial performance; do not pool the lag grid.
         if "trial_shift" in getattr(self.results, "param_axes", {}):
             selection["trial_shift"] = 0
         selected = self.results.sel(
-            keys=["r2_test", "r2_test_null", "n_trials_env", "env_slot_ids"],
+            keys=["r2_test_raw", "r2_test_raw_null", "n_trials_env", "env_slot_ids"],
             squeeze_ones=False,
             **selection,
         )
         self.summary_trials = np.asarray(selected["n_trials_env"], dtype=float)
         self.summary_env_ids = np.asarray(selected["env_slot_ids"], dtype=float)
-        self.summary_scores = np.asarray(selected["r2_test"], dtype=float).copy()
-        self.summary_null_scores = np.asarray(selected["r2_test_null"], dtype=float).copy()
+        self.summary_scores = np.asarray(selected["r2_test_raw"], dtype=float).copy()
+        self.summary_null_scores = np.asarray(selected["r2_test_raw_null"], dtype=float).copy()
         enough_trials = np.isfinite(self.summary_trials) & (self.summary_trials >= state["min_trial"])
         self.summary_scores[~enough_trials] = np.nan
         self.summary_null_scores[~enough_trials] = np.nan
@@ -684,7 +660,7 @@ class PlacefieldGainViewer(FigureViewer):
         if self.selected_result is not None and selected_x is not None and np.isfinite(self.selected_result[2]):
             ax.plot(selected_x, self.selected_result[2], color="red", marker="o", markersize=2, linestyle="none", zorder=5)
 
-        ax.set_ylabel(r"Gain Prediction $R^2$", fontsize=state["fontsize"])
+        ax.set_ylabel(r"Gain Prediction $R^2$ (raw gain)", fontsize=state["fontsize"])
         ylim = ax.get_ylim()
         tick_start = int(np.floor(10 * ylim[0]))
         tick_stop = int(np.ceil(10 * ylim[1]))
@@ -747,7 +723,7 @@ class PlacefieldGainViewer(FigureViewer):
         max_x = max(max_width - 1, 0)
         ax.set_xlim(-0.5, max_x + 0.5)
         ax.set_xlabel("Session # Within Environment" if state["by_env"] else "Overall Session #", fontsize=state["fontsize"])
-        ax.set_ylabel(r"Gain Prediction $R^2$", fontsize=state["fontsize"])
+        ax.set_ylabel(r"Gain Prediction $R^2$ (raw gain)", fontsize=state["fontsize"])
         ylim = ax.get_ylim()
         format_spines(
             ax,
@@ -846,7 +822,6 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
         environment: int | None = None,
         gain_estimator: str = "least_squares",
         gain_transform: str = "raw",
-        placefield_split: str = "train",
         spks_type: SpksTypes = "sigrebase",
         num_bins: int = 100,
         speed_threshold: float = 1.0,
@@ -867,7 +842,6 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
             environment=environment,
             gain_estimator=gain_estimator,
             gain_transform=gain_transform,
-            placefield_split=placefield_split,
             swarm_mode="pooled",
             include_covariance=False,
             include_familiarity=False,

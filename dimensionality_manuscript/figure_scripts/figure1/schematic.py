@@ -9,7 +9,7 @@ from dimensionality_manuscript.blender import RIG_HFOV_DEG, RenderParams, load_v
 from dimensionality_manuscript.configs.behavior_speed_env import ENV_REWARD_MAP, REFERENCE_ENV_LENGTH_CM
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer
 
-from ._shared import env_slot_color
+from ._shared import draw_reward_location, env_slot_color
 from .speed import MouseSpeedFocus
 
 # Environments shown, top row first. These are the ATL cohort's three environments, ordered so
@@ -19,7 +19,7 @@ VR_SCHEMATIC_ENVS: tuple[int, ...] = (1, 3, 4)
 # Reward-zone geometry is stored per session, not as a colony-wide constant: ENV_REWARD_MAP
 # gives the zone *start* in cm, and the drawn width is a presentation choice.
 VR_REWARD_ZONE_WIDTH_CM: float = 20.0
-VR_REWARD_LEGEND_LABEL: str = "reward zones (90% of trials)"
+VR_REWARD_LEGEND_LABEL: str = "reward location"
 
 # RenderParams fields, in the order the viewer registers them. Changing any of these makes the
 # viewer shell out to Blender; every other parameter is pure matplotlib.
@@ -102,14 +102,11 @@ class VREnvironmentSchematic(FigureViewer):
     panel_border : float
         Line width of a black border around each panel; 0 draws none.
     show_reward_zones : bool
-        Draw the reward-zone box on each track.
-    reward_zone_width_cm : float
-        Drawn width of the reward zone. Reward geometry is stored per session rather than as a
-        colony constant, so only the zone start comes from the data; this is presentation.
-    reward_zone_alpha : float
-        Opacity of the reward-zone boxes, which take their environment's color.
+        Draw an upward arrow at the reward-zone start on each track.
+    reward_zone_width_cm, reward_zone_alpha : float
+        Legacy inputs accepted for notebook compatibility. Rewards always use opaque arrows.
     show_legend : bool
-        Draw the reward-zone swatch and label below the last environment.
+        Draw a black reward-location arrow and label below the last environment.
     legend_yoffset : float
         Extra vertical shift of the legend row, in panel-height units; positive pushes it further
         below the last track. The figure grows or shrinks to follow it.
@@ -126,7 +123,7 @@ class VREnvironmentSchematic(FigureViewer):
         track_w   = n_rooms * panel_aspect + (n_rooms - 1) * room_gap
         row_pitch = 1 + arrow_gap + track_height + env_gap
 
-        width_units  = track_w + 2 * margin
+        width_units  = track_w + 2 * margin + 0.9  # environment labels
         height_units = n_envs * row_pitch - env_gap + 2 * margin
                        + (env_gap + track_height + legend_yoffset if show_legend else 0)
 
@@ -207,8 +204,6 @@ class VREnvironmentSchematic(FigureViewer):
         self.add_float("margin", value=margin, min=0.0, max=0.5)
         self.add_float("panel_border", value=panel_border, min=0.0, max=3.0)
         self.add_boolean("show_reward_zones", value=show_reward_zones)
-        self.add_float("reward_zone_width_cm", value=reward_zone_width_cm, min=2.0, max=60.0)
-        self.add_float("reward_zone_alpha", value=reward_zone_alpha, min=0.0, max=1.0)
         self.add_boolean("show_legend", value=show_legend)
         self.add_float("legend_yoffset", value=legend_yoffset, min=-0.5, max=1.5)
         self.add_boolean("show_scalebar", value=show_scalebar)
@@ -281,9 +276,19 @@ class VREnvironmentSchematic(FigureViewer):
         # track, and the bottom edge has to follow whichever band ends up lowest.
         y_bottom = (min(legend_y, arrow_ys[-1]) if state["show_legend"] else arrow_ys[-1]) - track_height / 2
 
+        # The head fills the gap from the track centerline to the image bottom;
+        # the equally long stem hangs below, and the 90-degree tip gives width = 2 * height.
+        reward_arrow_height = state["arrow_gap"] + track_height / 2
+        if state.get("show_reward_zones", True):
+            y_bottom = min(y_bottom, arrow_ys[-1] - reward_arrow_height)
+        if state["show_legend"]:
+            y_bottom = min(y_bottom, legend_y - reward_arrow_height)
+
         return {
+            "reward_arrow_height": reward_arrow_height,
             "track_w": track_w,
-            "width": track_w + 2 * margin,
+            "width": track_w + 2 * margin + 0.9,
+            "label_width": 0.9,
             "height": (0.0 - y_bottom) + 2 * margin,
             "panel_tops": panel_tops,
             "arrow_ys": arrow_ys,
@@ -357,7 +362,6 @@ class VREnvironmentSchematic(FigureViewer):
         margin = state["margin"]
         fontsize = state["fontsize"]
         show_legend = state["show_legend"]
-        reward_zone_alpha = state["reward_zone_alpha"]
 
         metrics = self.layout_metrics(state)
         track_w = metrics["track_w"]
@@ -365,12 +369,14 @@ class VREnvironmentSchematic(FigureViewer):
         y_bottom = metrics["y_bottom"]
 
         # No ticks, no spines -- just the rendered content, filling whatever box ``ax`` occupies.
-        ax.set_xlim(-margin, track_w + margin)
+        ax.set_xlim(-margin - metrics["label_width"], track_w + margin)
         ax.set_ylim(y_bottom - margin, margin)
         ax.set_axis_off()
 
         for env, panel_top, arrow_y in zip(self.envs, metrics["panel_tops"], metrics["arrow_ys"]):
             color = self._env_color(env)
+            ax.text(-0.12, panel_top - 0.5, f"Env {chr(65 + self.envs.index(env))}",
+                    ha="right", va="center", rotation=0, fontsize=fontsize, color=color)
 
             for room, image in enumerate(self.images[env]):
                 x0 = room * (panel_w + room_gap)
@@ -400,37 +406,14 @@ class VREnvironmentSchematic(FigureViewer):
             if state["show_reward_zones"]:
                 # ENV_REWARD_MAP holds the zone start in cm on the 200 cm reference track.
                 start = track_w * ENV_REWARD_MAP[env] / REFERENCE_ENV_LENGTH_CM
-                zone_width = track_w * state["reward_zone_width_cm"] / REFERENCE_ENV_LENGTH_CM
-                ax.add_patch(
-                    Rectangle(
-                        (start, arrow_y - track_height / 2),
-                        zone_width,
-                        track_height,
-                        facecolor=color,
-                        alpha=reward_zone_alpha,
-                        edgecolor="none",
-                        zorder=5,
-                    )
-                )
+                draw_reward_location(ax, start, arrow_y - metrics["reward_arrow_height"],
+                                     arrow_y, color=color, fontsize=fontsize, head_above=True)
 
         if show_legend:
-            # The zones are environment-colored, so the swatch is split into one segment per
-            # environment rather than drawn in a neutral grey that matches nothing on the plot.
-            swatch_w = 0.55 * panel_w / 1.6  # scales with panel width so the row stays balanced
-            segment_w = swatch_w / len(self.envs)
-            for segment, env in enumerate(self.envs):
-                ax.add_patch(
-                    Rectangle(
-                        (segment * segment_w, legend_y - track_height / 2),
-                        segment_w,
-                        track_height,
-                        facecolor=self._env_color(env),
-                        alpha=reward_zone_alpha,
-                        edgecolor="none",
-                        zorder=5,
-                    )
-                )
-            ax.text(swatch_w + 0.12, legend_y, VR_REWARD_LEGEND_LABEL, ha="left", va="center", fontsize=fontsize, zorder=5)
+            height = metrics["reward_arrow_height"]
+            draw_reward_location(ax, height, legend_y - height,
+                                 legend_y, color="black", fontsize=fontsize, head_above=True)
+            ax.text(2 * height + 0.12, legend_y, VR_REWARD_LEGEND_LABEL, ha="left", va="center", fontsize=fontsize, zorder=5)
 
         if state["show_scalebar"]:
             ax.text(
@@ -467,11 +450,12 @@ def vr_schematic_and_speed(
     top_margin: float = 0.02,
     bottom_margin: float = 0.14,
     panel_gap: float = 0.03,
+    split_speed: bool | None = None,
 ):
     """
     Stack the VR schematic over the speed panel on a shared physical x-axis.
 
-    The two panels line up so the reward zones in the schematic sit above the reward zones drawn
+    The two panels line up so the reward locations in the schematic sit above the reward locations drawn
     on the speed curves. Both are drawn by the viewers' own ``draw`` methods onto axes this
     function places, so each panel keeps whatever state its viewer is in -- construct them with
     the keywords you want, or tune them interactively first and pass them here.
@@ -504,6 +488,8 @@ def vr_schematic_and_speed(
     top_margin, bottom_margin : float
         Figure-fraction space left above the schematic and below the speed panel's x-axis label
         and ticks.
+    split_speed : bool or None
+        Separate all trials and first in block into two rows sharing x. None uses the viewer setting.
     panel_gap : float
         Figure-fraction vertical gap between the two panels.
 
@@ -512,7 +498,10 @@ def vr_schematic_and_speed(
     matplotlib.figure.Figure
     """
     schem_state = schematic.state
-    speed_state = speed.state
+    speed_state = dict(speed.state)
+    if split_speed is not None:
+        speed_state["split_speed"] = split_speed
+    split = speed_state.get("split_speed", False) and speed_state.get("show_first", True)
 
     metrics = schematic.layout_metrics(schem_state)
     axes_width_frac = right_margin - left_margin
@@ -539,10 +528,17 @@ def vr_schematic_and_speed(
 
     fig = plt.figure(figsize=(fig_width, fig_height))
     ax_schem = fig.add_axes([left_margin, 1.0 - top_margin - schem_height_frac, axes_width_frac, schem_height_frac])
-    ax_speed = fig.add_axes([left_margin, bottom_margin, axes_width_frac, speed_height_frac])
+    if split:
+        gap = min(panel_gap, speed_height_frac / 5)
+        row_height = (speed_height_frac - gap) / 2
+        ax_speed = fig.add_axes([left_margin, bottom_margin + row_height + gap, axes_width_frac, row_height])
+        ax_first = fig.add_axes([left_margin, bottom_margin, axes_width_frac, row_height], sharex=ax_speed)
+    else:
+        ax_speed = fig.add_axes([left_margin, bottom_margin, axes_width_frac, speed_height_frac])
+        ax_first = None
 
     schematic.draw(schem_state, ax_schem)
-    speed.draw(speed_state, ax_speed)
+    speed.draw(speed_state, ax_speed, ax_first=ax_first, show_reward_label=False)
 
     # The schematic's track (arrow + reward zones) spans data units [0, track_w] for a physical
     # length of REFERENCE_ENV_LENGTH_CM; converting its margin to the same cm scale and applying
@@ -550,6 +546,6 @@ def vr_schematic_and_speed(
     # regardless of margin, since both axes occupy the same figure-fraction width.
     cm_per_unit = REFERENCE_ENV_LENGTH_CM / metrics["track_w"]
     margin_cm = schem_state["margin"] * cm_per_unit
-    ax_speed.set_xlim(-margin_cm, REFERENCE_ENV_LENGTH_CM + margin_cm)
+    ax_speed.set_xlim(-margin_cm - metrics["label_width"] * cm_per_unit, REFERENCE_ENV_LENGTH_CM + margin_cm)
 
     return fig

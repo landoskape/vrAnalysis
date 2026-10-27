@@ -70,6 +70,8 @@ MODEL_NAMES: tuple[str, ...] = (
     "internal_placefield_1d_structured_gain",
     "external_placefield_1d_structured_additive",
     "internal_placefield_1d_structured_additive",
+    "external_placefield_1d_structured_gain_sqrt",
+    "internal_placefield_1d_structured_gain_sqrt",
 )
 
 

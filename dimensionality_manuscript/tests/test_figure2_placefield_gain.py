@@ -50,8 +50,8 @@ def test_summary_selection_filters_trials_and_locates_selected_result():
         def sel(self, **kwargs):
             self.selection = kwargs
             return {
-                "r2_test": np.array([[0.1, 0.4], [0.2, 0.3]]),
-                "r2_test_null": np.array([[-0.1, -0.4], [-0.2, -0.3]]),
+                "r2_test_raw": np.array([[0.1, 0.4], [0.2, 0.3]]),
+                "r2_test_raw_null": np.array([[-0.1, -0.4], [-0.2, -0.3]]),
                 "n_trials_env": np.array([[12, 4], [20, 20]]),
                 "env_slot_ids": np.array([[1, 2], [1, 2]]),
             }
@@ -63,18 +63,16 @@ def test_summary_selection_filters_trials_and_locates_selected_result():
         {
             "gain_estimator": "least_squares",
             "gain_transform": "sqrt",
-            "placefield_split": "all",
             "min_trial": 10,
             "environment": 1,
         }
     )
 
     assert viewer.results.selection == {
-        "keys": ["r2_test", "r2_test_null", "n_trials_env", "env_slot_ids"],
+        "keys": ["r2_test_raw", "r2_test_raw_null", "n_trials_env", "env_slot_ids"],
         "squeeze_ones": False,
         "gain_estimator": "least_squares",
         "gain_transform": "sqrt",
-        "placefield_split": "all",
     }
     assert viewer.summary_mice == ["m1", "m2"]
     np.testing.assert_allclose(viewer.summary_values[0], [0.1])
@@ -85,7 +83,7 @@ def test_summary_selection_filters_trials_and_locates_selected_result():
 
     viewer.results.param_axes = {"trial_shift": list(range(-3, 4))}
     viewer.refresh_summary(
-        {"gain_estimator": "least_squares", "gain_transform": "sqrt", "placefield_split": "all", "min_trial": 10, "environment": 1}
+        {"gain_estimator": "least_squares", "gain_transform": "sqrt", "min_trial": 10, "environment": 1}
     )
     assert viewer.results.selection["trial_shift"] == 0
 
@@ -122,7 +120,7 @@ def test_plot_adds_summary_and_optional_familiarity_panels():
     fig = viewer.plot(state)
     try:
         assert len(fig.axes) == 4
-        assert fig.axes[2].get_ylabel() == r"Gain Prediction $R^2$"
+        assert fig.axes[2].get_ylabel() == r"Gain Prediction $R^2$ (raw gain)"
         assert [tick.get_text() for tick in fig.axes[2].get_xticklabels()] == ["m1", "m2"]
         np.testing.assert_allclose(np.diff(fig.axes[2].get_yticks()), 0.1)
         np.testing.assert_allclose(fig.axes[2].lines[1].get_ydata(), [0.15, 0.15])
@@ -222,7 +220,7 @@ def test_plot_can_omit_covariance_panel():
         assert len(fig.axes) == 2
         assert fig.axes[0].get_xlabel() == "Trials"
         assert fig.axes[0].get_box_aspect() is None
-        assert fig.axes[1].get_ylabel() == r"Gain Prediction $R^2$"
+        assert fig.axes[1].get_ylabel() == r"Gain Prediction $R^2$ (raw gain)"
         assert all(text.get_text() != "Gain Covariance" for ax in fig.axes for text in ax.texts)
     finally:
         plt.close(fig)

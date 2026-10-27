@@ -81,6 +81,9 @@ ModelName = Literal[
     # Placefield models with a structured (low-rank) additive offset from the source residual
     "external_placefield_1d_structured_additive",
     "internal_placefield_1d_structured_additive",
+    # Appended to preserve existing model metadata indices.
+    "external_placefield_1d_structured_gain_sqrt",
+    "internal_placefield_1d_structured_gain_sqrt",
 ]
 
 # Type alias for subspace names
@@ -666,6 +669,9 @@ MODEL_NAMES: tuple[ModelName] = (
     # Placefield models with a structured (low-rank) additive offset from the source residual
     "external_placefield_1d_structured_additive",
     "internal_placefield_1d_structured_additive",
+    # Appended to preserve existing model metadata indices.
+    "external_placefield_1d_structured_gain_sqrt",
+    "internal_placefield_1d_structured_gain_sqrt",
 )
 
 
@@ -752,6 +758,8 @@ def short_model_name(model_name: ModelName) -> str:
         # Placefield models with a structured gain
         "external_placefield_1d_structured_gain": "Placefield (+Struct. Gain)",
         "internal_placefield_1d_structured_gain": "Int. Placefield (+Struct. Gain)",
+        "external_placefield_1d_structured_gain_sqrt": "Placefield (+Struct. Sqrt Gain)",
+        "internal_placefield_1d_structured_gain_sqrt": "Int. Placefield (+Struct. Sqrt Gain)",
         # Placefield models with a structured additive offset
         "external_placefield_1d_structured_additive": "Placefield (+Struct. Additive)",
         "internal_placefield_1d_structured_additive": "Int. Placefield (+Struct. Additive)",
@@ -782,6 +790,8 @@ def get_model(
     model_name: Literal[
         "external_placefield_1d_structured_gain",
         "internal_placefield_1d_structured_gain",
+        "external_placefield_1d_structured_gain_sqrt",
+        "internal_placefield_1d_structured_gain_sqrt",
     ],
     population_registry: PopulationRegistry,
     hyperparameters: Optional[HyperparametersBase] = None,
@@ -946,6 +956,8 @@ def get_model(
         # Placefield models with a structured gain
         "external_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
         "internal_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
+        "external_placefield_1d_structured_gain_sqrt": PlaceFieldStructuredGainModel,
+        "internal_placefield_1d_structured_gain_sqrt": PlaceFieldStructuredGainModel,
         # Placefield models with a structured additive offset
         "external_placefield_1d_structured_additive": PlaceFieldStructuredAdditiveModel,
         "internal_placefield_1d_structured_additive": PlaceFieldStructuredAdditiveModel,
@@ -1023,6 +1035,8 @@ def get_model(
         # Placefield models with a structured gain
         "external_placefield_1d_structured_gain": dict(internal=False),
         "internal_placefield_1d_structured_gain": dict(internal=True),
+        "external_placefield_1d_structured_gain_sqrt": dict(internal=False, gain_transform="sqrt"),
+        "internal_placefield_1d_structured_gain_sqrt": dict(internal=True, gain_transform="sqrt"),
         # Placefield models with a structured additive offset
         "external_placefield_1d_structured_additive": dict(internal=False),
         "internal_placefield_1d_structured_additive": dict(internal=True),

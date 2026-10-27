@@ -442,12 +442,13 @@ def plot_ratios_beeswarms_concise(
     include_first10: bool = True,
     value_scale: float = 1.0,
     leading_dims: int = 10,
+    color: str | None = None,
 ) -> None:
     """Behaving-only variance ratios for all dimensions, optionally preceded by the first 10."""
     keys = ("sf_cv_total_10", "sf_cv_total") if include_first10 else ("sf_cv_total",)
     labels = ["Head", "Full"] if include_first10 else ["Full"]
     xticks = np.arange(len(keys), dtype=float)
-    color = CONDITION_COLORS["behaving"]
+    color = CONDITION_COLORS["behaving"] if color is None else color
     alpha = 0.3
     beewidth = 0.2
     line_extent = np.array([-0.25, 0.25])

@@ -1,7 +1,10 @@
 # Running the dimensionality manuscript pipeline on MYRIAD (UCL)
 
-MYRIAD is a Sun Grid Engine (SGE) cluster. This guide covers environment setup,
-data transfer, job submission, and syncing results back to your local machine.
+Myriad is migrating from Sun Grid Engine (SGE) to Slurm. For the new RHEL9
+myriad-ng system, use [MYRIAD_SLURM.md](MYRIAD_SLURM.md), including the staged
+CPU validation steps. The SGE submission/environment commands below apply to
+the old portion during the transition. Data transfer and result syncing remain
+the same on both systems.
 
 ---
 

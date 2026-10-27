@@ -44,9 +44,6 @@ from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry
 from .regression import VALID_SPKS_TYPES
 
-#: Legal values for ``GainRegressionConfig.placefield_split``.
-PLACEFIELD_SPLITS: tuple[str, ...] = ("train", "all")
-
 #: Legal values for ``GainRegressionConfig.gain_transform``.
 GAIN_TRANSFORMS: tuple[str, ...] = ("raw", "sqrt")
 
@@ -70,6 +67,7 @@ CURVE_KEYS: tuple[str, ...] = (
     "r2_val_curve_null",
     "mse_test_curve_null",
     "r2_test_curve_null",
+    *(f"{metric}_{split}_curve_raw{suffix}" for metric in ("mse", "r2") for split in ("val", "test") for suffix in ("", "_null")),
 )
 
 #: Relative validation-MSE slack within which the *smallest* rank wins. The reported rank is a
@@ -235,8 +233,8 @@ def least_squares_gain_matrix(
     """Project each trial map onto a nonparametric trial-averaged place field.
 
     For each ROI and trial this computes ``(y @ p) / (p @ p)`` over bins finite in both the
-    trial map ``y`` and template ``p``.  The template uses either ``prediction_trials`` or all
-    trials, matching ``placefield_split``.  No intercept is fitted: gain is the multiplicative
+    trial map ``y`` and template ``p``. The template uses all trials unless ``prediction_trials``
+    is explicitly provided to this helper. No intercept is fitted: gain is the multiplicative
     scale of the place-field prediction, identical to the temporal structured-gain estimator.
     """
     trial_maps = np.asarray(trial_maps, dtype=float)
@@ -279,9 +277,11 @@ def apply_gain_transform(gain: np.ndarray, transform: str) -> np.ndarray:
     Returns
     -------
     np.ndarray
-        The transformed gain. Negative entries become NaN under ``"sqrt"`` and are dropped by the
-        caller's finite screen.
+        The transformed nonnegative gain. Negative entries raise ValueError for either transform;
+        non-finite entries are handled by the caller's finite screen.
     """
+    if np.any(gain < 0):
+        raise ValueError("Gain must be nonnegative before transformation")
     if transform == "raw":
         return gain
     if transform != "sqrt":
@@ -482,10 +482,29 @@ def optimize_rrr(
     )
 
 
-def score_rrr(model: ReducedRankRegression, rank: int, x: torch.Tensor, y: torch.Tensor) -> tuple[float, float]:
-    """Pooled MSE and R^2 of a rank-truncated prediction."""
+def score_rrr(
+    model: ReducedRankRegression, rank: int, x: torch.Tensor, y: torch.Tensor, *, gain_transform: str = "raw"
+) -> tuple[float, float]:
+    """Pooled MSE and R^2 in raw gain units, rectifying before inverse transformation."""
     prediction = model.predict(x, rank=rank, nonnegative=True)
+    if gain_transform == "sqrt":
+        prediction, y = prediction.square(), y.square()
+    elif gain_transform != "raw":
+        raise ValueError(f"Unknown gain transform {gain_transform!r}")
     return float(mse(prediction, y, reduce="mean", dim=None)), float(measure_r2(prediction, y, reduce="mean", dim=None))
+
+
+def raw_score_curve(
+    model: ReducedRankRegression, x: torch.Tensor, y: torch.Tensor, ranks: list[int], gain_transform: str
+) -> dict[str, list]:
+    """Score all ranks in raw units using the accumulating prediction pass."""
+    if gain_transform not in GAIN_TRANSFORMS:
+        raise ValueError(f"Unknown gain transform {gain_transform!r}")
+    _, scores = model.score_curve(
+        x, y, ranks=ranks, nonnegative=True, dim=None, verbose=False,
+        score_transform=torch.square if gain_transform == "sqrt" else None,
+    )
+    return scores
 
 
 def split_tensors(
@@ -564,6 +583,7 @@ class _NullFit:
     r2_val_curve: np.ndarray
     mse_test_curve: np.ndarray
     r2_test_curve: np.ndarray
+    raw_scores: dict[str, np.ndarray | float]
 
 
 def evaluate_null_rolls(
@@ -578,6 +598,7 @@ def evaluate_null_rolls(
     n_rolls: int,
     rng: np.random.Generator,
     trial_shift: int = 0,
+    gain_transform: str = "raw",
 ) -> _NullFit:
     """Refit and rescore the regression on trial-permuted gain, averaged over rolls.
 
@@ -613,15 +634,20 @@ def evaluate_null_rolls(
     trial_shift : int
         Target minus source trial index, applied after independently rolling neurons.
         Uses the real fit's lag and target columns for training and scoring alike.
+    gain_transform : str
+        Transform used for fitting. Raw-space scores invert it after rectification.
 
     Returns
     -------
     _NullFit
         Roll-averaged validation and test scores and rank curves.
     """
+    raw_keys = [f"{metric}_{split}{curve}_raw" for metric in ("mse", "r2") for split in ("val", "test") for curve in ("", "_curve")]
+    raw_values = {key: [] for key in raw_keys}
     empty = np.full(len(ranks), np.nan)
     if n_rolls <= 0:
-        return _NullFit(np.nan, np.nan, np.nan, np.nan, np.nan, empty, empty.copy(), empty.copy(), empty.copy())
+        return _NullFit(np.nan, np.nan, np.nan, np.nan, np.nan, empty, empty.copy(), empty.copy(), empty.copy(),
+                        {key: empty.copy() if "_curve" in key else np.nan for key in raw_keys})
 
     points: dict[str, list[float]] = {f"{metric}_{split}": [] for metric in ("mse", "r2") for split in ("val", "test")}
     curves: dict[str, list[np.ndarray]] = {key: [] for key in points}
@@ -635,12 +661,21 @@ def evaluate_null_rolls(
             _, scores = model.score_curve(*tensors[split], ranks=ranks, nonnegative=True, dim=None, verbose=False)
             curves[f"mse_{split}"].append(np.asarray(scores["mse"], dtype=float))
             curves[f"r2_{split}"].append(np.asarray(scores["r2"], dtype=float))
+            raw_scores = raw_score_curve(model, *tensors[split], ranks, gain_transform) if gain_transform == "sqrt" else scores
+            raw_point = (
+                score_rrr(model, rank, *tensors[split], gain_transform=gain_transform)
+                if gain_transform == "sqrt" else (mse_point, r2_point)
+            )
+            for metric, point in zip(("mse", "r2"), raw_point):
+                raw_values[f"{metric}_{split}_raw"].append(point)
+                raw_values[f"{metric}_{split}_curve_raw"].append(np.asarray(raw_scores[metric], dtype=float))
 
     averaged_points = {key: float(_roll_average(values)) for key, values in points.items()}
     averaged_curves = {key: _roll_average(values) for key, values in curves.items()}
     mse_val_curve = averaged_curves["mse_val"]
     null_rank = float(_parsimonious_rank(ranks, list(mse_val_curve))) if np.any(np.isfinite(mse_val_curve)) else np.nan
     return _NullFit(
+        raw_scores={key: _roll_average(values) for key, values in raw_values.items()},
         rank=null_rank,
         mse_val=averaged_points["mse_val"],
         r2_val=averaged_points["r2_val"],
@@ -692,10 +727,8 @@ class GainRegressionConfig(AnalysisConfigBase):
     wraparound. A trial step means the next retained full trial of this environment,
     which can span incomplete trials or intervening trials in other environments.
     The gain templates, neuron screen, and source/target neuron split are shared across
-    shifts. With ``placefield_split="train"``, templates use the original target-training
-    fold; shifted source inputs can come from other folds, but target-training and
-    target-test observations remain disjoint at every lag. This is a lag-prediction
-    curve, not a calibrated shift-test p-value.
+    shifts. Templates and neuron screening always use all retained full trials, including
+    held-out trials; only the regression fit uses the training fold.
 
     Gain is not centered and predictions are rectified (``nonnegative=True``) exactly as
     ``ReducedRankRegressionModel`` does; the intercept carries the per-neuron mean gain.
@@ -728,18 +761,12 @@ class GainRegressionConfig(AnalysisConfigBase):
         Minimum participation-ratio fraction-active for a neuron to enter the regression.
     trial_fractions : tuple of float
         Relative train/validation/test trial fractions, stratified within each environment.
-    placefield_split : str
-        ``"train"`` builds the trial-averaged place field, its estimator template, and the neuron screen
-        from training trials only, then measures every trial's gain against that fit. ``"all"`` uses
-        every trial, reproducing ``PlacefieldGainViewer``. ``"train"`` is the default because an
-        all-trial denominator lets a held-out trial contribute to its own gain, and injects the same
-        all-trial mean into every neuron -- a shared component that inflates cross-neuron
-        predictability.
     gain_estimator : str
         ``"gaussian"`` preserves the original Gaussian-bump weighted estimator.
         ``"least_squares"`` projects each trial map onto the nonparametric place field, matching
         the gain definition used by the temporal Trial Gain model.
     gain_transform : str
+        Measured gains must be nonnegative; either transform rejects negative entries.
         ``"raw"`` regresses gain as measured. ``"sqrt"`` takes its square root first, which pulls in
         the heavy upper tail without displacing the many zero-activity trials the way a log would.
         See :func:`apply_gain_transform`.
@@ -793,6 +820,11 @@ class GainRegressionConfig(AnalysisConfigBase):
     roi_lookup                               (N,)        session ROI index per metric-array column
     =======================================  ==========  ============================================
 
+    Scores with ``_raw`` (before an optional ``_null`` suffix) evaluate predictions and
+    targets in raw gain units, including every rank curve. For sqrt fits, predictions
+    are rectified then squared; raw fits duplicate the original scores. Alpha and rank
+    selection still use fitting-space validation MSE.
+
     Notes
     -----
     The ``*_null`` keys are the reference the real numbers should be read against. A rolled matrix
@@ -821,7 +853,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     ``max_rank`` and ``n_trials_train`` before reading it as a dimensionality estimate.
     """
 
-    schema_version: str = "v4"
+    schema_version: str = "v5"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
@@ -832,7 +864,6 @@ class GainRegressionConfig(AnalysisConfigBase):
     reliability_threshold: float = 0.3
     fraction_active_threshold: float = 0.1
     trial_fractions: tuple[float, float, float] = (1.0, 0.25, 0.25)
-    placefield_split: str = "train"
     gain_estimator: str = "gaussian"
     gain_transform: str = "raw"
     split_seed: int = 0
@@ -862,12 +893,10 @@ class GainRegressionConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        # Both denominator conventions run so the leakage-free default can be compared against the
-        # viewer's all-trial place field, and both transforms run so the skew correction can be
+        # Place fields always use all trials. Both transforms run so the skew correction can be
         # judged against untransformed gain. Thresholds are deliberately not swept -- they change
         # which neurons exist, and the counts stored here already support post-hoc filtering.
         return {
-            "placefield_split": list(PLACEFIELD_SPLITS),
             "gain_estimator": list(GAIN_ESTIMATORS),
             "gain_transform": list(GAIN_TRANSFORMS),
             "trial_shift": list(TRIAL_SHIFTS),
@@ -876,8 +905,6 @@ class GainRegressionConfig(AnalysisConfigBase):
     def validate(self) -> None:
         if self.spks_type not in VALID_SPKS_TYPES:
             raise ValueError(f"Unknown spks_type {self.spks_type!r}. Available: {VALID_SPKS_TYPES}")
-        if self.placefield_split not in PLACEFIELD_SPLITS:
-            raise ValueError(f"Unknown placefield_split {self.placefield_split!r}. Available: {PLACEFIELD_SPLITS}")
         if self.gain_estimator not in GAIN_ESTIMATORS:
             raise ValueError(f"Unknown gain_estimator {self.gain_estimator!r}. Available: {GAIN_ESTIMATORS}")
         if self.gain_transform not in GAIN_TRANSFORMS:
@@ -905,7 +932,6 @@ class GainRegressionConfig(AnalysisConfigBase):
             f"smooth={self.smooth_width}",
             f"rel={self.reliability_threshold}",
             f"frac={self.fraction_active_threshold}",
-            f"pf={self.placefield_split}",
             f"estimator={self.gain_estimator}",
             f"gain={self.gain_transform}",
             f"seed={self.split_seed}",
@@ -1025,8 +1051,7 @@ class GainRegressionConfig(AnalysisConfigBase):
         if any(cols.size < self.MIN_TRIALS_PER_SPLIT for cols in pair_columns.values()):
             return None
 
-        prediction_trials = columns["train"] if self.placefield_split == "train" else None
-        screen_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
+        screen_maps = trial_maps
         reliability = reliability_loo(screen_maps)
         fraction_active = FractionActive.compute(
             screen_maps,
@@ -1042,12 +1067,12 @@ class GainRegressionConfig(AnalysisConfigBase):
             return None
 
         if self.gain_estimator == "gaussian":
-            gain, _, _ = gaussian_gain_matrix(trial_maps[idx_keep], data["positions"], prediction_trials)
+            gain, _, _ = gaussian_gain_matrix(trial_maps[idx_keep], data["positions"])
         else:
-            gain, _, _ = least_squares_gain_matrix(trial_maps[idx_keep], prediction_trials)
+            gain, _, _ = least_squares_gain_matrix(trial_maps[idx_keep])
         gain = apply_gain_transform(gain, self.gain_transform)
         # The regression needs complete matrices, so a neuron with any degenerate trial is dropped.
-        # Screening after the transform also catches anything the transform sent to NaN.
+        # Both transforms reject negative gain and use the same finite-neuron screen.
         idx_finite = np.all(np.isfinite(gain), axis=1)
         gain = gain[idx_finite]
         if gain.shape[0] < 2 * self.MIN_NEURONS_PER_GROUP:
@@ -1096,6 +1121,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             env_slot_ids[: len(mouse_order)] = mouse_order
 
         scalar_keys = (
+            *(f"{metric}_{split}_raw{suffix}" for metric in ("mse", "r2") for split in ("val", "test") for suffix in ("", "_null")),
             "rrr_alpha",
             "rrr_rank",
             "rrr_rank_gss",
@@ -1194,12 +1220,30 @@ class GainRegressionConfig(AnalysisConfigBase):
                 n_rolls=self.n_null_rolls,
                 rng=np.random.default_rng(_seed(session.session_uid, env, self.split_seed, "null")),
                 trial_shift=self.trial_shift,
+                gain_transform=self.gain_transform,
             )
             scalars["rrr_rank_null"][slot] = null.rank
             scalars["mse_val_null"][slot], scalars["r2_val_null"][slot] = null.mse_val, null.r2_val
             scalars["mse_test_null"][slot], scalars["r2_test_null"][slot] = null.mse_test, null.r2_test
 
+            raw_curves = {}
+            for split, scores in (("val", {"mse": fit.val_mse, "r2": fit.val_r2}), ("test", test_scores)):
+                raw_scores = raw_score_curve(fit.model, *tensors[split], fit.ranks, self.gain_transform) if self.gain_transform == "sqrt" else scores
+                raw_point = (
+                    score_rrr(fit.model, fit.rank, *tensors[split], gain_transform=self.gain_transform)
+                    if self.gain_transform == "sqrt"
+                    else (scalars[f"mse_{split}"][slot], scalars[f"r2_{split}"][slot])
+                )
+                for metric, point in zip(("mse", "r2"), raw_point):
+                    key = f"{metric}_{split}_raw"
+                    scalars[key][slot] = point
+                    scalars[f"{key}_null"][slot] = null.raw_scores[key]
+                    curve_key = f"{metric}_{split}_curve_raw"
+                    raw_curves[curve_key] = np.asarray(raw_scores[metric], dtype=float)
+                    raw_curves[f"{curve_key}_null"] = null.raw_scores[curve_key]
+
             curves[slot] = {
+                **raw_curves,
                 "rank_values": np.asarray(fit.ranks, dtype=float),
                 "mse_val_curve": np.asarray(fit.val_mse, dtype=float),
                 "r2_val_curve": np.asarray(fit.val_r2, dtype=float),

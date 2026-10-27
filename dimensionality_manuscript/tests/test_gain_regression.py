@@ -11,7 +11,6 @@ from dimensionality_manuscript.configs.gain_regression import (
     GAIN_ESTIMATORS,
     GAIN_TRANSFORMS,
     MAX_ENV_SLOTS,
-    PLACEFIELD_SPLITS,
     TRIAL_SHIFTS,
     GainRegressionConfig,
     _full_trial_indices,
@@ -23,6 +22,7 @@ from dimensionality_manuscript.configs.gain_regression import (
     optimize_rrr,
     roll_gain_rows,
     score_rrr,
+    raw_score_curve,
     split_tensors,
     split_trials,
 )
@@ -126,7 +126,7 @@ def test_prediction_trials_keep_held_out_trials_out_of_their_own_denominator():
     # Against a train-only fit the held-out gain is its true value of 2.
     np.testing.assert_allclose(train_based, gain, atol=1e-6)
     # Against an all-trial fit every gain is deflated by the shared all-trial mean, which is the
-    # leakage the "train" placefield_split exists to avoid.
+    # effect of including held-out trials in the template.
     np.testing.assert_allclose(all_based, gain / np.mean(gain, axis=1, keepdims=True), atol=1e-6)
 
 
@@ -144,13 +144,11 @@ def test_sqrt_transform_compresses_the_tail_without_displacing_zeros():
     assert np.ptp(transformed) < np.ptp(gain)
 
 
-def test_sqrt_transform_marks_negative_gain_nan_for_the_finite_screen():
-    transformed = apply_gain_transform(np.array([[1.0, -0.5]]), "sqrt")
-
-    assert transformed[0, 0] == 1.0
-    assert np.isnan(transformed[0, 1])
-
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("transform", GAIN_TRANSFORMS)
+def test_transforms_reject_negative_gain(transform):
+    with pytest.raises(ValueError, match="nonnegative"):
+        apply_gain_transform(np.array([[1.0, -0.5]]), transform)
+    with pytest.raises(ValueError, match="Unknown"):
         apply_gain_transform(np.array([[1.0]]), "cube_root")
 
 
@@ -471,8 +469,9 @@ def test_environment_gain_declines_too_few_neurons():
     assert config._environment_gain(session, data, env=1, folds=folds) is None
 
 
+@pytest.mark.parametrize("gain_transform", GAIN_TRANSFORMS)
 @pytest.mark.parametrize("trial_shift", TRIAL_SHIFTS)
-def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, trial_shift):
+def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, trial_shift, gain_transform):
     rng = np.random.default_rng(8)
     n_rois = 14
     trial_counts = {1: 60, 3: 48}
@@ -493,7 +492,7 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, tri
     }
     session = SimpleNamespace(session_uid="uid", mouse_name="mouse", trial_environment=trial_environment)
 
-    config = GainRegressionConfig(n_null_rolls=3, trial_shift=trial_shift)
+    config = GainRegressionConfig(n_null_rolls=3, trial_shift=trial_shift, gain_transform=gain_transform)
     monkeypatch.setattr(GainRegressionConfig, "_load_session", lambda self, _session: data)
     # This mouse met environment 3 first, so env 3 owns slot 0 and env 1 owns slot 1. Results must
     # follow experience order, not environment-index order.
@@ -529,23 +528,34 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, tri
     assert result["gain_matrices"][0].shape[1] == 48
     np.testing.assert_array_equal(result["trial_columns"][0]["test"].size, result["n_trials_test"][0])
     assert set(GainRegressionConfig._result_handling) <= set(result)
+    for metric in ("mse", "r2"):
+        for split in ("val", "test"):
+            for suffix in ("", "_null"):
+                assert np.all(np.isfinite(result[f"{metric}_{split}_raw{suffix}"][:2]))
+                if gain_transform == "raw":
+                    for curve in ("", "_curve"):
+                        np.testing.assert_array_equal(result[f"{metric}_{split}{curve}_raw{suffix}"], result[f"{metric}_{split}{curve}{suffix}"])
+            for slot in (0, 1):
+                rank_index = int(result["rrr_rank"][slot]) - 1
+                assert result[f"{metric}_{split}_raw"][slot] == pytest.approx(result[f"{metric}_{split}_curve_raw"][slot, rank_index])
+
 
 
 def test_config_validation_and_variations():
     assert GainRegressionConfig.display_name == "gain_regression"
 
     variations = GainRegressionConfig.generate_variations()
-    assert {variation.placefield_split for variation in variations} == set(PLACEFIELD_SPLITS)
+    assert all(not hasattr(variation, "placefield_split") for variation in variations)
     assert {variation.gain_estimator for variation in variations} == set(GAIN_ESTIMATORS)
     assert {variation.gain_transform for variation in variations} == set(GAIN_TRANSFORMS)
     assert {variation.trial_shift for variation in variations} == set(TRIAL_SHIFTS)
-    assert GainRegressionConfig().schema_version == "v4"
-    assert len(variations) == len(PLACEFIELD_SPLITS) * len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS) * len(TRIAL_SHIFTS)
+    assert GainRegressionConfig().schema_version == "v5"
+    assert len(variations) == len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS) * len(TRIAL_SHIFTS)
     assert len({variation.key() for variation in variations}) == len(variations)
     assert len({variation.summary() for variation in variations}) == len(variations)
 
-    with pytest.raises(ValueError):
-        GainRegressionConfig(placefield_split="nonsense")
+    with pytest.raises(TypeError):
+        GainRegressionConfig(placefield_split="all")
     with pytest.raises(ValueError):
         GainRegressionConfig(gain_transform="log")
     with pytest.raises(ValueError):
@@ -564,3 +574,61 @@ def test_config_validation_and_variations():
 def test_config_rejects_invalid_trial_shift(trial_shift):
     with pytest.raises(ValueError, match="trial_shift"):
         GainRegressionConfig(trial_shift=trial_shift)
+
+
+@pytest.mark.parametrize("gain_transform", GAIN_TRANSFORMS)
+def test_scoring_rectifies_before_squaring(gain_transform):
+    from dimilibi.metrics import measure_r2, mse
+    from dimilibi.regression import ReducedRankRegression
+
+    # Linear extrapolation produces a negative value. It must become zero before squaring.
+    x_train = torch.tensor([[0.], [1.], [2.]], dtype=torch.float64)
+    y_train = 2 * x_train
+    model = ReducedRankRegression(alpha=0., fit_intercept=True).fit(x_train, y_train)
+    x = torch.tensor([[-1.], [0.5], [1.5]], dtype=torch.float64)
+    y = torch.tensor([[0.], [1.5], [2.5]], dtype=torch.float64)
+    assert model.predict(x, rank=1)[0, 0] < 0
+    prediction = model.predict(x, rank=1, nonnegative=True)
+    truth = y
+    if gain_transform == "sqrt":
+        prediction, truth = prediction.square(), y.square()
+    expected = (mse(prediction, truth, dim=None), measure_r2(prediction, truth, dim=None))
+    assert score_rrr(model, 1, x, y, gain_transform=gain_transform) == pytest.approx(expected)
+    curve = raw_score_curve(model, x, y, [1], gain_transform)
+    assert (curve["mse"][0], curve["r2"][0]) == pytest.approx(expected)
+
+
+def test_null_raw_metrics_match_manually_reconstructed_roll():
+    from dimilibi.regression import ReducedRankRegression
+    gain, sources, targets, columns = _null_inputs(n_trials=60, n_source=4, n_target=4, rank=1)
+    root_gain = np.sqrt(gain)
+    kwargs = dict(alpha=1., rank=2, ranks=[1, 2, 3], n_rolls=1, gain_transform="sqrt")
+    null = evaluate_null_rolls(root_gain, sources, targets, columns, rng=np.random.default_rng(9), **kwargs)
+    tensors = split_tensors(roll_gain_rows(root_gain, np.random.default_rng(9)), sources, targets, columns)
+    model = ReducedRankRegression(alpha=1., fit_intercept=True).fit(*tensors["train"])
+    from dimilibi.metrics import measure_r2, mse
+    for split in ("val", "test"):
+        x, y = tensors[split]
+        for rank in kwargs["ranks"]:
+            prediction = model.predict(x, rank=rank, nonnegative=True).square()
+            truth = y.square()
+            for metric, expected in (("mse", mse(prediction, truth, dim=None)), ("r2", measure_r2(prediction, truth, dim=None))):
+                assert null.raw_scores[f"{metric}_{split}_curve_raw"][rank - 1] == pytest.approx(expected)
+        point = score_rrr(model, 2, *tensors[split], gain_transform="sqrt")
+        for metric, expected in zip(("mse", "r2"), point):
+            assert null.raw_scores[f"{metric}_{split}_raw"] == pytest.approx(expected)
+    skipped = evaluate_null_rolls(root_gain, sources, targets, columns, rng=np.random.default_rng(9), **{**kwargs, "n_rolls": 0})
+    assert all(np.all(np.isnan(value)) for value in skipped.raw_scores.values())
+
+
+@pytest.mark.parametrize("estimator", GAIN_ESTIMATORS)
+def test_environment_gain_uses_all_trials_for_template_and_screen(estimator):
+    session, data = _environment_inputs(n_rois=12, n_trials=36, seed=4)
+    folds = [np.arange(24), np.arange(24, 30), np.arange(30, 36)]
+    changed_folds = [np.arange(12, 36), np.arange(6), np.arange(6, 12)]
+    config = GainRegressionConfig(gain_estimator=estimator)
+    first = config._environment_gain(session, data, 1, folds)
+    second = config._environment_gain(session, data, 1, changed_folds)
+    np.testing.assert_array_equal(first.gain, second.gain)
+    np.testing.assert_array_equal(first.roi_indices, second.roi_indices)
+    np.testing.assert_array_equal(first.reliability, second.reliability)

@@ -34,6 +34,7 @@ from .spectra_diagnostics import (
 )
 from .spectrum_by_familiarity import SpectrumCurvesByFamiliarityViewer, SpectrumDimFamiliarityViewer
 from .spectrum_figure import SpectrumAlphaFigureViewer, SpectrumFigureViewer
+from .spectrum_comparison import SpectrumComparisonViewer
 from .spectrum_negative import SpectrumNegativeViewer
 
 __all__ = [
@@ -51,6 +52,7 @@ __all__ = [
     "PlacefieldSpectrumMSEViewer",
     "SessionSpectraViewer",
     "SpectrumAlphaFigureViewer",
+    "SpectrumComparisonViewer",
     "SpectrumCurvesByFamiliarityViewer",
     "SpectrumDimFamiliarityViewer",
     "SpectrumFigureViewer",

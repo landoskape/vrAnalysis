@@ -23,6 +23,7 @@ from .model_style import ARCH_LABELS, ARCH_LINESTYLE, MODEL_STYLE, ROLE_COLOR, R
 from .performance import PERFORMANCE_MODEL_NAMES, ModelPerformanceViewer
 from .trial_performance import TRIAL_PERFORMANCE_MODEL_NAMES, TrialModelPerformanceViewer
 from .trial_gain import TrialGainFocus
+from .trial_time import TrialTimeFocus
 from .placefield_gain import PlacefieldGainSortViewer, PlacefieldGainViewer
 from .pf_residual import (
     PF_RESIDUAL_MODEL_NAMES,
@@ -50,6 +51,7 @@ __all__ = [
     "ModelPerformanceViewer",
     "TrialModelPerformanceViewer",
     "TrialGainFocus",
+    "TrialTimeFocus",
     "PlacefieldGainViewer",
     "PlacefieldGainSortViewer",
     "ModelPlacefieldResidualExplorer",

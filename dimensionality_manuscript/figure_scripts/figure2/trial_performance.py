@@ -28,6 +28,9 @@ TRIAL_PERFORMANCE_MODEL_COLORS = (
     "#008000",
     "#0000cd",
 )
+SQRT_GAIN_MODEL_NAME = "internal_placefield_1d_structured_gain_sqrt"
+SQRT_GAIN_MODEL_LABEL = "Trial Gain\n(sqrt)"
+SQRT_GAIN_MODEL_COLOR = "#8c4db5"
 TRIAL_PERFORMANCE_METRICS = {"r2": r"R$^2$", "mse": "MSE"}
 ENVIRONMENT_OPTIONS = ("Average", "Slot 1", "Slot 2", "Slot 3")
 AGGREGATION_OPTIONS = ("mean", "median")
@@ -80,7 +83,8 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
 
     External PF is optional via ``include_external_placefield`` (default False). The main
     axis subtracts internal PF, or external PF when included. The inset shows absolute scores.
-    Style parameters match :class:`ModelPerformanceViewer`; ``selection_defaults`` seeds
+    Set ``include_sqrt_gain=True`` to compare raw and square-root Trial Gain on the same
+    activity metric. Style parameters match :class:`ModelPerformanceViewer`; ``selection_defaults`` seeds
     data-selection widgets from the results aggregator.
 
     ``aggregation`` controls every nested summary: environment slots within each session,
@@ -102,6 +106,7 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
         avg_by_mouse: bool = True,
         include_structured_additive: bool = False,
         include_external_placefield: bool = False,
+        include_sqrt_gain: bool = False,
         fontsize: float = 12.0,
         xtick_rotation: float = 45.0,
         ytick_max: float = 0.1,
@@ -133,6 +138,10 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
             raise ValueError(
                 "TrialModelPerformanceViewer requires a ResultsAggregator built from " f"TrialPlacecellRegressionConfig, not {analysis_name!r}."
             )
+        if include_sqrt_gain:
+            self.base_model_names = (*TRIAL_PERFORMANCE_MODEL_NAMES[:-1], SQRT_GAIN_MODEL_NAME, TRIAL_PERFORMANCE_MODEL_NAMES[-1])
+            self.base_model_labels = (*TRIAL_PERFORMANCE_MODEL_LABELS[:-1], SQRT_GAIN_MODEL_LABEL, TRIAL_PERFORMANCE_MODEL_LABELS[-1])
+            self.base_model_colors = (*TRIAL_PERFORMANCE_MODEL_COLORS[:-1], SQRT_GAIN_MODEL_COLOR, TRIAL_PERFORMANCE_MODEL_COLORS[-1])
         self._initial_environment = environment
         self._initial_aggregation = aggregation
         super().__init__(

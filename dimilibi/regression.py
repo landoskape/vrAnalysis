@@ -1,4 +1,4 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, Callable
 from copy import copy
 from tqdm import tqdm
 import numpy as np
@@ -473,6 +473,7 @@ class ReducedRankRegression(RidgeRegression):
         nonnegative: Optional[bool] = False,
         dim: DimType = None,
         verbose: bool = True,
+        score_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> tuple[list[int], dict[str, list]]:
         """Score the model across a range of ranks in a single pass.
 
@@ -516,6 +517,10 @@ class ReducedRankRegression(RidgeRegression):
         verbose : bool
             If True, displays a progress bar for scoring each rank (default is True).
 
+        score_transform : callable or None
+            Applied to targets and rectified predictions for scoring only.
+            For example, torch.square evaluates square-root fits in original units.
+
         Returns
         -------
         ranks : list[int]
@@ -537,6 +542,8 @@ class ReducedRankRegression(RidgeRegression):
         latents = X @ (self._beta_ols @ V)  # (num_samples, num_targets), all ranks
 
         running = torch.zeros(X.size(0), y.size(1), dtype=latents.dtype, device=latents.device)
+        if score_transform is not None:
+            y = score_transform(y)
         prev_rank = 0
         scores: dict[str, list] = {"mse": [], "r2": []}
         for rank in tqdm(ranks, desc="Scoring ranks", leave=False, disable=not verbose):
@@ -544,6 +551,8 @@ class ReducedRankRegression(RidgeRegression):
             running = running + latents[:, prev_rank:rank] @ V[:, prev_rank:rank].T
             prev_rank = rank
             prediction = torch.relu(running) if nonnegative else running
+            if score_transform is not None:
+                prediction = score_transform(prediction)
             scores["mse"].append(mse(prediction, y, reduce="mean", dim=dim))
             scores["r2"].append(measure_r2(prediction, y, reduce="mean", dim=dim))
 
