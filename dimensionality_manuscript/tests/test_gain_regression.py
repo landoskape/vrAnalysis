@@ -23,6 +23,7 @@ from dimensionality_manuscript.configs.gain_regression import (
     roll_gain_rows,
     score_rrr,
     raw_score_curve,
+    gain_score_curve,
     split_tensors,
     split_trials,
 )
@@ -530,14 +531,19 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, tri
     assert set(GainRegressionConfig._result_handling) <= set(result)
     for metric in ("mse", "r2"):
         for split in ("val", "test"):
-            for suffix in ("", "_null"):
-                assert np.all(np.isfinite(result[f"{metric}_{split}_raw{suffix}"][:2]))
-                if gain_transform == "raw":
-                    for curve in ("", "_curve"):
-                        np.testing.assert_array_equal(result[f"{metric}_{split}{curve}_raw{suffix}"], result[f"{metric}_{split}{curve}{suffix}"])
-            for slot in (0, 1):
-                rank_index = int(result["rrr_rank"][slot]) - 1
-                assert result[f"{metric}_{split}_raw"][slot] == pytest.approx(result[f"{metric}_{split}_curve_raw"][slot, rank_index])
+            for scale in GAIN_TRANSFORMS:
+                for suffix in ("", "_null"):
+                    assert np.all(np.isfinite(result[f"{metric}_{split}_{scale}{suffix}"][:2]))
+                    if gain_transform == scale:
+                        for curve in ("", "_curve"):
+                            np.testing.assert_array_equal(
+                                result[f"{metric}_{split}{curve}_{scale}{suffix}"], result[f"{metric}_{split}{curve}{suffix}"]
+                            )
+                for slot in (0, 1):
+                    rank_index = int(result["rrr_rank"][slot]) - 1
+                    assert result[f"{metric}_{split}_{scale}"][slot] == pytest.approx(
+                        result[f"{metric}_{split}_curve_{scale}"][slot, rank_index]
+                    )
 
 
 
@@ -549,7 +555,7 @@ def test_config_validation_and_variations():
     assert {variation.gain_estimator for variation in variations} == set(GAIN_ESTIMATORS)
     assert {variation.gain_transform for variation in variations} == set(GAIN_TRANSFORMS)
     assert {variation.trial_shift for variation in variations} == set(TRIAL_SHIFTS)
-    assert GainRegressionConfig().schema_version == "v5"
+    assert GainRegressionConfig().schema_version == "v6"
     assert len(variations) == len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS) * len(TRIAL_SHIFTS)
     assert len({variation.key() for variation in variations}) == len(variations)
     assert len({variation.summary() for variation in variations}) == len(variations)
@@ -576,8 +582,9 @@ def test_config_rejects_invalid_trial_shift(trial_shift):
         GainRegressionConfig(trial_shift=trial_shift)
 
 
+@pytest.mark.parametrize("score_scale", GAIN_TRANSFORMS)
 @pytest.mark.parametrize("gain_transform", GAIN_TRANSFORMS)
-def test_scoring_rectifies_before_squaring(gain_transform):
+def test_scoring_rectifies_before_conversion(gain_transform, score_scale):
     from dimilibi.metrics import measure_r2, mse
     from dimilibi.regression import ReducedRankRegression
 
@@ -590,35 +597,44 @@ def test_scoring_rectifies_before_squaring(gain_transform):
     assert model.predict(x, rank=1)[0, 0] < 0
     prediction = model.predict(x, rank=1, nonnegative=True)
     truth = y
-    if gain_transform == "sqrt":
-        prediction, truth = prediction.square(), y.square()
+    if gain_transform != score_scale:
+        transform = torch.square if score_scale == "raw" else torch.sqrt
+        prediction, truth = transform(prediction), transform(y)
     expected = (mse(prediction, truth, dim=None), measure_r2(prediction, truth, dim=None))
-    assert score_rrr(model, 1, x, y, gain_transform=gain_transform) == pytest.approx(expected)
-    curve = raw_score_curve(model, x, y, [1], gain_transform)
+    assert score_rrr(model, 1, x, y, gain_transform=gain_transform, score_scale=score_scale) == pytest.approx(expected)
+    curve = gain_score_curve(model, x, y, [1], gain_transform, score_scale)
+    if score_scale == "raw":
+        assert curve == raw_score_curve(model, x, y, [1], gain_transform)
     assert (curve["mse"][0], curve["r2"][0]) == pytest.approx(expected)
 
 
-def test_null_raw_metrics_match_manually_reconstructed_roll():
+@pytest.mark.parametrize("gain_transform", GAIN_TRANSFORMS)
+@pytest.mark.parametrize("score_scale", GAIN_TRANSFORMS)
+def test_null_metrics_match_manually_reconstructed_roll(gain_transform, score_scale):
     from dimilibi.regression import ReducedRankRegression
-    gain, sources, targets, columns = _null_inputs(n_trials=60, n_source=4, n_target=4, rank=1)
-    root_gain = np.sqrt(gain)
-    kwargs = dict(alpha=1., rank=2, ranks=[1, 2, 3], n_rolls=1, gain_transform="sqrt")
-    null = evaluate_null_rolls(root_gain, sources, targets, columns, rng=np.random.default_rng(9), **kwargs)
-    tensors = split_tensors(roll_gain_rows(root_gain, np.random.default_rng(9)), sources, targets, columns)
-    model = ReducedRankRegression(alpha=1., fit_intercept=True).fit(*tensors["train"])
     from dimilibi.metrics import measure_r2, mse
+    gain, sources, targets, columns = _null_inputs(n_trials=60, n_source=4, n_target=4, rank=1)
+    fit_gain = np.sqrt(gain) if gain_transform == "sqrt" else gain
+    kwargs = dict(alpha=1., rank=2, ranks=[1, 2, 3], n_rolls=1, gain_transform=gain_transform)
+    null = evaluate_null_rolls(fit_gain, sources, targets, columns, rng=np.random.default_rng(9), **kwargs)
+    null_scores = null.raw_scores if score_scale == "raw" else null.sqrt_scores
+    tensors = split_tensors(roll_gain_rows(fit_gain, np.random.default_rng(9)), sources, targets, columns)
+    model = ReducedRankRegression(alpha=1., fit_intercept=True).fit(*tensors["train"])
     for split in ("val", "test"):
         x, y = tensors[split]
         for rank in kwargs["ranks"]:
-            prediction = model.predict(x, rank=rank, nonnegative=True).square()
-            truth = y.square()
+            prediction = model.predict(x, rank=rank, nonnegative=True)
+            truth = y
+            if gain_transform != score_scale:
+                transform = torch.square if score_scale == "raw" else torch.sqrt
+                prediction, truth = transform(prediction), transform(y)
             for metric, expected in (("mse", mse(prediction, truth, dim=None)), ("r2", measure_r2(prediction, truth, dim=None))):
-                assert null.raw_scores[f"{metric}_{split}_curve_raw"][rank - 1] == pytest.approx(expected)
-        point = score_rrr(model, 2, *tensors[split], gain_transform="sqrt")
-        for metric, expected in zip(("mse", "r2"), point):
-            assert null.raw_scores[f"{metric}_{split}_raw"] == pytest.approx(expected)
-    skipped = evaluate_null_rolls(root_gain, sources, targets, columns, rng=np.random.default_rng(9), **{**kwargs, "n_rolls": 0})
-    assert all(np.all(np.isnan(value)) for value in skipped.raw_scores.values())
+                assert null_scores[f"{metric}_{split}_curve_{score_scale}"][rank - 1] == pytest.approx(expected)
+                if rank == kwargs["rank"]:
+                    assert null_scores[f"{metric}_{split}_{score_scale}"] == pytest.approx(expected)
+    skipped = evaluate_null_rolls(fit_gain, sources, targets, columns, rng=np.random.default_rng(9), **{**kwargs, "n_rolls": 0})
+    skipped_scores = skipped.raw_scores if score_scale == "raw" else skipped.sqrt_scores
+    assert all(np.all(np.isnan(value)) for value in skipped_scores.values())
 
 
 @pytest.mark.parametrize("estimator", GAIN_ESTIMATORS)

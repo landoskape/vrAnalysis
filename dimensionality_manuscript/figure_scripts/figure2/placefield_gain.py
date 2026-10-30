@@ -264,6 +264,149 @@ def _fit_gaussian(position: np.ndarray, curve: np.ndarray) -> tuple[np.ndarray, 
     return fitted, bump
 
 
+def gain_performance_comparison(
+    results: ResultsAggregator, gain_estimator: str, min_trial: int = 10, score_scale: str = "raw",
+    gain_transform: str | None = None,
+) -> np.ndarray:
+    """Return matched R² on the requested gain scale, shaped (session, environment slot, transform, condition).
+
+    Transform order is raw/sqrt; condition order is same-trial/mean ±1 lag/random roll.
+    Pass gain_transform to load only that fit; None compares both transforms.
+    Both lag scores must exist. All selected groups use the same eligible session/environment
+    observations; trials below the threshold or any missing score exclude that observation.
+    Random-roll scores come from the same-trial fit's stored roll average.
+    """
+    if min_trial < 0:
+        raise ValueError("min_trial must be non-negative")
+    if score_scale not in GAIN_TRANSFORMS:
+        raise ValueError(f"Unknown score scale {score_scale!r}")
+    if gain_transform is not None and gain_transform not in GAIN_TRANSFORMS:
+        raise ValueError(f"Unknown gain transform {gain_transform!r}")
+    selected_transforms = GAIN_TRANSFORMS if gain_transform is None else (gain_transform,)
+    score_key = f"r2_test_{score_scale}"
+    axes = results.param_axes
+    for name, required in (("gain_transform", selected_transforms), ("trial_shift", (-1, 0, 1))):
+        if not set(required) <= set(axes.get(name, ())):
+            raise ValueError(f"Gain comparison requires {name} values {required}")
+    transforms = []
+    for transform in selected_transforms:
+        lag_scores = {}
+        for shift in (-1, 0, 1):
+            keys = [score_key, "n_trials_env"]
+            if shift == 0:
+                keys.append(f"{score_key}_null")
+            selected = results.sel(
+                keys=keys, squeeze_ones=False,
+                gain_estimator=gain_estimator, gain_transform=transform, trial_shift=shift,
+            )
+            score = np.asarray(selected[score_key], dtype=float).copy()
+            if score.ndim != 2 or score.shape[0] != len(results.mouse_names):
+                raise ValueError("Gain comparison expects session × environment-slot scores; select any extra parameter axes first")
+            enough = np.isfinite(selected["n_trials_env"]) & (selected["n_trials_env"] >= min_trial)
+            score[~enough] = np.nan
+            lag_scores[shift] = score
+            if shift == 0:
+                null = np.asarray(selected[f"{score_key}_null"], dtype=float).copy()
+                null[~enough] = np.nan
+        # Arithmetic mean deliberately requires both directions, rather than using one
+        # available direction when the other lag is missing.
+        lag_mean = (lag_scores[-1] + lag_scores[1]) / 2
+        transforms.append(np.stack((lag_scores[0], lag_mean, null), axis=-1))
+    scores = np.stack(transforms, axis=-2)
+    matched = np.all(np.isfinite(scores), axis=(-2, -1))
+    return np.where(matched[..., None, None], scores, np.nan)
+
+
+class PlacefieldGainPerformanceViewer(FigureViewer):
+    """Compare one selected gain fit with adjacent-trial and random-roll controls.
+
+    Requires v6 GainRegressionConfig results for sqrt-scale scores. The score_scale
+    widget selects raw or sqrt units for every fit and control on the same axis.
+    The gain_transform widget selects the fitted raw or sqrt model. Its three groups
+    are same-trial, mean lag -1/+1, and random roll; lags ±2/±3
+    are never loaded. The roll control uses trial_shift=0. With avg_by_mouse=True,
+    average environment slots within sessions, then sessions within mice, matching
+    PlacefieldGainViewer's pooled summary. Otherwise each point is a session average.
+    Only observations available in all three selected groups are compared. Missing
+    results for the unselected transform do not affect the plotted observations.
+
+    Example::
+
+        viewer = PlacefieldGainPerformanceViewer(results, gain_estimator="least_squares")
+        viewer.show()
+    """
+
+    def __init__(
+        self, results: ResultsAggregator, *, gain_estimator: str = "gaussian",
+        avg_by_mouse: bool = True, min_trial: int = 10, mouse: str = "All", score_scale: str = "raw",
+        gain_transform: str = "raw", beewidth: float = 0.2, fontsize: float = 8.0,
+        figsize: tuple[float, float] = (7.0, 4.0),
+    ):
+        if gain_estimator not in GAIN_ESTIMATORS:
+            raise ValueError(f"gain_estimator must be one of {GAIN_ESTIMATORS}")
+        if min_trial < 0:
+            raise ValueError("min_trial must be non-negative")
+        if score_scale not in GAIN_TRANSFORMS:
+            raise ValueError(f"Unknown score scale {score_scale!r}")
+        if gain_transform not in GAIN_TRANSFORMS:
+            raise ValueError(f"Unknown gain transform {gain_transform!r}")
+        self.results = results
+        self.figsize = figsize
+        mice = list(dict.fromkeys(np.asarray(results.mouse_names).tolist()))
+        if mouse not in ["All", *mice]:
+            raise ValueError(f"Unknown mouse {mouse!r}")
+        self.add_selection("gain_estimator", value=gain_estimator, options=list(GAIN_ESTIMATORS))
+        self.add_selection("gain_transform", value=gain_transform, options=list(GAIN_TRANSFORMS))
+        self.add_selection("score_scale", value=score_scale, options=list(GAIN_TRANSFORMS))
+        self.add_selection("mouse", value=mouse, options=["All", *mice])
+        self.add_boolean("avg_by_mouse", value=avg_by_mouse)
+        self.add_integer("min_trial", value=min_trial, min=0, max=100)
+        self.add_float("beewidth", value=beewidth, min=0.0, max=0.5, step=0.01)
+        self.add_float("fontsize", value=fontsize, min=1.0, max=30.0)
+        self.on_change(["gain_estimator", "gain_transform", "min_trial", "score_scale"], self.refresh_data)
+        self.refresh_data(self.state)
+
+    def refresh_data(self, state):
+        self.comparison_scores = gain_performance_comparison(
+            self.results, state["gain_estimator"], state["min_trial"], state["score_scale"],
+            gain_transform=state["gain_transform"],
+        )
+
+    def subject_scores(self, state) -> tuple[list[str], np.ndarray]:
+        """Return one row per mouse or session, keeping the three groups paired."""
+        mouse_names = np.asarray(self.results.mouse_names)
+        keep = np.ones(len(mouse_names), dtype=bool) if state["mouse"] == "All" else mouse_names == state["mouse"]
+        session_scores = _finite_mean(self.comparison_scores[keep], axis=1).reshape(np.sum(keep), 3)
+        if not state["avg_by_mouse"]:
+            return np.asarray(self.results.session_ids)[keep].tolist(), session_scores
+        mice = list(dict.fromkeys(mouse_names[keep].tolist()))
+        return mice, np.asarray([_finite_mean(session_scores[mouse_names[keep] == mouse], axis=0) for mouse in mice]).reshape(-1, 3)
+
+    def plot(self, state):
+        subjects, scores = self.subject_scores(state)
+        self.subject_names = subjects
+        fig, ax = self.new_subplots(figsize=self.figsize, layout="constrained")
+        labels = ["Same trial", "Mean lag ±1", "Random roll"]
+        colors = ("k", "#777777", "#bd4444")
+        ax.set_title(f"{state['gain_transform'].capitalize()} gain fit", fontsize=state["fontsize"])
+        for x, color in enumerate(colors):
+            values = scores[:, x]
+            values = values[np.isfinite(values)]
+            offsets = beeswarm(values) if values.size else np.empty(0)
+            ax.plot(x + state["beewidth"] * offsets, values, color=color,
+                    linestyle="none", marker="o", markersize=3, alpha=0.8)
+            if values.size:
+                ax.plot(x + np.array([-0.25, 0.25]), [np.mean(values)] * 2, color=color, linewidth=2.)
+        ax.axhline(0, color="0.7", linestyle=":", linewidth=0.7, zorder=0)
+        ax.set_xlim(-0.5, 2.5)
+        ax.set_ylabel(r"Gain Prediction $R^2$" + f" ({state['score_scale']} gain)", fontsize=state["fontsize"])
+        format_spines(ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"],
+                      xbounds=[0, 2], xticks=np.arange(3), ybounds=ax.get_ylim(),
+                      tick_length=2, tick_fontsize=state["fontsize"])
+        ax.set_xticks(np.arange(3), labels, rotation=45, ha="right", fontsize=state["fontsize"])
+        return fig
+
+
 class PlacefieldGainViewer(FigureViewer):
     """View place-field gain, its covariance, and held-out gain-regression scores.
 

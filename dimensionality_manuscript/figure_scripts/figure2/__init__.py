@@ -24,7 +24,7 @@ from .performance import PERFORMANCE_MODEL_NAMES, ModelPerformanceViewer
 from .trial_performance import TRIAL_PERFORMANCE_MODEL_NAMES, TrialModelPerformanceViewer
 from .trial_gain import TrialGainFocus
 from .trial_time import TrialTimeFocus
-from .placefield_gain import PlacefieldGainSortViewer, PlacefieldGainViewer
+from .placefield_gain import PlacefieldGainPerformanceViewer, PlacefieldGainSortViewer, PlacefieldGainViewer
 from .pf_residual import (
     PF_RESIDUAL_MODEL_NAMES,
     ModelPlacefieldResidualExplorer,
@@ -53,6 +53,7 @@ __all__ = [
     "TrialGainFocus",
     "TrialTimeFocus",
     "PlacefieldGainViewer",
+    "PlacefieldGainPerformanceViewer",
     "PlacefieldGainSortViewer",
     "ModelPlacefieldResidualExplorer",
     "ModelPlacefieldResidualFamiliarityViewer",

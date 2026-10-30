@@ -19,6 +19,8 @@ if package_name not in sys.modules:
 
 from dimensionality_manuscript.figure_scripts.figure2.placefield_gain import (
     PlacefieldGainSortViewer,
+    PlacefieldGainPerformanceViewer,
+    gain_performance_comparison,
     PlacefieldGainViewer,
     _full_trial_indices,
     _values_by_mouse,
@@ -317,3 +319,137 @@ def test_least_squares_gain_recovers_multipliers():
     gain, fitted = least_squares_gain_matrix(trial_maps, prediction)
     np.testing.assert_allclose(gain[0], multipliers)
     np.testing.assert_allclose(fitted, prediction)
+
+
+
+def _comparison_results():
+    from dimensionality_manuscript.pipeline import ResultsAggregator
+    axes = {"gain_estimator": ["gaussian", "least_squares"], "gain_transform": ["raw", "sqrt"], "trial_shift": list(range(-3, 4))}
+    shape = (3, 2, 2, 7, 3)
+    score = np.full(shape, -999.)  # Any accidental ±2/±3 selection will be obvious.
+    null = np.full(shape, -888.)
+    trials = np.full(shape, 30.)
+    base = np.array([[.1, .3, np.nan], [.5, .7, np.nan], [.9, 1.1, np.nan]])
+    for estimator in range(2):
+        for transform in range(2):
+            for shift, offset in ((0, 0), (-1, -.04), (1, -.08)):
+                index = (slice(None), estimator, transform, shift + 3, slice(None))
+                score[index] = base + transform * .01 + estimator * .001 + offset
+                null[index] = base + transform * .01 + estimator * .001 - .09
+    trials[1, :, :, :, 1] = 5  # Threshold excludes the second environment of session 2.
+    score[2, :, 1, 4, 1] = np.nan  # Missing sqrt +1 excludes this observation from ALL groups.
+    return ResultsAggregator._from_data(
+        {"r2_test_raw": score, "r2_test_raw_null": null, "n_trials_env": trials,
+         "r2_test": np.full(shape, 1234.)},
+        axes, ["s1", "s2", "s3"], np.array(["m1", "m1", "m2"]),
+    )
+
+
+def test_gain_comparison_pairs_transforms_lags_and_rolls_in_raw_units():
+    results = _comparison_results()
+    calls = []
+    original_sel = results.sel
+    def recording_sel(**kwargs):
+        calls.append(kwargs)
+        return original_sel(**kwargs)
+    results.sel = recording_sel
+    scores = gain_performance_comparison(results, "gaussian", min_trial=10)
+    assert scores.shape == (3, 3, 2, 3)
+    np.testing.assert_allclose(scores[0, 0], [[.1, .04, .01], [.11, .05, .02]], atol=1e-12)
+    assert np.all(np.isnan(scores[1, 1]))  # Threshold.
+    assert np.all(np.isnan(scores[2, 1]))  # Missing one lag is never treated as a two-lag mean.
+    assert np.all(np.isnan(scores[:, 2]))  # Unvisited environment slot.
+    assert {call["trial_shift"] for call in calls} == {-1, 0, 1}
+    assert all("r2_test" not in call["keys"] for call in calls)
+    assert all(("r2_test_raw_null" in call["keys"]) == (call["trial_shift"] == 0) for call in calls)
+    assert len(calls) == 6
+    # Choosing the estimator must affect the data rather than silently pooling it.
+    least_squares = gain_performance_comparison(_comparison_results(), "least_squares", 10)
+    np.testing.assert_allclose(least_squares[0, 0], scores[0, 0] + .001)
+
+
+def test_gain_comparison_viewer_hierarchical_averages_and_mouse_filter():
+    viewer = PlacefieldGainPerformanceViewer(_comparison_results())
+    subjects, values = viewer.subject_scores(viewer.state)
+    assert subjects == ["m1", "m2"]
+    # m1: average environments within each session (.2 and .5), then sessions (.35).
+    np.testing.assert_allclose(values[:, 0], [.35, 1.])
+    np.testing.assert_allclose(values[:, 1], [.29, .94])
+    np.testing.assert_allclose(values[:, 2], [.26, .91])
+    assert values.shape == (2, 3)
+    state = dict(viewer.state, avg_by_mouse=False, mouse="m1")
+    subjects, values = viewer.subject_scores(state)
+    assert subjects == ["s1", "s2"]
+    np.testing.assert_allclose(values[:, 0], [.2, .5])
+    fig = viewer.plot(viewer.state)
+    try:
+        assert len(fig.axes) == 1
+        ax = fig.axes[0]
+        assert len(ax.get_xticklabels()) == 3
+        assert "raw gain" in ax.get_ylabel()
+        assert [tick.get_text() for tick in ax.get_xticklabels()] == ["Same trial", "Mean lag ±1", "Random roll"]
+        assert ax.get_title() == "Raw gain fit"
+        np.testing.assert_allclose(ax.lines[0].get_ydata(), [.35, 1.])
+        np.testing.assert_allclose(ax.lines[2].get_ydata(), [.29, .94])
+        np.testing.assert_allclose(ax.lines[4].get_ydata(), [.26, .91])
+    finally:
+        plt.close(fig)
+
+
+def test_gain_comparison_missing_lag_grid_and_empty_results():
+    results = _comparison_results()
+    results.param_axes["trial_shift"] = [0]
+    with np.testing.assert_raises_regex(ValueError, "trial_shift"):
+        gain_performance_comparison(results, "gaussian")
+    viewer = PlacefieldGainPerformanceViewer(_comparison_results(), min_trial=100)
+    subjects, values = viewer.subject_scores(viewer.state)
+    assert subjects == ["m1", "m2"]
+    assert np.all(np.isnan(values))
+    fig = viewer.plot(viewer.state)
+    plt.close(fig)
+
+
+
+def test_gain_comparison_selects_sqrt_score_scale_for_both_fits_and_controls():
+    results = _comparison_results()
+    results.arrays["r2_test_sqrt"] = results.arrays["r2_test_raw"] + .2
+    results.arrays["r2_test_sqrt_null"] = results.arrays["r2_test_raw_null"] + .3
+    raw = gain_performance_comparison(results, "gaussian")
+    root = gain_performance_comparison(results, "gaussian", score_scale="sqrt")
+    np.testing.assert_allclose(root[..., :2], raw[..., :2] + .2)
+    np.testing.assert_allclose(root[..., 2], raw[..., 2] + .3)
+    viewer = PlacefieldGainPerformanceViewer(results, score_scale="sqrt")
+    fig = viewer.plot(viewer.state)
+    try:
+        assert "sqrt gain" in fig.axes[0].get_ylabel()
+        np.testing.assert_allclose(
+            viewer.comparison_scores,
+            gain_performance_comparison(results, "gaussian", score_scale="sqrt", gain_transform="raw"),
+        )
+    finally:
+        plt.close(fig)
+
+
+
+def test_gain_comparison_loads_only_selected_fit_and_its_controls():
+    results = _comparison_results()
+    calls = []
+    original_sel = results.sel
+    def recording_sel(**kwargs):
+        calls.append(kwargs)
+        return original_sel(**kwargs)
+    results.sel = recording_sel
+    viewer = PlacefieldGainPerformanceViewer(results, gain_transform="sqrt")
+    assert len(calls) == 3
+    assert all(call["gain_transform"] == "sqrt" for call in calls)
+    subjects, scores = viewer.subject_scores(viewer.state)
+    np.testing.assert_allclose(scores[:, 0], [.36, .91])
+    fig = viewer.plot(viewer.state)
+    try:
+        assert fig.axes[0].get_title() == "Sqrt gain fit"
+        assert len(fig.axes[0].get_xticklabels()) == 3
+    finally:
+        plt.close(fig)
+    raw = gain_performance_comparison(results, "gaussian", gain_transform="raw")
+    assert raw.shape == (3, 3, 1, 3)
+    assert np.isfinite(raw[2, 1]).all()  # Missing sqrt lag must not hide valid raw data.

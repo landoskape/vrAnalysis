@@ -67,7 +67,8 @@ CURVE_KEYS: tuple[str, ...] = (
     "r2_val_curve_null",
     "mse_test_curve_null",
     "r2_test_curve_null",
-    *(f"{metric}_{split}_curve_raw{suffix}" for metric in ("mse", "r2") for split in ("val", "test") for suffix in ("", "_null")),
+    *(f"{metric}_{split}_curve_{scale}{suffix}" for scale in GAIN_TRANSFORMS
+      for metric in ("mse", "r2") for split in ("val", "test") for suffix in ("", "_null")),
 )
 
 #: Relative validation-MSE slack within which the *smallest* rank wins. The reported rank is a
@@ -482,29 +483,44 @@ def optimize_rrr(
     )
 
 
+def _score_transform(gain_transform: str, score_scale: str):
+    """Convert nonnegative fitting-space values into the requested scoring space."""
+    if gain_transform not in GAIN_TRANSFORMS or score_scale not in GAIN_TRANSFORMS:
+        raise ValueError(f"Unknown gain transform or score scale: {gain_transform!r}, {score_scale!r}")
+    if gain_transform == score_scale:
+        return None
+    return torch.square if score_scale == "raw" else torch.sqrt
+
+
 def score_rrr(
-    model: ReducedRankRegression, rank: int, x: torch.Tensor, y: torch.Tensor, *, gain_transform: str = "raw"
+    model: ReducedRankRegression, rank: int, x: torch.Tensor, y: torch.Tensor, *,
+    gain_transform: str = "raw", score_scale: str = "raw",
 ) -> tuple[float, float]:
-    """Pooled MSE and R^2 in raw gain units, rectifying before inverse transformation."""
+    """Pooled MSE and R^2 in the requested units; rectify before changing scale."""
+    transform = _score_transform(gain_transform, score_scale)
     prediction = model.predict(x, rank=rank, nonnegative=True)
-    if gain_transform == "sqrt":
-        prediction, y = prediction.square(), y.square()
-    elif gain_transform != "raw":
-        raise ValueError(f"Unknown gain transform {gain_transform!r}")
+    if transform is not None:
+        prediction, y = transform(prediction), transform(y)
     return float(mse(prediction, y, reduce="mean", dim=None)), float(measure_r2(prediction, y, reduce="mean", dim=None))
+
+
+def gain_score_curve(
+    model: ReducedRankRegression, x: torch.Tensor, y: torch.Tensor, ranks: list[int],
+    gain_transform: str, score_scale: str,
+) -> dict[str, list]:
+    """Score all ranks in requested units using the accumulating prediction pass."""
+    _, scores = model.score_curve(
+        x, y, ranks=ranks, nonnegative=True, dim=None, verbose=False,
+        score_transform=_score_transform(gain_transform, score_scale),
+    )
+    return scores
 
 
 def raw_score_curve(
     model: ReducedRankRegression, x: torch.Tensor, y: torch.Tensor, ranks: list[int], gain_transform: str
 ) -> dict[str, list]:
     """Score all ranks in raw units using the accumulating prediction pass."""
-    if gain_transform not in GAIN_TRANSFORMS:
-        raise ValueError(f"Unknown gain transform {gain_transform!r}")
-    _, scores = model.score_curve(
-        x, y, ranks=ranks, nonnegative=True, dim=None, verbose=False,
-        score_transform=torch.square if gain_transform == "sqrt" else None,
-    )
-    return scores
+    return gain_score_curve(model, x, y, ranks, gain_transform, "raw")
 
 
 def split_tensors(
@@ -584,6 +600,7 @@ class _NullFit:
     mse_test_curve: np.ndarray
     r2_test_curve: np.ndarray
     raw_scores: dict[str, np.ndarray | float]
+    sqrt_scores: dict[str, np.ndarray | float]
 
 
 def evaluate_null_rolls(
@@ -635,19 +652,21 @@ def evaluate_null_rolls(
         Target minus source trial index, applied after independently rolling neurons.
         Uses the real fit's lag and target columns for training and scoring alike.
     gain_transform : str
-        Transform used for fitting. Raw-space scores invert it after rectification.
+        Transform used for fitting. Both explicit scoring scales convert after rectification.
 
     Returns
     -------
     _NullFit
         Roll-averaged validation and test scores and rank curves.
     """
-    raw_keys = [f"{metric}_{split}{curve}_raw" for metric in ("mse", "r2") for split in ("val", "test") for curve in ("", "_curve")]
-    raw_values = {key: [] for key in raw_keys}
+    scale_keys = {scale: [f"{metric}_{split}{curve}_{scale}" for metric in ("mse", "r2")
+                          for split in ("val", "test") for curve in ("", "_curve")] for scale in GAIN_TRANSFORMS}
+    scale_values = {scale: {key: [] for key in keys} for scale, keys in scale_keys.items()}
     empty = np.full(len(ranks), np.nan)
     if n_rolls <= 0:
         return _NullFit(np.nan, np.nan, np.nan, np.nan, np.nan, empty, empty.copy(), empty.copy(), empty.copy(),
-                        {key: empty.copy() if "_curve" in key else np.nan for key in raw_keys})
+                        *({key: empty.copy() if "_curve" in key else np.nan for key in scale_keys[scale]}
+                          for scale in GAIN_TRANSFORMS))
 
     points: dict[str, list[float]] = {f"{metric}_{split}": [] for metric in ("mse", "r2") for split in ("val", "test")}
     curves: dict[str, list[np.ndarray]] = {key: [] for key in points}
@@ -661,21 +680,27 @@ def evaluate_null_rolls(
             _, scores = model.score_curve(*tensors[split], ranks=ranks, nonnegative=True, dim=None, verbose=False)
             curves[f"mse_{split}"].append(np.asarray(scores["mse"], dtype=float))
             curves[f"r2_{split}"].append(np.asarray(scores["r2"], dtype=float))
-            raw_scores = raw_score_curve(model, *tensors[split], ranks, gain_transform) if gain_transform == "sqrt" else scores
-            raw_point = (
-                score_rrr(model, rank, *tensors[split], gain_transform=gain_transform)
-                if gain_transform == "sqrt" else (mse_point, r2_point)
-            )
-            for metric, point in zip(("mse", "r2"), raw_point):
-                raw_values[f"{metric}_{split}_raw"].append(point)
-                raw_values[f"{metric}_{split}_curve_raw"].append(np.asarray(raw_scores[metric], dtype=float))
+            for scale in GAIN_TRANSFORMS:
+                scale_scores = (
+                    scores if scale == gain_transform
+                    else gain_score_curve(model, *tensors[split], ranks, gain_transform, scale)
+                )
+                scale_point = (
+                    (mse_point, r2_point) if scale == gain_transform
+                    else score_rrr(model, rank, *tensors[split], gain_transform=gain_transform, score_scale=scale)
+                )
+                for metric, point in zip(("mse", "r2"), scale_point):
+                    scale_values[scale][f"{metric}_{split}_{scale}"].append(point)
+                    scale_values[scale][f"{metric}_{split}_curve_{scale}"].append(np.asarray(scale_scores[metric], dtype=float))
+
 
     averaged_points = {key: float(_roll_average(values)) for key, values in points.items()}
     averaged_curves = {key: _roll_average(values) for key, values in curves.items()}
     mse_val_curve = averaged_curves["mse_val"]
     null_rank = float(_parsimonious_rank(ranks, list(mse_val_curve))) if np.any(np.isfinite(mse_val_curve)) else np.nan
     return _NullFit(
-        raw_scores={key: _roll_average(values) for key, values in raw_values.items()},
+        raw_scores={key: _roll_average(values) for key, values in scale_values["raw"].items()},
+        sqrt_scores={key: _roll_average(values) for key, values in scale_values["sqrt"].items()},
         rank=null_rank,
         mse_val=averaged_points["mse_val"],
         r2_val=averaged_points["r2_val"],
@@ -820,10 +845,11 @@ class GainRegressionConfig(AnalysisConfigBase):
     roi_lookup                               (N,)        session ROI index per metric-array column
     =======================================  ==========  ============================================
 
-    Scores with ``_raw`` (before an optional ``_null`` suffix) evaluate predictions and
-    targets in raw gain units, including every rank curve. For sqrt fits, predictions
-    are rectified then squared; raw fits duplicate the original scores. Alpha and rank
-    selection still use fitting-space validation MSE.
+    Scores with ``_raw`` or ``_sqrt`` (before an optional ``_null`` suffix) evaluate
+    predictions and targets in that explicit gain scale, including every rank curve.
+    Predictions are rectified before square/sqrt conversion. Scores in the fitted scale
+    duplicate the original scores. Alpha and rank selection still use fitting-space
+    validation MSE.
 
     Notes
     -----
@@ -853,7 +879,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     ``max_rank`` and ``n_trials_train`` before reading it as a dimensionality estimate.
     """
 
-    schema_version: str = "v5"
+    schema_version: str = "v6"
     data_config_name: str = "default"
 
     spks_type: SpksTypes = "sigrebase"
@@ -1121,7 +1147,8 @@ class GainRegressionConfig(AnalysisConfigBase):
             env_slot_ids[: len(mouse_order)] = mouse_order
 
         scalar_keys = (
-            *(f"{metric}_{split}_raw{suffix}" for metric in ("mse", "r2") for split in ("val", "test") for suffix in ("", "_null")),
+            *(f"{metric}_{split}_{scale}{suffix}" for scale in GAIN_TRANSFORMS
+              for metric in ("mse", "r2") for split in ("val", "test") for suffix in ("", "_null")),
             "rrr_alpha",
             "rrr_rank",
             "rrr_rank_gss",
@@ -1226,24 +1253,28 @@ class GainRegressionConfig(AnalysisConfigBase):
             scalars["mse_val_null"][slot], scalars["r2_val_null"][slot] = null.mse_val, null.r2_val
             scalars["mse_test_null"][slot], scalars["r2_test_null"][slot] = null.mse_test, null.r2_test
 
-            raw_curves = {}
+            scale_curves = {}
             for split, scores in (("val", {"mse": fit.val_mse, "r2": fit.val_r2}), ("test", test_scores)):
-                raw_scores = raw_score_curve(fit.model, *tensors[split], fit.ranks, self.gain_transform) if self.gain_transform == "sqrt" else scores
-                raw_point = (
-                    score_rrr(fit.model, fit.rank, *tensors[split], gain_transform=self.gain_transform)
-                    if self.gain_transform == "sqrt"
-                    else (scalars[f"mse_{split}"][slot], scalars[f"r2_{split}"][slot])
-                )
-                for metric, point in zip(("mse", "r2"), raw_point):
-                    key = f"{metric}_{split}_raw"
-                    scalars[key][slot] = point
-                    scalars[f"{key}_null"][slot] = null.raw_scores[key]
-                    curve_key = f"{metric}_{split}_curve_raw"
-                    raw_curves[curve_key] = np.asarray(raw_scores[metric], dtype=float)
-                    raw_curves[f"{curve_key}_null"] = null.raw_scores[curve_key]
+                for scale in GAIN_TRANSFORMS:
+                    scale_scores = (
+                        scores if scale == self.gain_transform
+                        else gain_score_curve(fit.model, *tensors[split], fit.ranks, self.gain_transform, scale)
+                    )
+                    scale_point = (
+                        (scalars[f"mse_{split}"][slot], scalars[f"r2_{split}"][slot]) if scale == self.gain_transform
+                        else score_rrr(fit.model, fit.rank, *tensors[split], gain_transform=self.gain_transform, score_scale=scale)
+                    )
+                    null_scores = null.raw_scores if scale == "raw" else null.sqrt_scores
+                    for metric, point in zip(("mse", "r2"), scale_point):
+                        key = f"{metric}_{split}_{scale}"
+                        scalars[key][slot] = point
+                        scalars[f"{key}_null"][slot] = null_scores[key]
+                        curve_key = f"{metric}_{split}_curve_{scale}"
+                        scale_curves[curve_key] = np.asarray(scale_scores[metric], dtype=float)
+                        scale_curves[f"{curve_key}_null"] = null_scores[curve_key]
 
             curves[slot] = {
-                **raw_curves,
+                **scale_curves,
                 "rank_values": np.asarray(fit.ranks, dtype=float),
                 "mse_val_curve": np.asarray(fit.val_mse, dtype=float),
                 "r2_val_curve": np.asarray(fit.val_r2, dtype=float),
