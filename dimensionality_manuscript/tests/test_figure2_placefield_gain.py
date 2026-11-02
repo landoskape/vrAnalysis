@@ -368,6 +368,78 @@ def test_gain_comparison_pairs_transforms_lags_and_rolls_in_raw_units():
     np.testing.assert_allclose(least_squares[0, 0], scores[0, 0] + .001)
 
 
+def test_gain_viewer_compares_matched_transforms_on_explicit_score_and_display_scales():
+    results = _comparison_results()
+    shape = results.arrays["r2_test_raw"].shape
+    results.arrays["env_slot_ids"] = np.broadcast_to(np.arange(3), shape).copy()
+    results.arrays["r2_test_sqrt"] = results.arrays["r2_test_raw"] + .2
+    results.arrays["r2_test_sqrt_null"] = results.arrays["r2_test_raw_null"] + .3
+    # A missing null in just one fit must exclude that observation from both rows.
+    results.arrays["r2_test_sqrt_null"][0, :, 1, 3, 1] = np.nan
+    viewer = object.__new__(PlacefieldGainViewer)
+    viewer.results = results
+    viewer.session = SimpleNamespace(session_uid="s1")
+    viewer.figsize = (8., 3.)
+    viewer.raw_gain = np.array([[0., 1., 4.], [9., 16., 25.]])
+    state = dict(gain_estimator="gaussian", gain_transform="sqrt", score_scale="sqrt",
+                 compare_transforms=True, display_scale="raw", min_trial=10, environment=0,
+                 swarm_mode="pooled", include_covariance=True, include_familiarity=False,
+                 gain_vmax=4., covariance_vmax=.5, interpolation="none", fontsize=8., beewidth=.2)
+    viewer.refresh_summary(state)
+    raw, root = (viewer.transform_summaries[key] for key in ("raw", "sqrt"))
+    np.testing.assert_allclose(raw.summary_scores[0], [.3, np.nan, np.nan])
+    np.testing.assert_allclose(root.summary_scores[0], [.31, np.nan, np.nan])
+    np.testing.assert_allclose(raw.summary_null_scores[0], [.31, np.nan, np.nan])
+    assert raw.selected_result[:2] == (0, 0)
+    np.testing.assert_allclose(raw.selected_result[2], .3)
+    fig = viewer.plot(state)
+    try:
+        assert len(fig.axes) == 6
+        for index in (0, 3):
+            np.testing.assert_allclose(
+                np.concatenate([im.get_array() for im in fig.axes[index].images], axis=1), viewer.raw_gain,
+            )
+        np.testing.assert_allclose(fig.axes[2].get_ylim(), fig.axes[5].get_ylim())
+        assert fig.axes[2].get_shared_y_axes().joined(fig.axes[2], fig.axes[5])
+        assert "sqrt gain" in fig.axes[2].get_ylabel()
+        assert "Raw gain fit" in fig.axes[0].get_title()
+        assert "Sqrt gain fit" in fig.axes[3].get_title()
+    finally:
+        plt.close(fig)
+    results.sessions = [SimpleNamespace(date=f"2023-01-0{day}", session_id="1") for day in (1, 2, 3)]
+    state.update(swarm_mode="by_mouse", include_familiarity=True, by_env=True)
+    fig = viewer.plot(state)
+    try:
+        assert len(fig.axes) == 8
+        np.testing.assert_allclose(fig.axes[2].get_ylim(), fig.axes[6].get_ylim())
+        np.testing.assert_allclose(fig.axes[3].get_ylim(), fig.axes[7].get_ylim())
+        assert "sqrt gain" in fig.axes[7].get_ylabel()
+    finally:
+        plt.close(fig)
+    # Switching back to fitting units exposes the sqrt image without changing score units.
+    state.update(display_scale="fit", swarm_mode="pooled", include_familiarity=False)
+    fig = viewer.plot(state)
+    try:
+        np.testing.assert_allclose(
+            np.concatenate([im.get_array() for im in fig.axes[3].images], axis=1), np.sqrt(viewer.raw_gain),
+        )
+    finally:
+        plt.close(fig)
+
+
+def test_gain_viewer_registers_comparison_controls(monkeypatch):
+    from dimensionality_manuscript.configs.gain_regression import GainRegressionConfig
+    session = SimpleNamespace(mouse_name="m1", date="2023-01-01", session_id="1",
+                              session_print=lambda: "s1", session_uid="s1")
+    monkeypatch.setattr(PlacefieldGainViewer, "_load", lambda self, session: {"session": session, "environments": [0]})
+    monkeypatch.setattr(PlacefieldGainViewer, "refresh_data", lambda self, state: None)
+    viewer = PlacefieldGainViewer([session], SimpleNamespace(config_class=GainRegressionConfig()),
+                                 score_scale="sqrt", compare_transforms=True, display_scale="raw")
+    assert viewer.state["score_scale"] == "sqrt"
+    assert viewer.state["compare_transforms"] is True
+    assert viewer.state["display_scale"] == "raw"
+
+
 def test_gain_comparison_viewer_hierarchical_averages_and_mouse_filter():
     viewer = PlacefieldGainPerformanceViewer(_comparison_results())
     subjects, values = viewer.subject_scores(viewer.state)
@@ -453,3 +525,61 @@ def test_gain_comparison_loads_only_selected_fit_and_its_controls():
     raw = gain_performance_comparison(results, "gaussian", gain_transform="raw")
     assert raw.shape == (3, 3, 1, 3)
     assert np.isfinite(raw[2, 1]).all()  # Missing sqrt lag must not hide valid raw data.
+
+
+
+def test_gain_viewers_select_the_requested_placefield_split():
+    from dimensionality_manuscript.pipeline import ResultsAggregator
+    source = _comparison_results()
+    # Add the restored axis, with distinct train/all values to catch accidental pooling.
+    arrays = {key: np.stack((value + .2 if key.startswith("r2_") else value, value), axis=1)
+              for key, value in source.arrays.items()}
+    axes = {"placefield_split": ["train", "all"], **source.param_axes}
+    results = ResultsAggregator._from_data(arrays, axes, source.session_ids, source.mouse_names)
+    all_scores = gain_performance_comparison(results, "gaussian", gain_transform="raw", placefield_split="all")
+    train_scores = gain_performance_comparison(results, "gaussian", gain_transform="raw", placefield_split="train")
+    np.testing.assert_allclose(train_scores, all_scores + .2)
+    viewer = PlacefieldGainPerformanceViewer(results, placefield_split="train")
+    np.testing.assert_allclose(viewer.comparison_scores, train_scores)
+    direct = object.__new__(PlacefieldGainViewer)
+    direct.results = results
+    direct.session = SimpleNamespace(session_uid="s1")
+    state = {"gain_estimator": "gaussian", "gain_transform": "raw", "placefield_split": "train", "min_trial": 10, "environment": 1}
+    results.arrays["env_slot_ids"] = np.ones_like(results.arrays["n_trials_env"])
+    direct.refresh_summary(state)
+    np.testing.assert_allclose(direct.summary_scores[0, :2], [.3, .5])
+    with np.testing.assert_raises_regex(ValueError, "placefield_split axis"):
+        gain_performance_comparison(source, "gaussian", placefield_split="train")
+
+
+
+def test_direct_gain_viewer_uses_training_template_and_screen(monkeypatch):
+    from dimensionality_manuscript.configs.gain_regression import split_trials, _seed
+    module = sys.modules[PlacefieldGainViewer.__module__]
+    viewer = object.__new__(PlacefieldGainViewer)
+    viewer.session = SimpleNamespace(session_uid="train-template", trial_environment=np.ones(36, dtype=int))
+    viewer.data = {"full_trials": np.arange(36)}
+    viewer.trial_fractions = (1., .25, .25)
+    viewer.split_seed = 0
+    viewer.reliability_threshold = 0.
+    viewer.fraction_active_threshold = 0.
+    viewer._gain_cache = {}
+    viewer._sort_cache = {}
+    viewer._select_session = lambda *args: None
+    viewer.refresh_summary = lambda state: None
+    maps = np.eye(4)[:, None, :] * np.arange(1, 37)[None, :, None]
+    viewer._environment_maps = lambda env: (maps, np.arange(4), np.arange(36))
+    screens = []
+    def reliability(screen_maps):
+        screens.append(screen_maps.copy())
+        return np.ones(4)
+    monkeypatch.setattr(module, "reliability_loo", reliability)
+    viewer.refresh_data({"mouse": "m", "session": "s", "environment": 1,
+                         "placefield_split": "train", "gain_estimator": "least_squares",
+                         "gain_transform": "raw", "sort_method": "environment"})
+    folds = split_trials(viewer.session.trial_environment, viewer.trial_fractions,
+                         _seed(viewer.session.session_uid, viewer.split_seed, "trials"))
+    np.testing.assert_array_equal(screens[0], maps[:, folds[0]])
+    template = np.mean(maps[:, folds[0]], axis=1)
+    expected, _ = least_squares_gain_matrix(maps, template)
+    np.testing.assert_allclose(viewer.raw_gain, expected[viewer.roi_indices])

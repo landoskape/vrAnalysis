@@ -10,6 +10,7 @@ from dimensionality_manuscript.configs.gain_regression import (
     CURVE_KEYS,
     GAIN_ESTIMATORS,
     GAIN_TRANSFORMS,
+    PLACEFIELD_SPLITS,
     MAX_ENV_SLOTS,
     TRIAL_SHIFTS,
     GainRegressionConfig,
@@ -470,9 +471,10 @@ def test_environment_gain_declines_too_few_neurons():
     assert config._environment_gain(session, data, env=1, folds=folds) is None
 
 
+@pytest.mark.parametrize("placefield_split", PLACEFIELD_SPLITS)
 @pytest.mark.parametrize("gain_transform", GAIN_TRANSFORMS)
 @pytest.mark.parametrize("trial_shift", TRIAL_SHIFTS)
-def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, trial_shift, gain_transform):
+def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, trial_shift, gain_transform, placefield_split):
     rng = np.random.default_rng(8)
     n_rois = 14
     trial_counts = {1: 60, 3: 48}
@@ -493,7 +495,7 @@ def test_process_assembles_results_on_the_experience_order_axis(monkeypatch, tri
     }
     session = SimpleNamespace(session_uid="uid", mouse_name="mouse", trial_environment=trial_environment)
 
-    config = GainRegressionConfig(n_null_rolls=3, trial_shift=trial_shift, gain_transform=gain_transform)
+    config = GainRegressionConfig(n_null_rolls=3, trial_shift=trial_shift, gain_transform=gain_transform, placefield_split=placefield_split)
     monkeypatch.setattr(GainRegressionConfig, "_load_session", lambda self, _session: data)
     # This mouse met environment 3 first, so env 3 owns slot 0 and env 1 owns slot 1. Results must
     # follow experience order, not environment-index order.
@@ -551,17 +553,17 @@ def test_config_validation_and_variations():
     assert GainRegressionConfig.display_name == "gain_regression"
 
     variations = GainRegressionConfig.generate_variations()
-    assert all(not hasattr(variation, "placefield_split") for variation in variations)
+    assert {variation.placefield_split for variation in variations} == set(PLACEFIELD_SPLITS)
     assert {variation.gain_estimator for variation in variations} == set(GAIN_ESTIMATORS)
     assert {variation.gain_transform for variation in variations} == set(GAIN_TRANSFORMS)
     assert {variation.trial_shift for variation in variations} == set(TRIAL_SHIFTS)
     assert GainRegressionConfig().schema_version == "v6"
-    assert len(variations) == len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS) * len(TRIAL_SHIFTS)
+    assert len(variations) == len(PLACEFIELD_SPLITS) * len(GAIN_ESTIMATORS) * len(GAIN_TRANSFORMS) * len(TRIAL_SHIFTS)
     assert len({variation.key() for variation in variations}) == len(variations)
     assert len({variation.summary() for variation in variations}) == len(variations)
 
-    with pytest.raises(TypeError):
-        GainRegressionConfig(placefield_split="all")
+    with pytest.raises(ValueError):
+        GainRegressionConfig(placefield_split="invalid")
     with pytest.raises(ValueError):
         GainRegressionConfig(gain_transform="log")
     with pytest.raises(ValueError):
@@ -648,3 +650,74 @@ def test_environment_gain_uses_all_trials_for_template_and_screen(estimator):
     np.testing.assert_array_equal(first.gain, second.gain)
     np.testing.assert_array_equal(first.roi_indices, second.roi_indices)
     np.testing.assert_array_equal(first.reliability, second.reliability)
+
+
+@pytest.mark.parametrize("gain_transform", GAIN_TRANSFORMS)
+@pytest.mark.parametrize("score_scale", GAIN_TRANSFORMS)
+def test_scoring_uses_the_same_target_denominator_for_equivalent_predictions(gain_transform, score_scale):
+    # Deliberately heterogeneous neuron means distinguish pooled from per-neuron R2.
+    raw_target = np.array([[0., 16.], [1., 25.], [9., 36.]])
+    raw_prediction = np.array([[0., 12.], [4., 20.], [4., 30.]])
+    y = torch.tensor(np.sqrt(raw_target) if gain_transform == "sqrt" else raw_target)
+    prediction = torch.tensor(np.sqrt(raw_prediction) if gain_transform == "sqrt" else raw_prediction)
+    class Model:
+        def predict(self, x, rank, nonnegative):
+            assert nonnegative is True
+            return prediction
+    truth = np.sqrt(raw_target) if score_scale == "sqrt" else raw_target
+    predicted = np.sqrt(raw_prediction) if score_scale == "sqrt" else raw_prediction
+    sse = np.sum((truth-predicted)**2)
+    sst = np.sum((truth-truth.mean())**2)
+    measured_mse, measured_r2 = score_rrr(Model(), 1, torch.zeros(3, 1), y,
+                                         gain_transform=gain_transform, score_scale=score_scale)
+    assert measured_r2 == pytest.approx(1-sse/sst)
+    assert measured_mse == pytest.approx(sse/truth.size)
+    assert measured_mse/(1-measured_r2) == pytest.approx(sst/truth.size)
+
+
+def test_adjacent_lags_preserve_targets_but_full_row_rolls_change_test_denominator():
+    gain = np.arange(6*18, dtype=float).reshape(6, 18)**2
+    columns = {"train": np.arange(3, 10), "val": np.arange(10, 13), "test": np.arange(13, 15)}
+    sources, targets = np.arange(3), np.arange(3, 6)
+    real = split_tensors(gain, sources, targets, columns)["test"][1].numpy()
+    for lag in (-1, 1):
+        lagged = split_tensors(gain, sources, targets, columns, trial_shift=lag)["test"][1].numpy()
+        np.testing.assert_array_equal(lagged, real)
+    rolled = roll_gain_rows(gain, np.random.default_rng(1))
+    null = split_tensors(rolled, sources, targets, columns)["test"][1].numpy()
+    assert not np.allclose(np.sum((real-real.mean())**2), np.sum((null-null.mean())**2))
+    # The roll preserves each full row's marginal distribution, not its test-fold subset.
+    np.testing.assert_array_equal(np.sort(rolled, axis=1), np.sort(gain, axis=1))
+
+
+
+def test_restoring_train_preserves_existing_v6_all_trial_cache_keys():
+    assert GainRegressionConfig().placefield_split == "all"
+    assert GainRegressionConfig().key() == "7c6f45f8d1d516e4"
+    assert GainRegressionConfig(placefield_split="all").key() == "7c6f45f8d1d516e4"
+    assert GainRegressionConfig(gain_estimator="least_squares", gain_transform="sqrt", trial_shift=-1).key() == "02dc702b8b23d4d8"
+    assert GainRegressionConfig(placefield_split="train").key() != GainRegressionConfig(placefield_split="all").key()
+    assert "pf=train" in GainRegressionConfig(placefield_split="train").summary()
+
+
+@pytest.mark.parametrize("estimator", GAIN_ESTIMATORS)
+def test_train_placefields_and_screen_ignore_held_out_trials(estimator):
+    session, data = _environment_inputs(n_rois=12, n_trials=36, seed=4)
+    folds = [np.arange(24), np.arange(24, 30), np.arange(30, 36)]
+    config = GainRegressionConfig(placefield_split="train", gain_estimator=estimator)
+    original = config._environment_gain(session, data, 1, folds)
+    maps = data["env_maps"].spkmap[0]
+    if estimator == "gaussian":
+        expected, _, _ = gaussian_gain_matrix(maps, POSITIONS, prediction_trials=folds[0])
+    else:
+        expected, _, _ = least_squares_gain_matrix(maps, prediction_trials=folds[0])
+    np.testing.assert_allclose(original.gain, expected, rtol=1e-8, atol=1e-8)
+    # The template uses the full original training fold, including the boundary trials
+    # trimmed out of regression pairs, matching the historical PF=train definition.
+    maps[:, 24:] *= 3
+    changed = config._environment_gain(session, data, 1, folds)
+    np.testing.assert_array_equal(changed.reliability, original.reliability)
+    np.testing.assert_array_equal(changed.fraction_active, original.fraction_active)
+    np.testing.assert_array_equal(changed.roi_indices, original.roi_indices)
+    np.testing.assert_allclose(changed.gain[:, :24], original.gain[:, :24])
+    np.testing.assert_allclose(changed.gain[:, 24:], original.gain[:, 24:] * 3)

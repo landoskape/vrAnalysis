@@ -13,6 +13,7 @@ from ..env_order import MAX_ENV_SLOTS, load_env_order
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import ACTIVITY_PARAMETERS_NAMES, MODEL_NAMES, ModelName, PopulationRegistry, get_model
 from ..regression_models.models import make_gain_unit_index
+from ..regression_models.gain_residual import GAIN_RESIDUAL_SCORE_NAMES, gain_residual_scores
 from ..trial_registry import (
     EnvironmentTrialRegistry,
     FIXED_VALIDATION_FOLD,
@@ -29,11 +30,17 @@ from .regression import (
     _regression_quality_filter,
 )
 
+GAIN_RESIDUAL_MODELS: tuple[ModelName, ...] = (
+    "external_placefield_1d_structured_gain_residual",
+    "internal_placefield_1d_structured_gain_residual",
+)
+
 STRUCTURED_GAIN_MODELS: tuple[ModelName, ...] = (
     "external_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain",
     "external_placefield_1d_structured_gain_sqrt",
     "internal_placefield_1d_structured_gain_sqrt",
+    *GAIN_RESIDUAL_MODELS,
 )
 
 ALL_CELL_TRIAL_MODELS: tuple[ModelName, ...] = (
@@ -48,6 +55,7 @@ PLACECELL_TRIAL_MODELS: tuple[ModelName, ...] = (
     *ALL_CELL_TRIAL_MODELS[:-1],
     "internal_placefield_1d_structured_gain",
     "internal_placefield_1d_structured_gain_sqrt",
+    *GAIN_RESIDUAL_MODELS,
     "rrr",
 )
 
@@ -313,6 +321,12 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
     The structured-gain grid includes raw and square-root variants. Both are selected and
     evaluated on reconstructed activity; the sqrt variant regresses square-root gains and
     squares its nonnegative output before scaling the target place field.
+
+    Gain-residual models explicitly decompose activity into a trial-template projection
+    and its residual, and predict both. Their usual r2 remains the median fold score.
+    Component scores are saved per fold and as medians; *_pooled scores use summed
+    SSE/SST so r2_template_pooled + delta_r2_gain_pooled +
+    delta_r2_residual_pooled equals r2_pooled exactly.
     """
 
     schema_version: str = "v2"
@@ -403,6 +417,16 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
                 "structured_gain_max_trial_rank_folds",
             )
         }
+        if self.model_name in GAIN_RESIDUAL_MODELS:
+            extra_names = (*GAIN_RESIDUAL_SCORE_NAMES, "residual_requested_rank", "residual_effective_rank", "residual_max_rank")
+            output.update({name: np.full(MAX_ENV_SLOTS, np.nan) for name in extra_names})
+            fold_output.update({name + "_folds": np.full((MAX_ENV_SLOTS, len(ROTATING_TEST_FOLDS)), np.nan) for name in extra_names})
+            output.update(
+                {
+                    name: np.full(MAX_ENV_SLOTS, np.nan)
+                    for name in ("r2_pooled", "r2_template_pooled", "delta_r2_gain_pooled", "delta_r2_residual_pooled")
+                }
+            )
         selected_rois = [None] * MAX_ENV_SLOTS
         source_rois = [None] * MAX_ENV_SLOTS
         target_rois = [None] * MAX_ENV_SLOTS
@@ -544,6 +568,13 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
                     gain_model = fold_report.trained_model[2]
                     fold_output["structured_gain_max_trial_rank_folds"][slot, fold_index] = float(gain_model.max_rank)
                     fold_output["structured_gain_effective_rank_folds"][slot, fold_index] = float(min(hyperparameters.rank, gain_model.max_rank))
+                if self.model_name in GAIN_RESIDUAL_MODELS:
+                    for name, value in gain_residual_scores(fold_report).items():
+                        fold_output[name + "_folds"][slot, fold_index] = value
+                    residual_model = fold_report.trained_model[3]
+                    fold_output["residual_requested_rank_folds"][slot, fold_index] = hyperparameters.rank_residual
+                    fold_output["residual_effective_rank_folds"][slot, fold_index] = min(hyperparameters.rank_residual, residual_model.max_rank)
+                    fold_output["residual_max_rank_folds"][slot, fold_index] = residual_model.max_rank
 
             num_scored_folds = len(fold_reports)
             output["mse"][slot] = float(np.median(fold_output["mse_folds"][slot, :num_scored_folds]))
@@ -551,6 +582,16 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
             output["n_trials_train"][slot] = float(np.median(fold_output["n_trials_train_folds"][slot, :num_scored_folds]))
             output["n_trials_test"][slot] = float(np.median(fold_output["n_trials_test_folds"][slot, :num_scored_folds]))
             selected_hyperparameters[slot] = vars(hyperparameters).copy()
+            if self.model_name in GAIN_RESIDUAL_MODELS:
+                for name in extra_names:
+                    values = fold_output[name + "_folds"][slot, :num_scored_folds]
+                    output[name][slot] = np.sum(values) if name.startswith(("sse_", "sst_")) else np.median(values)
+                sst = output["sst_activity"][slot]
+                if sst > 0:
+                    output["r2_pooled"][slot] = 1 - output["sse_combined"][slot] / sst
+                    output["r2_template_pooled"][slot] = 1 - output["sse_template"][slot] / sst
+                    output["delta_r2_gain_pooled"][slot] = (output["sse_template"][slot] - output["sse_gain"][slot]) / sst
+                    output["delta_r2_residual_pooled"][slot] = (output["sse_gain"][slot] - output["sse_combined"][slot]) / sst
             if self.model_name in STRUCTURED_GAIN_MODELS:
                 output["structured_gain_requested_rank"][slot] = float(hyperparameters.rank)
                 output["structured_gain_max_trial_rank"][slot] = float(

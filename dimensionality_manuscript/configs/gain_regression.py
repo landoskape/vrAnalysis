@@ -24,7 +24,9 @@ free to change without invalidating stored results).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import hashlib
+import json
 from typing import ClassVar, Optional
 
 import numpy as np
@@ -43,6 +45,9 @@ from ..env_order import MAX_ENV_SLOTS, load_env_order
 from ..pipeline.base import AnalysisConfigBase
 from ..registry import PopulationRegistry
 from .regression import VALID_SPKS_TYPES
+
+#: Trial subset used to estimate place fields and screen neurons.
+PLACEFIELD_SPLITS: tuple[str, ...] = ("train", "all")
 
 #: Legal values for ``GainRegressionConfig.gain_transform``.
 GAIN_TRANSFORMS: tuple[str, ...] = ("raw", "sqrt")
@@ -625,6 +630,11 @@ def evaluate_null_rolls(
     one: the null model sees the same number of trials, the same neurons, and the same split
     boundaries, differing only in that no trial structure is shared across neurons.
 
+    Full-row rolls preserve each neuron's overall distribution, but change the values
+    assigned to held-out target columns. Each roll therefore uses its own test-target
+    mean and R^2 denominator. These scores are marginal-distribution controls, not
+    fixed-target permutation p-values; individual rolls are not stored.
+
     Hyperparameters are not re-optimized. ``alpha`` and ``rank`` come from the real fit, so the
     comparison is "the same model, on data with the shared structure removed" rather than "the best
     model that can be fit to noise". The full rank curves are recorded anyway, since they cost one
@@ -752,8 +762,10 @@ class GainRegressionConfig(AnalysisConfigBase):
     wraparound. A trial step means the next retained full trial of this environment,
     which can span incomplete trials or intervening trials in other environments.
     The gain templates, neuron screen, and source/target neuron split are shared across
-    shifts. Templates and neuron screening always use all retained full trials, including
-    held-out trials; only the regression fit uses the training fold.
+    shifts. Templates and neuron screening use either the original target-training fold
+    (placefield_split="train") or all retained full trials ("all", the default). Shifted
+    source inputs can belong to another target-assigned fold; regression fits use only
+    the training pairs. All-trial templates and screening include held-out trials.
 
     Gain is not centered and predictions are rectified (``nonnegative=True``) exactly as
     ``ReducedRankRegressionModel`` does; the intercept carries the per-neuron mean gain.
@@ -786,6 +798,11 @@ class GainRegressionConfig(AnalysisConfigBase):
         Minimum participation-ratio fraction-active for a neuron to enter the regression.
     trial_fractions : tuple of float
         Relative train/validation/test trial fractions, stratified within each environment.
+    placefield_split : str
+        "train" estimates templates/denominators and reliability/fraction-active screening
+        from the original untrimmed target-training fold. "all" uses all retained trials
+        and preserves the existing v6 results and cache keys. Both options share the
+        same regression folds and lag-boundary trimming.
     gain_estimator : str
         ``"gaussian"`` preserves the original Gaussian-bump weighted estimator.
         ``"least_squares"`` projects each trial map onto the nonparametric place field, matching
@@ -890,6 +907,7 @@ class GainRegressionConfig(AnalysisConfigBase):
     reliability_threshold: float = 0.3
     fraction_active_threshold: float = 0.1
     trial_fractions: tuple[float, float, float] = (1.0, 0.25, 0.25)
+    placefield_split: str = "all"
     gain_estimator: str = "gaussian"
     gain_transform: str = "raw"
     split_seed: int = 0
@@ -919,16 +937,19 @@ class GainRegressionConfig(AnalysisConfigBase):
 
     @staticmethod
     def _param_grid() -> dict:
-        # Place fields always use all trials. Both transforms run so the skew correction can be
+        # Both template/screen conventions and transforms run so the skew correction can be
         # judged against untransformed gain. Thresholds are deliberately not swept -- they change
         # which neurons exist, and the counts stored here already support post-hoc filtering.
         return {
+            "placefield_split": list(PLACEFIELD_SPLITS),
             "gain_estimator": list(GAIN_ESTIMATORS),
             "gain_transform": list(GAIN_TRANSFORMS),
             "trial_shift": list(TRIAL_SHIFTS),
         }
 
     def validate(self) -> None:
+        if self.placefield_split not in PLACEFIELD_SPLITS:
+            raise ValueError(f"Unknown placefield_split {self.placefield_split!r}. Available: {PLACEFIELD_SPLITS}")
         if self.spks_type not in VALID_SPKS_TYPES:
             raise ValueError(f"Unknown spks_type {self.spks_type!r}. Available: {VALID_SPKS_TYPES}")
         if self.gain_estimator not in GAIN_ESTIMATORS:
@@ -950,6 +971,18 @@ class GainRegressionConfig(AnalysisConfigBase):
         ):
             raise ValueError(f"trial_shift must be an integer in {TRIAL_SHIFTS}")
 
+    def legacy_key(self) -> str:
+        """Preserve pre-option all-trial identities; train results get distinct keys.
+
+        v5/v6 all-trial configs originally had no placefield_split field. Omitting
+        the explicit default here preserves every existing all-trial cache entry.
+        """
+        fields = asdict(self)
+        if self.placefield_split == "all":
+            fields.pop("placefield_split")
+        serialized = json.dumps(fields, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
     def summary(self) -> str:
         parts = [
             self.display_name,
@@ -958,6 +991,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             f"smooth={self.smooth_width}",
             f"rel={self.reliability_threshold}",
             f"frac={self.fraction_active_threshold}",
+            *(["pf=train"] if self.placefield_split == "train" else []),
             f"estimator={self.gain_estimator}",
             f"gain={self.gain_transform}",
             f"seed={self.split_seed}",
@@ -1068,7 +1102,7 @@ class GainRegressionConfig(AnalysisConfigBase):
             return None
 
         # Keep exactly the same targets at all seven lags, including zero. Templates
-        # still use the original training fold so their definition is lag-independent.
+        # use the original training fold (or all trials), independently of lag.
         margin = max(abs(shift) for shift in TRIAL_SHIFTS)
         pair_columns = {
             name: cols[(cols >= margin) & (cols < trial_maps.shape[1] - margin)]
@@ -1077,7 +1111,8 @@ class GainRegressionConfig(AnalysisConfigBase):
         if any(cols.size < self.MIN_TRIALS_PER_SPLIT for cols in pair_columns.values()):
             return None
 
-        screen_maps = trial_maps
+        prediction_trials = columns["train"] if self.placefield_split == "train" else None
+        screen_maps = trial_maps if prediction_trials is None else trial_maps[:, prediction_trials]
         reliability = reliability_loo(screen_maps)
         fraction_active = FractionActive.compute(
             screen_maps,
@@ -1093,9 +1128,9 @@ class GainRegressionConfig(AnalysisConfigBase):
             return None
 
         if self.gain_estimator == "gaussian":
-            gain, _, _ = gaussian_gain_matrix(trial_maps[idx_keep], data["positions"])
+            gain, _, _ = gaussian_gain_matrix(trial_maps[idx_keep], data["positions"], prediction_trials)
         else:
-            gain, _, _ = least_squares_gain_matrix(trial_maps[idx_keep])
+            gain, _, _ = least_squares_gain_matrix(trial_maps[idx_keep], prediction_trials)
         gain = apply_gain_transform(gain, self.gain_transform)
         # The regression needs complete matrices, so a neuron with any degenerate trial is dropped.
         # Both transforms reject negative gain and use the same finite-neuron screen.

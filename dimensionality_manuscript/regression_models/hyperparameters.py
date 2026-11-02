@@ -314,6 +314,32 @@ class PlaceFieldStructuredGainHyperparameters(PlaceFieldHyperparameters):
 
 
 @dataclass(frozen=True)
+class PlaceFieldGainResidualHyperparameters(PlaceFieldStructuredGainHyperparameters):
+    """Shared PF settings plus independent gain and residual RRR settings.
+
+    ``alpha``/``rank`` refer to the trial gain regression; ``alpha_residual``/
+    ``rank_residual`` refer to the signed, framewise residual regression.
+    """
+
+    rank_residual: int = 25
+    alpha_residual: float = 1e2
+
+    @classmethod
+    def get_search_space(cls):
+        space = super().get_search_space()
+        space["training"]["alpha_residual"] = space["training"]["alpha"]
+        space["prediction"]["rank_residual"] = space["prediction"]["rank"]
+        return space
+
+    @classmethod
+    def get_optuna_space(cls, trial):
+        space = super().get_optuna_space(trial)
+        space["training"]["alpha_residual"] = trial.suggest_float("alpha_residual", 1e-2, 1e10, log=True)
+        space["prediction"]["rank_residual"] = space["prediction"]["rank"]
+        return space
+
+
+@dataclass(frozen=True)
 class PlaceFieldStructuredAdditiveHyperparameters(PlaceFieldHyperparameters):
     """Hyperparameters for the PlaceFieldStructuredAdditiveModel.
 

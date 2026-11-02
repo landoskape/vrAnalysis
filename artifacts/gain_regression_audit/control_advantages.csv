@@ -1,0 +1,17 @@
+estimator,scale,fit,control,mean_advantage,mice_above,mice
+gaussian,raw,raw,lag_pm1,0.03460117973071798,14,14
+gaussian,raw,raw,random_roll,0.03855260245005136,14,14
+gaussian,raw,sqrt,lag_pm1,0.03994746000264871,14,14
+gaussian,raw,sqrt,random_roll,0.03110153718841246,14,14
+gaussian,sqrt,raw,lag_pm1,0.015868904877371394,11,14
+gaussian,sqrt,raw,random_roll,0.07630418142636701,14,14
+gaussian,sqrt,sqrt,lag_pm1,0.05509994453772632,14,14
+gaussian,sqrt,sqrt,random_roll,0.06428847515447376,14,14
+least_squares,raw,raw,lag_pm1,0.0353926067937987,14,14
+least_squares,raw,raw,random_roll,0.03996077244693367,14,14
+least_squares,raw,sqrt,lag_pm1,0.04024190623631178,14,14
+least_squares,raw,sqrt,random_roll,0.03224714036260614,14,14
+least_squares,sqrt,raw,lag_pm1,0.016537423068394456,12,14
+least_squares,sqrt,raw,random_roll,0.07356573866325145,14,14
+least_squares,sqrt,sqrt,lag_pm1,0.051703062419612915,14,14
+least_squares,sqrt,sqrt,random_roll,0.061872456295956335,14,14

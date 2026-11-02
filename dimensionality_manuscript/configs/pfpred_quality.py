@@ -27,6 +27,20 @@ across trials for each cell. The result keys are the Cartesian product
 across-ROI mean and median summaries are also stored for all cells, quality-filtered cells, and
 their complement using the established ``{mean|median}_{quality_filtered_|notquality_filtered_}``
 naming convention; :func:`trial_activity_population_summary_keys` enumerates them.
+
+Spatial prediction variability is saved as ``pf_{all,f1,f2}`` and
+``rms_{all_from_all,f1_from_f1,f2_from_f1,f1_from_f2,f2_from_f2}``, each shaped
+``(rois, position_bins)`` for the best environment. Their ``_slot`` counterparts are
+``(MAX_ENV_SLOTS, rois, position_bins)``; positions are in ``pf_rms_distcenters``.
+F1/f2 alternate chronological trials within each environment. ``from`` identifies
+the PF template split, while the preceding split supplies the residual trials.
+``pf_rms_r_<comparison>`` stores per-ROI Pearson r across pairwise-finite positions,
+with ``_slot`` counterparts for every environment. ``pf_rms_r_cv`` averages the
+two held-out directions; ``pf_rms_r_independent_cv`` averages PF f1 versus RMS f2
+from f2 and PF f2 versus RMS f1 from f1, keeping all inputs on independent splits.
+Both directional r values must be finite for their average to be finite. Constant
+maps and fewer than two paired positions give NaN. Existing ``cc`` remains the
+temporal activity/prediction correlation.
 """
 
 from __future__ import annotations
@@ -57,6 +71,84 @@ TRIAL_ACTIVITY_METRICS: tuple[str, ...] = ("trial_rms", "trial_mean", "trial_pf_
 TRIAL_ACTIVITY_STATISTICS: tuple[str, ...] = ("mean", "variance", "cv")
 TRIAL_ACTIVITY_ROI_STATISTICS: tuple[str, ...] = ("mean", "median")
 TRIAL_ACTIVITY_SUBSETS: tuple[str, ...] = ("", "quality_filtered_", "notquality_filtered_")
+
+# Names read as RMS on <evaluation trials> from <place-field template trials>.
+PF_RMS_COMPARISONS = {
+    "all_from_all": ("all", "all_from_all"),
+    "f1_from_f1": ("f1", "f1_from_f1"),
+    "f2_from_f1": ("f1", "f2_from_f1"),
+    "f1_from_f2": ("f2", "f1_from_f2"),
+    "f2_from_f2": ("f2", "f2_from_f2"),
+    "independent_f1": ("f1", "f2_from_f2"),
+    "independent_f2": ("f2", "f1_from_f1"),
+}
+
+
+def pf_rms_map_keys() -> list[str]:
+    """Per-ROI, per-position maps; slot counterparts append ``_slot``."""
+    return [f"pf_{fold}" for fold in ("all", "f1", "f2")] + [
+        f"rms_{name}" for name in list(PF_RMS_COMPARISONS)[:5]
+    ]
+
+
+def pf_rms_correlation_keys() -> list[str]:
+    """Per-ROI Pearson r across position, including both two-fold averages."""
+    return [f"pf_rms_r_{name}" for name in PF_RMS_COMPARISONS] + ["pf_rms_r_cv", "pf_rms_r_independent_cv"]
+
+
+def _spatial_pearson_r(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Pairwise-finite Pearson r across position; constant/undersampled maps give NaN."""
+    valid = np.isfinite(left) & np.isfinite(right)
+    count = np.sum(valid, axis=-1, keepdims=True)
+    centered = []
+    for values in (left, right):
+        mean = np.divide(
+            np.sum(np.where(valid, values, 0.0), axis=-1, keepdims=True),
+            count, out=np.zeros_like(count, dtype=float), where=count > 0,
+        )
+        centered.append(np.where(valid, values - mean, 0.0))
+    x, y = centered
+    denominator = np.sqrt(np.sum(x**2, axis=-1) * np.sum(y**2, axis=-1))
+    r = np.divide(
+        np.sum(x * y, axis=-1), denominator,
+        out=np.full(denominator.shape, np.nan), where=(count[..., 0] >= 2) & (denominator > 0),
+    )
+    return np.clip(r, -1, 1)
+
+
+def _placefield_rms_maps(spkmap: np.ndarray) -> dict[str, np.ndarray]:
+    """PF/RMS maps and spatial r from ``(rois, chronological trials, positions)``.
+
+    F1 takes alternating environment-local trials starting with the first; f2 takes the
+    remainder. RMS squares each trial's residual before averaging trials at each position.
+    ``f2_from_f1`` and ``f1_from_f2`` evaluate held-out trials against the training PF.
+    ``independent_f1/f2`` correlate a PF with the other fold's within-fold RMS: neither
+    the residual activity nor its template shares trials with the correlated PF.
+    The two ``*_cv`` r values are arithmetic means of the two directions, requiring both.
+    """
+    spkmap = np.asarray(spkmap, dtype=float)
+    rows = {"all": np.arange(spkmap.shape[1]), "f1": np.arange(0, spkmap.shape[1], 2),
+            "f2": np.arange(1, spkmap.shape[1], 2)}
+
+    def trial_mean(values):
+        finite = np.isfinite(values)
+        count = np.sum(finite, axis=1)
+        return np.divide(
+            np.sum(np.where(finite, values, 0.0), axis=1), count,
+            out=np.full((spkmap.shape[0], spkmap.shape[2]), np.nan), where=count > 0,
+        )
+
+    result = {f"pf_{fold}": trial_mean(spkmap[:, indices]) for fold, indices in rows.items()}
+    for name in list(PF_RMS_COMPARISONS)[:5]:
+        evaluation, template = name.split("_from_")
+        result[f"rms_{name}"] = np.sqrt(trial_mean(
+            (spkmap[:, rows[evaluation]] - result[f"pf_{template}"][:, None, :]) ** 2
+        ))
+    for name, (fold, rms) in PF_RMS_COMPARISONS.items():
+        result[f"pf_rms_r_{name}"] = _spatial_pearson_r(result[f"pf_{fold}"], result[f"rms_{rms}"])
+    result["pf_rms_r_cv"] = (result["pf_rms_r_f2_from_f1"] + result["pf_rms_r_f1_from_f2"]) / 2
+    result["pf_rms_r_independent_cv"] = (result["pf_rms_r_independent_f1"] + result["pf_rms_r_independent_f2"]) / 2
+    return result
 
 
 def trial_activity_summary_keys() -> list[str]:
@@ -112,7 +204,8 @@ class PFPredQualityConfig(AnalysisConfigBase):
     # v9: added per-cell summaries of four trial-wise activity-amplitude measurements, per-cell
     # fraction active and quality masks, and finite-only population summaries by quality subset.
     # v10: added least-squares trial gain and its per-cell / population summaries.
-    schema_version: str = "v10"
+    # v11: two-fold spatial PF/RMS maps and their per-ROI Pearson correlations.
+    schema_version: str = "v11"
     data_config_name: str = "default"
     spks_type: SpksTypes = "sigrebase"
     reliability_threshold: float = 0.3
@@ -352,6 +445,7 @@ def _trial_activity_by_slot(
     A cell is quality filtered within an environment when both its reliability and fraction
     active are strictly above their thresholds. ``notquality_filtered`` is the complement.
     Across-ROI summaries explicitly select finite values, so failed trial-gain fits are ignored.
+    The same trial maps supply the PF/RMS maps and spatial correlations (see module docstring).
     """
     frame_behavior = get_frame_behavior(session)
     trial_placefields = get_placefield(
@@ -365,6 +459,12 @@ def _trial_activity_by_slot(
     n_rois = spks.shape[1]
     result = {key: np.full((MAX_ENV_SLOTS, n_rois), np.nan) for key in trial_activity_summary_keys()}
     result.update({key: np.full(MAX_ENV_SLOTS, np.nan) for key in trial_activity_population_summary_keys()})
+    spatial_keys = pf_rms_map_keys() + pf_rms_correlation_keys()
+    for key in spatial_keys:
+        shape = (n_rois, len(smp.dist_edges) - 1) if key in pf_rms_map_keys() else (n_rois,)
+        result[key] = np.full(shape, np.nan)
+        result[f"{key}_slot"] = np.full((MAX_ENV_SLOTS, *shape), np.nan)
+    result["pf_rms_distcenters"] = 0.5 * (np.asarray(smp.dist_edges[:-1]) + np.asarray(smp.dist_edges[1:]))
     fraction_active_slot = np.full((MAX_ENV_SLOTS, n_rois), np.nan)
     quality_filtered_roi_mask_slot = np.zeros((MAX_ENV_SLOTS, n_rois), dtype=bool)
     num_rois_slot = np.full(MAX_ENV_SLOTS, np.nan)
@@ -395,6 +495,12 @@ def _trial_activity_by_slot(
             continue
         pf_env = trial_placefields.filter_by_environment(env)
         spkmap = np.transpose(pf_env.placefield, (2, 0, 1))
+        # Placefield rows are ordered by true trial number; explicitly preserve chronology.
+        spkmap = spkmap[:, np.argsort(pf_env.trials)]
+        for key, values in _placefield_rms_maps(spkmap).items():
+            result[f"{key}_slot"][slot] = values
+            if env_to_index[env] == best_env:
+                result[key] = values
         summaries = _summarize_trial_activity(_trial_activity_measurements(spkmap, bin_centers))
         for key, values in summaries.items():
             result[key][slot] = values

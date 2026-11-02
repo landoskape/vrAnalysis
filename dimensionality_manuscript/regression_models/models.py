@@ -15,6 +15,7 @@ from .base import RegressionModel, ActivityParameters, OptimizationMethod
 from .hyperparameters import (
     PlaceFieldHyperparameters,
     PlaceFieldStructuredGainHyperparameters,
+    PlaceFieldGainResidualHyperparameters,
     PlaceFieldStructuredAdditiveHyperparameters,
     RBFPosHyperparameters,
     FullRegressorHyperparameters,
@@ -82,6 +83,9 @@ def get_regressor_dimensionality_from_hyperparameters(
 
     if isinstance(hyperparameters, ReducedRankRegressionHyperparameters):
         return hyperparameters.rank
+
+    if isinstance(hyperparameters, PlaceFieldGainResidualHyperparameters):
+        return hyperparameters.num_bins * num_environments + hyperparameters.rank + hyperparameters.rank_residual
 
     # Checked before PlaceFieldHyperparameters because they subclass it: the spatial maps plus
     # the latent dimensions of the low-rank source->target map.

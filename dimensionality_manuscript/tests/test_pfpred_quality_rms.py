@@ -202,7 +202,7 @@ def test_trial_activity_population_summaries_match_quality_naming_and_ignore_nan
 def test_pfpred_quality_defaults_and_threshold_validation():
     config = PFPredQualityConfig()
 
-    assert config.schema_version == "v10"
+    assert config.schema_version == "v11"
     assert config.reliability_threshold == pytest.approx(0.3)
     assert config.fraction_active_threshold == pytest.approx(0.1)
     assert "rel=0.3_fa=0.1" in config.summary()
@@ -225,7 +225,7 @@ def test_trial_activity_by_slot_stores_fraction_active_masks_and_subset_summarie
         )
 
         def filter_by_environment(self, environment):
-            return SimpleNamespace(placefield=self.placefield[self.environment == environment])
+            return SimpleNamespace(placefield=self.placefield[self.environment == environment], trials=np.array([9, 3]))
 
     monkeypatch.setattr(pfpred_quality, "get_frame_behavior", lambda session: object())
     monkeypatch.setattr(pfpred_quality, "get_placefield", lambda *args, **kwargs: FakePlacefields())
@@ -269,6 +269,71 @@ def test_trial_activity_by_slot_stores_fraction_active_masks_and_subset_summarie
     assert result[f"mean_quality_filtered_{key}"][0] == pytest.approx(result[key][0, 0])
     assert result[f"median_notquality_filtered_{key}"][0] == pytest.approx(result[key][0, 1])
     assert np.isnan(result[f"mean_quality_filtered_{key}"][1])
+    expected_spatial = pfpred_quality._placefield_rms_maps(
+        np.transpose(FakePlacefields.placefield[:2][::-1], (2, 0, 1))
+    )
+    for key, expected in expected_spatial.items():
+        np.testing.assert_allclose(result[key], expected, equal_nan=True)
+        np.testing.assert_allclose(result[f"{key}_slot"][0], expected, equal_nan=True)
+        assert np.all(np.isnan(result[f"{key}_slot"][2:]))
+    np.testing.assert_allclose(result["pf_rms_distcenters"], [0.5, 1.5, 2.5, 3.5])
+
+
+def test_spatial_pf_rms_maps_include_every_fold_pair_and_both_cv_correlations():
+    maps = np.array([[
+        [1.0, 2.0, 5.0, 3.0], [3.0, 1.0, 2.0, 7.0],
+        [3.0, 6.0, 1.0, 5.0], [1.0, 5.0, 8.0, 1.0],
+        [2.0, 4.0, 9.0, 1.0],
+    ]])
+    result = pfpred_quality._placefield_rms_maps(maps)
+    folds = {"all": maps, "f1": maps[:, ::2], "f2": maps[:, 1::2]}
+    for name, trials in folds.items():
+        np.testing.assert_allclose(result[f"pf_{name}"], np.mean(trials, axis=1))
+    for evaluation, template in [("all", "all"), ("f1", "f1"), ("f2", "f1"), ("f1", "f2"), ("f2", "f2")]:
+        expected = np.sqrt(np.mean((folds[evaluation] - np.mean(folds[template], axis=1)[:, None]) ** 2, axis=1))
+        np.testing.assert_allclose(result[f"rms_{evaluation}_from_{template}"], expected)
+    for name, (fold, rms) in pfpred_quality.PF_RMS_COMPARISONS.items():
+        expected_r = np.corrcoef(result[f"pf_{fold}"][0], result[f"rms_{rms}"][0])[0, 1]
+        np.testing.assert_allclose(result[f"pf_rms_r_{name}"], [expected_r])
+    assert not np.allclose(result["pf_rms_r_independent_f1"], result["pf_rms_r_f2_from_f1"])
+    np.testing.assert_allclose(result["pf_rms_r_cv"],
+                               (result["pf_rms_r_f2_from_f1"] + result["pf_rms_r_f1_from_f2"]) / 2)
+    np.testing.assert_allclose(result["pf_rms_r_independent_cv"],
+                               (result["pf_rms_r_independent_f1"] + result["pf_rms_r_independent_f2"]) / 2)
+    # Changing held-out trials cannot change the training PF or its within-fold RMS.
+    changed = maps.copy()
+    changed[:, 1::2] *= 10
+    perturbed = pfpred_quality._placefield_rms_maps(changed)
+    np.testing.assert_allclose(perturbed["pf_f1"], result["pf_f1"])
+    np.testing.assert_allclose(perturbed["rms_f1_from_f1"], result["rms_f1_from_f1"])
+    assert not np.allclose(perturbed["rms_f2_from_f1"], result["rms_f2_from_f1"])
+
+
+def test_spatial_correlation_uses_pairwise_finite_bins_and_rejects_constant_maps():
+    left = np.array([[1., 2., 4., np.nan], [1., 1., 1., 1.], [np.nan, 1., np.nan, np.nan]])
+    right = np.array([[3., 2., 8., 100.], [1., 2., 3., 4.], [2., 3., 4., 5.]])
+    r = pfpred_quality._spatial_pearson_r(left, right)
+    assert r[0] == pytest.approx(np.corrcoef(left[0, :3], right[0, :3])[0, 1])
+    assert np.all(np.isnan(r[1:]))
+
+
+def test_pf_rms_maps_preserve_missing_bins_in_the_residual_split():
+    maps = np.array([[[1., np.nan, 3.], [2., 7., np.nan], [3., np.nan, 7.], [6., 9., np.nan]]])
+    result = pfpred_quality._placefield_rms_maps(maps)
+    np.testing.assert_allclose(result["pf_all"], [[3., 8., 5.]])
+    np.testing.assert_allclose(result["pf_f1"], [[2., np.nan, 5.]], equal_nan=True)
+    np.testing.assert_allclose(result["rms_f1_from_f1"], [[1., np.nan, 2.]], equal_nan=True)
+    np.testing.assert_allclose(result["rms_f2_from_f1"], [[np.sqrt(8.), np.nan, np.nan]], equal_nan=True)
+    assert np.isnan(result["pf_rms_r_f2_from_f1"][0])
+
+
+@pytest.mark.parametrize("n_trials", [0, 1])
+def test_empty_fold_does_not_produce_crossvalidated_r(n_trials):
+    result = pfpred_quality._placefield_rms_maps(np.ones((2, n_trials, 4)))
+    assert np.all(np.isnan(result["pf_f2"]))
+    assert np.all(np.isnan(result["rms_f2_from_f1"]))
+    assert np.all(np.isnan(result["pf_rms_r_cv"]))
+    assert np.all(np.isnan(result["pf_rms_r_independent_cv"]))
 
 
 def test_least_squares_trial_gain_uses_non_gaussian_template_and_handles_missing_bins(monkeypatch):

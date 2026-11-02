@@ -1,0 +1,100 @@
+[
+  {
+    "session": "ATL012.2023-01-23.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 1.6202895913863813e-08
+  },
+  {
+    "session": "ATL012.2023-01-24.703",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 7.277862090759868e-08
+  },
+  {
+    "session": "ATL012.2023-02-09.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 7.112906175166245e-08
+  },
+  {
+    "session": "ATL012.2023-02-14.703",
+    "pf": "train",
+    "slot": 1,
+    "same_roi_split": true,
+    "max_gain_difference": 9.309370829768682e-09
+  },
+  {
+    "session": "ATL012.2023-02-21.702",
+    "pf": "train",
+    "slot": 2,
+    "same_roi_split": true,
+    "max_gain_difference": 4.326334801518783e-08
+  },
+  {
+    "session": "ATL012.2023-02-27.701",
+    "pf": "train",
+    "slot": 2,
+    "same_roi_split": true,
+    "max_gain_difference": 7.474999730305854e-09
+  },
+  {
+    "session": "ATL020.2023-04-04.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 1.1225708207440732e-07
+  },
+  {
+    "session": "ATL022.2023-04-27.702",
+    "pf": "train",
+    "slot": 2,
+    "same_roi_split": true,
+    "max_gain_difference": 1.4620832189393695e-07
+  },
+  {
+    "session": "ATL023.2023-04-28.702",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 0.09286237962171606
+  },
+  {
+    "session": "ATL028.2023-08-04.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 3.109911816956412e-08
+  },
+  {
+    "session": "ATL045.2024-01-24.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 1.566641594230589e-08
+  },
+  {
+    "session": "ATL045.2024-01-26.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 4.430541800104493e-08
+  },
+  {
+    "session": "ATL045.2024-01-30.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 2.152711919833905e-08
+  },
+  {
+    "session": "ATL060.2024-07-12.701",
+    "pf": "train",
+    "slot": 0,
+    "same_roi_split": true,
+    "max_gain_difference": 1.7408312347200194e-08
+  }
+]

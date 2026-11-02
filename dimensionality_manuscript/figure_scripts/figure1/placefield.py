@@ -6,13 +6,15 @@ from vrAnalysis.helpers.vrsupport import _jit_reliability_loo
 from vrAnalysis.processors.spkmaps import Maps
 
 from dimensionality_manuscript.configs.pfpred_quality import (
+    PF_RMS_COMPARISONS,
     TRIAL_ACTIVITY_METRICS,
     TRIAL_ACTIVITY_STATISTICS,
     _summarize_trial_activity,
     _trial_activity_measurements,
+    pf_rms_map_keys,
+    pf_rms_correlation_keys,
     trial_activity_summary_keys,
 )
-from dimensionality_manuscript.configs.placefield_structure import CrossValidatedPlacefieldsConfig
 from dimensionality_manuscript.env_order import _session_sort_key
 from dimensionality_manuscript.figure_scripts import session_cache
 from dimensionality_manuscript.figure_scripts.panels import (
@@ -417,27 +419,28 @@ class PlaceFieldFocus(FigureViewer):
 
 
 class PlaceFieldPredictionFocus(FigureViewer):
-    """Place field, trial consistency, PF prediction, and prediction error for one ROI/environment.
+    """Place field, trial consistency, and spatial PF/RMS correlation for one ROI/environment.
 
-    Up to five columns. The map columns share the VR-position axis and every top-row panel shares
+    Up to five columns. The map columns share the VR-position axis; trial-wise panels share
     the trial axis:
 
-    1. Trial-by-position spike map with the place field (trial average) below.
+    1. Trial-by-position spike map with the selected PF and RMS error placefield below.
     2. Per-trial consistency with the other trials, with the weighted average (reliability) below.
        Dropped when ``show_consistency`` is False.
     3. A selectable trial-wise activity-amplitude measurement, with a selectable across-trial
        summary below. Dropped when ``include_amplitude_summary`` is False.
     4. The place-field prediction of each trial, with its trial average below. Dropped when
        ``show_prediction`` is False.
-    5. Prediction error (prediction - activity), with the per-position RMS error below.
+    5. PF versus RMS across position, with the session's per-ROI r histogram below.
 
-    Turning both existing columns and the amplitude-summary column off leaves the two-column
-    version: the data and the error.
+    Turning the optional columns off leaves the data and PF/RMS correlation columns.
 
     The place-field prediction of a trial is the place field itself: ``get_placefield_prediction``
     predicts each frame from the trial-averaged map, so in position units every trial's prediction
-    is the same row. Column 3 is therefore the place field tiled across trials (masked where the
-    trial has no data), which is what makes column 4 a picture of trial-to-trial variability.
+    is the same row. The optional prediction column shows that all-trial template.
+    PF/RMS maps and Pearson r are read from schema v11 quality results. Folds alternate trials
+    chronologically within each environment. ``f2_from_f1`` means RMS on f2 relative to PF f1;
+    ``independent_f1`` compares PF f1 with RMS on f2 relative to PF f2 (and vice versa).
 
     Parameters
     ----------
@@ -455,8 +458,8 @@ class PlaceFieldPredictionFocus(FigureViewer):
         Index into ``env_maps.environments``.
     vmax : float
         Upper limit (in sigma) of the gray_r colorscale for the activity and prediction maps.
-    vmax_error : float
-        Saturation (in sigma) of the symmetric bwr colorscale for the error map.
+    pf_rms_comparison : str
+        Which all-trial, within-fold, held-out, or independent-fold PF/RMS pairing to show.
     fontsize : float
         Single font size for the whole panel: axis labels, tick labels, in-axes annotations, and
         colorscale labels.
@@ -471,13 +474,13 @@ class PlaceFieldPredictionFocus(FigureViewer):
     amplitude_statistic : {"mean", "variance", "cv"}
         Across-trial summary drawn in the bottom row.
     nbins : int
-        Number of bins shared by the session-wide reliability and amplitude-summary histograms.
+        Number of bins shared by the session-wide reliability, amplitude, and PF/RMS r histograms.
     use_trial_weights : bool
         Weight the trial-consistency scatter by each trial's RMS activity, so silent trials
         don't show up in the plot.
     figsize : tuple[float, float]
         Figure size in inches. Not rescaled when columns are dropped, so the remaining columns get
-        wider; pass a narrower width for the two-column (activity + error) version.
+        wider; pass a narrower width for the two-column version.
     **selection_defaults
         Starting values for the aggregator's own param axes, by name.
     """
@@ -491,7 +494,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         roi: int = 0,
         env: int = 0,
         vmax: float = 5.0,
-        vmax_error: float = 5.0,
+        pf_rms_comparison: str = "f2_from_f1",
         fontsize: float = 12.0,
         show_consistency: bool = True,
         show_prediction: bool = True,
@@ -505,7 +508,8 @@ class PlaceFieldPredictionFocus(FigureViewer):
     ):
         self.results = results
         self.figsize = figsize
-        self._example_config = CrossValidatedPlacefieldsConfig()
+        self._example_config = results.config_class()
+        self._quality_result_cache = None
 
         mouse_names = np.asarray(results.mouse_names)
         self.mice = sorted({str(mouse_name) for mouse_name in mouse_names})
@@ -519,9 +523,6 @@ class PlaceFieldPredictionFocus(FigureViewer):
             }
             for mouse_name in self.mice
         }
-        self._result_row_by_session = {
-            session.session_print(): row for row, session in enumerate(results.sessions)
-        }
         initial_mouse = mouse if mouse is not None else self.mice[0]
         initial_sessions = list(self._sessions_by_mouse[initial_mouse])
         initial_session = example_session if example_session is not None else initial_sessions[0]
@@ -534,7 +535,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         self.add_integer("env", value=env, min=0, max=max(env, 0))
 
         self.add_float("vmax", value=vmax, min=1.0, max=20.0)
-        self.add_float("vmax_error", value=vmax_error, min=1.0, max=20.0)
+        self.add_selection("pf_rms_comparison", value=pf_rms_comparison, options=list(PF_RMS_COMPARISONS))
         self.add_float("fontsize", value=fontsize, min=4.0, max=30.0)
         self.add_boolean("show_consistency", value=show_consistency)
         self.add_boolean("show_prediction", value=show_prediction)
@@ -547,6 +548,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         self.on_change("mouse", self.update_example_session)
         self.on_change("example_session", self.update_example_bounds)
         self.on_change(["roi", "env"], self.refresh_data)
+        self.on_change(list(self.selection_names), self.refresh_data)
         self.update_example_session(self.state)
 
     def update_example_session(self, state):
@@ -584,23 +586,32 @@ class PlaceFieldPredictionFocus(FigureViewer):
         # Every trial is predicted by the same place field; mask where the trial has no data.
         self.pred_spkmap = np.broadcast_to(self.placefield, self.spkmap.shape).copy()
         self.pred_spkmap[np.isnan(self.spkmap)] = np.nan
-        self.error = self.spkmap - self.pred_spkmap
         self.avg_prediction = np.nanmean(self.pred_spkmap, axis=0)
-        self.rms_error = np.sqrt(np.nanmean(self.error**2, axis=0))
         measured = _trial_activity_measurements(self.spkmap[None, ...], self.distcenters)
         self.trial_activity = {key: values[0] for key, values in measured.items()}
 
-        keys = ["env_slot_ids", "reliability_slot", *trial_activity_summary_keys()]
-        selected = self.results.sel(
-            mouse=state["mouse"],
-            keys=keys,
-            squeeze_ones=False,
-            **data_selection(state, self.results, self.selection_names),
-        )
-        global_row = self._result_row_by_session[state["example_session"]]
-        mouse_rows = np.flatnonzero(np.asarray(self.results.mouse_names) == state["mouse"])
-        mouse_row = int(np.flatnonzero(mouse_rows == global_row)[0])
-        env_slot_ids = np.asarray(selected["env_slot_ids"][mouse_row], dtype=float)
+        spatial_keys = pf_rms_map_keys() + pf_rms_correlation_keys()
+        keys = ["env_slot_ids", "reliability_slot", *trial_activity_summary_keys(),
+                "pf_rms_distcenters", *[f"{key}_slot" for key in spatial_keys]]
+        session = self._sessions_by_mouse[state["mouse"]][state["example_session"]]
+        params = data_selection(state, self.results, self.selection_names)
+        schema_version = getattr(self.results, "_schema_version", None)
+        if schema_version is not None:
+            params["schema_version"] = schema_version
+        config = self.results.config_class(**params)
+        cache_key = (session.session_uid, config.key())
+        # These maps are large: retain only this session instead of padding every session's
+        # ROI-by-position arrays through the aggregator.
+        if self._quality_result_cache is None or self._quality_result_cache[0] != cache_key:
+            selected = self.results.store.get(session.session_uid, config)
+            if selected is None:
+                raise KeyError(f"No pfpred_quality result for {session.session_print()} -- rerun the schema v11 sweep.")
+            self._quality_result_cache = (cache_key, selected)
+        selected = self._quality_result_cache[1]
+        missing = [key for key in keys if key not in selected]
+        if missing:
+            raise KeyError(f"Missing {missing} -- rerun the pfpred_quality sweep (schema v11 required).")
+        env_slot_ids = np.asarray(selected["env_slot_ids"], dtype=float)
         environment = int(env_maps.environments[state["env"]])
         matching_slots = np.flatnonzero(env_slot_ids == environment)
         if matching_slots.size == 0:
@@ -609,14 +620,18 @@ class PlaceFieldPredictionFocus(FigureViewer):
                 f"for {state['example_session']}."
             )
         slot = int(matching_slots[0])
+        self.pf_rms_distcenters = np.asarray(selected["pf_rms_distcenters"], dtype=float)
+        self.session_pf_rms = {
+            key: np.asarray(selected[f"{key}_slot"][slot], dtype=float) for key in spatial_keys
+        }
         self.session_activity_summary = {
-            key: np.asarray(selected[key][mouse_row, slot], dtype=float)
+            key: np.asarray(selected[key][slot], dtype=float)
             for key in trial_activity_summary_keys()
         }
         self.trial_activity_summary = {
             key: values[state["roi"]] for key, values in self.session_activity_summary.items()
         }
-        self.session_reliability = np.asarray(selected["reliability_slot"][mouse_row, slot], dtype=float)
+        self.session_reliability = np.asarray(selected["reliability_slot"][slot], dtype=float)
         trial_numbers, trial_weights, trial_consistency, _ = _trial_consistency(self.spkmap)
         self.consistency = (
             trial_numbers,
@@ -627,11 +642,16 @@ class PlaceFieldPredictionFocus(FigureViewer):
 
     def plot(self, state):
         vmax = state["vmax"]
-        vmax_error = state["vmax_error"]
         fontsize = state["fontsize"]
         show_consistency = state["show_consistency"]
         show_prediction = state["show_prediction"]
         include_amplitude_summary = state["include_amplitude_summary"]
+        comparison = state["pf_rms_comparison"]
+        fold, rms_name = PF_RMS_COMPARISONS[comparison]
+        pf = self.session_pf_rms[f"pf_{fold}"][state["roi"]]
+        rms = self.session_pf_rms[f"rms_{rms_name}"][state["roi"]]
+        session_r = self.session_pf_rms[f"pf_rms_r_{comparison}"]
+        r = session_r[state["roi"]]
 
         distcenters = self.distcenters
         spkmap = self.spkmap
@@ -642,7 +662,9 @@ class PlaceFieldPredictionFocus(FigureViewer):
         xlims_clean = (np.round(xlims[0] / 50) * 50, np.round(xlims[1] / 50) * 50)
         xlabels = [f"{int(round(x))}" for x in xlims_clean]
         # One y range for the three line panels so place field, prediction, and error are comparable.
-        ymax_pf = np.nanmax([np.nanmax(self.placefield), np.nanmax(self.avg_prediction), np.nanmax(self.rms_error)]) * 1.2
+        finite_amplitudes = np.concatenate([pf, rms, self.avg_prediction])
+        finite_amplitudes = finite_amplitudes[np.isfinite(finite_amplitudes)]
+        ymax_pf = max(1.0, np.max(finite_amplitudes) * 1.2) if finite_amplitudes.size else 1.0
 
         # Columns are added left to right, so the optional ones only shift what follows them.
         width_ratios = [1]
@@ -658,15 +680,15 @@ class PlaceFieldPredictionFocus(FigureViewer):
         if show_prediction:
             icol_prediction = len(width_ratios)
             width_ratios.append(1)
-        icol_error = len(width_ratios)
+        icol_correlation = len(width_ratios)
         width_ratios.append(1)
 
         fig = self.new_figure(figsize=self.figsize, layout="constrained")
         gs = fig.add_gridspec(2, len(width_ratios), width_ratios=width_ratios, height_ratios=[6, 1])
         ax_spkmap = fig.add_subplot(gs[0, 0])
         ax_placefield = fig.add_subplot(gs[1, 0])
-        ax_error = fig.add_subplot(gs[0, icol_error])
-        ax_rms_error = fig.add_subplot(gs[1, icol_error])
+        ax_correlation = fig.add_subplot(gs[0, icol_correlation])
+        ax_r_histogram = fig.add_subplot(gs[1, icol_correlation])
 
         def draw_map(ax, values, cmap, vlow, vhigh, spines_visible):
             """One trial-by-position image, sharing the trial axis and the cleaned position axis."""
@@ -675,9 +697,9 @@ class PlaceFieldPredictionFocus(FigureViewer):
             ax.set_ylim(ylims[0], ylims[1])
             style_axis(ax, fontsize=fontsize, xbounds=xlims_clean, xticks=[], yticks=[], spines_visible=spines_visible)
 
-        def draw_curve(ax, values, label, ylabel=None, include_left_spine=False):
+        def draw_curve(ax, values, label, ylabel=None, include_left_spine=False, positions=None):
             """One position-axis curve below a map, on the shared y range, labeled in-axes."""
-            ax.plot(distcenters, values, color="k", linewidth=1.5)
+            ax.plot(distcenters if positions is None else positions, values, color="k", linewidth=1.5)
             ax.set_facecolor(("black", 0.04))
             ax.set_xlabel("VR Position", labelpad=-10, fontsize=fontsize)
             ax.set_xlim(xlims_clean)
@@ -709,7 +731,11 @@ class PlaceFieldPredictionFocus(FigureViewer):
         # ------------------------------------------------------------- col 1: activity --
         draw_map(ax_spkmap, spkmap, "gray_r", 0, vmax, ["left"])
         ax_spkmap.set_ylabel("Trials", fontsize=fontsize)
-        draw_curve(ax_placefield, self.placefield, "Placefield", r"$\sigma$", include_left_spine=True)
+        draw_curve(ax_placefield, pf, f"PF {fold}", r"$\sigma$", include_left_spine=True,
+                   positions=self.pf_rms_distcenters)
+        ax_placefield.plot(self.pf_rms_distcenters, rms, color="tab:red", linewidth=1.5)
+        ax_placefield.text(xlims[1], ymax_pf, f"RMS {rms_name.replace('_', ' ')}",
+                          ha="right", va="top", color="tab:red", fontsize=fontsize)
 
         # ---------------------------------------------------------- col 2: consistency --
         if show_consistency:
@@ -724,9 +750,17 @@ class PlaceFieldPredictionFocus(FigureViewer):
             draw_map(fig.add_subplot(gs[0, icol_prediction]), self.pred_spkmap, "gray_r", 0, vmax, [])
             draw_curve(fig.add_subplot(gs[1, icol_prediction]), self.avg_prediction, "PF Prediction")
 
-        # ---------------------------------------------------------------- col 5: error --
-        draw_map(ax_error, self.error, "bwr", -vmax_error, vmax_error, [])
-        draw_curve(ax_rms_error, self.rms_error, "RMS Error")
+        # Spatial samples of the selected cell, plus the distribution across session ROIs.
+        valid = np.isfinite(pf) & np.isfinite(rms)
+        ax_correlation.scatter(pf[valid], rms[valid], s=10, color="black")
+        ax_correlation.set_xlabel(f"PF {fold} ($\\sigma$)", fontsize=fontsize)
+        ax_correlation.set_ylabel(f"RMS {rms_name.replace('_', ' ')} ($\\sigma$)", fontsize=fontsize)
+        ax_correlation.set_title(f"r = {r:.3f}", fontsize=fontsize)
+        style_axis(ax_correlation, fontsize=fontsize, spines_visible=["bottom", "left"])
+        self._draw_session_histogram(
+            ax_r_histogram, session_r, r, nbins=state["nbins"], label="PF–RMS r",
+            fontsize=fontsize, bounds=(-1.0, 1.0), xlim=(-1.1, 1.1),
+        )
 
         # --------------------------------------------------------- inset colorscales --
         draw_vertical_colorscale(
@@ -736,15 +770,6 @@ class PlaceFieldPredictionFocus(FigureViewer):
             high_label=f"{int(vmax)}",
             fontsize=fontsize,
             ylabel=r"Fluorescence ($\sigma$)",
-        )
-        draw_vertical_colorscale(
-            ax_error.inset_axes([0.225, 0.15, 0.125, 0.7]),
-            "bwr",
-            low_label=f"-{int(vmax_error)}",
-            high_label=f"{int(vmax_error)}",
-            low_color="w",
-            fontsize=fontsize,
-            ylabel=r"Error ($\sigma$)",
         )
         return fig
 

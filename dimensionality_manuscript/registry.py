@@ -19,6 +19,7 @@ from .regression_models.models import (
     ReducedRankRegressionModel,
 )
 from .regression_models.hyperparameters import HyperparametersBase
+from .regression_models.gain_residual import PlaceFieldGainResidualModel
 from .subspace_analysis.base import SubspaceModel
 from .subspace_analysis.subspaces import PCASubspace, CovCovSubspace, CovCovCrossvalidatedSubspace, SVCASubspace
 from .subspace_analysis.stimspace import StimSpaceSubspace
@@ -84,6 +85,8 @@ ModelName = Literal[
     # Appended to preserve existing model metadata indices.
     "external_placefield_1d_structured_gain_sqrt",
     "internal_placefield_1d_structured_gain_sqrt",
+    "external_placefield_1d_structured_gain_residual",
+    "internal_placefield_1d_structured_gain_residual",
 ]
 
 # Type alias for subspace names
@@ -672,6 +675,8 @@ MODEL_NAMES: tuple[ModelName] = (
     # Appended to preserve existing model metadata indices.
     "external_placefield_1d_structured_gain_sqrt",
     "internal_placefield_1d_structured_gain_sqrt",
+    "external_placefield_1d_structured_gain_residual",
+    "internal_placefield_1d_structured_gain_residual",
 )
 
 
@@ -760,6 +765,8 @@ def short_model_name(model_name: ModelName) -> str:
         "internal_placefield_1d_structured_gain": "Int. Placefield (+Struct. Gain)",
         "external_placefield_1d_structured_gain_sqrt": "Placefield (+Struct. Sqrt Gain)",
         "internal_placefield_1d_structured_gain_sqrt": "Int. Placefield (+Struct. Sqrt Gain)",
+        "external_placefield_1d_structured_gain_residual": "Placefield (Trial Gain + Residual)",
+        "internal_placefield_1d_structured_gain_residual": "Int. Placefield (Trial Gain + Residual)",
         # Placefield models with a structured additive offset
         "external_placefield_1d_structured_additive": "Placefield (+Struct. Additive)",
         "internal_placefield_1d_structured_additive": "Int. Placefield (+Struct. Additive)",
@@ -797,6 +804,18 @@ def get_model(
     hyperparameters: Optional[HyperparametersBase] = None,
     activity_parameters: Optional[ActivityParameters | str] = None,
 ) -> PlaceFieldStructuredGainModel: ...
+
+
+@overload
+def get_model(
+    model_name: Literal[
+        "external_placefield_1d_structured_gain_residual",
+        "internal_placefield_1d_structured_gain_residual",
+    ],
+    population_registry: PopulationRegistry,
+    hyperparameters: Optional[HyperparametersBase] = None,
+    activity_parameters: Optional[ActivityParameters | str] = None,
+) -> PlaceFieldGainResidualModel: ...
 
 
 @overload
@@ -958,6 +977,8 @@ def get_model(
         "internal_placefield_1d_structured_gain": PlaceFieldStructuredGainModel,
         "external_placefield_1d_structured_gain_sqrt": PlaceFieldStructuredGainModel,
         "internal_placefield_1d_structured_gain_sqrt": PlaceFieldStructuredGainModel,
+        "external_placefield_1d_structured_gain_residual": PlaceFieldGainResidualModel,
+        "internal_placefield_1d_structured_gain_residual": PlaceFieldGainResidualModel,
         # Placefield models with a structured additive offset
         "external_placefield_1d_structured_additive": PlaceFieldStructuredAdditiveModel,
         "internal_placefield_1d_structured_additive": PlaceFieldStructuredAdditiveModel,
@@ -1037,6 +1058,8 @@ def get_model(
         "internal_placefield_1d_structured_gain": dict(internal=True),
         "external_placefield_1d_structured_gain_sqrt": dict(internal=False, gain_transform="sqrt"),
         "internal_placefield_1d_structured_gain_sqrt": dict(internal=True, gain_transform="sqrt"),
+        "external_placefield_1d_structured_gain_residual": dict(internal=False),
+        "internal_placefield_1d_structured_gain_residual": dict(internal=True),
         # Placefield models with a structured additive offset
         "external_placefield_1d_structured_additive": dict(internal=False),
         "internal_placefield_1d_structured_additive": dict(internal=True),

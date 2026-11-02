@@ -24,6 +24,7 @@ from dimensionality_manuscript.figure_scripts.figure1.placefield import PlaceFie
 
 def _viewer(monkeypatch, *, include_amplitude_summary=True):
     session = SimpleNamespace(
+        session_uid="M1/2020-01-01/1",
         mouse_name="M1",
         date="2020-01-01",
         session_id="1",
@@ -35,12 +36,15 @@ def _viewer(monkeypatch, *, include_amplitude_summary=True):
         sessions=[session],
         param_axes={},
     )
+    from dimensionality_manuscript.configs.pfpred_quality import PFPredQualityConfig
+    results.config_class = PFPredQualityConfig
     spkmap = np.array(
         [
             [
                 [0.0, 1.0, 3.0, 1.0, 0.0],
                 [0.0, 2.0, 6.0, 2.0, 0.0],
                 [0.0, 0.5, 1.5, 0.5, 0.0],
+                [1.0, 3.0, 4.0, 1.0, 0.0],
             ]
         ]
     )
@@ -51,12 +55,16 @@ def _viewer(monkeypatch, *, include_amplitude_summary=True):
     )
     measured = placefield._trial_activity_measurements(spkmap, env_maps.distcenters)
     summaries = placefield._summarize_trial_activity(measured)
+    from dimensionality_manuscript.configs.pfpred_quality import _placefield_rms_maps
+    spatial = _placefield_rms_maps(spkmap)
     precomputed = {
-        "env_slot_ids": np.array([[7.0]]),
-        "reliability_slot": np.array([[[placefield._trial_consistency(spkmap[0])[3]]]]),
-        **{key: values[None, None, :] for key, values in summaries.items()},
+        "env_slot_ids": np.array([7.0]),
+        "reliability_slot": np.array([[placefield._trial_consistency(spkmap[0])[3]]]),
+        **{key: values[None, :] for key, values in summaries.items()},
+        **{f"{key}_slot": values[None] for key, values in spatial.items()},
+        "pf_rms_distcenters": env_maps.distcenters,
     }
-    results.sel = lambda *, keys, **kwargs: {key: precomputed[key] for key in keys}
+    results.store = SimpleNamespace(get=lambda session_uid, config: precomputed)
     monkeypatch.setattr(placefield.session_cache, "get_env_maps", lambda selected_session: env_maps)
     return PlaceFieldPredictionFocus(
         results,
@@ -127,3 +135,34 @@ def test_amplitude_column_is_absent_when_disabled(monkeypatch):
     fig = viewer.plot(viewer.state)
 
     assert not any(axis.get_ylabel() == "Trial RMS" for axis in fig.axes)
+
+
+def test_pf_rms_scatter_histogram_and_overlay_follow_comparison_selection(monkeypatch):
+    viewer = _viewer(monkeypatch, include_amplitude_summary=False)
+    state = {**viewer.state, "pf_rms_comparison": "independent_f1", "nbins": 6}
+    fig = viewer.plot(state)
+    fig.canvas.draw()
+    pf = viewer.session_pf_rms["pf_f1"][0]
+    rms = viewer.session_pf_rms["rms_f2_from_f2"][0]
+    r = viewer.session_pf_rms["pf_rms_r_independent_f1"][0]
+    scatter = next(axis for axis in fig.axes if axis.get_title().startswith("r ="))
+    np.testing.assert_allclose(scatter.collections[0].get_offsets(), np.column_stack([pf, rms]))
+    assert scatter.get_title() == f"r = {r:.3f}"
+    histogram = next(axis for axis in fig.axes if any(text.get_text() == "PF–RMS r" for text in axis.texts))
+    assert len(histogram.patches) == 6
+    assert histogram.lines[0].get_xdata()[0] == r
+    overlay = next(axis for axis in fig.axes if any(text.get_text() == "PF f1" for text in axis.texts))
+    np.testing.assert_allclose(overlay.lines[0].get_ydata(), pf)
+    np.testing.assert_allclose(overlay.lines[1].get_ydata(), rms)
+    assert sum(len(axis.images) for axis in fig.axes) == 1
+
+
+def test_focus_reuses_one_session_result_without_aggregating_maps(monkeypatch):
+    viewer = _viewer(monkeypatch)
+
+    def unexpected_load(*args, **kwargs):
+        raise AssertionError("Changing ROI must reuse the cached session result")
+
+    monkeypatch.setattr(viewer.results.store, "get", unexpected_load)
+    viewer.refresh_data(viewer.state)
+    assert viewer.session_pf_rms["pf_f1"].shape == (1, 5)
