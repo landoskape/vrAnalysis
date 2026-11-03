@@ -315,10 +315,12 @@ class PlaceFieldStructuredGainHyperparameters(PlaceFieldHyperparameters):
 
 @dataclass(frozen=True)
 class PlaceFieldGainResidualHyperparameters(PlaceFieldStructuredGainHyperparameters):
-    """Shared PF settings plus independent gain and residual RRR settings.
+    """Inherited standalone gain settings plus independently tuned residual RRR.
 
     ``alpha``/``rank`` refer to the trial gain regression; ``alpha_residual``/
-    ``rank_residual`` refer to the signed, framewise residual regression.
+    ``rank_residual`` refer to the signed, framewise residual regression. Gain/PF
+    settings are copied from the matching standalone gain optimization and stored
+    here for reproducible replay; the gain-residual optimizer searches only E.
     """
 
     rank_residual: int = 25

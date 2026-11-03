@@ -322,14 +322,19 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
     evaluated on reconstructed activity; the sqrt variant regresses square-root gains and
     squares its nonnegative output before scaling the target place field.
 
-    Gain-residual models explicitly decompose activity into a trial-template projection
-    and its residual, and predict both. Their usual r2 remains the median fold score.
+    Version 3 revises only gain-residual models: the gain predictor now matches the
+    standalone structured-gain model exactly and E uses regularized measured gains.
+    Exact projection energies in source/target/predicted E are reported posthoc.
+    Defaults resolve to v3 for gain-residual models and v2 for all other models, so
+    their existing result identities are unchanged. Explicit v2 gain-residual configs
+    are rejected because the old unregularized implementation is no longer used.
+    Their usual r2 remains the median fold score.
     Component scores are saved per fold and as medians; *_pooled scores use summed
     SSE/SST so r2_template_pooled + delta_r2_gain_pooled +
     delta_r2_residual_pooled equals r2_pooled exactly.
     """
 
-    schema_version: str = "v2"
+    schema_version: str | None = None
     data_config_name: str = "even"
     model_name: ModelName = "external_placefield_1d"
     spks_type: SpksTypes = "sigrebase"
@@ -351,9 +356,43 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
     def _param_grid() -> dict:
         return {"model_name": list(PLACECELL_TRIAL_MODELS)}
 
+    def __post_init__(self):
+        if self.schema_version is None:
+            object.__setattr__(self, "schema_version", "v3" if self.model_name in GAIN_RESIDUAL_MODELS else "v2")
+        super().__post_init__()
+
+    @classmethod
+    def generate_variations(cls, schema_version=None):
+        names = PLACECELL_TRIAL_MODELS
+        if schema_version in ("v1", "v2"):
+            names = tuple(name for name in names if name not in GAIN_RESIDUAL_MODELS)
+        elif schema_version == "v3":
+            names = GAIN_RESIDUAL_MODELS
+        return [cls(model_name=name, schema_version=schema_version) for name in names]
+
+    @classmethod
+    def generate_variations_matching(cls, param_filters):
+        # Validate field names as in the base class, then filter incompatible
+        # model/schema combinations before constructing the configs.
+        from dataclasses import fields
+
+        unknown = set(param_filters) - {field.name for field in fields(cls)}
+        if unknown:
+            raise ValueError(f"Unknown field(s) for {cls.__name__}: {sorted(unknown)}")
+        if "model_name" in param_filters:
+            return [cls(**param_filters)]
+        names = [cfg.model_name for cfg in cls.generate_variations(param_filters.get("schema_version"))]
+        return [cls(model_name=name, **param_filters) for name in names]
+
     def validate(self):
-        if self.schema_version not in ("v1", "v2"):
-            raise ValueError("TrialPlacecellRegressionConfig supports schema_version='v1' or 'v2'")
+        if self.schema_version not in ("v1", "v2", "v3"):
+            raise ValueError("TrialPlacecellRegressionConfig supports schema_version='v1', 'v2', or 'v3'")
+        if self.model_name in GAIN_RESIDUAL_MODELS and self.schema_version != "v3":
+            raise ValueError("Revised gain-residual models require schema_version='v3'; omit schema_version to select it automatically")
+        if self.model_name in GAIN_RESIDUAL_MODELS and self.method == "best":
+            raise ValueError("Gain-residual models require one reference optimization method; use method='preferred' or name a method")
+        if self.model_name not in GAIN_RESIDUAL_MODELS and self.schema_version == "v3":
+            raise ValueError("schema_version='v3' is reserved for the revised gain-residual models")
         if self.data_config_name != "even":
             raise ValueError("TrialPlacecellRegressionConfig requires data_config_name='even'")
         if self.model_name not in PLACECELL_TRIAL_MODELS:
@@ -495,7 +534,7 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
 
                 fold_models = [model]
                 fold_reports = [report]
-                if self.schema_version == "v2":
+                if self.schema_version != "v1":
                     atomic_folds = split_trials_by_environment(
                         np.full(environment_trials.size, environment),
                         (1, 1, 1, 1),
@@ -585,7 +624,11 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
             if self.model_name in GAIN_RESIDUAL_MODELS:
                 for name in extra_names:
                     values = fold_output[name + "_folds"][slot, :num_scored_folds]
-                    output[name][slot] = np.sum(values) if name.startswith(("sse_", "sst_")) else np.median(values)
+                    is_energy = name.endswith("_energy")
+                    output[name][slot] = np.sum(values) if name.startswith(("sse_", "sst_")) or is_energy else np.median(values)
+                for prefix in ("source_residual", "target_residual", "predicted_residual"):
+                    energy = output[prefix + "_energy"][slot]
+                    output[prefix + "_gain_energy_fraction"][slot] = output[prefix + "_gain_energy"][slot] / energy if energy > 0 else np.nan
                 sst = output["sst_activity"][slot]
                 if sst > 0:
                     output["r2_pooled"][slot] = 1 - output["sse_combined"][slot] / sst

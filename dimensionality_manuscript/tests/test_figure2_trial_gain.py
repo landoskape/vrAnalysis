@@ -17,14 +17,15 @@ def test_bin_prediction_excludes_missing_and_out_of_range_frames():
     np.testing.assert_allclose(curve, [3., 8., np.nan], equal_nan=True)
 
 
-@pytest.mark.parametrize("version,folds", [("v1", [None]), ("v2", [None, 0, 1])])
+@pytest.mark.parametrize("version,folds", [("v1", [None]), ("v2", [None, 0, 1]), ("v3", [None, 0, 1])])
 @pytest.mark.parametrize("drop_frame", [False, True])
 @pytest.mark.parametrize("temporal", [False, True])
 @pytest.mark.parametrize("reference", [False, True])
 def test_replay_uses_saved_params_targets_and_scored_folds(monkeypatch, version, folds, drop_frame, temporal, reference):
     calls = []
     session = SimpleNamespace(idx_rois=np.array([False, True, False, True]))
-    config = TrialPlacecellRegressionConfig(schema_version=version, model_name="rrr")
+    name = "internal_placefield_1d_structured_gain_residual" if version == "v3" else "rrr"
+    config = TrialPlacecellRegressionConfig(schema_version=version, model_name=name)
     saved = dict(env_slot_ids=np.array([7.]), selected_hyperparameters=[{"rank": 2}],
                  selected_roi_indices=[np.array([1, 3])], target_roi_indices=[np.array([3])])
     monkeypatch.setattr(trial_predictions, "PopulationRegistry", lambda **kwargs: SimpleNamespace(**kwargs))

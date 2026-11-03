@@ -1,0 +1,28 @@
+[
+  {
+    "session": "ATL012.2023-01-20.702",
+    "environment": 1,
+    "test_fold": 1,
+    "gain_identical": true,
+    "max_absolute_difference": 0.0,
+    "previous_combined_r2": -6195514627929439.0,
+    "gain_r2": 0.03576980071023017,
+    "combined_r2": 0.036060816070973556,
+    "residual_hyperparameters": "fixed rank=25, alpha=1000; not optimized for this check",
+    "target_residual_gain_energy_fraction": 0.0008799578416934301,
+    "predicted_residual_gain_energy_fraction": 0.04456915418417949
+  },
+  {
+    "session": "ATL049.2024-05-02.701",
+    "environment": 3,
+    "test_fold": 1,
+    "gain_identical": true,
+    "max_absolute_difference": 0.0,
+    "previous_combined_r2": -2.0573004762603402e+98,
+    "gain_r2": 0.11474205461369325,
+    "combined_r2": 0.11449649105054183,
+    "residual_hyperparameters": "fixed rank=25, alpha=1000; not optimized for this check",
+    "target_residual_gain_energy_fraction": 0.009571527832111302,
+    "predicted_residual_gain_energy_fraction": 0.060044385541180495
+  }
+]

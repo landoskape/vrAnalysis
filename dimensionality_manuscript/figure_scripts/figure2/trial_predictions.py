@@ -38,7 +38,7 @@ def replay_predictions(config, saved, session, edges, *, temporal=False, referen
     standardized = session_cache.get_spks(session)
     raw_rois = np.flatnonzero(session.idx_rois)
     lookup = {int(roi): row for row, roi in enumerate(raw_rois)}
-    folds = ROTATING_TEST_FOLDS if config.schema_version == "v2" else (3,)
+    folds = (3,) if config.schema_version == "v1" else ROTATING_TEST_FOLDS
     for slot, environment in enumerate(saved["env_slot_ids"]):
         params = saved["selected_hyperparameters"][slot]
         if not np.isfinite(environment) or params is None:

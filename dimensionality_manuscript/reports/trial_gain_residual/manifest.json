@@ -1,0 +1,102 @@
+{
+  "n_saved_sessions": 149,
+  "n_unscored_sessions": 9,
+  "n_sessions": 140,
+  "n_mice": 14,
+  "n_units": 267,
+  "store": "D:\\localData\\dimensionality-manuscript\\cache\\pipeline_v2",
+  "schema": "v2",
+  "configuration": "_spks=sigrebase_method=preferred_ap=std_rel=0.3_fa=0.1_seed=0_v2",
+  "plot_window": [
+    {
+      "model": "Internal PF",
+      "below_window": 0,
+      "above_window": 0,
+      "median": 0.09700511973869141
+    },
+    {
+      "model": "Existing trial gain",
+      "below_window": 1,
+      "above_window": 0,
+      "median": 0.11406869739809511
+    },
+    {
+      "model": "Existing sqrt gain",
+      "below_window": 0,
+      "above_window": 0,
+      "median": 0.1232804358995021
+    },
+    {
+      "model": "New G only",
+      "below_window": 56,
+      "above_window": 0,
+      "median": 0.051869033327217595
+    },
+    {
+      "model": "New G + E",
+      "below_window": 56,
+      "above_window": 0,
+      "median": 0.06437804780672995
+    },
+    {
+      "model": "Full peer RRR",
+      "below_window": 0,
+      "above_window": 7,
+      "median": 0.1678224802017212
+    }
+  ],
+  "diagnostic_subset": [
+    {
+      "branch": "internal",
+      "n_units": 152,
+      "n_mice": 14,
+      "mean_mouse_residual_increment": 0.013592642673224154
+    },
+    {
+      "branch": "external",
+      "n_units": 206,
+      "n_mice": 14,
+      "mean_mouse_residual_increment": 0.01611032904449219
+    }
+  ],
+  "rank_summary": [
+    {
+      "branch": "Gain",
+      "median_rank": 16.0,
+      "median_rank_bound": 29.0,
+      "at_bound": 48
+    },
+    {
+      "branch": "Residual",
+      "median_rank": 528.0,
+      "median_rank_bound": 622.0,
+      "at_bound": 56
+    }
+  ],
+  "stability": [
+    {
+      "branch": "internal",
+      "any_severe_units": 115,
+      "median_severe_units": 50,
+      "severe_folds": 182,
+      "total_folds": 801,
+      "positive_residual_folds": 788,
+      "positive_residual_units": 262,
+      "median_residual_r2": 0.020233853264528978,
+      "mouse_mean_residual_r2": 0.021517432774727542,
+      "worst_fold_r2": -2.0573004762603402e+98
+    },
+    {
+      "branch": "external",
+      "any_severe_units": 61,
+      "median_severe_units": 20,
+      "severe_folds": 85,
+      "total_folds": 801,
+      "positive_residual_folds": 790,
+      "positive_residual_units": 263,
+      "median_residual_r2": 0.026046346767557904,
+      "mouse_mean_residual_r2": 0.027269768588077,
+      "worst_fold_r2": -2.660262586618367e+76
+    }
+  ]
+}

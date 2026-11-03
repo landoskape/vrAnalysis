@@ -1,0 +1,87 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trial gain + residual: saved-results report</title><style>
+body{font:16px/1.6 system-ui,sans-serif;color:#253241;background:#f2f5f8;margin:0}main{max-width:1350px;margin:auto;padding:42px 36px}
+h1{font-size:34px;line-height:1.2;margin:0 0 12px}h2{font-size:24px;margin:36px 0 12px}.meta,figcaption{color:#596776;font-size:14px}
+.warning{background:#fff1ed;border-left:5px solid #be4d59;padding:18px 24px;border-radius:6px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:24px 0}
+.card{background:white;border-radius:8px;padding:18px}.big{font-size:30px;font-weight:700;display:block}figure{margin:22px 0;background:white;padding:16px;border-radius:10px}img{width:100%;height:auto}
+table{border-collapse:collapse;width:100%;font-size:14px;background:white}th,td{padding:12px 10px;text-align:right;border-bottom:1px solid #dfe5ea}th:first-child,td:first-child{text-align:left}
+code{font-size:13px}a{color:#3569aa}li{margin:8px 0}@media(max-width:700px){main{padding:22px 14px}.cards{grid-template-columns:1fr}table{font-size:11px}}</style>
+<main><h1>Trial gain + residual prediction</h1><p class="meta">Saved v2 results · 3 November 2026 · sigrebase / std / preferred / seed 0 · 140 scored sessions out of 149 saved, 14 mice, 267 matched session–environment units.</p>
+<div class="warning"><strong>Archived unregularized v2 run.</strong> The gain-residual model has since been revised (v3) to reuse the standalone gain predictor.
+The population figures below have not been recomputed. Two real-data equality checks are saved in <a href="regularized_validation.json">regularized_validation.json</a>.
+<br><strong>The v2 combined model was not numerically reliable.</strong> The residual branch predicts held-out structure in E,
+but catastrophic gain predictions prevent a clean population-level claim that G+E explains the gap to full peer RRR.
+The synthetic implementation tests missed this real-data instability.</div>
+<div class="cards"><div class="card"><span class="big">115 / 267</span>Internal-model units with at least one R² &lt; −1 fold.</div>
+<div class="card"><span class="big">788 / 801</span>Internal-model folds with positive held-out E-component R².</div>
+<div class="card"><span class="big">0.020</span>Median internal E-component R²; equal-mouse mean 0.022.</div></div>
+<h2>1. Predictive performance and stability</h2><figure><img src="01_performance_and_stability.png" alt="Model comparisons, per-mouse failures, and full error tails"><figcaption>A shows stored median-fold scores, with one dot per session–environment unit: a descriptive distribution, not independent animals. The fixed display window is −0.08 to 0.36; out-of-window counts are explicit and medians use all units. B exposes failures hidden by median-fold scoring. C includes every severe combined-model fold on a log error-ratio scale. Dashed G-only curves use the same folds as the solid combined curves.</figcaption></figure>
+<h2>2. The residual branch carries held-out predictability</h2><figure><img src="02_residual_structure.png" alt="Residual predictability, mouse comparisons, conditional benefit, and rank use"><figcaption>A and B predict E on all units, including those with unstable gain prediction. Internal and external E targets differ because their template trajectories differ, and their component R² denominators differ. Component scores do not add to original-activity R². B averages environments within session, sessions within mouse, then mice equally. C is explicitly restricted to units whose three combined-model folds all have R² ≥ −1. It plots (SSE_G − SSE_G+E)/SST_original followed by the same mouse-level averaging. That subset is score-selected: this is a diagnostic, not an unbiased population estimate. D shows rank relative to different branch-specific bounds.</figcaption></figure>
+<h2>Audit summary</h2><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Position</th>
+      <th>Any severe fold: units / 267</th>
+      <th>Severe median: units / 267</th>
+      <th>Severe folds / 801</th>
+      <th>E R² &gt; 0: folds / 801</th>
+      <th>Median E R²</th>
+      <th>Equal-mouse mean E R²</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>internal</td>
+      <td>115</td>
+      <td>50</td>
+      <td>182</td>
+      <td>788</td>
+      <td>0.0202</td>
+      <td>0.0215</td>
+    </tr>
+    <tr>
+      <td>external</td>
+      <td>61</td>
+      <td>20</td>
+      <td>85</td>
+      <td>790</td>
+      <td>0.0260</td>
+      <td>0.0273</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>What the saved results support</h2><ul>
+<li><strong>There is predictable structure beyond a per-trial template rescaling.</strong>
+Measured E remains after an explicit per-cell, per-trial template projection. Its component R² is positive in
+262/267 internal units and 263/267 external units.
+These are descriptive counts; folds and units share animals.</li>
+<li><strong>The gain predictor is the current bottleneck.</strong> Failures affect 115/267 internal units
+and 61/267 external units. G-only and G+E errors track each other in the severe tail.
+The worst internal fold has R² = -2.06e+98.</li>
+<li><strong>Median-fold scoring hides some failures.</strong> Only 50 internal units have median R² &lt; −1,
+although 115 have at least one such fold. Pooled increments also lose precision when subtracting enormous,
+nearly equal SSEs, so we do not interpret their numerical values in that tail.</li>
+<li><strong>Residual prediction is not necessarily low dimensional.</strong> The median internal residual rank is 528,
+versus 16 for gain. E has many more observations and a much higher available-rank bound.</li></ul>
+<h2>Interpretation and next step</h2>
+<p>Predictable E can include template mismatch and, for the internal model, position-decoding errors.
+The result establishes structure beyond this chosen trial-gain template; it does not by itself identify a separate physiological process.</p>
+<p>The failure pattern is consistent with ill-conditioned raw gain ratios when a cell's template energy is tiny.
+The new decomposition uses unregularized gains to preserve exact orthogonality; the existing structured-gain model shrinks gain measurements toward 1.
+That is a plausible explanation from the implementation and G-only error pattern, not a direct measurement of failing template energies.</p>
+<p>A useful repair would preserve the explicit measured decomposition while stabilizing the gain features used by the learned predictor
+(for example, with separate regularized source-gain features). The branches should then be reevaluated before claiming a clean additive result.
+This report does not modify the model, delete results, or refit sessions.</p>
+<h2>Data and reproducibility</h2>
+<p>All six compared models match on session, environment identity, exact source/target ROI IDs, and trial-fold membership.
+Every compared model has 149 saved sessions; 140 sessions have at least one finite scored environment (267 scored units in total).
+The other 9 sessions contribute no scored environments and are listed in session_coverage.csv.
+Exact retained prediction-frame masks are absent from cached summaries;
+cross-model frame support cannot be independently audited here. Within the new model, G and E share a frame mask.</p>
+<p>The main comparison uses the median of three held-out trial-fold scores. The validation quarter is fixed and hyperparameters are reused
+across rotations. Place-cell selection uses full-session activity, as in the existing analysis. There is no noise-ceiling correction:
+full peer RRR is a benchmark, not maximum explainable predictability.</p>
+<p>Source store: <code>D:\localData\dimensionality-manuscript\cache\pipeline_v2\results.db</code>, opened read-only.
+Configurations and computation timestamps are recorded in provenance.csv.</p>
+<p><a href="01_performance_and_stability.svg">Figure 1 SVG</a> · <a href="02_residual_structure.svg">Figure 2 SVG</a> · <a href="session_environment_scores.csv">Session–environment scores</a> · <a href="fold_scores.csv">Fold scores</a> · <a href="mouse_residual_scores.csv">Mouse summaries</a> · <a href="worst_internal_results.csv">Worst results</a> · <a href="session_coverage.csv">Session coverage</a> · <a href="provenance.csv">Provenance</a> · <a href="manifest.json">Audit manifest</a> · <a href="make_report.py">Reproduction script</a></p></main></html>

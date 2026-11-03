@@ -1,6 +1,5 @@
-"""Predict trial-template amplitudes and the remaining temporal activity separately."""
+"""Existing trial-gain prediction plus residual RRR and exact posthoc projection audits."""
 
-from copy import copy
 from dataclasses import replace
 
 import numpy as np
@@ -8,11 +7,11 @@ import pandas as pd
 import torch
 
 from dimilibi import ReducedRankRegression, measure_r2
-from vrAnalysis.processors.placefields import get_placefield_prediction
 from vrAnalysis.helpers.optimization import golden_section_search
+from vrAnalysis.processors.placefields import get_placefield_prediction
 
 from .hyperparameters import PlaceFieldGainResidualHyperparameters
-from .models import PlaceFieldModel, PlaceFieldStructuredGainModel, least_squares_gain, make_gain_unit_index
+from .models import PlaceFieldStructuredGainModel, least_squares_gain
 
 
 GAIN_RESIDUAL_SCORE_NAMES = (
@@ -30,21 +29,57 @@ GAIN_RESIDUAL_SCORE_NAMES = (
     "sse_gain",
     "sse_residual",
     "sse_combined",
+    *(
+        f"{prefix}_{suffix}"
+        for prefix in ("source_residual", "target_residual", "predicted_residual")
+        for suffix in ("energy", "gain_energy", "off_template_energy", "gain_energy_fraction")
+    ),
 )
 
 
+def template_projection_energy(activity, template, unit_index):
+    """Exact per-cell/unit projection, reported as uncentered squared energies.
+
+    Normalize templates before taking dot products, avoiding ill-conditioned raw
+    gain ratios even in this posthoc audit. Zero templates project to zero.
+    The projection does not modify model inputs or predictions.
+    """
+    activity = np.asarray(activity, dtype=np.float64)
+    template = np.asarray(template, dtype=np.float64)
+    total = float(np.sum(activity**2))
+    gain_energy = off_energy = 0.0
+    for unit in np.unique(unit_index):
+        keep = unit_index == unit
+        values, field = activity[:, keep], template[:, keep]
+        scale = np.max(np.abs(field), axis=1, keepdims=True)
+        normalized = np.divide(field, scale, out=np.zeros_like(field), where=scale > 0)
+        denominator = np.sum(normalized**2, axis=1, keepdims=True)
+        coefficient = np.divide(
+            np.sum(values * normalized, axis=1, keepdims=True),
+            denominator,
+            out=np.zeros_like(denominator),
+            where=denominator > 0,
+        )
+        projection = coefficient * normalized
+        gain_energy += float(np.sum(projection**2))
+        off_energy += float(np.sum((values - projection) ** 2))
+    return dict(
+        energy=total, gain_energy=gain_energy, off_template_energy=off_energy, gain_energy_fraction=gain_energy / total if total > 0 else np.nan
+    )
+
+
 class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
-    """Decompose Y = G + E and learn g_source -> g_target and E_source -> E_target.
+    """Reuse structured gain exactly, then predict Y - g_regularized PF.
 
-    G is the unregularized least-squares projection onto each cell's template within
-    each gain unit (a whole trial with TrialRegistry). E = Y - G is measured, rather
-    than formed by subtracting predicted gains. Internal position is decoded with
-    frozen, actual-position training maps, exactly as in the structured gain model.
+    Gain hyperparameters are inherited from the matching standalone gain model.
+    The inherited gain training and readout preserve its shrinkage and frame rules:
+    source gains are measured BEFORE target-template frame filtering. E uses measured,
+    regularized gains, not predictions, and can retain template-shaped activity.
+    Process metrics quantify that activity with an exact posthoc projection.
+    Residual predictions and G+E are signed, unprojected, and unrectified.
 
-    Held-out prediction uses only source activity and frozen maps. Target components
-    are measured only during fitting, validation, and scoring. Residual predictions
-    are signed and neither projected off-template nor rectified; their sum with G
-    is also left unrectified so the two predictions remain literally additive.
+    Implementation revision 2 uses new optimization/score cache keys.
+    TrialPlacecellRegressionConfig uses schema v3 for these models only.
     """
 
     def __init__(
@@ -63,7 +98,6 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
             internal=internal,
             fit_intercept=fit_intercept,
             min_frames_per_unit=min_frames_per_unit,
-            gain_regularization=0.0,
             hyperparameters=hyperparameters or PlaceFieldGainResidualHyperparameters(),
             autosave=autosave,
             **kwargs,
@@ -78,9 +112,36 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
         name = f"{prefix}_placefield_1d_structured_gain_residual"
         return name if self.fit_intercept else name + "_no_intercept"
 
+    def _get_hyperparameter_cache_key(self, *args, **kwargs):
+        return super()._get_hyperparameter_cache_key(*args, **kwargs) + "_regularized_v2"
+
+    def _resolve_optimization_method(self, method, allow_best=False):
+        if method == "best":
+            raise ValueError("Gain-residual models require one reference optimization method; use preferred, golden, grid, or optuna")
+        return super()._resolve_optimization_method(method, allow_best=allow_best)
+
     def regressor_dimensionality(self, num_environments=1, hyperparameters=None):
         hp = hyperparameters or self.hyperparameters
         return hp.num_bins * num_environments + hp.rank + hp.rank_residual
+
+    def inherited_gain_hyperparameters(self, session, spks_type, train_split, validation_split, method="preferred"):
+        """Use the same registry, scaling, split names and method as standalone G."""
+        reference = PlaceFieldStructuredGainModel(
+            self.registry,
+            internal=self.internal,
+            fit_intercept=self.fit_intercept,
+            min_frames_per_unit=self.min_frames_per_unit,
+            gain_regularization=self.gain_regularization,
+            activity_parameters=self.activity_parameters,
+            autosave=self.autosave,
+        )
+        return reference.get_best_hyperparameters(
+            session,
+            spks_type=spks_type,
+            train_split=train_split,
+            validation_split=validation_split,
+            method=method,
+        )[0]
 
     def decomposition_inputs(
         self,
@@ -92,86 +153,68 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
         nan_safe=False,
         include_target=False,
     ):
-        """Use one common frame mask for both branches; never inspect held-out Y."""
-        source, target, behavior = self.get_session_data(session, spks_type, split)
-        true_behavior = copy(behavior)
-        if self.internal:
-            behavior = self.decode_internal_frame_behavior(source, source_placefield, behavior)
+        """Keep baseline source gain measurements, then align the two branches.
+
+        Never remeasure source gains on the smaller target-valid output mask.
+        Target activity is inspected only for explicitly requested fit/scoring labels.
+        Target regularized labels are defined on that output support; units retain
+        the original split-wide IDs, including units with no remaining output frames.
+        """
+        inputs = super().prediction_inputs(
+            session,
+            target_placefield,
+            source_placefield,
+            spks_type,
+            split,
+            nan_safe=nan_safe,
+        )
+        source, target, _ = self.get_session_data(session, spks_type, split)
+        source = np.asarray(source, dtype=np.float64)[:, inputs["idx_valid_prediction"]]
+        behavior = inputs.get("frame_behavior_internal", inputs["frame_behavior"])
         source_template = get_placefield_prediction(source_placefield, behavior)[0].T
-        target_template = get_placefield_prediction(target_placefield, behavior)[0].T
-        source = np.asarray(source, dtype=np.float64)
-        valid = np.all(np.isfinite(source), axis=0) & np.all(np.isfinite(source_template), axis=0) & np.all(np.isfinite(target_template), axis=0)
+        valid = ~np.any(np.isnan(inputs["target_prediction"]), axis=0)
         if nan_safe and not np.all(valid):
-            raise ValueError("Non-finite source activity or template predictions")
+            raise ValueError("NaN target template predictions")
         if not np.any(valid):
             raise ValueError("No finite template predictions on this split")
-        units, _ = make_gain_unit_index(
-            self.get_split_chunk_index(session, spks_type, split),
-            behavior.trial,
-        )
-        # Remap after filtering: trials with no usable frames must not affect shrinkage,
-        # rank bounds, or the training observation count.
-        _, units = np.unique(units[valid], return_inverse=True)
-        num_units = int(units.max()) + 1
-        source = source[:, valid]
+        inputs["target_prediction"] = inputs["target_prediction"][:, valid]
+        inputs["unit_index"] = inputs["unit_index"][valid]
+        inputs["idx_valid_prediction"] = inputs["idx_valid_prediction"][valid]
+        inputs["was_filtered"] = inputs["was_filtered"] or not np.all(valid)
+        for key in ("frame_behavior", "frame_behavior_internal"):
+            if key in inputs:
+                inputs[key] = inputs[key].filter(np.flatnonzero(valid))
         source_template = source_template[:, valid]
-        target_template = target_template[:, valid]
-        source_gain = least_squares_gain(source, source_template, units, num_units)
-        inputs = dict(
-            source_gain=source_gain,
-            source_residual=source - source_template * source_gain[:, units],
-            target_prediction=target_template,
-            unit_index=units,
-            num_units=num_units,
-            frame_behavior=true_behavior.filter(np.flatnonzero(valid)),
-            idx_valid_prediction=np.flatnonzero(valid),
-            was_filtered=not np.all(valid),
-        )
-        if self.internal:
-            inputs["frame_behavior_internal"] = behavior.filter(np.flatnonzero(valid))
+        inputs["source_template"] = source_template
+        inputs["source_residual"] = source[:, valid] - source_template * inputs["source_gain"][:, inputs["unit_index"]]
         if include_target:
-            target = np.asarray(target, dtype=np.float64)[:, valid]
+            target = np.asarray(target, dtype=np.float64)[:, inputs["idx_valid_prediction"]]
             if not np.all(np.isfinite(target)):
                 raise ValueError("Non-finite target activity in fitting/scoring data")
-            target_gain = least_squares_gain(target, target_template, units, num_units)
-            inputs["target_gain"] = target_gain
-            inputs["target_gain_activity"] = target_template * target_gain[:, units]
+            gain = least_squares_gain(
+                target,
+                inputs["target_prediction"],
+                inputs["unit_index"],
+                inputs["num_units"],
+                self.gain_regularization,
+            )
+            inputs["target_gain_activity"] = inputs["target_prediction"] * gain[:, inputs["unit_index"]]
             inputs["target_residual"] = target - inputs["target_gain_activity"]
         return inputs
 
-    def _fit_branch(self, inputs, branch, alpha):
-        if branch == "gain":
-            keep = np.bincount(inputs["unit_index"], minlength=inputs["num_units"]) >= self.min_frames_per_unit
-            if not np.any(keep):
-                raise ValueError(f"No gain unit has at least {self.min_frames_per_unit} frames")
-            x, y = inputs["source_gain"][:, keep], inputs["target_gain"][:, keep]
-        else:
-            x, y = inputs["source_residual"], inputs["target_residual"]
+    def _fit_residual(self, inputs, alpha):
         return ReducedRankRegression(alpha=alpha, fit_intercept=self.fit_intercept).fit(
-            torch.tensor(x.T, dtype=torch.float64),
-            torch.tensor(y.T, dtype=torch.float64),
+            torch.tensor(inputs["source_residual"].T, dtype=torch.float64),
+            torch.tensor(inputs["target_residual"].T, dtype=torch.float64),
         )
 
     def train(self, session, spks_type=None, split="train", hyperparameters=None):
         hp = hyperparameters or self.hyperparameters
-        target_pf, source_pf = PlaceFieldModel.train(self, session, spks_type, split, hp)
-        inputs = self.decomposition_inputs(
-            session,
-            target_pf,
-            source_pf,
-            spks_type,
-            split,
-            include_target=True,
-        )
-        return (
-            target_pf,
-            source_pf,
-            self._fit_branch(inputs, "gain", hp.alpha),
-            self._fit_branch(inputs, "residual", hp.alpha_residual),
-        )
+        target_pf, source_pf, gain_model = super().train(session, spks_type, split, hp)
+        inputs = self.decomposition_inputs(session, target_pf, source_pf, spks_type, split, include_target=True)
+        return target_pf, source_pf, gain_model, self._fit_residual(inputs, hp.alpha_residual)
 
     def apply_models(self, inputs, gain_model, residual_model, hyperparameters):
-        """Predict the two components without accessing measured target components."""
         gain_activity, extras = self.apply_gain_model(inputs, gain_model, hyperparameters.rank, nan_safe=True)
         residual = (
             residual_model.predict(
@@ -189,88 +232,54 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
             residual_prediction=residual,
             placefield_prediction=inputs["target_prediction"],
             residual_source=inputs["source_residual"],
+            source_template=inputs["source_template"],
+            gain_regularization=self.gain_regularization,
+            num_gain_units=inputs["num_units"],
         )
         return gain_activity + residual, extras
 
-    def predict(
-        self,
-        session,
-        coefficients,
-        spks_type=None,
-        split="test",
-        hyperparameters=None,
-        nan_safe=False,
-    ):
+    def predict(self, session, coefficients, spks_type=None, split="test", hyperparameters=None, nan_safe=False):
         target_pf, source_pf, gain_model, residual_model = coefficients
-        inputs = self.decomposition_inputs(
-            session,
-            target_pf,
-            source_pf,
-            spks_type,
-            split,
-            nan_safe=nan_safe,
-        )
+        inputs = self.decomposition_inputs(session, target_pf, source_pf, spks_type, split, nan_safe=nan_safe)
         return self.apply_models(inputs, gain_model, residual_model, hyperparameters or self.hyperparameters)
 
-    def _optimize_golden(self, session, spks_type, train_split, validation_split, nan_safe=False):
-        """Tune each branch against its measured activity component on validation trials.
+    def process(self, *args, **kwargs):
+        report = super().process(*args, **kwargs)
+        report.metrics.update(gain_residual_scores(report))
+        return report
 
-        Both branches inherit the same plain-PF hyperparameters. Gain is scored in
-        reconstructed activity units, so low-energy trials do not dominate the loss
-        through large, poorly determined gain ratios. The combined score is recorded
-        for the returned pair; independent tuning need not minimize combined MSE.
-        """
-        pf_hp = self.inherited_placefield_hyperparameters(session, spks_type, train_split, validation_split)
-        hp = PlaceFieldGainResidualHyperparameters(num_bins=pf_hp.num_bins, smooth_width=pf_hp.smooth_width)
-        target_pf, source_pf = PlaceFieldModel.train(self, session, spks_type, train_split, hp)
-        train = self.decomposition_inputs(
-            session,
-            target_pf,
-            source_pf,
-            spks_type,
-            train_split,
-            nan_safe=nan_safe,
-            include_target=True,
+    def _optimize_residual(self, session, spks_type, train_split, validation_split, method, nan_safe=False):
+        """Freeze reference G settings; tune only E prediction on validation trials."""
+        gain_hp = self.inherited_gain_hyperparameters(session, spks_type, train_split, validation_split, method)
+        hp = PlaceFieldGainResidualHyperparameters(
+            num_bins=gain_hp.num_bins,
+            smooth_width=gain_hp.smooth_width,
+            alpha=gain_hp.alpha,
+            rank=gain_hp.rank,
         )
-        validation = self.decomposition_inputs(
-            session,
-            target_pf,
-            source_pf,
-            spks_type,
-            validation_split,
-            nan_safe=nan_safe,
-            include_target=True,
-        )
-        results = []
-        fitted = {}
-        for branch in ("gain", "residual"):
-            max_model = self._fit_branch(train, branch, 1e2)
-            max_rank = int(max_model.max_rank)
-            records = []
+        target_pf, source_pf, gain_model = super().train(session, spks_type, train_split, hp)
+        train = self.decomposition_inputs(session, target_pf, source_pf, spks_type, train_split, nan_safe=nan_safe, include_target=True)
+        validation = self.decomposition_inputs(session, target_pf, source_pf, spks_type, validation_split, nan_safe=nan_safe, include_target=True)
+        max_rank = int(self._fit_residual(train, hp.alpha_residual).max_rank)
+        records = []
 
-            def evaluate(alpha, rank, model=None):
-                model = model if model is not None else self._fit_branch(train, branch, alpha)
-                if branch == "gain":
-                    prediction = self.apply_gain_model(validation, model, rank, nan_safe=nan_safe)[0]
-                    target = validation["target_gain_activity"]
-                else:
-                    prediction = (
-                        model.predict(
-                            torch.tensor(validation["source_residual"].T, dtype=torch.float64),
-                            rank=rank,
-                            nonnegative=False,
-                        )
-                        .numpy()
-                        .T
-                    )
-                    target = validation["target_residual"]
-                score = float(np.mean((target - prediction) ** 2))
-                if not np.isfinite(score):
-                    score = float("inf")
-                records.append(dict(branch=branch, alpha=float(alpha), rank=int(rank), score=score))
-                return score
+        def evaluate(alpha, rank, fitted=None):
+            fitted = fitted if fitted is not None else self._fit_residual(train, alpha)
+            prediction = (
+                fitted.predict(
+                    torch.tensor(validation["source_residual"].T, dtype=torch.float64),
+                    rank=int(rank),
+                    nonnegative=False,
+                )
+                .numpy()
+                .T
+            )
+            score = float(np.mean((validation["target_residual"] - prediction) ** 2))
+            records.append(dict(alpha_residual=float(alpha), rank_residual=int(rank), score=score if np.isfinite(score) else np.inf))
+            return records[-1]["score"]
 
-            best_alpha = golden_section_search(
+        if method == "golden":
+            alpha = golden_section_search(
                 func=lambda alpha: evaluate(alpha, max_rank),
                 a=1e-2,
                 b=1e6,
@@ -280,12 +289,12 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
                 minimize=True,
                 logspace=True,
             )[0]
-            model = self._fit_branch(train, branch, best_alpha)
+            fitted = self._fit_residual(train, alpha)
             if max_rank == 1:
-                evaluate(best_alpha, 1, model)
+                evaluate(alpha, 1, fitted)
             else:
                 golden_section_search(
-                    func=lambda rank: evaluate(best_alpha, int(rank), model),
+                    func=lambda rank: evaluate(alpha, int(rank), fitted),
                     a=1.0,
                     b=float(max_rank),
                     tolerance_param=1.0,
@@ -294,50 +303,71 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
                     minimize=True,
                     logspace=False,
                 )
-            best = min(records, key=lambda record: record["score"])
-            if not np.isfinite(best["score"]):
-                raise ValueError(f"No finite validation score for {branch} regression")
-            fitted[branch] = self._fit_branch(train, branch, best["alpha"])
-            if branch == "gain":
-                hp = replace(hp, alpha=best["alpha"], rank=best["rank"])
-            else:
-                hp = replace(hp, alpha_residual=best["alpha"], rank_residual=best["rank"])
-            results.extend(records)
-        prediction, _ = self.apply_models(validation, fitted["gain"], fitted["residual"], hp)
+        elif method == "grid":
+            space = hp.get_search_space()
+            for alpha in space["training"]["alpha_residual"]:
+                fitted = self._fit_residual(train, alpha)
+                for rank in sorted({min(int(r), max_rank) for r in space["prediction"]["rank_residual"]}):
+                    evaluate(alpha, rank, fitted)
+        else:
+            import optuna
+
+            study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=0))
+            study.optimize(
+                lambda trial: evaluate(
+                    trial.suggest_float("alpha_residual", 1e-2, 1e10, log=True),
+                    trial.suggest_int("rank_residual", 1, max_rank),
+                ),
+                n_trials=50,
+                show_progress_bar=False,
+            )
+        best = min(records, key=lambda row: row["score"])
+        if not np.isfinite(best["score"]):
+            raise ValueError("No finite validation score for residual regression")
+        hp = replace(hp, alpha_residual=best["alpha_residual"], rank_residual=best["rank_residual"])
+        residual_model = self._fit_residual(train, hp.alpha_residual)
+        prediction, _ = self.apply_models(validation, gain_model, residual_model, hp)
         target = validation["target_gain_activity"] + validation["target_residual"]
-        score = float(np.mean((target - prediction) ** 2))
-        params = dict(
-            num_bins=hp.num_bins,
-            smooth_width=hp.smooth_width,
-            alpha=hp.alpha,
-            rank=hp.rank,
-            alpha_residual=hp.alpha_residual,
-            rank_residual=hp.rank_residual,
-        )
-        return params, score, pd.DataFrame(results)
+        params = {key: getattr(hp, key) for key in ("num_bins", "smooth_width", "alpha", "rank", "alpha_residual", "rank_residual")}
+        table = pd.DataFrame(records).assign(alpha=hp.alpha, rank=hp.rank, num_bins=hp.num_bins, smooth_width=hp.smooth_width)
+        return params, float(np.mean((target - prediction) ** 2)), table
+
+    def _optimize_golden(self, session, spks_type, train_split, validation_split, nan_safe=False):
+        return self._optimize_residual(session, spks_type, train_split, validation_split, "golden", nan_safe)
+
+    def _optimize_grid(self, session, spks_type, train_split, validation_split, nan_safe=False):
+        return self._optimize_residual(session, spks_type, train_split, validation_split, "grid", nan_safe)
+
+    def _optimize_optuna(self, session, spks_type, train_split, validation_split, nan_safe=False):
+        return self._optimize_residual(session, spks_type, train_split, validation_split, "optuna", nan_safe)
 
 
 def gain_residual_scores(report):
-    """Score both predictions against original activity with a shared denominator.
+    """Common-denominator prediction scores and exact posthoc template energies.
 
-    Per-fold increments telescope exactly: R2(PF) + gain increment + residual
-    increment = R2(G+E). Standalone G and E scores are also saved. Summed SSE and
-    SST permit additive pooling across folds without taking separate medians.
+    Fractions use squared norm, not centered variance. E uses measured regularized
+    gains. Predicted E is audited separately. Energies sum across folds; fractions
+    must be pooled using those energies rather than averaged over folds.
     """
+    metrics = getattr(report, "metrics", {})
+    if all(key in metrics for key in GAIN_RESIDUAL_SCORE_NAMES):
+        return {key: metrics[key] for key in GAIN_RESIDUAL_SCORE_NAMES}
     target = np.asarray(report.target_data, dtype=np.float64)
-    gain = report.extras["gain_prediction"]
-    residual = report.extras["residual_prediction"]
-    template = report.extras["placefield_prediction"]
+    gain, residual = report.extras["gain_prediction"], report.extras["residual_prediction"]
+    template, units = report.extras["placefield_prediction"], report.extras["gain_unit_index"]
     sst = float(np.sum((target - target.mean()) ** 2))
-    sse_template = float(np.sum((target - template) ** 2))
-    sse_gain = float(np.sum((target - gain) ** 2))
-    sse_residual = float(np.sum((target - residual) ** 2))
-    sse_combined = float(np.sum((target - gain - residual) ** 2))
-    units = report.extras["gain_unit_index"]
-    target_gain = least_squares_gain(target, template, units, int(units.max()) + 1)
-    measured_gain = template * target_gain[:, units]
+    sse_template, sse_gain = float(np.sum((target - template) ** 2)), float(np.sum((target - gain) ** 2))
+    sse_residual, sse_combined = float(np.sum((target - residual) ** 2)), float(np.sum((target - gain - residual) ** 2))
+    measured_gains = least_squares_gain(
+        target,
+        template,
+        units,
+        report.extras["num_gain_units"],
+        report.extras["gain_regularization"],
+    )
+    measured_gain = template * measured_gains[:, units]
     measured_residual = target - measured_gain
-    return dict(
+    scores = dict(
         mse_gain=float(np.mean((target - gain) ** 2)),
         mse_residual=float(np.mean((target - residual) ** 2)),
         r2_gain=float(measure_r2(gain, target, dim=None)),
@@ -353,3 +383,10 @@ def gain_residual_scores(report):
         sse_residual=sse_residual,
         sse_combined=sse_combined,
     )
+    for prefix, activity, field in (
+        ("source_residual", report.extras["residual_source"], report.extras["source_template"]),
+        ("target_residual", measured_residual, template),
+        ("predicted_residual", residual, template),
+    ):
+        scores.update({f"{prefix}_{key}": value for key, value in template_projection_energy(activity, field, units).items()})
+    return scores
