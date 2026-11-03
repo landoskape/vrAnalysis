@@ -79,7 +79,8 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
     Residual predictions and G+E are signed, unprojected, and unrectified.
 
     Implementation revision 2 uses new optimization/score cache keys.
-    TrialPlacecellRegressionConfig uses schema v3 for these models only.
+    TrialPlacecellRegressionConfig retains schema v2; old gain-residual DB results
+    must be invalidated when adopting this revised implementation.
     """
 
     def __init__(

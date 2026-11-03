@@ -10,6 +10,11 @@ whatever the key includes is accounted for automatically. That means the ``--dat
 ``--activity-parameters`` used here must match the ones the results were produced with, or a
 different (and probably empty) set of files is targeted.
 
+``--all-cache-variants`` instead scans the two cache directories for the explicitly
+named models. It covers every registry (including environment/trial registries),
+session, scaling, spike type, method, and implementation revision. It does not load
+sessions and cannot be combined with the ordinary combination-selection flags.
+
 Usage
 -----
     python -m dimensionality_manuscript.scripts.clear_model_caches
@@ -30,6 +35,9 @@ Examples
     python -m dimensionality_manuscript.scripts.clear_model_caches --sessions-file ~/vrAnalysis/sessions.json
 
     # --sessions-file falls back to $DIM_MANUSCRIPT_SESSIONS_FILE if not passed explicitly
+
+    # All variants for an explicitly named model, including old cache-key revisions
+    python -m dimensionality_manuscript.scripts.clear_model_caches --models internal_placefield_1d_structured_gain_residual --all-cache-variants --dry-run
 """
 
 import argparse
@@ -41,8 +49,10 @@ from vrAnalysis.sessions import SpksTypes
 from dimensionality_manuscript.configs.data_config import get_data_config, list_data_configs
 from dimensionality_manuscript.registry import (
     ACTIVITY_PARAMETERS_NAMES,
+    MODEL_NAMES,
     ModelName,
     PopulationRegistry,
+    RegistryPaths,
     get_model,
 )
 from dimensionality_manuscript.scripts.run import collect_sessions_auto
@@ -61,6 +71,54 @@ DEFAULT_SPKS_TYPES: tuple[SpksTypes, ...] = ("sigrebase",)
 #: separate cache entry, and clearing only the one you happened to think of is a silent no-op, so
 #: the default covers all of them. Names with nothing cached simply report zero.
 DEFAULT_ACTIVITY_PARAMETERS: tuple[str, ...] = ("default", "preserved", "std")
+
+
+def find_model_cache_variants(models: list[ModelName], registry_paths=None):
+    """Find direct joblib cache files belonging to exactly the requested model names.
+
+    Match the longest registered model-name prefix so clearing a base model does
+    not accidentally clear registered variants with a longer shared prefix.
+    Population caches and ResultsStore blobs are outside the two scanned folders.
+    """
+    unknown = set(models) - set(MODEL_NAMES)
+    if unknown:
+        raise ValueError(f"Unknown models: {sorted(unknown)}")
+    paths = registry_paths or RegistryPaths()
+    directories = {"hyperparameters": paths.hyperparameter_path, "scores": paths.score_path}
+    found = {name: {kind: [] for kind in directories} for name in dict.fromkeys(models)}
+    names_by_length = sorted(MODEL_NAMES, key=len, reverse=True)
+    for kind, directory in directories.items():
+        directory = Path(directory).resolve()
+        for path in sorted(directory.glob("*.joblib")):
+            owner = next((name for name in names_by_length if path.name.startswith(name + "_")), None)
+            if owner not in found:
+                continue
+            if path.resolve().parent != directory or not path.is_file():
+                raise ValueError(f"Cache path is not a file within the intended cache directory: {path}")
+            found[owner][kind].append(path)
+    return found
+
+
+def clear_model_cache_variants(models, *, registry_paths=None, clear_hyperparameters=True, clear_scores=True, dry_run=False):
+    """Clear all variants of selected models without loading sessions or registries."""
+    found = find_model_cache_variants(models, registry_paths)
+    enabled = {"hyperparameters": clear_hyperparameters, "scores": clear_scores}
+    counts = {kind: 0 for kind in enabled}
+    print("Scope: ONLY the named models; ALL sessions, registry variants, spike types, scalings, methods, and cache revisions.")
+    for name, entries in found.items():
+        print(name)
+        for kind, files in entries.items():
+            if not enabled[kind]:
+                continue
+            counts[kind] += len(files)
+            verb = "would clear" if dry_run else "clearing"
+            print(f"  {kind}: {verb} {len(files)} file(s)")
+            if files:
+                print(f"    Directory: {files[0].parent}")
+            if not dry_run:
+                for path in files:
+                    path.unlink()
+    return counts
 
 
 def clear_model_caches(
@@ -135,20 +193,25 @@ def clear_model_caches(
 
 def main():
     parser = argparse.ArgumentParser(description="Clear cached hyperparameters and scores for regression models")
-    parser.add_argument("--models", nargs="+", default=list(DEFAULT_MODELS), help=f"Model names. Default: {' '.join(DEFAULT_MODELS)}")
-    parser.add_argument("--spks-types", nargs="+", default=list(DEFAULT_SPKS_TYPES), help=f"Spike types. Default: {' '.join(DEFAULT_SPKS_TYPES)}")
+    parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=None, help=f"Model names. Default: {' '.join(DEFAULT_MODELS)}")
+    parser.add_argument("--spks-types", nargs="+", default=None, help=f"Spike types. Default: {' '.join(DEFAULT_SPKS_TYPES)}")
     parser.add_argument(
         "--activity-parameters",
         nargs="+",
-        default=list(DEFAULT_ACTIVITY_PARAMETERS),
+        default=None,
         help=f"Named activity scalings. Available: {', '.join(ACTIVITY_PARAMETERS_NAMES)}. Default: {' '.join(DEFAULT_ACTIVITY_PARAMETERS)}",
     )
     parser.add_argument(
         "--data-config",
-        default="default",
+        default=None,
         help=f"Named DataConfig the results were produced with. Available: {', '.join(list_data_configs())}. Default: default",
     )
-    parser.add_argument("--method", default="preferred", help="Optimization method the results were produced with. Default: preferred")
+    parser.add_argument("--method", default=None, help="Optimization method the results were produced with. Default: preferred")
+    parser.add_argument(
+        "--all-cache-variants",
+        action="store_true",
+        help="Clear ALL cached variants of the explicitly named --models, including trial registries and old revisions; no session loading",
+    )
     cache_group = parser.add_mutually_exclusive_group()
     cache_group.add_argument("--hyperparameters-only", action="store_true", help="Clear only the hyperparameter cache")
     cache_group.add_argument("--scores-only", action="store_true", help="Clear only the score cache")
@@ -161,17 +224,29 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Report what would be removed without removing it")
     args = parser.parse_args()
 
-    counts = clear_model_caches(
-        models=args.models,
-        spks_types=args.spks_types,
-        activity_parameters_names=args.activity_parameters,
-        data_config_name=args.data_config,
-        method=args.method,
-        clear_hyperparameters=not args.scores_only,
-        clear_scores=not args.hyperparameters_only,
-        sessions_file=args.sessions_file,
-        dry_run=args.dry_run,
-    )
+    if args.all_cache_variants:
+        if not args.models:
+            parser.error("--all-cache-variants requires explicit --models")
+        if any(value is not None for value in (args.spks_types, args.activity_parameters, args.data_config, args.method, args.sessions_file)):
+            parser.error("--all-cache-variants cannot be combined with spike/scaling/data-config/method/session filters")
+        counts = clear_model_cache_variants(
+            args.models,
+            clear_hyperparameters=not args.scores_only,
+            clear_scores=not args.hyperparameters_only,
+            dry_run=args.dry_run,
+        )
+    else:
+        counts = clear_model_caches(
+            models=args.models or list(DEFAULT_MODELS),
+            spks_types=args.spks_types or list(DEFAULT_SPKS_TYPES),
+            activity_parameters_names=args.activity_parameters or list(DEFAULT_ACTIVITY_PARAMETERS),
+            data_config_name=args.data_config or "default",
+            method=args.method or "preferred",
+            clear_hyperparameters=not args.scores_only,
+            clear_scores=not args.hyperparameters_only,
+            sessions_file=args.sessions_file,
+            dry_run=args.dry_run,
+        )
 
     verb = "Would clear" if args.dry_run else "Cleared"
     print(f"{verb} {counts['hyperparameters']} hyperparameter cache entrie(s) and {counts['scores']} score cache entrie(s)")

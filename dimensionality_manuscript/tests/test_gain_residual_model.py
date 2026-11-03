@@ -254,7 +254,7 @@ def test_registry_cache_and_schema_identity(internal):
     prefix = "internal" if internal else "external"
     name = f"{prefix}_placefield_1d_structured_gain_residual"
     config = TrialPlacecellRegressionConfig(model_name=name)
-    assert config.schema_version == "v3"
+    assert config.schema_version == "v2"
     assert MODEL_NAMES.index(name) >= 50
     registry = SimpleNamespace(registry_params=config.data_config.to_registry_params())
     new = get_model(name, registry)
@@ -265,7 +265,7 @@ def test_registry_cache_and_schema_identity(internal):
     assert new._get_score_cache_key(session, "sigrebase") != old._get_score_cache_key(session, "sigrebase")
     assert new.regressor_dimensionality() == get_regressor_dimensionality_from_hyperparameters(new.hyperparameters)
     baseline_name = old._get_model_name() if internal else "external_placefield_1d"
-    assert config.key() != replace(config, model_name=baseline_name, schema_version=None).key()
+    assert config.key() != replace(config, model_name=baseline_name).key()
     old_new_cache_key = RegressionModel._get_hyperparameter_cache_key(new, session, "sigrebase")
     assert new._get_hyperparameter_cache_key(session, "sigrebase") == old_new_cache_key + "_regularized_v2"
     assert "internal_placefield_1d_structured_gain_residual" in TrialPlacecellRegressionConfig._param_grid()["model_name"]
@@ -317,15 +317,18 @@ def test_reference_optimization_uses_identical_settings(synthetic, monkeypatch):
     assert calls == [dict(spks_type="sigrebase", train_split="train", validation_split="validation", method="golden")]
 
 
-def test_revised_model_schema_selection_preserves_other_config_keys():
+def test_revised_models_keep_one_schema_and_support_targeted_invalidation():
     variations = TrialPlacecellRegressionConfig.generate_variations()
-    assert {cfg.schema_version for cfg in variations} == {"v2", "v3"}
-    assert all("gain_residual" in cfg.model_name for cfg in variations if cfg.schema_version == "v3")
-    assert all("gain_residual" not in cfg.model_name for cfg in TrialPlacecellRegressionConfig.generate_variations("v2"))
-    assert len(TrialPlacecellRegressionConfig.generate_variations_matching({"schema_version": "v3"})) == 2
+    assert {cfg.schema_version for cfg in variations} == {"v2"}
+    assert len(variations) == 9
+    for prefix in ("internal", "external"):
+        name = f"{prefix}_placefield_1d_structured_gain_residual"
+        configs = TrialPlacecellRegressionConfig.generate_variations_matching({"model_name": name, "schema_version": "v2"})
+        assert len(configs) == 1 and configs[0].model_name == name
+        assert configs[0].schema_version == "v2"
     baseline = TrialPlacecellRegressionConfig(model_name="rrr")
     assert baseline.key() == replace(baseline, schema_version="v2").key()
-    with pytest.raises(ValueError, match="require schema_version='v3'"):
-        TrialPlacecellRegressionConfig(model_name="internal_placefield_1d_structured_gain_residual", schema_version="v2")
+    with pytest.raises(ValueError, match="supports schema_version"):
+        TrialPlacecellRegressionConfig(model_name="internal_placefield_1d_structured_gain_residual", schema_version="v3")
     with pytest.raises(ValueError, match="one reference optimization method"):
         TrialPlacecellRegressionConfig(model_name="internal_placefield_1d_structured_gain_residual", method="best")
