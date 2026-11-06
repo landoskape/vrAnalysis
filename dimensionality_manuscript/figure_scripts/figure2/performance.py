@@ -15,6 +15,7 @@ from dimensionality_manuscript.figure_scripts.panels import (
 )
 
 from ._scores import draw_subject_traces, performance_scores
+from .model_style import COMPARISON_MODEL_COLORS, ordered_comparison_models
 
 # The base model set is laid out along the x-axis in a deliberate order. Optional models
 # extend this set; labels and colors remain panel-specific.
@@ -23,12 +24,12 @@ PERFORMANCE_MODEL_NAMES: list[ModelName] = [
     "internal_placefield_1d_gain",
     "rrr",
 ]
-PERFORMANCE_MODEL_LABELS = ("Placefield", "Global\nGain", "Peer\nPrediction")
-PERFORMANCE_MODEL_COLORS = ("#000000", "#c00000", "#0000cd")
+PERFORMANCE_MODEL_LABELS = ("Int.Pos.\nPlacefield", "Global\nGain", "Peer\nPred.")
+PERFORMANCE_MODEL_COLORS = tuple(COMPARISON_MODEL_COLORS[name] for name in PERFORMANCE_MODEL_NAMES)
 
 STRUCTURED_ADDITIVE_MODEL_NAME: ModelName = "internal_placefield_1d_structured_additive"
 STRUCTURED_ADDITIVE_MODEL_LABEL = "Shared\nResidual"
-STRUCTURED_ADDITIVE_MODEL_COLOR = "#c06000"
+STRUCTURED_ADDITIVE_MODEL_COLOR = COMPARISON_MODEL_COLORS[STRUCTURED_ADDITIVE_MODEL_NAME]
 
 # Axis label for each selectable metric. Both are plotted in their stored units -- R^2 as a
 # fraction (<= 1), not a percentage -- so there is no display rescaling anywhere in this panel.
@@ -62,10 +63,10 @@ class ModelPerformanceViewer(FigureViewer):
     avg_by_mouse : bool
         Average sessions within a mouse before plotting, so one trace is one mouse.
     include_external_placefield : bool
-        Prepend external PF as "Placefield" and label internal PF "Internal Placefield".
+        Prepend external PF as "Placefield"; internal PF is "Int. Pos. PF".
         External PF becomes the reference when included; otherwise internal PF is used.
     include_structured_additive : bool
-        Insert the internal structured-additive model between PF+Gain and Peer.
+        Append Shared Residual after Peer Prediction.
     fontsize : float
         Font size for the main axis's tick labels and y label.
     xtick_rotation : float
@@ -96,6 +97,7 @@ class ModelPerformanceViewer(FigureViewer):
     structured_additive_model_label = STRUCTURED_ADDITIVE_MODEL_LABEL
     structured_additive_model_color = STRUCTURED_ADDITIVE_MODEL_COLOR
     performance_metrics = PERFORMANCE_METRICS
+    use_comparison_order = True
 
     def __init__(
         self,
@@ -106,7 +108,6 @@ class ModelPerformanceViewer(FigureViewer):
         include_structured_additive: bool = False,
         include_external_placefield: bool = False,
         fontsize: float = 12.0,
-        xtick_rotation: float = 45.0,
         ytick_max: float = 0.1,
         ylim: tuple[float, float] = (-0.03, 0.12),
         show_zero_line: bool = True,
@@ -139,17 +140,21 @@ class ModelPerformanceViewer(FigureViewer):
         self.model_colors = list(self.base_model_colors)
         if include_external_placefield and "external_placefield_1d" not in self.model_names:
             self.model_names.insert(0, "external_placefield_1d")
-            self.model_labels.insert(0, "Placefield")
-            self.model_colors.insert(0, "#666666")
-            internal_index = self.model_names.index("internal_placefield_1d")
-            self.model_labels[internal_index] = "Internal\nPlacefield"
+            self.model_labels.insert(0, "PF")
+            self.model_colors.insert(0, COMPARISON_MODEL_COLORS["external_placefield_1d"])
+            if not self.use_comparison_order:
+                internal_index = self.model_names.index("internal_placefield_1d")
+                self.model_labels[internal_index] = "Int.Pos.\nPF"
         if include_structured_additive:
-            # Shared Residual belongs immediately before Peer Prediction. This also keeps the
-            # insertion correct for subclasses that add another gain model before Peer.
-            insert_at = len(self.model_names) - 1
+            insert_at = len(self.model_names) if self.use_comparison_order else len(self.model_names) - 1
             self.model_names.insert(insert_at, self.structured_additive_model_name)
             self.model_labels.insert(insert_at, self.structured_additive_model_label)
             self.model_colors.insert(insert_at, self.structured_additive_model_color)
+        if self.use_comparison_order:
+            styles = dict(zip(self.model_names, zip(self.model_labels, self.model_colors)))
+            self.model_names = ordered_comparison_models(self.model_names)
+            self.model_labels = [styles[name][0] for name in self.model_names]
+            self.model_colors = [styles[name][1] for name in self.model_names]
         self._scores = np.empty((len(self.model_names), 0))
 
         # --- data selection (model_name is fixed by self.model_names) ---

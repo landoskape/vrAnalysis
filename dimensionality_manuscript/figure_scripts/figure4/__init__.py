@@ -25,6 +25,7 @@ from ._alpha_config import (
 from .familiarity import DimensionalityFamiliarityViewer
 from .placefield_fits import PlacefieldExampleFitViewer, PlacefieldFitFigureViewer
 from .placefield_population import PlacefieldPopulationViewer
+from .placefield_spectrum_example import PlacefieldSpectrumExampleViewer
 from .placefield_projections import PlacefieldProjectionViewer
 from .placefield_sessions_mse import PlacefieldParameterSessionsViewer, PlacefieldSpectrumMSEViewer
 from .spectra_diagnostics import (
@@ -47,6 +48,7 @@ __all__ = [
     "PlacefieldFitFigureViewer",
     "PlacefieldParameterSessionsViewer",
     "PlacefieldPopulationViewer",
+    "PlacefieldSpectrumExampleViewer",
     "PlacefieldProjectionViewer",
     "PlacefieldSpectraViewer",
     "PlacefieldSpectrumMSEViewer",

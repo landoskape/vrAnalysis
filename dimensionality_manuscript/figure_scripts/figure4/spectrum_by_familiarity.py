@@ -87,6 +87,10 @@ class SpectrumCurvesByFamiliarityViewer(FigureViewer):
         Experience-order slot shown in ``"by_env"`` mode.
     mouse : str or None
         Example mouse for ax[0]/ax[2]. If None, the first of ``results.unique_mice`` is used.
+    full_scale_example : bool
+        Stretch the example mouse's session colors across the full colormap, using its first
+        and last available sessions as endpoints shared by both example panels. Population
+        panels and the colorbar retain the actual session-number scale.
     plot_style : {"each", "errorPlot"}
         Population-panel (ax[1]/ax[3]) style: individual + mean lines, or mean +/- std band.
     hide_error : bool
@@ -127,6 +131,7 @@ class SpectrumCurvesByFamiliarityViewer(FigureViewer):
         session_alignment: str = "within_env",
         env_slot: int = 0,
         mouse: str | None = None,
+        full_scale_example: bool = False,
         plot_style: str = "errorPlot",
         hide_error: bool = False,
         skip_sessions: int = 0,
@@ -173,6 +178,7 @@ class SpectrumCurvesByFamiliarityViewer(FigureViewer):
             self.add_selection("mouse", options=mouse_options, value=mouse)
         else:
             self.add_selection("mouse", options=mouse_options)
+        self.add_boolean("full_scale_example", value=full_scale_example)
         self.add_integer("env_slot", value=int(env_slot), min=0, max=MAX_ENV_SLOTS - 1)
         self.add_selection("plot_style", options=["each", "errorPlot"], value=plot_style)
         self.add_boolean("hide_error", value=hide_error)
@@ -396,9 +402,14 @@ class SpectrumCurvesByFamiliarityViewer(FigureViewer):
 
         fig, axes = self.new_subplots(1, 4, figsize=self.figsize, layout="constrained", sharey=True)
         mouse = str(state["mouse"])
-        self._plot_example(axes[0], pf_records.get(mouse, []), cmap, norm)
+        example_norm = norm
+        if state["full_scale_example"]:
+            example_indices = [idx + 1 for collection in (pf_records, full_records) for idx, _ in collection.get(mouse, [])]
+            if example_indices and min(example_indices) < max(example_indices):
+                example_norm = Normalize(vmin=min(example_indices), vmax=max(example_indices))
+        self._plot_example(axes[0], pf_records.get(mouse, []), cmap, example_norm)
         self._plot_population(axes[1], pf_records, state, cmap, norm)
-        self._plot_example(axes[2], full_records.get(mouse, []), cmap, norm)
+        self._plot_example(axes[2], full_records.get(mouse, []), cmap, example_norm)
         self._plot_population(axes[3], full_records, state, cmap, norm)
 
         axes[0].set_title(f"{self.pf_label}: {mouse}", fontsize=fontsize)

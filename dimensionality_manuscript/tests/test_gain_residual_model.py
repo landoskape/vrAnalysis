@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+from dimilibi import measure_r2
 from dimensionality_manuscript.configs.trial_regression import TrialPlacecellRegressionConfig
 from dimensionality_manuscript.regression_models.gain_residual import (
     PlaceFieldGainResidualModel,
@@ -205,6 +206,21 @@ def test_component_scores_share_units_and_increments_telescope(synthetic):
     total_r2 = 1 - scores["sse_combined"] / scores["sst_activity"]
     assert scores["r2_template"] + scores["delta_r2_gain"] + scores["delta_r2_residual"] == pytest.approx(total_r2)
     assert scores["sse_combined"] == pytest.approx(np.sum((report.target_data - prediction) ** 2))
+    residual_activity = extras["placefield_prediction"] + extras["residual_prediction"]
+    expected_sse = np.sum((report.target_data - residual_activity) ** 2)
+    assert scores["sse_residual"] == pytest.approx(expected_sse)
+    assert scores["mse_residual"] == pytest.approx(expected_sse / report.target_data.size)
+    assert scores["r2_residual"] == pytest.approx(float(measure_r2(residual_activity, report.target_data, dim=None)))
+    # Component diagnostics still measure the raw residual, without adding PF.
+    inputs = model.decomposition_inputs(None, "target", "source", split="test", include_target=True)
+    assert scores["r2_residual_component"] == pytest.approx(
+        float(measure_r2(extras["residual_prediction"], inputs["target_residual"], dim=None))
+    )
+    extras["residual_prediction"] = np.zeros_like(extras["residual_prediction"])
+    baseline = gain_residual_scores(report)
+    assert baseline["sse_residual"] == pytest.approx(baseline["sse_template"])
+    assert baseline["r2_residual"] == pytest.approx(baseline["r2_template"])
+
 
 
 def test_trial_config_saves_component_folds_and_additive_pooled_scores(synthetic, monkeypatch):

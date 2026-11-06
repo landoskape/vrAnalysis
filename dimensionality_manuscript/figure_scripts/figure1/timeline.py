@@ -56,6 +56,10 @@ class ExperimentTimeline(FigureViewer):
         Draw each environment's bar from its first to its last session, ignoring sessions in
         between where it was not run. False draws one rectangle per contiguous run instead, which
         exposes the dropouts (e.g. CR_Hippocannula6 skips environment 1 mid-way).
+    mode : {"absolute", "relative"}
+        Absolute acquisition order, or imaging-session count within each environment.
+        Relative mode aligns each environment's first imaging session after training;
+        only the first environment extends through training.
     train_in_first_env : bool
         Extend the first environment's bar back through the training block -- the mouse is trained
         in the environment it later sees first.
@@ -84,6 +88,8 @@ class ExperimentTimeline(FigureViewer):
     training_color, imaging_color : str
         Colors of the two phase-bar segments. Grey by default so they do not compete with the
         environment palette.
+    imaging_label : str
+        Text above the imaging phase bar.
     env_label_color : str
         Color of the labels drawn inside the environment bars.
     show_phase_bar, show_phase_labels, show_env_labels : bool
@@ -105,6 +111,7 @@ class ExperimentTimeline(FigureViewer):
         merge_gaps: bool = True,
         train_in_first_env: bool = True,
         label_by_env_id: bool = False,
+        mode: str = "absolute",
         figsize: tuple[float, float] = (3.6, 2.0),
         phase_label_height: float = 0.55,
         phase_bar_height: float = 0.3,
@@ -123,6 +130,7 @@ class ExperimentTimeline(FigureViewer):
         axis_label_scale: float = 1.0,
         training_color: str = "0.65",
         imaging_color: str = "0.25",
+        imaging_label: str = "imaging",
         env_label_color: str = "w",
         show_phase_bar: bool = True,
         show_phase_labels: bool = True,
@@ -144,6 +152,7 @@ class ExperimentTimeline(FigureViewer):
         self.add_boolean("merge_gaps", value=merge_gaps)
         self.add_boolean("train_in_first_env", value=train_in_first_env)
         self.add_boolean("label_by_env_id", value=label_by_env_id)
+        self.add_selection("mode", value=mode, options=["absolute", "relative"])
 
         # --- figure size in inches; everything else below is relative to it ---
         self.add_float("fig_width", value=figsize[0], min=0.5, max=20.0, step=0.01)
@@ -173,6 +182,7 @@ class ExperimentTimeline(FigureViewer):
         # --- style ---
         self.add_text("training_color", value=training_color)
         self.add_text("imaging_color", value=imaging_color)
+        self.add_text("imaging_label", value=imaging_label)
         self.add_text("env_label_color", value=env_label_color)
         self.add_boolean("show_phase_bar", value=show_phase_bar)
         self.add_boolean("show_phase_labels", value=show_phase_labels)
@@ -232,16 +242,20 @@ class ExperimentTimeline(FigureViewer):
             cumulative += height
         return edges
 
-    def draw(self, ax, state) -> None:
+    def draw(self, ax, state, *, session_xlim=None) -> None:
         """Draw the timeline into an existing axes.
 
         Keeping the renderer separate from :meth:`plot` lets summary viewers embed the same
         timeline panel without copying its layout logic or creating a temporary figure.
+        ``session_xlim`` optionally aligns the viewport to imaging-session centers (1-based),
+        so an embedded schematic can share the horizontal range of summary curves.
         """
         fontsize = state["fontsize"]
         num_training = state["num_training"]
         num_envs = len(self.env_order)
-        num_sessions = num_training + self.num_imaging
+        relative = state.get("mode", "absolute") == "relative"
+        imaging_length = int(self.env_present.sum(axis=1).max()) if relative and num_envs else self.num_imaging
+        num_sessions = max(1, num_training + imaging_length)
         edges = self._band_edges(state, num_envs)
 
         def x(session_units: float) -> float:
@@ -249,6 +263,9 @@ class ExperimentTimeline(FigureViewer):
             return session_units / num_sessions
 
         ax.set_xlim(-state["margin_x"], 1.0 + state["margin_x"])
+        if session_xlim is not None:
+            view_left, view_right = (num_training + value - 0.5 for value in session_xlim)
+            ax.set_xlim(x(view_left), x(view_right))
         ax.set_ylim(edges["axis_label"][1] - state["margin_y"], 1.0 + state["margin_y"])
         ax.set_axis_off()
 
@@ -262,10 +279,14 @@ class ExperimentTimeline(FigureViewer):
         if num_training > 0:
             segments = [
                 ("training", 0.0, num_training - half_gap, state["training_color"]),
-                ("imaging", num_training + half_gap, num_sessions, state["imaging_color"]),
+                (state.get("imaging_label", "imaging"), num_training + half_gap, num_sessions, state["imaging_color"]),
             ]
         else:
-            segments = [("imaging", 0.0, num_sessions, state["imaging_color"])]
+            segments = [(state.get("imaging_label", "imaging"), 0.0, num_sessions, state["imaging_color"])]
+        if session_xlim is not None:
+            segments = [(label, max(start, view_left), min(stop, view_right), color)
+                        for label, start, stop, color in segments
+                        if max(start, view_left) < min(stop, view_right)]
 
         if state["show_phase_bar"]:
             for _, start, stop, color in segments:
@@ -288,7 +309,9 @@ class ExperimentTimeline(FigureViewer):
         for slot, env in enumerate(self.env_order):
             top, bottom = edges[f"env{slot}"]
             present = self.env_present[slot]
-            if state["merge_gaps"]:
+            if relative:
+                runs = [(0, int(present.sum()))]
+            elif state["merge_gaps"]:
                 # First appearance -> last appearance, ignoring any dropout in between; the
                 # un-merged form draws one rectangle per contiguous run instead.
                 runs = [(int(present.argmax()), int(self.num_imaging - present[::-1].argmax()))]
@@ -305,8 +328,11 @@ class ExperimentTimeline(FigureViewer):
 
             if state["show_env_labels"]:
                 label = f"Env {env}" if state["label_by_env_id"] else f"{ordinal(slot + 1)} Env"
+                label_right = num_training + (int(present.sum()) if relative else self.num_imaging)
+                if session_xlim is not None:
+                    label_right = min(label_right, view_right)
                 ax.text(
-                    x(num_sessions - state["env_label_pad"]),
+                    x(label_right - state["env_label_pad"]),
                     (top + bottom) / 2,
                     label,
                     ha="right",

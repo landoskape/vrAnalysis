@@ -483,8 +483,12 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
     optional per-session negative clipping and mouse averaging. ``pr_pre_smooth=True`` measures
     it before display smoothing; False measures the displayed spectra. Neither choice changes
     the raw cumulative SVRs. The horizontal dimensionality swarms share the spectrum's log axis.
+    ``source_key`` selects PFxFull (``sf_cv``, the default) or PFxPF (``ss_cv``)
+    for the orange spectra, dimensionalities, and variance-ratio numerator.
     ``height_ratios`` sets the relative heights of the spectrum and dimensionality rows.
     """
+
+    _source_keys = {"PFxPF": "ss_cv", "PFxFull": "sf_cv"}
 
     _head_controls = (
         "first10",
@@ -501,6 +505,7 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
         self,
         results: ResultsAggregator,
         *,
+        source_key: str = "sf_cv",
         pr_pre_smooth: bool = True,
         beewidth: float = 0.15,
         point_alpha: float = 0.6,
@@ -511,17 +516,28 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
         figsize: tuple[float, float] = (7.0, 4.0),
         **options,
     ):
+        # Accept stored keys in Python while displaying readable choices in the viewer.
+        self._initial_source_label = {value: key for key, value in self._source_keys.items()}.get(source_key, source_key)
+        if self._initial_source_label not in self._source_keys:
+            raise ValueError(f"Unknown source_key {source_key!r}; expected sf_cv or ss_cv")
         self.height_ratios = height_ratios
         options.update(include_first10_beeswarm=False, include_first10_by_env=False, show_slope_panel=False)
+        self.add_selection("source_key", value=self._initial_source_label, options=tuple(self._source_keys))
         super().__init__(results, figsize=figsize, ax1_width_ratio=ax1_width_ratio, **options)
         unused_controls = (
-            *self._head_controls, "style_by_env", "ax23_width_ratio",
-            "all_text_x", "all_text_y", "all_text_ha", "all_text_va",
+            *self._head_controls,
+            "style_by_env",
+            "ax23_width_ratio",
+            "all_text_x",
+            "all_text_y",
+            "all_text_ha",
+            "all_text_va",
         )
         for name in list(self.parameters):
             if name not in unused_controls and not name.startswith(("annotation_", "env_legend_")):
                 continue
             self.remove_parameter(name)
+        self.on_change("source_key", self.refresh_data)
         self.add_boolean("pr_pre_smooth", value=pr_pre_smooth)
         self.add_float("beewidth", value=beewidth, min=0.0, max=0.5, step=0.01)
         self.add_float("point_alpha", value=point_alpha, min=0.0, max=1.0, step=0.05)
@@ -535,6 +551,7 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
             spectrum_mode=state["spectrum_mode"],
             env_full_scope=state["env_full_scope"],
             full_within_env=state["full_within_env"],
+            source_key=self._source_keys[state.get("source_key", self._initial_source_label)],
         )
 
     def _new_composite_axes(self, state, width_ratios):
@@ -553,23 +570,33 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
         dim_axis = self._dimensionality_axis
         display_arrays = spectrum_display_arrays(
             self._ratios_arrays,
-            state["pf_smooth_method"], state["pf_smooth_width"],
-            state["full_smooth_method"], state["full_smooth_width"],
-            clip_negative=state["clip_negative"], normalize=state["normalize"],
+            state["pf_smooth_method"],
+            state["pf_smooth_width"],
+            state["full_smooth_method"],
+            state["full_smooth_width"],
+            clip_negative=state["clip_negative"],
+            normalize=state["normalize"],
         )
         plot_ratios_spectrum(
-            spectrum_axis, display_arrays, fontsize,
+            spectrum_axis,
+            display_arrays,
+            fontsize,
             standard_log_yticklabels=True,
-            ylim=tuple(10 ** limit for limit in state["ylims"]),
+            ylim=tuple(10**limit for limit in state["ylims"]),
             show_first10_indicator=False,
+            pf_label=state["source_key"],
         )
         apply_legend(spectrum_axis, state, fontsize, prefix="spectrum_legend", auto_loc=LEGEND_AUTO_LOCS["spectrum_legend"])
         if state["include_beeswarm"]:
             component_axis = axes[1]
             value_scale = 100.0 if state["as_percent"] else 1.0
             plot_ratios_beeswarms_concise(
-                component_axis, self._ratios_arrays, fontsize,
-                include_first10=False, value_scale=value_scale, color="black",
+                component_axis,
+                self._ratios_arrays,
+                fontsize,
+                include_first10=False,
+                value_scale=value_scale,
+                color="black",
             )
             ratio_ylims = tuple(limit * value_scale for limit in state["shared_variance_ratio_ylims"])
             component_axis.set_ylim(*ratio_ylims)
@@ -587,9 +614,13 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
         )
         values = [_signed_participation_ratio(pr_arrays[key]) for key in ("sf_cv", "ff")]
         _horizontal_beeswarm_panel(
-            dim_axis, values, [CONDITION_COLORS["behaving"], "black"],
-            beewidth=state["beewidth"], each_alpha=state["point_alpha"],
-            markersize=state["markersize"], mean_linewidth=state["mean_linewidth"],
+            dim_axis,
+            values,
+            [CONDITION_COLORS["behaving"], "black"],
+            beewidth=state["beewidth"],
+            each_alpha=state["point_alpha"],
+            markersize=state["markersize"],
+            mean_linewidth=state["mean_linewidth"],
         )
         # Include measured dimensionalities even when the spectrum's visible tail ends earlier.
         finite = np.concatenate(values)
@@ -601,8 +632,12 @@ class ConciseSpectrumDimensionalityViewer(ConciseSpectrumViewer):
         dim_axis.set_xlabel("Dimensionality (PR)", fontsize=fontsize)
         dim_axis.set_ylabel("")
         format_spines(
-            dim_axis, x_pos=-0.02, y_pos=-0.02, spines_visible=["bottom"],
-            xbounds=[1, xmax], tick_fontsize=state["fontsize"],
+            dim_axis,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["bottom"],
+            xbounds=[1, xmax],
+            tick_fontsize=state["fontsize"],
         )
         decades = 10.0 ** np.arange(0, np.floor(np.log10(xmax)) + 1)
         dim_axis.set_xticks(decades)

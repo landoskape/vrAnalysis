@@ -57,6 +57,8 @@ def _decay_stat_panel(
     xtick_labels,
     ybounds: tuple[float, float] | None = None,
     yticks=None,
+    linewidth: float = 2.0,
+    zorders=None,
 ) -> None:
     """One panel of a per-curve statistic at the two decay-model x-positions (power law, exponential).
 
@@ -72,6 +74,11 @@ def _decay_stat_panel(
       then ``[n_curves .. 2*n_curves-1]`` for the exponential), each with a short horizontal mean line.
       ``beewidth`` sets the point spread; the reduced-equation label sits under each block.
 
+    ``linewidth`` controls the summary curves and swarm mean lines; faint per-mouse
+    curves in ``each`` mode retain their own width.
+
+    ``zorders``, when given, specifies draw order per curve independently of legend/column order.
+
     ``ybounds``/``yticks`` override the y range and ticks (see :func:`_format_stat_spines`); by default
     the y spine spans the automatic limits and keeps matplotlib's ticks.
     """
@@ -80,6 +87,7 @@ def _decay_stat_panel(
         line_extent = np.array([-0.25, 0.25])
         for j in range(2):  # decay model column: 0 = power law, 1 = exponential
             for k, (data, color) in enumerate(zip(data_list, colors)):
+                draw_kwargs = {} if zorders is None else {"zorder": zorders[k]}
                 vals = np.asarray(data, dtype=float)[:, j]
                 x = j * n_curves + k
                 offsets = np.zeros_like(vals)
@@ -95,25 +103,29 @@ def _decay_stat_panel(
                     markersize=3,
                     alpha=0.3,
                     label=labels[k] if j == 0 else None,
+                    **draw_kwargs,
                 )
-                ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=2.0)
+                ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=linewidth, **draw_kwargs)
         n_pos = 2 * n_curves
         ax.set_xlim(-0.5, n_pos - 0.5)
         centers = [(n_curves - 1) / 2.0, n_curves + (n_curves - 1) / 2.0]
         _format_stat_spines(ax, [0, n_pos - 1], ybounds, yticks)
+        ax.tick_params(axis="both", labelsize=fontsize)
         ax.set_xticks(centers, labels=xtick_labels, fontsize=fontsize)
         return
 
     x = np.array([0.0, 1.0])
-    for data, color, label in zip(data_list, colors, labels):
+    for k, (data, color, label) in enumerate(zip(data_list, colors, labels)):
+        draw_kwargs = {} if zorders is None else {"zorder": zorders[k]}
         data = np.atleast_2d(np.asarray(data, dtype=float))
         if display == "errorPlot":
-            errorPlot(x, data, axis=0, se=True, ax=ax, color=color, alpha=0.25, label=label, linewidth=2.0)
+            errorPlot(x, data, axis=0, se=True, ax=ax, color=color, alpha=0.25, label=label, linewidth=linewidth, **draw_kwargs)
         else:  # "each"
-            ax.plot(x, data.T, color=color, alpha=0.3, linewidth=0.8)
-            ax.plot(x, np.nanmean(data, axis=0), color=color, linewidth=2.0, label=label)
+            ax.plot(x, data.T, color=color, alpha=0.3, linewidth=0.8, **draw_kwargs)
+            ax.plot(x, np.nanmean(data, axis=0), color=color, linewidth=linewidth, label=label, **draw_kwargs)
     ax.set_xlim(-0.3, 1.3)
     _format_stat_spines(ax, [0, 1], ybounds, yticks)
+    ax.tick_params(axis="both", labelsize=fontsize)
     ax.set_xticks([0, 1], labels=xtick_labels, fontsize=fontsize)
 
 
@@ -159,17 +171,19 @@ def _beeswarm_panel(
     yscale: str = "linear",
     markersize: float = 3.0,
     mean_linewidth: float = 2.0,
+    zorders=None,
 ) -> None:
-    """Per-mouse beeswarm (points + bold mean line) at integer x-positions ``0, 1, ...``."""
+    """Per-mouse beeswarm at integer columns, with optional per-curve ``zorders``."""
     line_extent = np.array([-0.25, 0.25])
     for x, (vals, color) in enumerate(zip(values_list, colors)):
+        draw_kwargs = {} if zorders is None else {"zorder": zorders[x]}
         vals = np.asarray(vals, dtype=float)
         offsets = np.zeros_like(vals)
         finite = np.isfinite(vals)
         if finite.any():
             offsets[finite] = beeswarm(vals[finite])
-        ax.plot(x + beewidth * offsets, vals, color=color, linestyle="none", marker="o", markersize=markersize, alpha=each_alpha)
-        ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=mean_linewidth)
+        ax.plot(x + beewidth * offsets, vals, color=color, linestyle="none", marker="o", markersize=markersize, alpha=each_alpha, **draw_kwargs)
+        ax.plot(x + line_extent, [np.nanmean(vals)] * 2, color=color, linewidth=mean_linewidth, **draw_kwargs)
     ax.set_xlim(-0.5, len(labels) - 0.5)
     ax.set_yscale(yscale)
     ymin = 0 if yscale == "linear" else 1

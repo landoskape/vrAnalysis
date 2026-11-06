@@ -12,17 +12,20 @@ the deterministic train/test split and trial-averaging the fit used (:func:`_loa
 population summaries live elsewhere (``PlacefieldPopulationViewer``).
 """
 
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
+from matplotlib.ticker import MaxNLocator
 
 from vrAnalysis.helpers import edge2center
 from vrAnalysis.helpers.plotting import format_spines
 from dimensionality_manuscript import ResultsAggregator
-from dimensionality_manuscript.registry import PopulationRegistry
+from dimensionality_manuscript.registry import PopulationRegistry, get_activity_parameters
 from dimensionality_manuscript.configs.tilbury_fit import TilburyFitConfig, _eval_tilbury, _eval_gaussian, _SPLITS
 
 from ..panels import FigureViewer
+from ..legends import LEGEND_KNOBS, apply_legend
 from ._param_axes import add_merged_param_axis_widgets, encode_param, sel_params
 
 # Fixed curve colors shared by both viewers.
@@ -84,6 +87,8 @@ def _load_fit_curves(
     session_uid: str,
     fit_params: dict,
     extra_keys: tuple[str, ...] = (),
+    target_activity_parameters_name: str = "std",
+    target_full_session: bool = False,
 ) -> dict:
     """Load one session's kept-neuron Tilbury fits and rebuild its held-out test curve.
 
@@ -107,20 +112,31 @@ def _load_fit_curves(
     extra_keys : tuple of str
         Additional per-neuron result keys to select alongside :data:`_BASE_FIT_KEYS`, sliced to the
         kept-neuron prefix the same way (e.g. ``r2_test_shrinkage``, ``lambda_selected``).
+    target_activity_parameters_name : str
+        Activity preset used for the returned multiplicative fluorescence conversion.
+    target_full_session : bool
+        If True, compute target scaling statistics before selecting VR frames,
+        matching StimSpaceSpectraConfig. False preserves the VR-frame convention
+        used by the single-neuron fit viewers.
 
     Returns
     -------
     dict
-        ``theta`` (P,), ``test_curve`` (n_kept, P), ``params`` (n_kept, 6),
+        ``theta`` (P,), ``train_curve``, ``validation_curve``, ``test_curve``
+        (each n_kept, P), ``best_env``, ``params`` (n_kept, 6),
         ``params_control`` (n_kept, 4), ``params_shrinkage`` (n_kept, 6), ``r2_test`` (n_kept,),
         ``r2_test_control`` (n_kept,), ``idx_keep`` (N_available,) bool, ``idx_neurons``
-        (N_available,) original ROI indices, ``session``, plus one entry per name in ``extra_keys``,
+        (N_available,) original ROI indices, ``fluorescence_scale`` (n_kept,) converting fit
+        units to ``target_activity_parameters_name`` (default ``std``), ``session``, plus one entry per name in ``extra_keys``,
         all aligned so row ``n`` of every kept-neuron array is the same neuron.
     """
     if session_uid not in results._session_index:
         raise KeyError(f"session_uid {session_uid!r} not in results (options: {list(results.session_ids)}).")
 
-    config = results.config_class
+    # Rebuild data in the same units as the selected stored fits, rather than
+    # using the aggregator base config (which may have a different activity preset).
+    base_config = results.config_class
+    config = base_config(**fit_params) if isinstance(base_config, type) else replace(base_config, **fit_params)
     idx = results._session_index[session_uid]
     session = results.sessions[idx]
 
@@ -156,8 +172,34 @@ def _load_fit_curves(
         bad |= counts[s] == 0
     good = ~bad
 
+    # Recover the multiplicative conversion from fit units to the target activity units.
+    # All activity presets used here scale without centering. Compare peak activity
+    # over all splits so a silent test split still gets the correct conversion.
+    fluorescence_scale = np.ones(n_kept)
+    if config.activity_parameters_name != target_activity_parameters_name or target_full_session:
+        if target_full_session:
+            # StimSpace scales before selecting VR frames: its statistics include
+            # the entire recording, including for historical retained-VR fits.
+            ap = get_activity_parameters(target_activity_parameters_name)
+            target_full = population.data[population.idx_neurons]
+            target_spks = {
+                s: np.asarray(population.apply_split(
+                    target_full, time_idx=registry.time_split[s], prefiltered=False,
+                    scale=ap.scale, scale_type=ap.scale_type, pre_split=ap.presplit,
+                )).T
+                for s in _SPLITS
+            }
+        else:
+            target_spks, _ = replace(config, activity_parameters_name=target_activity_parameters_name)._get_split_data(session, registry)
+        source_peak = np.maximum.reduce([np.max(np.abs(spks[s]), axis=0) for s in _SPLITS])
+        target_peak = np.maximum.reduce([np.max(np.abs(target_spks[s][:, idx_keep]), axis=0) for s in _SPLITS])
+        np.divide(target_peak, source_peak, out=fluorescence_scale, where=source_peak > 0)
+    fit["fluorescence_scale"] = fluorescence_scale
     fit["theta"] = dist_centers[good]
     fit["test_curve"] = curves["test"][:, good]
+    fit["train_curve"] = curves["train"][:, good]
+    fit["validation_curve"] = curves["validation"][:, good]
+    fit["best_env"] = best_env
     fit["idx_neurons"] = idx_neurons
     fit["session"] = session
     return fit
@@ -380,12 +422,12 @@ class PlacefieldFitFigureViewer(FigureViewer):
     (``idx_keep``). A neuron that was never available or was dropped before fitting raises (opt-in via
     ``strict``) or is flagged with an empty, titled panel.
 
-    The first ``n_rows * n_cols`` entries of the list are plotted, in order, into a shared-axes grid
-    (``sharex``/``sharey``); each panel overlays the held-out test placefield (points) against the
+    The first ``n_rows * n_cols`` entries of the list are plotted, in order, into a grid;
+    each panel overlays the held-out test placefield (points) against the
     plain-Gaussian control (always shown) and the generalized-family fit(s) selected by ``fit_model``
-    (generalized, shrinkage, or both). The whole group in a panel is normalized by the test-data
-    curve's statistic (``normalize``: std / sum / max / none), so the fits stay overlaid on the data
-    while panels remain comparable under ``sharey``. Only one panel is labelled and carries the
+    (generalized, shrinkage, or both). With ``normalize_independent=False``, data and fits
+    are displayed in frame-SD-normalized fluorescence units, preserving amplitude differences.
+    Otherwise each curve is normalized separately by ``normalize`` to emphasize shape. Only one panel is labelled and carries the
     legend, picked by ``legend_axis`` (a flat row-major panel index).
 
     Parameters
@@ -419,13 +461,22 @@ class PlacefieldFitFigureViewer(FigureViewer):
         Gap between a legend entry's sample line and its label, in font-size units. Default 0.8.
     legend_markerfirst : bool
         If True (default), the sample line is drawn to the left of its label; False puts it on the right.
+    legend_text_only : bool
+        Hide legend handles and color labels to match their curves, aligned to the legend
+        position, as in PlacefieldPopulationViewer. Default False.
+    data_color : str
+        Matplotlib color for the test-data points. Default "gray".
     normalize : {"std", "sum", "max", "none"}
-        Per-panel, the test-data curve and both fits are divided by this statistic of the test-data
-        curve, so the fits stay overlaid on the data while panels share a scale under ``sharey``.
+        Statistic used to divide each curve when ``normalize_independent=True``.
+        Ignored when False, which displays normalized fluorescence units.
     normalize_independent : bool
-        If True, divide each of the three curves (test data, generalized, gaussian) by its *own*
-        statistic instead of the shared test-data one -- a shape-only comparison that removes amplitude
-        differences between the fits and the data (they no longer overlay). Default False.
+        If True, divide each curve by its own ``normalize`` statistic for a shape-only
+        comparison. If False (default), convert all curves to the ``std`` activity preset:
+        fluorescence divided by each neuron's SD across retained frames, without centering.
+    sharey : bool
+        Common y limits with y spines/ticks only in the leftmost column when True (default).
+        If False, each panel has its own limits, y spine, and ticks. Y-axis titles appear
+        only in the leftmost column in either mode.
     fit_model : {"generalized", "shrinkage", "both"}
         Which generalized-family fit(s) to overlay alongside the always-shown plain-Gaussian control.
         A lone fit is drawn in the generalized (blue) color; ``"both"`` keeps generalized blue and
@@ -458,8 +509,11 @@ class PlacefieldFitFigureViewer(FigureViewer):
         legend_handlelength: float = 2.0,
         legend_handletextpad: float = 0.8,
         legend_markerfirst: bool = True,
+        legend_text_only: bool = False,
+        data_color: str = "gray",
         normalize: str = "std",
         normalize_independent: bool = False,
+        sharey: bool = True,
         fit_model: str = "both",
         strict: bool = True,
         fontsize: float = 9.0,
@@ -506,6 +560,8 @@ class PlacefieldFitFigureViewer(FigureViewer):
         self.add_float("legend_handlelength", value=legend_handlelength, min=0.0, max=6.0, step=0.1)
         self.add_float("legend_handletextpad", value=legend_handletextpad, min=0.0, max=3.0, step=0.05)
         self.add_boolean("legend_markerfirst", value=legend_markerfirst)
+        self.add_boolean("legend_text_only", value=legend_text_only)
+        self.add_text("data_color", value=data_color)
         # One widget per TilburyFitConfig param axis (see PlacefieldExampleFitViewer).
         self._fit_axes = list(results.param_axes)
         self._tuple_labels = add_merged_param_axis_widgets(self, results)
@@ -515,9 +571,8 @@ class PlacefieldFitFigureViewer(FigureViewer):
             self.set_parameter_value(name, encode_param(self._tuple_labels, name, value))
 
         self.add_selection("normalize", options=list(_FIT_FIGURE_NORMALIZATIONS), value=normalize)
-        # normalize_independent: scale each of the three curves (test data, generalized, gaussian) by
-        # its own statistic (shape-only comparison), instead of the whole group by the test-data curve.
         self.add_boolean("normalize_independent", value=normalize_independent)
+        self.add_boolean("sharey", value=sharey)
         # Which generalized-family fit(s) to overlay (the plain-Gaussian control is always shown).
         self.add_selection("fit_model", options=list(_FIT_MODEL_OPTIONS), value=fit_model)
         self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)
@@ -575,11 +630,12 @@ class PlacefieldFitFigureViewer(FigureViewer):
         n_cols = int(state["n_cols"])
         method = state["normalize"]
         independent = bool(state["normalize_independent"])
+        sharey = bool(state["sharey"])
         n_show = n_rows * n_cols
         # Panel that carries the legend, as a flat row-major index into the grid.
         legend_cell = min(int(state["legend_axis"]), n_show - 1)
 
-        fig, axs = self.new_subplots(n_rows, n_cols, figsize=self.figsize, squeeze=False, layout="constrained")
+        fig, axs = self.new_subplots(n_rows, n_cols, figsize=self.figsize, squeeze=False, sharey=sharey, layout="constrained")
 
         theta = None
         for cell in range(n_show):
@@ -588,7 +644,7 @@ class PlacefieldFitFigureViewer(FigureViewer):
             if r == n_rows - 1:
                 ax.set_xlabel("Position (cm)", fontsize=fontsize)
             if c == 0:
-                ax.set_ylabel("Activity", fontsize=fontsize)
+                ax.set_ylabel("Activity (a.u.)" if independent else "Norm. Fluor.", fontsize=fontsize)
             if cell >= len(self._resolved):
                 ax.set_visible(False)  # fewer requested neurons than panels -> hide the extras
                 continue
@@ -607,20 +663,20 @@ class PlacefieldFitFigureViewer(FigureViewer):
             gen = _eval_tilbury(theta, fit["params"][kept_row])
             gauss = _eval_gaussian(theta, fit["params_control"][kept_row])
             shrink = _eval_tilbury(theta, fit["params_shrinkage"][kept_row])
-            # normalize_independent: each curve divided by its own statistic (shape-only). Otherwise
-            # the whole set shares the test-data curve's scale, keeping the fits overlaid on the data.
+            # Shape normalization is optional; otherwise restore frame-SD fluorescence
+            # units using the same conversion for data and every fit.
             if independent:
                 data = data / _fit_figure_scale(data, method)
                 gen = gen / _fit_figure_scale(gen, method)
                 gauss = gauss / _fit_figure_scale(gauss, method)
                 shrink = shrink / _fit_figure_scale(shrink, method)
             else:
-                scale = _fit_figure_scale(data, method)
-                data, gen, gauss, shrink = data / scale, gen / scale, gauss / scale, shrink / scale
+                scale = fit["fluorescence_scale"][kept_row]
+                data, gen, gauss, shrink = data * scale, gen * scale, gauss * scale, shrink * scale
 
             # The legend lives on one panel, so only that panel's curves get labelled.
             first = (r, c) == divmod(legend_cell, n_cols)
-            ax.plot(theta, data, "o", color="gray", ms=2.5, alpha=0.5, label="Test data" if first else None)
+            ax.plot(theta, data, "o", color=state["data_color"], ms=2.5, alpha=0.5, label="Test data" if first else None)
             ax.plot(theta, gauss, "-", color=_GAUSSIAN_COLOR, lw=1.5, label="Gaussian" if first else None)
             # Overlay the requested generalized-family fit(s). A lone fit is drawn blue (the
             # generalized color); "both" keeps generalized blue and shrinkage purple.
@@ -634,15 +690,16 @@ class PlacefieldFitFigureViewer(FigureViewer):
             if first:
                 # The anchor box defaults to the axes box (0, 0, 1, 1); offsetting its origin slides
                 # the legend off the panel without moving where ``loc`` pins it within the box.
-                leg = ax.legend(
-                    fontsize=fontsize - 1,
-                    frameon=False,
-                    loc=state["legend_position"],
-                    bbox_to_anchor=(float(state["legend_x_offset"]), float(state["legend_y_offset"]), 1.0, 1.0),
-                    markerfirst=bool(state["legend_markerfirst"]),
-                    handlelength=float(state["legend_handlelength"]),
-                    handletextpad=float(state["legend_handletextpad"]),
+                # Reuse the population viewer's colored-text legend behavior while
+                # retaining this viewer's placement and handle controls.
+                legend_state = {f"legend_{name}": spec[1] for name, spec in LEGEND_KNOBS.items()}
+                legend_state.update(state)
+                legend_state["legend_loc"] = state["legend_position"]
+                apply_legend(
+                    ax, legend_state, fontsize,
+                    offset=(float(state["legend_x_offset"]), float(state["legend_y_offset"])),
                 )
+                leg = ax.get_legend()
                 # Keep the constrained layout from reserving space for an off-panel legend, which
                 # would shrink the panels and break the uniform grid.
                 leg.set_in_layout(False)
@@ -653,34 +710,33 @@ class PlacefieldFitFigureViewer(FigureViewer):
                 ax.patch.set_visible(False)
 
         xbounds = (0, theta[-1] + (theta[1] - theta[0]) / 2)
-        ylims = [ax.get_ylim() for ax in axs.flat if ax.get_visible()]
-        ymax = max(yl[1] for yl in ylims)
-        # Extend the drawn y-range a touch below 0 so the test-data points sitting at ~0 are not
-        # clipped by the bottom edge; the spine (ybounds) still starts at exactly 0.
-        ylims = (-0.05 * ymax, ymax)
-        ybounds = (0, np.floor(ymax * 10) / 10)
+        visible = [ax for ax in axs.flat if ax.get_visible()]
+        shared_limits = (min(ax.get_ylim()[0] for ax in visible), max(ax.get_ylim()[1] for ax in visible))
         for cell in range(n_show):
             r, c = divmod(cell, n_cols)
             ax = axs[r, c]
+            if not ax.get_visible():
+                continue
+            lower, upper = shared_limits if sharey else ax.get_ylim()
+            ymax = MaxNLocator(nbins=4).tick_values(0, max(upper, np.finfo(float).eps))[-1]
+            ybounds = (0, ymax)
+            ax.set_ylim(min(lower, -0.05 * ymax), ymax * 1.05)
             on_left = c == 0
+            show_y = on_left or not sharey
             on_bottom = r == n_rows - 1
-            spines_visible = ["bottom"]
-            if on_left:
-                spines_visible.append("left")
-            xticks = xbounds if on_bottom else []
-            yticks = ybounds if on_left else []
-            ylabels = [0, 1] if on_left else []
-            ax.set_ylim(ylims)
             format_spines(
                 ax,
                 x_pos=-0.02,
                 y_pos=-0.02,
                 xbounds=xbounds,
                 ybounds=ybounds,
-                spines_visible=spines_visible,
-                xticks=xticks,
-                yticks=yticks,
-                ylabels=ylabels,
+                spines_visible=["bottom", "left"] if show_y else ["bottom"],
+                xticks=xbounds if on_bottom else [],
+                # Shared axes share their tick locator/formatter too; hide ticks
+                # on other columns through tick_params rather than clearing them.
+                yticks=ybounds,
+                ylabels=[f"{v:g}" for v in ybounds],
                 tick_fontsize=fontsize,
             )
+            ax.tick_params(axis="y", left=show_y, labelleft=show_y)
         return fig

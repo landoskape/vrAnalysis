@@ -12,32 +12,26 @@ from dimensionality_manuscript import ResultsAggregator, average_by_mouse
 from ._alpha_config import ADAPTIVE_ALPHA_CONFIG_REGISTRY, AdaptiveAlphaConfig
 from ._param_axes import (
     CVPCA_KEYS,
-    FIT_KEY_PARAM_KEYS,
     POP_ALPHA_COLORS,
     POP_ALPHA_LABELS,
     POP_EIG_KEYS,
     PREFERRED_DEFAULTS,
-    SOURCE_OF_KEY,
     STIMSPACE_KEYS,
     add_merged_param_axis_widgets,
 )
-from ._param_axes import encode_param as _encode_param
-from ._param_axes import sel_params as _sel_params_for
+from ._placefield_spectrum_access import PlacefieldSpectrumAccess
 from ._spectrum_math import (
     DECAY_MODELS,
     _align_rows_to_sessions,
-    _clip_at_first_negative,
     _decay_fit_per_session,
-    _eig_to_ss_scale,
     _median_fpd_alpha_per_session,
-    _smooth_spectrum,
 )
 from ._stats import _beeswarm_panel, _decay_stat_panel, _paired_pvalue, _significance_stars, _zero_to_max_ticks
 from ..legends import add_legend_widgets, apply_legend, update_legend_widgets
 from ..panels import FigureViewer, style_model_axis
 
 
-class PlacefieldPopulationViewer(FigureViewer):
+class PlacefieldPopulationViewer(PlacefieldSpectrumAccess, FigureViewer):
     """Tilbury generalized-Gaussian placefield fits: population summaries (no examples).
 
     Four panels driven by every session in
@@ -105,7 +99,7 @@ class PlacefieldPopulationViewer(FigureViewer):
     beewidth : float
         Beeswarm point spread in x-axis units (gs[2] and gs[-1]).
     source_key : str
-        Which spectrum drives the gs[-1] orange curve: ``ss_cv``/``ss_direct``/``ss_cvpca`` (from
+        Which spectrum drives the gs[-1] data curve: ``ss_cv``/``ss_direct``/``ss_cvpca`` (from
         ``results_spectra``) or ``reg_covariances_fixed`` (from ``results_cvpca``). Only offered as
         a widget when ``results_spectra`` is given.
     metric : {"r2", "cc"}
@@ -144,12 +138,23 @@ class PlacefieldPopulationViewer(FigureViewer):
         gs[-1] legend styling, seeded via :func:`~..legends.update_legend_widgets` (``{knob:
         value}``, see :data:`~..legends.LEGEND_KNOBS`). None leaves the defaults (``loc="auto"``:
         "best" for the ``"characteristic_dim"``/``"mse"`` options, no legend for
-        ``"decay_exponent"``, whose columns are labelled on the x-axis).
+        ``"decay_exponent"``, whose columns are labelled on the x-axis). Set ``text_only=True``
+        for colored labels without handles, aligned to the legend location.
     **selection_defaults
         Starting values for the shared param-axis widgets (:data:`~._param_axes.PREFERRED_DEFAULTS`
         remains the fallback for axes not named here), keyed by raw ``param_axes`` name of ``results``
         (``activity_parameters_name``) or of ``results_spectra``/``results_cvpca`` (e.g.
         ``smooth_widths``, ``reliability_fraction_active_thresholds``).
+    data_color : str
+        Matplotlib color for the last-axis data curve (default gray, ``"0.5"``).
+        Use ``"darkorange"`` for the original orange.
+    data_zorder : float
+        Draw order of the last-axis data artists, default 3 (model artists use 2).
+        Data remains first in the legend and categorical columns.
+    linewidth : float
+        Width in points of the main summary curves and swarm mean lines on all panels.
+        Individual mouse curves in the performance panel use ``min(linewidth / 2, 0.5)``.
+        Editable through the ``linewidth`` widget without recomputing statistics.
     fontsize : float
         Base font size, threaded explicitly into every label/tick/legend.
     figsize : tuple[float, float]
@@ -179,6 +184,9 @@ class PlacefieldPopulationViewer(FigureViewer):
         legend: dict | None = None,
         fontsize: float = 9.0,
         figsize: tuple[float, float] = (8.0, 3.0),
+        linewidth: float = 2.0,
+        data_color: str = "0.5",
+        data_zorder: float = 3.0,
         **selection_defaults,
     ):
         self.results = results
@@ -199,6 +207,9 @@ class PlacefieldPopulationViewer(FigureViewer):
         self.add_integer("num_bins", value=num_bins, min=5, max=200)
         self.add_selection("fraction_view", options=["pooled", "by_mouse", "none"], value=fraction_view)
         self.add_float("beewidth", value=beewidth, min=0.0, max=1.0, step=0.01)
+        self.add_float("linewidth", value=linewidth, min=0.0, max=10.0, step=0.1)
+        self.add_text("data_color", value=data_color)
+        self.add_float("data_zorder", value=data_zorder, min=0.0, max=20.0, step=0.5)
         self.add_selection("metric", value=metric, options=["r2", "cc"])
         # Which generalized fit to show. "both" plots the unregularized (blue) and the shrinkage
         # (purple) fits side by side. "generalized"/"shrinkage" plot only that one fit, labelled
@@ -258,7 +269,7 @@ class PlacefieldPopulationViewer(FigureViewer):
         self.add_integer("source_minimum_window_size", value=cfg.minimum_window_size, min=1, max=500)
 
         # Widgets that change which numbers get computed (data selection, fit-spectrum fetches, the
-        # adaptive alpha / decay-law estimates) trigger a recompute; pure style knobs (beewidth,
+        # adaptive alpha / decay-law estimates) trigger a recompute; pure style knobs (linewidth, beewidth,
         # fraction_view's layout, display, legend placement, fontsize) are read directly by plot().
         data_triggers = [
             "num_bins",
@@ -284,99 +295,6 @@ class PlacefieldPopulationViewer(FigureViewer):
 
         self.refresh_data(self.state)
 
-    def encode_param(self, name: str, value):
-        """Map a raw param value to its widget value (tuple -> string label; else unchanged)."""
-        return _encode_param(self._tuple_labels, name, value)
-
-    def _sel_params(self, state: dict, source: str) -> dict:
-        """Select the params relevant to ``source`` ("stimspace"/"cvpca"), decoding tuple labels."""
-        return _sel_params_for(state, self._tuple_labels, self._agg[source].param_axes)
-
-    def _fit_sel_params(self, state: dict) -> dict:
-        """Params pinning every Tilbury-fit param axis, decoding tuple labels back to tuples."""
-        return _sel_params_for(state, self._tuple_labels, self._fit_axes)
-
-    @staticmethod
-    def _cfg_from_state(state: dict, prefix: str) -> AdaptiveAlphaConfig:
-        """Build the adaptive-fit config from the ``{prefix}_*`` widgets."""
-        return AdaptiveAlphaConfig(
-            smooth_method=state[f"{prefix}_smooth_method"],
-            smooth_width=state[f"{prefix}_smooth_width"],
-            fpd_window_size=int(state[f"{prefix}_fpd_window_size"]),
-            adaptive_buffer=int(state[f"{prefix}_adaptive_buffer"]),
-            minimum_window_size=int(state[f"{prefix}_minimum_window_size"]),
-        )
-
-    def _spectrum_sessions(
-        self,
-        state: dict,
-        key: str,
-        cfg: AdaptiveAlphaConfig,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
-        """Per-session raw and smoothed ``(sessions, dims)`` spectrum for ``key``, with mouse/session ids.
-
-        Normalize is applied per session (row), so the adaptive alpha fit can find each session's
-        own first-negative crossover before any cross-session averaging blurs it. Both the raw
-        (pre-smoothing) and smoothed spectrum are returned: smoothing maps every non-positive entry
-        to NaN before exponentiating back, so a smoothed row is never negative -- first-negative
-        detection must use the raw one, while the exponent fit itself uses the smoothed one.
-        """
-        source = SOURCE_OF_KEY[key]
-        agg = self._agg[source]
-        spec = agg.sel(keys=[key], avg_by_mouse=False, **self._sel_params(state, source))[key]
-        spec = np.atleast_2d(np.asarray(spec, dtype=float))
-        if state.get("clip_negative", False):
-            spec = _clip_at_first_negative(spec)
-        if state["normalize"]:
-            spec = spec / np.nansum(spec, axis=1)[:, None]
-        smoothed = _smooth_spectrum(spec, cfg.smooth_method, cfg.smooth_width)
-        return spec, smoothed, agg.mouse_names, agg.session_ids
-
-    def _fit_spectrum_raw_sessions(self, state: dict, key: str) -> np.ndarray:
-        """Raw (unnormalized, unsmoothed) per-session Tilbury-fit eigenvalue spectrum for ``key``.
-
-        ``key`` is one of :data:`~._param_axes.POP_EIG_KEYS` from the Tilbury-fit aggregator. Each
-        session is converted from the PCA convention to the ``ss_cv`` covariance convention with
-        ``P / (P - 1)``, gated by whichever ``params*`` arrays back ``key``
-        (:data:`~._param_axes.FIT_KEY_PARAM_KEYS`).
-        """
-        fit_params = self._fit_sel_params(state)
-        param_keys = FIT_KEY_PARAM_KEYS[key]
-        selected = self.results_fit.sel(
-            keys=[key, *param_keys],
-            squeeze_ones=False,
-            **fit_params,
-        )
-        dist_centers = self.results_fit.sel_objects(
-            keys=["dist_centers"],
-            **fit_params,
-        )["dist_centers"]
-        param_arrays = [selected[pk] for pk in param_keys]
-        return np.stack(
-            [
-                _eig_to_ss_scale(eig, list(params_row), theta)
-                for eig, theta, *params_row in zip(
-                    np.asarray(selected[key], dtype=float),
-                    dist_centers,
-                    *param_arrays,
-                )
-            ]
-        )
-
-    def _fit_spectrum_sessions(
-        self,
-        state: dict,
-        key: str,
-        cfg: AdaptiveAlphaConfig,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
-        """Per-session raw+smoothed Tilbury-fit eigenvalue spectrum for ``key``, with mouse/session ids."""
-        session_spec = self._fit_spectrum_raw_sessions(state, key)
-        if state.get("clip_negative", False):
-            session_spec = _clip_at_first_negative(session_spec)
-        if state["normalize"]:
-            session_spec = session_spec / np.nansum(session_spec, axis=1)[:, None]
-        smoothed = _smooth_spectrum(session_spec, cfg.smooth_method, cfg.smooth_width)
-        return session_spec, smoothed, self.results_fit.mouse_names, self.results_fit.session_ids
 
     def _aggregate_stats(self, state: dict) -> dict:
         """Per-session and per-mouse summary arrays for the gs[0]/gs[1]/gs[2] population panels.
@@ -519,14 +437,13 @@ class PlacefieldPopulationViewer(FigureViewer):
                 param_cols.append(average_by_mouse(param_s, mouse_names))
             return {"characteristic_dim": np.stack(param_cols, axis=1), "mse": np.stack(mse_cols, axis=1)}
 
-        # Assemble the curves: the source_key data spectrum, then the eig fit spectra -- "better"
-        # composite (if requested), the selected generalized fit(s), then the gaussian control,
-        # keeping POP_EIG_KEYS' order. A single-fit selection draws that fit blue and labelled
+        # Assemble curves in legend/column order: data, Gaussian, selected generalized fits,
+        # then the optional "better" composite. A single-fit selection draws that fit blue and labelled
         # "Generalized" (matching gs[0]/gs[1], which instead draw it black -- see class docstring).
         curves: list[tuple[tuple, str, str]] = []  # (per-session spectra tuple, color, label)
         if self.results_spectra is not None:
             spectra = self._spectrum_sessions(state, state["source_key"], cfg)
-            curves.append((spectra, POP_ALPHA_COLORS["source_key"], "Data"))
+            curves.append((spectra, "0.5", "Data"))
 
         def _wanted(key: str) -> bool:
             if key == "eig_better":
@@ -537,7 +454,8 @@ class PlacefieldPopulationViewer(FigureViewer):
                 return fit_sel in ("both", "generalized")
             return True  # eig_control is always shown
 
-        eig_keys = [key for key in POP_EIG_KEYS if _wanted(key)]
+        eig_order = ["eig_control", "eig_shrinkage", "eig_tilbury", "eig_better"]
+        eig_keys = [key for key in eig_order if _wanted(key)]
         for key in eig_keys:
             if fit_sel != "both" and key in ("eig_shrinkage", "eig_tilbury"):
                 color, label = POP_ALPHA_COLORS["eig_tilbury"], "Generalized"
@@ -563,6 +481,7 @@ class PlacefieldPopulationViewer(FigureViewer):
     def plot(self, state: dict):
         stats = self._stats
         fontsize = self.fontsize
+        linewidth = state["linewidth"]
 
         fig = self.new_figure(figsize=self.figsize, layout="constrained")
         num_cols = 4 if state["fraction_view"] != "none" else 3
@@ -586,7 +505,7 @@ class PlacefieldPopulationViewer(FigureViewer):
             peak_densities = ((stats["mouse_density_peak"], "black", "Generalized"),)
         for density, color, label in peak_densities:
             ax1.plot(centers_peak, density.T, color=color, linewidth=0.8, alpha=0.3)
-            ax1.plot(centers_peak, np.nanmean(density, axis=0), color=color, linewidth=2.0, label=label)
+            ax1.plot(centers_peak, np.nanmean(density, axis=0), color=color, linewidth=linewidth, label=label)
         ax1.axvline(x=2.0, color="k", linestyle=":", linewidth=0.8)
         ax1.set_xlabel("Peak Exponent", fontsize=fontsize)
         ax1.set_ylabel("Density", fontsize=fontsize)
@@ -613,8 +532,8 @@ class PlacefieldPopulationViewer(FigureViewer):
             perf_cols, perf_labels = [1, 2], ["Generalized", "Gaussian"]
         mouse_avg_performance = stats["mouse_avg_performance"][:, perf_cols]
         x_models = list(range(len(perf_cols)))
-        ax2.plot(x_models, mouse_avg_performance.T, color="0.7", marker="o", markersize=3, linewidth=0.8)
-        ax2.plot(x_models, np.nanmean(mouse_avg_performance, axis=0), color="k", marker="o", markersize=5, linewidth=2.0)
+        ax2.plot(x_models, mouse_avg_performance.T, color="0.7", marker="o", markersize=3, linewidth=min(linewidth / 2, 0.5))
+        ax2.plot(x_models, np.nanmean(mouse_avg_performance, axis=0), color="k", marker="o", markersize=5, linewidth=linewidth)
         ax2.set_ylabel("Test R²" if state["metric"] == "r2" else "Test Correlation", fontsize=fontsize)
         ylims = ax2.get_ylim()
         if state["metric"] == "cc":
@@ -671,7 +590,7 @@ class PlacefieldPopulationViewer(FigureViewer):
                 x = np.zeros_like(vals)
                 x[np.isfinite(vals)] = beewidth * offsets
                 ax3.plot(x, vals, linestyle="none", color="black", marker="o", markersize=4, alpha=0.8)
-                ax3.plot([-0.25, 0.25], [np.nanmean(vals)] * 2, color="black", linewidth=2.0)
+                ax3.plot([-0.25, 0.25], [np.nanmean(vals)] * 2, color="black", linewidth=linewidth)
                 ax3.set_xlim(-0.5, 0.5)
                 xticks = []
             else:
@@ -687,7 +606,7 @@ class PlacefieldPopulationViewer(FigureViewer):
                     if finite.any():
                         offsets[finite] = beeswarm(vals[finite])
                     ax3.plot(xi + beewidth * offsets, vals, linestyle="none", color="black", marker=".", markersize=5, alpha=0.3)
-                    ax3.plot(xi + np.array([-0.4, 0.4]), [np.nanmean(vals)] * 2, color="black", linewidth=1.2)
+                    ax3.plot(xi + np.array([-0.4, 0.4]), [np.nanmean(vals)] * 2, color="black", linewidth=linewidth)
                 ax3.set_xlim(-1.0, len(mice))
                 ax3.set_xlabel("Mice", fontsize=fontsize)
                 xticks = range(len(mice))
@@ -708,9 +627,15 @@ class PlacefieldPopulationViewer(FigureViewer):
         ax4 = fig.add_subplot(outer[0, -1])
         last = self._last_axis_result
         last_axis = last["last_axis"]
-        colors, labels = last["colors"], last["labels"]
+        labels = last["labels"]
+        colors = [state["data_color"] if label == "Data" else color for color, label in zip(last["colors"], labels)]
+        zorders = [state["data_zorder"] if label == "Data" else 2.0 for label in labels]
         if last_axis == "decay_exponent":
-            _beeswarm_panel(ax4, last["values"], colors, labels, fontsize, state["beewidth"])
+            _beeswarm_panel(
+                ax4, last["values"], colors, labels, fontsize, state["beewidth"],
+                mean_linewidth=linewidth,
+                zorders=zorders,
+            )
             ax4.set_ylabel("Decay exponent", fontsize=fontsize)
             # The beeswarm columns are labelled on the x-axis, so no legend unless one is asked for --
             # its points carry no labels, hence the proxy handles.
@@ -732,8 +657,11 @@ class PlacefieldPopulationViewer(FigureViewer):
                 xtick_labels,
                 ybounds=ybounds,
                 yticks=yticks,
+                linewidth=linewidth,
+                zorders=zorders,
             )
             ax4.set_xlabel("Fit Type", fontsize=fontsize)
             ax4.set_ylabel("Dimensionality" if last_axis == "characteristic_dim" else "Log-space MSE", fontsize=fontsize)
             apply_legend(ax4, state, fontsize, auto_loc="best")
+        ax4.tick_params(axis="both", labelsize=fontsize)
         return fig

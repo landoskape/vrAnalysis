@@ -207,19 +207,35 @@ def test_target_filter_intersects_models_and_handles_no_common_pairs(viewer_setu
     assert viewer.state["trial"] == 0
 
 
-def test_trial_gain_focus_retains_original_controls_and_two_panel_plot(viewer_setup):
-    viewer = trial_gain.TrialGainFocus(viewer_setup.viewer.results)
-    assert set(viewer.parameters) == {"mouse", "example_session", "env", "roi", "trial", "fontsize"}
+@pytest.mark.parametrize("show_gain_fit", [False, True])
+def test_trial_gain_focus_controls_and_optional_gain_fit(viewer_setup, show_gain_fit):
+    viewer = trial_gain.TrialGainFocus(viewer_setup.viewer.results, show_gain_fit=show_gain_fit)
+    assert set(viewer.parameters) == {"mouse", "example_session", "env", "roi", "trial", "fontsize", "show_gain_fit"}
     assert viewer.parameters["roi"].max == 1
     assert viewer.parameters["trial"].max == 1
     viewer.set_parameter_value("trial", 1)
     np.testing.assert_array_equal(viewer.trial_activity, [2., 3.])
     fig = viewer.plot(viewer.state)
-    assert len(fig.axes) == 2
-    assert fig.axes[0].get_xlabel() == "VR Position"
-    assert fig.axes[0].get_legend_handles_labels()[1] == ["Average place field", "Trial 1"]
-    assert "Gain (slope)" in fig.axes[1].texts[0].get_text()
-    plt.close(fig)
+    assert len(fig.axes) == (2 if show_gain_fit else 1)
+    np.testing.assert_allclose(fig.get_size_inches(), viewer.figsize)
+    ax = fig.axes[0]
+    assert ax.get_xlabel() == "Position (cm)"
+    assert ax.get_ylabel() == "Norm. Fluor."
+    np.testing.assert_array_equal(ax.get_xlim(), [0, 200])
+    np.testing.assert_array_equal(ax.get_xticks(), [0, 200])
+    np.testing.assert_allclose(ax.get_ylim(), [-.15, 3])
+    np.testing.assert_array_equal(ax.get_yticks(), [0, 3])
+    np.testing.assert_array_equal(ax.spines["left"].get_bounds(), [0, 3])
+    assert ax.get_facecolor() == plt.matplotlib.colors.to_rgba(plt.rcParams["axes.facecolor"])
+    assert [text.get_text() for text in ax.texts] == ["Avg PF", f"Single Trial\nGain={viewer.gain:.2f}"]
+    if show_gain_fit:
+        assert "Gain (slope)" in fig.axes[1].texts[0].get_text()
+    fig.canvas.draw()
+    viewer.set_parameter_value("show_gain_fit", not show_gain_fit)
+    toggled = viewer.plot(viewer.state)
+    assert len(toggled.axes) == (1 if show_gain_fit else 2)
+    np.testing.assert_allclose(toggled.get_size_inches(), viewer.figsize)
+    plt.close(toggled)
 
 
 def test_time_viewer_contracts_shared_gaps_preserving_model_gaps_and_cache(viewer_setup, monkeypatch):
@@ -270,7 +286,18 @@ def test_time_viewer_contracts_shared_gaps_preserving_model_gaps_and_cache(viewe
     assert viewer.absolute_trial == 1
     fig = viewer.plot(viewer.state)
     assert len(fig.axes) == 1
-    assert fig.axes[0].get_xlabel() == "Retained trial time (s)"
+    ax = fig.axes[0]
+    assert ax.get_xlabel() == "Trial Time (s)"
+    assert ax.get_ylabel() == "Norm. Fluor."
+    np.testing.assert_array_equal(ax.get_xlim(), [0, 1])
+    np.testing.assert_array_equal(ax.get_xticks(), [0, 1])
+    np.testing.assert_allclose(ax.get_ylim(), [-.4, 8])
+    np.testing.assert_array_equal(ax.get_yticks(), [0, 8])
+    np.testing.assert_array_equal(ax.spines["left"].get_bounds(), [0, 8])
+    assert [text.get_text() for text in ax.texts] == [
+        "Placefield", "Single Trial", "Int. PF prediction", "Peer prediction",
+    ]
+    fig.canvas.draw()
     for line in fig.axes[0].lines:
         np.testing.assert_allclose(line.get_xdata(), [0., .25])
         assert line.get_linestyle() == "-"
@@ -281,6 +308,9 @@ def test_time_viewer_contracts_shared_gaps_preserving_model_gaps_and_cache(viewe
     np.testing.assert_allclose(viewer.placefield_activity, [3., np.nan], equal_nan=True)
     np.testing.assert_allclose(viewer.observed_activity, [0., 4.], equal_nan=True)
     assert calls == initial_calls
+    internal_fig = viewer.plot(viewer.state)
+    assert internal_fig.axes[0].lines[0].get_label() == "Int. Pos. Placefield"
+    plt.close(internal_fig)
     viewer.set_parameter_value("internal4reference", False)
 
     viewer.set_parameter_value("roi", 1)

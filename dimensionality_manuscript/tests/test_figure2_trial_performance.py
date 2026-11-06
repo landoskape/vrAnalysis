@@ -6,6 +6,9 @@ import numpy as np
 import pytest
 
 from dimensionality_manuscript.figure_scripts.figure2.trial_performance import (
+    GAIN_RESIDUAL_MODEL_NAME,
+    GAIN_RESIDUAL_ONLY_NAME,
+    SQRT_GAIN_MODEL_NAME,
     TRIAL_PERFORMANCE_MODEL_NAMES,
     TrialModelPerformanceViewer,
     trial_performance_scores,
@@ -13,7 +16,12 @@ from dimensionality_manuscript.figure_scripts.figure2.trial_performance import (
 
 
 class _FakeTrialResults:
-    model_names = ("external_placefield_1d", *TRIAL_PERFORMANCE_MODEL_NAMES)
+    model_names = (
+        "external_placefield_1d",
+        *TRIAL_PERFORMANCE_MODEL_NAMES,
+        GAIN_RESIDUAL_MODEL_NAME,
+        SQRT_GAIN_MODEL_NAME,
+    )
     param_axes = {"model_name": list(model_names)}
     config_class = SimpleNamespace(
         spks_type="sigrebase",
@@ -33,6 +41,8 @@ class _FakeTrialResults:
         return {
             "r2": base + 0.01 * model_index,
             "mse": 1.0 - base - 0.01 * model_index,
+            "r2_residual": base - 0.4,
+            "mse_residual": 1.4 - base,
         }
 
 
@@ -43,10 +53,10 @@ def test_trial_performance_uses_temporal_trial_model_comparison():
     assert tuple(viewer.model_names) == TRIAL_PERFORMANCE_MODEL_NAMES
     assert "external_placefield_1d_gain" not in viewer.model_names
     assert viewer.model_labels == [
-        "Placefield",
+        "PF",
         "Global\nGain",
         "Trial\nGain",
-        "Peer\nPrediction",
+        "Peer\nPred.",
     ]
     assert [call[0] for call in results.calls] == list(TRIAL_PERFORMANCE_MODEL_NAMES)
     assert viewer.state["metric"] == "r2"
@@ -128,12 +138,12 @@ def test_trial_performance_placefield_baseline(include_external, metric):
         results, include_external_placefield=include_external, metric=metric,
     )
     expected_names = list(TRIAL_PERFORMANCE_MODEL_NAMES)
-    expected_labels = ["Placefield", "Global\nGain", "Trial\nGain", "Peer\nPrediction"]
+    expected_labels = ["PF", "Global\nGain", "Trial\nGain", "Peer\nPred."]
     expected_colors = ["#000000", "#c00000", "#008000", "#0000cd"]
     if include_external:
         expected_names.insert(0, "external_placefield_1d")
-        expected_labels[0] = "Internal\nPlacefield"
-        expected_labels.insert(0, "Placefield")
+        expected_labels[0] = "Int.Pos.\nPF"
+        expected_labels.insert(0, "PF")
         expected_colors.insert(0, "#666666")
     assert viewer.model_names == expected_names
     assert viewer.model_labels == expected_labels
@@ -151,6 +161,52 @@ def test_trial_performance_placefield_baseline(include_external, metric):
     inset_center = next(line for line in inset.lines if line.get_linewidth() == viewer.state["mean_linewidth"])
     np.testing.assert_allclose(inset_center.get_ydata(), np.mean(viewer._scores, axis=1))
     plt.close(fig)
+
+
+@pytest.mark.parametrize("include_residual", [False, True])
+@pytest.mark.parametrize("include_combined", [False, True])
+@pytest.mark.parametrize("include_external", [False, True])
+@pytest.mark.parametrize("include_sqrt", [False, True])
+@pytest.mark.parametrize("metric", ["r2", "mse"])
+def test_trial_performance_optional_gain_residual_scores(
+    include_residual, include_combined, include_external, include_sqrt, metric,
+):
+    results = _FakeTrialResults()
+    viewer = TrialModelPerformanceViewer(
+        results,
+        include_external_placefield=include_external,
+        include_gain_residual=include_residual,
+        include_gain_plus_residual=include_combined,
+        include_sqrt_gain=include_sqrt,
+        metric=metric,
+    )
+    expected_labels = ["PF", "Global\nGain", "Trial\nGain"]
+    if include_external:
+        expected_labels[0] = "Int.Pos.\nPF"
+        expected_labels.insert(0, "PF")
+    if include_residual:
+        expected_labels.insert(-1, "Gain\nResid.")
+        index = viewer.model_names.index(GAIN_RESIDUAL_ONLY_NAME)
+        # E-only is measured against activity, not against measured residuals,
+        # and must use its own metric rather than the combined model's metric.
+        expected = [-0.075, 0.5] if metric == "r2" else [1.075, 0.5]
+        np.testing.assert_allclose(viewer._scores[index], expected)
+    if include_combined:
+        expected_labels.append("Gain+\nResid.")
+        index = viewer.model_names.index(GAIN_RESIDUAL_MODEL_NAME)
+        expected = [0.365, 0.94] if metric == "r2" else [0.635, 0.06]
+        np.testing.assert_allclose(viewer._scores[index], expected)
+    if include_sqrt:
+        expected_labels.append("Trial Gain\n(sqrt)")
+    expected_labels.append("Peer\nPred.")
+    assert viewer.model_labels == expected_labels
+    assert len(viewer.model_colors) == len(expected_labels)
+    assert (GAIN_RESIDUAL_ONLY_NAME in viewer.model_names) == include_residual
+    assert (GAIN_RESIDUAL_MODEL_NAME in viewer.model_names) == include_combined
+    assert "include_gain_residual" not in viewer.parameters
+    assert "include_gain_plus_residual" not in viewer.parameters
+    assert GAIN_RESIDUAL_ONLY_NAME not in [call[0] for call in results.calls]
+    assert all(not call[2] for call in results.calls)
 
 
 def test_trial_performance_exposes_parent_parameters():

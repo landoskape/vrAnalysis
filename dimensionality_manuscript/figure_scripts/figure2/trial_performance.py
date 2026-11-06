@@ -17,10 +17,10 @@ TRIAL_PERFORMANCE_MODEL_NAMES: tuple[ModelName, ...] = (
     "rrr",
 )
 TRIAL_PERFORMANCE_MODEL_LABELS = (
-    "Placefield",
+    "PF",
     "Global\nGain",
     "Trial\nGain",
-    "Peer\nPrediction",
+    "Peer\nPred.",
 )
 TRIAL_PERFORMANCE_MODEL_COLORS = (
     "#000000",
@@ -31,6 +31,9 @@ TRIAL_PERFORMANCE_MODEL_COLORS = (
 SQRT_GAIN_MODEL_NAME = "internal_placefield_1d_structured_gain_sqrt"
 SQRT_GAIN_MODEL_LABEL = "Trial Gain\n(sqrt)"
 SQRT_GAIN_MODEL_COLOR = "#8c4db5"
+GAIN_RESIDUAL_MODEL_NAME: ModelName = "internal_placefield_1d_structured_gain_residual"
+# Viewer-only entry: E is stored alongside G+E in the gain-residual model results.
+GAIN_RESIDUAL_ONLY_NAME = "gain_residual_only"
 TRIAL_PERFORMANCE_METRICS = {"r2": r"R$^2$", "mse": "MSE"}
 ENVIRONMENT_OPTIONS = ("Average", "Slot 1", "Slot 2", "Slot 3")
 AGGREGATION_OPTIONS = ("mean", "median")
@@ -57,14 +60,17 @@ def trial_performance_scores(results, model_names, metric, selection, environmen
         raise ValueError(f"aggregation must be one of {AGGREGATION_OPTIONS}, got {aggregation!r}")
     per_model = []
     for model_name in model_names:
-        selected = results.sel(model_name=model_name, avg_by_mouse=False, **selection)
-        if metric not in selected:
+        residual_only = model_name == GAIN_RESIDUAL_ONLY_NAME
+        result_model = GAIN_RESIDUAL_MODEL_NAME if residual_only else model_name
+        result_metric = f"{metric}_residual" if residual_only else metric
+        selected = results.sel(model_name=result_model, avg_by_mouse=False, **selection)
+        if result_metric not in selected:
             raise ValueError(
-                f"No {metric!r} results are available for {model_name!r}. "
+                f"No {result_metric!r} results are available for {result_model!r}. "
                 "TrialModelPerformanceViewer requires results aggregated from "
                 "TrialPlacecellRegressionConfig; also check that transferred results use its current schema."
             )
-        values = np.asarray(selected[metric], dtype=float)
+        values = np.asarray(selected[result_metric], dtype=float)
         if values.ndim != 2:
             raise ValueError(f"{metric!r} must have shape (sessions, environment slots), got {values.shape}")
         if environment == "Average":
@@ -83,6 +89,11 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
 
     External PF is optional via ``include_external_placefield`` (default False). The main
     axis subtracts internal PF, or external PF when included. The inset shows absolute scores.
+    Set ``include_gain_residual=True`` to add E-only (Gain Residual) and
+    ``include_gain_plus_residual=True`` to add G+E (Gain + Resid.) at construction.
+    The order is E-only, Trial Gain, then G+E. E-only predicts PF + E
+    and uses the stored ``r2_residual`` / ``mse_residual`` activity scores from the
+    G+E model.
     Set ``include_sqrt_gain=True`` to compare raw and square-root Trial Gain on the same
     activity metric. Style parameters match :class:`ModelPerformanceViewer`; ``selection_defaults`` seeds
     data-selection widgets from the results aggregator.
@@ -94,6 +105,8 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
     base_model_names = TRIAL_PERFORMANCE_MODEL_NAMES
     base_model_labels = TRIAL_PERFORMANCE_MODEL_LABELS
     base_model_colors = TRIAL_PERFORMANCE_MODEL_COLORS
+    # Trial figures retain their existing labels and optional-model insertion order.
+    use_comparison_order = False
     performance_metrics = TRIAL_PERFORMANCE_METRICS
 
     def __init__(
@@ -106,6 +119,8 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
         avg_by_mouse: bool = True,
         include_structured_additive: bool = False,
         include_external_placefield: bool = False,
+        include_gain_residual: bool = False,
+        include_gain_plus_residual: bool = False,
         include_sqrt_gain: bool = False,
         fontsize: float = 12.0,
         xtick_rotation: float = 45.0,
@@ -138,10 +153,27 @@ class TrialModelPerformanceViewer(ModelPerformanceViewer):
             raise ValueError(
                 "TrialModelPerformanceViewer requires a ResultsAggregator built from " f"TrialPlacecellRegressionConfig, not {analysis_name!r}."
             )
+        self.include_gain_residual = include_gain_residual
+        self.include_gain_plus_residual = include_gain_plus_residual
+        names = list(TRIAL_PERFORMANCE_MODEL_NAMES)
+        labels = list(TRIAL_PERFORMANCE_MODEL_LABELS)
+        colors = list(TRIAL_PERFORMANCE_MODEL_COLORS)
+        if include_gain_residual:
+            gain_index = names.index("internal_placefield_1d_structured_gain")
+            names.insert(gain_index, GAIN_RESIDUAL_ONLY_NAME)
+            labels.insert(gain_index, "Gain\nResid.")
+            colors.insert(gain_index, "#e69f00")
+        if include_gain_plus_residual:
+            names.insert(-1, GAIN_RESIDUAL_MODEL_NAME)
+            labels.insert(-1, "Gain+\nResid.")
+            colors.insert(-1, "#009e73")
         if include_sqrt_gain:
-            self.base_model_names = (*TRIAL_PERFORMANCE_MODEL_NAMES[:-1], SQRT_GAIN_MODEL_NAME, TRIAL_PERFORMANCE_MODEL_NAMES[-1])
-            self.base_model_labels = (*TRIAL_PERFORMANCE_MODEL_LABELS[:-1], SQRT_GAIN_MODEL_LABEL, TRIAL_PERFORMANCE_MODEL_LABELS[-1])
-            self.base_model_colors = (*TRIAL_PERFORMANCE_MODEL_COLORS[:-1], SQRT_GAIN_MODEL_COLOR, TRIAL_PERFORMANCE_MODEL_COLORS[-1])
+            names.insert(-1, SQRT_GAIN_MODEL_NAME)
+            labels.insert(-1, SQRT_GAIN_MODEL_LABEL)
+            colors.insert(-1, SQRT_GAIN_MODEL_COLOR)
+        self.base_model_names = tuple(names)
+        self.base_model_labels = tuple(labels)
+        self.base_model_colors = tuple(colors)
         self._initial_environment = environment
         self._initial_aggregation = aggregation
         super().__init__(

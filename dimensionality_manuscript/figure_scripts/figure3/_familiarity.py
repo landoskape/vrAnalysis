@@ -39,6 +39,8 @@ def select_by_env_spectra(
     sel_params: dict,
     env_full_scope: str,
     full_within_env: bool,
+    *,
+    source_key: str = "sf_cv",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load the spectra and session mask selected by the ``by_env`` controls.
 
@@ -59,6 +61,11 @@ def select_by_env_spectra(
         sf_key = "sf_cv_env_fullall"
         ff_key = "ff_env_full1_fullall" if full_within_env else "ff"
         include_iti = env_full_scope != "outside_env"
+
+    if source_key == "ss_cv":
+        sf_key = "ss_cv_env"
+    elif source_key != "sf_cv":
+        raise ValueError(f"Unknown source_key {source_key!r}; expected sf_cv or ss_cv")
 
     out = results.sel(
         keys=[sf_key, ff_key],

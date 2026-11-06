@@ -1,6 +1,7 @@
 """Cross-validated population place-field maps."""
 
 import matplotlib as mpl
+from matplotlib.transforms import blended_transform_factory
 import numpy as np
 
 from dimensionality_manuscript.configs.behavior_speed_env import ENV_REWARD_MAP, REFERENCE_ENV_LENGTH_CM
@@ -275,7 +276,7 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
 
         for axis, label, spines_visible in zip(
             ax,
-            ("Placefields", "RMS error"),
+            ("Pos Mean", "Pos STD"),
             (("left", "bottom"), ("bottom",)),
         ):
             axis.text(
@@ -288,16 +289,27 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
                 fontsize=state["fontsize"],
             )
             axis.set_xlim(0, REFERENCE_ENV_LENGTH_CM)
-            axis.set_xlabel("VR Position (cm)", labelpad=-10, fontsize=state["fontsize"])
+            axis.set_xlabel("Position (cm)", fontsize=state["fontsize"], va="top")
             style_axis(
                 axis,
                 fontsize=state["fontsize"],
                 xbounds=(0, REFERENCE_ENV_LENGTH_CM),
                 xticks=(0, REFERENCE_ENV_LENGTH_CM),
-                yticks=(),
+                yticks=(0, self.placefield.shape[0]) if "left" in spines_visible else (),
                 spines_visible=spines_visible,
             )
-        ax[0].set_ylabel("ROIs", fontsize=state["fontsize"])
+            # Share the tick-label offset so alignment follows font size and spine position.
+            axis.xaxis.set_label_coords(
+                0.5,
+                0,
+                transform=blended_transform_factory(axis.transAxes, axis.get_xticklabels()[0].get_transform()),
+            )
+        ax[0].set_ylabel("ROIs", fontsize=state["fontsize"], ha="right", va="center", rotation_mode="default")
+        ax[0].yaxis.set_label_coords(
+            0,
+            0.5,
+            transform=blended_transform_factory(ax[0].get_yticklabels()[0].get_transform(), ax[0].transAxes),
+        )
 
         environment = self.environments[state["env"]]
         if state["show_reward"] and environment in ENV_REWARD_MAP and environment in ENV_NUM_COLORS:
@@ -319,7 +331,7 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
             low_label="0",
             high_label=f"{state['vmax']:g}",
             fontsize=state["fontsize"],
-            ylabel=r"Fluorescence ($\sigma$)",
+            ylabel="Norm. Fluor.",
         )
         draw_vertical_colorscale(
             ax[1].inset_axes([0.12, 0.15, 0.06, 0.7]),
@@ -327,7 +339,7 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
             low_label="0",
             high_label=f"{state['vmax_error']:g}",
             fontsize=state["fontsize"],
-            ylabel=r"RMS error ($\sigma$)",
+            ylabel="std(N.Fluor)",
         )
         return fig
 

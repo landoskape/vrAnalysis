@@ -1,0 +1,111 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>PF mean and RMS variability — population report</title>
+<style>body{font:16px system-ui;color:#20303d;max-width:1350px;margin:45px auto;padding:0 30px;line-height:1.6}h1{font-size:34px}h2{font-size:25px}p{max-width:1100px}img{width:100%;height:auto}section{border-top:1px solid #d5dde1;margin-top:45px;padding-top:16px}a{color:#176b89}.callout{background:#edf5f4;padding:18px 25px;border-radius:8px}table{border-collapse:collapse}td,th{padding:6px 12px;border-bottom:1px solid #ddd}code{font-size:13px}</style>
+<h1>Does place-field variability follow the mean?</h1><p>Population exploration · saved v11 results · 140 included / 149 stored sessions · 14 mice · 931,443 best-environment ROI observations. Generated 3 November 2026.</p>
+<div class="callout"><b>At a glance</b><ul><li>All trials (shared): mean r = <b>0.968</b> ± 0.001 SEM; 100.0% of finite ROI observations have r &gt; 0 (mouse-balanced).</li><li>Held-out RMS: mean r = <b>0.446</b> ± 0.020 SEM; 92.1% of finite ROI observations have r &gt; 0 (mouse-balanced).</li><li>Independent trials: mean r = <b>0.319</b> ± 0.022 SEM; 71.2% of finite ROI observations have r &gt; 0 (mouse-balanced).</li></ul><p>Spatial reliability: average within-session Spearman ρ = <b>0.828</b> ± 0.012 SEM across 14 mice; 14 positive, 0 negative mouse means.</p><p>Trial RMS CV: average within-session Spearman ρ = <b>-0.359</b> ± 0.041 SEM across 14 mice; 0 positive, 14 negative mouse means.</p><p>The shared-trial, held-out, and fully independent constructions answer different questions. Use the independent-trial result as the strongest check that mean–variability coupling generalizes across separate trials.</p></div>
+<h2>What is being measured?</h2><p>For each neuron, PF is mean activity across trials at each position. RMS is the square root of the mean squared residual from a PF template at that position. The reported scalar is <b>Pearson r across position between PF and RMS</b>, not mean firing rate, temporal prediction RMS, or spatial reliability itself. A positive r means variability is higher where mean activity is higher; r measures map shape agreement, not proportionality or variance magnitude.</p>
+<p>All-trial RMS uses deviations from the all-trial mean: this is a position-dependent population SD (ddof=0). F1 and F2 alternate chronological trials. <b>Held-out</b> averages r(PF F1, RMS on F2 relative to PF F1) and its reverse. The PF enters that residual, so it can contribute template-mismatch effects. <b>Independent</b> averages r(PF F1, within-F2 RMS relative to PF F2) and its reverse; each correlation’s two maps use disjoint trials. The two directional r values are averaged arithmetically, exactly as saved. Both directions must be finite.</p>
+<p>Spatial reliability is the stored environment-specific reliability. Amplitude consistency is represented by across-trial CV (SD/mean); lower CV means more consistent amplitude. Trial RMS is the primary amplitude measure, with least-squares and Gaussian PF gain CV as alternatives. These CVs are not correlation coefficients and are not bounded by one.</p>
+<h2>Reading population statistics</h2><p>Primary analysis uses each session’s environment with the most trials. Neurons are summarized within session; sessions receive equal weight within mouse; mice receive equal weight across the population. Thus large recordings and mice with many sessions do not dominate. All cells are included unless explicitly labeled. No cross-session cell matching is assumed: counts refer to ROI observations, not unique neurons. Bands/error bars are descriptive between-mouse SEM, not 95% confidence intervals. No neuron-level p-values are used.</p><ol><li><a href="#01_distributions">How strongly does variability follow the mean field?</a></li><li><a href="#02_each_mouse">Neuron distributions within each mouse</a></li><li><a href="#03_subsets">Distribution tails, selection, and mouse means</a></li><li><a href="#04_spatial_curves">The relationship with spatial reliability</a></li><li><a href="#05_associations">Association strength across mice</a></li><li><a href="#06_amplitude">Does mean–variability coupling depend on amplitude consistency?</a></li><li><a href="#07_joint">Spatial reliability and amplitude consistency together</a></li><li><a href="#08_environments">Sensitivity to environment choice</a></li></ol><section id="01_distributions"><h2>How strongly does variability follow the mean field?</h2><p>Thin lines: individual mice. Within each mouse, average the normalized session histograms; thick line and band: equal-mouse mean ± between-mouse SEM. All cells, best environment per session. All bins are 0.05 wide; no smoothing. The all-trial comparison shares data between the mean and residual map, so its high correlation alone is not independent evidence.</p><a href="figures/01_distributions.svg">SVG</a><img loading="lazy" src="figures/01_distributions.png" alt="How strongly does variability follow the mean field?"></section><section id="02_each_mouse"><h2>Neuron distributions within each mouse</h2><p>Independent-trial comparison. Faint steps: each session’s neuron distribution. Colored curve: equal-session average for that mouse. These are repeated ROI observations; the same neuron may appear on multiple days, and cell identities have not been tracked.</p><a href="figures/02_each_mouse.svg">SVG</a><img loading="lazy" src="figures/02_each_mouse.png" alt="Neuron distributions within each mouse"></section><section id="03_subsets"><h2>Distribution tails, selection, and mouse means</h2><p>CDFs use the same equal-session then equal-mouse weights as Figure 1. Dashed: quality selection (spatial reliability > 0.3 and fraction active > 0.1); solid: all cells. This selection directly depends on spatial reliability. Right: each dot is the mean of session neuron means, with mice ordered alphabetically.</p><a href="figures/03_subsets.svg">SVG</a><img loading="lazy" src="figures/03_subsets.png" alt="Distribution tails, selection, and mouse means"></section><section id="04_spatial_curves"><h2>The relationship with spatial reliability</h2><p>Fixed reliability bins, width 0.1. Each session bin needs ≥20 finite neuron pairs; average session-bin means within mouse, then mice equally. Thin colored lines: mice. Thick curves ± between-mouse SEM shown only with ≥3 mice. Gray: activity-selected sensitivity analysis without selecting on spatial reliability. Curves describe association; reliability and PF/RMS summaries use overlapping trials.</p><a href="figures/04_spatial_curves.svg">SVG</a><img loading="lazy" src="figures/04_spatial_curves.png" alt="The relationship with spatial reliability"></section><section id="05_associations"><h2>Association strength across mice</h2><p>Compute Spearman correlation across neurons separately within each session, then average sessions per mouse. Thin connected lines: mice; points ± SEM: equal-mouse summaries. Higher amplitude CV means less consistent amplitude, so its sign has the opposite interpretation to spatial reliability. No neuron-level significance tests: sessions and neurons are repeated observations.</p><a href="figures/05_associations.svg">SVG</a><img loading="lazy" src="figures/05_associations.png" alt="Association strength across mice"></section><section id="06_amplitude"><h2>Does mean–variability coupling depend on amplitude consistency?</h2><p>Same hierarchy and ≥20-pair session-bin / ≥3-mouse thresholds as spatial curves. Fixed CV bins of width 0.5; last bin contains every finite CV ≥6. Negative CVs are excluded from these curves (counts reported below); all finite CVs enter Spearman correlations. RMS is the primary amplitude summary; gain definitions are sensitivity analyses.</p><a href="figures/06_amplitude.svg">SVG</a><img loading="lazy" src="figures/06_amplitude.png" alt="Does mean–variability coupling depend on amplitude consistency?"></section><section id="07_joint"><h2>Spatial reliability and amplitude consistency together</h2><p>Coarse joint bins show the spatial relationship at comparable amplitude CV. Each session cell requires ≥20 finite neurons; average sessions within mouse, then mice. Labels give contributing mice; colors require ≥3. Descriptive stratification does not establish independent causal contributions.</p><a href="figures/07_joint.svg">SVG</a><img loading="lazy" src="figures/07_joint.png" alt="Spatial reliability and amplitude consistency together"></section><section id="08_environments"><h2>Sensitivity to environment choice</h2><p>All observed environments, summarized separately by the order each mouse first experienced them. Equal sessions per mouse, then equal mice ± SEM. Different slots can contain different sessions and mice; these are not matched causal estimates of familiarity. Primary figures use only the environment with the most trials in each session.</p><a href="figures/08_environments.svg">SVG</a><img loading="lazy" src="figures/08_environments.png" alt="Sensitivity to environment choice"></section>
+<section><h2>Coverage and reproducibility</h2><table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sessions</th>
+      <th>roi_observations</th>
+      <th>finite_independent</th>
+    </tr>
+    <tr>
+      <th>mouse</th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>ATL012</th>
+      <td>23</td>
+      <td>59503</td>
+      <td>52740</td>
+    </tr>
+    <tr>
+      <th>ATL020</th>
+      <td>7</td>
+      <td>47214</td>
+      <td>43087</td>
+    </tr>
+    <tr>
+      <th>ATL022</th>
+      <td>17</td>
+      <td>145834</td>
+      <td>117508</td>
+    </tr>
+    <tr>
+      <th>ATL023</th>
+      <td>1</td>
+      <td>6677</td>
+      <td>6189</td>
+    </tr>
+    <tr>
+      <th>ATL027</th>
+      <td>14</td>
+      <td>104464</td>
+      <td>89210</td>
+    </tr>
+    <tr>
+      <th>ATL028</th>
+      <td>3</td>
+      <td>27470</td>
+      <td>25357</td>
+    </tr>
+    <tr>
+      <th>ATL045</th>
+      <td>6</td>
+      <td>38623</td>
+      <td>33650</td>
+    </tr>
+    <tr>
+      <th>ATL049</th>
+      <td>17</td>
+      <td>108325</td>
+      <td>91922</td>
+    </tr>
+    <tr>
+      <th>ATL057</th>
+      <td>6</td>
+      <td>52628</td>
+      <td>43826</td>
+    </tr>
+    <tr>
+      <th>ATL058</th>
+      <td>9</td>
+      <td>70820</td>
+      <td>58786</td>
+    </tr>
+    <tr>
+      <th>ATL060</th>
+      <td>7</td>
+      <td>18510</td>
+      <td>14722</td>
+    </tr>
+    <tr>
+      <th>ATL076</th>
+      <td>16</td>
+      <td>178712</td>
+      <td>153089</td>
+    </tr>
+    <tr>
+      <th>CR_Hippocannula6</th>
+      <td>7</td>
+      <td>46503</td>
+      <td>42857</td>
+    </tr>
+    <tr>
+      <th>CR_Hippocannula7</th>
+      <td>7</td>
+      <td>26160</td>
+      <td>22724</td>
+    </tr>
+  </tbody>
+</table><p>9 stored sessions have no usable experience-slot best environment and are excluded from primary figures (see session_coverage.csv). Nonfinite best-environment correlations: {&#x27;all&#x27;: 45916, &#x27;heldout&#x27;: 135776, &#x27;independent&#x27;: 135776}. Each metric uses its own finite denominator; constant maps or too few paired positions yield NaN. Negative amplitude CV observations excluded only from amplitude-bin curves: {&#x27;rms_cv&#x27;: 0, &#x27;gain_cv&#x27;: 0, &#x27;gaussian_cv&#x27;: 0}. Curves are omitted where fewer than three mice meet the per-session bin threshold; thin mouse curves can extend beyond the population curve.</p>
+<p>Configuration: <code>pfpred_quality_spks=sigrebase_rel=0.3_fa=0.1_v11</code>. Stored computation times span 2026-11-02T16:45:38.029292+00:00 to 2026-11-02T22:47:41.968171+00:00. The report reads result blobs without recomputing models or changing the store. Source: <code>D:\localData\dimensionality-manuscript\cache\pipeline_v2</code>.</p><p><a href="make_report.py">Rebuild script</a> · <a href="provenance.csv">Result provenance</a> · <a href="coverage.csv">Coverage</a> · <a href="session_summaries.csv">Session summaries</a> · <a href="mouse_summaries.csv">Mouse summaries</a> · <a href="session_spearman.csv">Session correlations</a> · <a href="mouse_spearman.csv">Mouse correlations</a></p></section></html>

@@ -55,8 +55,11 @@ def ratios_arrays(
     env_full_scope: str = "within_env",
     full_within_env: bool = False,
     first_n: int = 10,
+    source_key: str = "sf_cv",
 ) -> dict[str, np.ndarray]:
     """Mouse-averaged spectra plus per-mouse cumulative-variance-ratio arrays for the ratios figure.
+
+    ``source_key`` selects the PF numerator; output keys retain their legacy ``sf_cv`` names.
 
     Shared data prep for :func:`plot_ratios_spectrum`, :func:`plot_ratios_beeswarms` and
     :func:`plot_ratios_beeswarms_combined`. The behaving beeswarm arrays use the same raw
@@ -66,12 +69,15 @@ def ratios_arrays(
     if not 1 <= first_n <= 30:
         raise ValueError(f"first_n must be between 1 and 30, got {first_n}")
 
-    out = results.sel(keys=["sf_cv", "ff"], **sel_params, avg_by_mouse=False, include_iti=False)
-    out_iti = results.sel(keys=["sf_cv", "ff"], **sel_params, avg_by_mouse=False, include_iti=True)
+    if source_key not in ("sf_cv", "ss_cv"):
+        raise ValueError(f"Unknown source_key {source_key!r}; expected sf_cv or ss_cv")
+
+    out = results.sel(keys=[source_key, "ff"], **sel_params, avg_by_mouse=False, include_iti=False)
+    out_iti = results.sel(keys=[source_key, "ff"], **sel_params, avg_by_mouse=False, include_iti=True)
 
     if spectrum_mode == "all":
         # Retain the unnormalized behaving spectra for display-only processing and raw SVRs.
-        sf_cv_sessions_raw = np.asarray(out["sf_cv"], dtype=float)
+        sf_cv_sessions_raw = np.asarray(out[source_key], dtype=float)
         ff_sessions_raw = np.asarray(out["ff"], dtype=float)
         spectrum_mouse_names = results.mouse_names
     elif spectrum_mode == "avg_env":
@@ -80,6 +86,7 @@ def ratios_arrays(
             sel_params,
             env_full_scope,
             full_within_env,
+            source_key=source_key,
         )
         sf_cv_sessions_raw = _average_available_env_slots(sf_env)[session_mask]
         ff_sessions_raw = _average_available_env_slots(ff_env)[session_mask]
@@ -92,13 +99,13 @@ def ratios_arrays(
     full_sum = np.nansum(ff_sessions_raw, axis=1, keepdims=True)
     full_sum_iti = np.nansum(out_iti["ff"], axis=1, keepdims=True)
     sf_cv = sf_cv_sessions_raw / full_sum
-    sf_cv_iti = out_iti["sf_cv"] / full_sum_iti
+    sf_cv_iti = out_iti[source_key] / full_sum_iti
     ff = ff_sessions_raw / full_sum
 
     full_sum_10 = np.nansum(ff_sessions_raw[:, :first_n], axis=1, keepdims=True)
     full_sum_iti_10 = np.nansum(out_iti["ff"][:, :first_n], axis=1, keepdims=True)
     sf_cv_10 = sf_cv_sessions_raw[:, :first_n] / full_sum_10
-    sf_cv_iti_10 = out_iti["sf_cv"][:, :first_n] / full_sum_iti_10
+    sf_cv_iti_10 = out_iti[source_key][:, :first_n] / full_sum_iti_10
 
     session_has_spontaneous = np.array([session.has_spontaneous() for session in results.sessions])
 
@@ -190,6 +197,7 @@ def plot_ratios_spectrum(
     show_first10_indicator: bool = True,
     leading_dims: int = 10,
     include_legend: bool = True,
+    pf_label: str = r"PF$\times$CA1",
 ) -> None:
     """Mouse-averaged normalized ``sf_cv`` / ``ff`` spectra (log-log).
 
@@ -211,7 +219,7 @@ def plot_ratios_spectrum(
 
     ax.plot(xvals(sf_cv), sf_cv.T, color=sf_color, alpha=each_alpha, linewidth=1.0)
     ax.plot(xvals(ff), ff.T, color=ff_color, alpha=each_alpha, linewidth=1.0)
-    ax.plot(xvals(sf_cv), np.nanmean(sf_cv, axis=0), color=sf_color, label=r"PF$\times$CA1", linewidth=2.0)
+    ax.plot(xvals(sf_cv), np.nanmean(sf_cv, axis=0), color=sf_color, label=pf_label, linewidth=2.0)
     ax.plot(xvals(ff), np.nanmean(ff, axis=0), color=ff_color, label=r"CA1$\times$CA1", linewidth=2.0)
     ax.set_xscale("log")
     ax.set_yscale("log")

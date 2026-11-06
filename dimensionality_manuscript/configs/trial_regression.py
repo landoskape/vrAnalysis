@@ -324,7 +324,8 @@ class TrialPlacecellRegressionConfig(AnalysisConfigBase):
 
     Gain-residual models reuse the standalone structured-gain predictor exactly and
     define E using regularized measured gains. Exact projection energies in E are
-    reported posthoc. All models retain schema v2; replacing prior unregularized
+    reported posthoc. E-only activity scores predict PF + E; G+E predicts G + E.
+    All models retain schema v2; replacing prior unregularized
     gain-residual results requires targeted invalidation of those two configurations.
     Their usual r2 remains the median fold score.
     Component scores are saved per fold and as medians; *_pooled scores use summed

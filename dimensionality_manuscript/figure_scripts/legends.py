@@ -7,6 +7,7 @@ namespaced by a ``prefix``, so a multi-panel figure can carry independent contro
 panel's legend.
 """
 
+from matplotlib.offsetbox import VPacker
 from syd import Viewer
 
 # Matplotlib legend placements, plus "auto" (the panel's own default placement, which may be no legend
@@ -36,6 +37,7 @@ LEGEND_KNOBS = {
     "labelspacing": ("float", 0.5, 0.0, 3.0, 0.05),
     "borderpad": ("float", 0.4, 0.0, 3.0, 0.05),
     "borderaxespad": ("float", 0.5, 0.0, 3.0, 0.05),
+    "text_only": ("boolean", False, None, None, None),
     "markerfirst": ("boolean", True, None, None, None),
     "frameon": ("boolean", False, None, None, None),
     "visible": ("boolean", True, None, None, None),
@@ -88,6 +90,9 @@ def apply_legend(
     that show no legend unless asked; ``loc="none"`` never draws one. ``handles``/``labels`` are passed
     through when given, for panels whose artists carry no labels (e.g. a beeswarm). ``offset``
     shifts the legend from its ``loc`` placement by ``(x, y)`` in axes-relative coordinates.
+    ``text_only=True`` hides handles and colors labels to match their artists. Labels align
+    with their location (left, right, or center); placement and spacing knobs still apply.
+    Handle length/padding and marker order apply only to the ordinary legend.
 
     Calling this on a panel that already drew its own legend restyles it: matplotlib replaces the
     previous legend, and the "don't draw one" cases clear it.
@@ -106,7 +111,7 @@ def apply_legend(
         if existing is not None:
             existing.remove()
         return
-    kwargs = {knob: state[f"{prefix}_{knob}"] for knob in LEGEND_KNOBS if knob != "fontsize_scale"}
+    kwargs = {knob: state[f"{prefix}_{knob}"] for knob in LEGEND_KNOBS if knob not in ("fontsize_scale", "text_only")}
     kwargs["loc"] = loc
     kwargs["fontsize"] = fontsize * state[f"{prefix}_fontsize_scale"]
     if offset is not None:
@@ -115,7 +120,21 @@ def apply_legend(
         kwargs["bbox_transform"] = ax.transAxes
     if "visible" in kwargs:
         kwargs.pop("visible")  # matplotlib doesn't accept a visible kwarg, but we use it to hide the legend
+    text_only = state.get(f"{prefix}_text_only", False)
+    if text_only:
+        kwargs.update(
+            handlelength=0, handletextpad=0, labelcolor="linecolor", markerfirst="right" not in loc
+        )
     if handles is not None:
-        ax.legend(handles, labels, **kwargs)
+        legend = ax.legend(handles, labels, **kwargs)
     else:
-        ax.legend(**kwargs)
+        legend = ax.legend(**kwargs)
+    if text_only:
+        for handle in legend.legend_handles:
+            handle.set_visible(False)
+        alignment = "right" if "right" in loc else "left" if "left" in loc else "center" if "center" in loc else "left"
+        # Align each column's packed label boxes as well as multiline label contents.
+        for box in legend.findobj(VPacker):
+            box.align = alignment
+        for text in legend.get_texts():
+            text.set_multialignment(alignment)

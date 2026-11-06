@@ -177,11 +177,15 @@ def _supported_length(stack: np.ndarray, min_mice: int) -> int:
     return int(valid[-1]) + 1 if valid.size else 0
 
 
-def draw_familiarity_series(ax, curves: dict[str, np.ndarray], color: str, label: str, state) -> tuple[int, np.ndarray]:
+def draw_familiarity_series(
+    ax, curves: dict[str, np.ndarray], color: str, label: str, state, *, statistic: str = "mean",
+) -> tuple[int, np.ndarray]:
     """Draw one model's per-mouse session curves onto ``ax``.
 
-    ``style == "all"`` draws every mouse thin plus a solid across-mouse mean; ``"errorPlot"``
-    draws a mean +/- SE (or SD) band instead. Either way the mean is truncated where fewer than
+    ``style == "all"`` draws every mouse thin plus a solid across-mouse center; ``"errorPlot"``
+    draws a center +/- SE (or SD) band instead. Optional ``statistic="median"`` uses the
+    median instead of the default mean, retaining the same SD or SD/sqrt(n) spread.
+    Either way the center is truncated where fewer than
     ``min_mice`` mice remain, since the tail of the x-axis is carried by whichever mouse ran
     longest. Style knobs come from :func:`add_familiarity_curve_widgets`.
 
@@ -195,20 +199,25 @@ def draw_familiarity_series(ax, curves: dict[str, np.ndarray], color: str, label
     stack = _pad_stack(curves)
     length = _supported_length(stack, state["min_mice"])
     linewidth = state["linewidth"]
+    reducer = np.nanmedian if statistic == "median" else np.nanmean
     if state["style"] == "all":
         for values in curves.values():
             ax.plot(np.arange(len(values)), values, color=(color, state["subject_alpha"]), linewidth=state["subject_linewidth"])
         if length:
-            ax.plot(np.arange(length), np.nanmean(stack[:, :length], axis=0), color=color, linewidth=linewidth, label=label)
+            ax.plot(np.arange(length), reducer(stack[:, :length], axis=0), color=color, linewidth=linewidth, label=label)
         return stack.shape[1], stack
     if not length:
         return 0, stack
     supported = stack[:, :length]
     se = state["se"]
-    errorPlot(np.arange(length), supported, axis=0, se=se, ax=ax, color=color, linewidth=linewidth, alpha=state["fill_alpha"], label=label)
     # Only the band is drawn, not the individual mice, so the autoscale should track its edges
     # rather than single-mouse outliers well outside it.
     num_valid = np.sum(np.isfinite(supported), axis=0)
     spread = np.nanstd(supported, axis=0) / (np.sqrt(num_valid) if se else 1.0)
-    mean = np.nanmean(supported, axis=0)
+    mean = reducer(supported, axis=0)
+    if statistic == "median":
+        ax.fill_between(np.arange(length), mean - spread, mean + spread, color=color, alpha=state["fill_alpha"], linewidth=0)
+        ax.plot(np.arange(length), mean, color=color, linewidth=linewidth, label=label)
+    else:
+        errorPlot(np.arange(length), supported, axis=0, se=se, ax=ax, color=color, linewidth=linewidth, alpha=state["fill_alpha"], label=label)
     return length, np.concatenate([mean - spread, mean + spread])

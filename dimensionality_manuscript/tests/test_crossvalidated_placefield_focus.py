@@ -130,17 +130,19 @@ def test_focus_plot_has_two_main_population_axes():
 
     main_axes = fig.axes[:2]
     assert [axis.get_title() for axis in main_axes] == ["", ""]
-    assert [axis.texts[0].get_text() for axis in main_axes] == ["Placefields", "RMS error"]
+    assert [axis.texts[0].get_text() for axis in main_axes] == ["Pos Mean", "Pos STD"]
     assert [axis.texts[0].get_position() for axis in main_axes] == [(0.9, 0.85), (0.9, 0.85)]
     assert all(axis.texts[0].get_ha() == "right" and axis.texts[0].get_va() == "top" for axis in main_axes)
     assert main_axes[0].get_ylabel() == "ROIs"
-    assert [axis.get_xlabel() for axis in main_axes] == ["VR Position (cm)", "VR Position (cm)"]
+    assert [axis.get_xlabel() for axis in main_axes] == ["Position (cm)", "Position (cm)"]
     assert all(list(axis.get_xticks()) == [0, 200] for axis in main_axes)
-    assert all(list(axis.get_yticks()) == [] for axis in main_axes)
+    assert list(main_axes[0].get_yticks()) == [0, viewer.placefield.shape[0]]
+    assert list(main_axes[1].get_yticks()) == []
     assert main_axes[0].spines["left"].get_visible()
     assert not main_axes[1].spines["left"].get_visible()
     assert all(axis.spines["bottom"].get_visible() for axis in main_axes)
-    assert main_axes[0].child_axes[0].get_ylabel() == r"Fluorescence ($\sigma$)"
+    assert main_axes[0].child_axes[0].get_ylabel() == "Norm. Fluor."
+    assert main_axes[1].child_axes[0].get_ylabel() == "std(N.Fluor)"
 
 
 def test_focus_reward_zone_uses_environment_style_controls_and_optional_legend():

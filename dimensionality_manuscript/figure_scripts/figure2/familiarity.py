@@ -25,7 +25,7 @@ from ._scores import (
     mouse_session_curves,
     performance_scores,
 )
-from .model_style import ROLE_COLOR
+from .model_style import COMPARISON_MODEL_ABBREVIATIONS, COMPARISON_MODEL_LABELS, ROLE_COLOR
 
 from .performance import (
     STRUCTURED_ADDITIVE_MODEL_NAME,
@@ -44,10 +44,10 @@ FAMILIARITY_PF_COLOR = ROLE_COLOR["external"]
 FAMILIARITY_PF_GAIN_COLOR = ROLE_COLOR["internal"]
 FAMILIARITY_STRUCTURED_ADDITIVE_COLOR = STRUCTURED_ADDITIVE_MODEL_COLOR
 FAMILIARITY_PEER_COLOR = ROLE_COLOR["neural"]
-FAMILIARITY_PF_LABEL = "PF"
-FAMILIARITY_PF_GAIN_LABEL = "Gain"
-FAMILIARITY_STRUCTURED_ADDITIVE_LABEL = "Residual"
-FAMILIARITY_PEER_LABEL = "Peer"
+FAMILIARITY_PF_LABEL = COMPARISON_MODEL_LABELS[FAMILIARITY_IMPROVEMENT_CONTROL]
+FAMILIARITY_PF_GAIN_LABEL = COMPARISON_MODEL_LABELS[FAMILIARITY_PF_GAIN_MODEL]
+FAMILIARITY_STRUCTURED_ADDITIVE_LABEL = COMPARISON_MODEL_LABELS[FAMILIARITY_STRUCTURED_ADDITIVE_MODEL]
+FAMILIARITY_PEER_LABEL = COMPARISON_MODEL_LABELS[FAMILIARITY_PEER_MODEL]
 
 # Plain PF is the reference for every inferential comparison. The interaction coefficients are
 # therefore the changes in each enabled model's advantage over PF per session.
@@ -154,10 +154,9 @@ class RegressionFamiliarityViewer(FigureViewer):
         self.results = results
         self.figsize = figsize
         self.include_structured_additive = include_structured_additive
-        self.comparison_model_names = [FAMILIARITY_PF_GAIN_MODEL]
+        self.comparison_model_names = [FAMILIARITY_PF_GAIN_MODEL, FAMILIARITY_PEER_MODEL]
         if include_structured_additive:
             self.comparison_model_names.append(FAMILIARITY_STRUCTURED_ADDITIVE_MODEL)
-        self.comparison_model_names.append(FAMILIARITY_PEER_MODEL)
 
         # PF is loaded even in improvement mode because it is the subtraction baseline. Whether
         # it is displayed is decided per value mode in _plot_value_mode(), which also lets the
@@ -443,17 +442,25 @@ class RegressionFamiliarityViewer(FigureViewer):
 
 
 class RegressionFamiliarityByEnvViewer(FigureViewer):
-    """Per-environment baseline R^2 and reference-minus-baseline improvement.
+    """Per-environment baseline R^2 and a selectable model comparison.
 
     Each curve is one experience-order environment slot, using the shared black/blue/green
     palette. The left axis shows ``r2_env`` for ``baseline_model`` (default external PF); the
-    right shows ``reference_model`` (default RRR) minus that baseline for the same session
-    and slot. Both models are selectable in the viewer. These scores evaluate a global
+    right shows ``reference_model`` (default RRR) minus that baseline in ``comparison_mode="delta"``,
+    or baseline divided by reference in ``comparison_mode="ratio"``, for the same session
+    and slot, before averaging across mice. Zero reference scores yield missing ratios.
+    Both models are selectable in the viewer. These scores evaluate a global
     session fit on each environment's held-out frames, without fitting separate models.
 
-    ``show_reference_mean`` adds the across-mouse reference mean for each environment to the
-    absolute panel as a thin dashed line without error bars, using the same alignment and
-    ``min_mice`` threshold as the baseline curves.
+    ``reference_mode`` selects ``"just_baseline"``, ``"reference_mean"``, or
+    ``"reference_mean_error"``. The latter two add the across-mouse reference mean for each
+    environment as a thin dashed line, using the baseline's alignment and ``min_mice`` threshold.
+    The error mode also adds a shaded SE (``se=True``) or SD (``se=False``) band.
+    ``statistic`` selects the across-mouse ``"mean"`` (default) or ``"median"`` for both
+    panels and reference curves. Error bands retain the across-mouse SD or SD/sqrt(n),
+    centered on the selected statistic; they are not confidence intervals for the median.
+    The legacy constructor option ``show_reference_mean`` maps to the first two modes.
+    ``show_zero_line`` toggles the comparison's equality line: zero for delta, one for ratio.
 
     When ``within_env_session`` is true, each mouse and slot is compacted to the sessions in
     which that environment has a finite score.  Otherwise values retain their position in the
@@ -469,7 +476,10 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         *,
         baseline_model: ModelName = "external_placefield_1d",
         reference_model: ModelName = FAMILIARITY_PEER_MODEL,
-        show_reference_mean: bool = False,
+        reference_mode: str = "just_baseline",
+        comparison_mode: str = "delta",
+        statistic: str = "mean",
+        show_reference_mean: bool | None = None,
         within_env_session: bool = True,
         auto_ylim: bool = True,
         ylim: tuple[float, float] = (0.0, 0.3),
@@ -484,6 +494,17 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         for name, value in (("baseline_model", baseline_model), ("reference_model", reference_model)):
             if value not in available_models:
                 raise ValueError(f"{name} must be one of {available_models}, got {value!r}")
+        reference_modes = ["just_baseline", "reference_mean", "reference_mean_error"]
+        comparison_modes = ["delta", "ratio"]
+        for name, value, options in (
+            ("reference_mode", reference_mode, reference_modes),
+            ("comparison_mode", comparison_mode, comparison_modes),
+            ("statistic", statistic, ["mean", "median"]),
+        ):
+            if value not in options:
+                raise ValueError(f"{name} must be one of {options}, got {value!r}")
+        if show_reference_mean is not None and reference_mode == "just_baseline":
+            reference_mode = "reference_mean" if show_reference_mean else "just_baseline"
 
         self.results = results
         self.figsize = figsize
@@ -499,7 +520,9 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         )
         self.add_selection("baseline_model", value=baseline_model, options=available_models)
         self.add_selection("reference_model", value=reference_model, options=available_models)
-        self.add_boolean("show_reference_mean", value=show_reference_mean)
+        self.add_selection("reference_mode", value=reference_mode, options=reference_modes)
+        self.add_selection("comparison_mode", value=comparison_mode, options=comparison_modes)
+        self.add_selection("statistic", value=statistic, options=["mean", "median"])
         self.add_boolean("within_env_session", value=within_env_session)
         add_familiarity_curve_widgets(self, results, **curve_kwargs)
 
@@ -539,14 +562,17 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         if self._baseline_scores.shape != self._reference_scores.shape:
             raise ValueError("Baseline and reference r2_env arrays must have matching shapes")
 
-    def _slot_curves(self, values: np.ndarray, slot: int, within_env_session: bool) -> dict[str, np.ndarray]:
+    def _slot_curves(
+        self, values: np.ndarray, slot: int, within_env_session: bool, *, session_support: np.ndarray | None = None,
+    ) -> dict[str, np.ndarray]:
         """Return one slot's curves in within-environment or overall-session coordinates."""
         curves = {}
         for mouse in self.results.unique_mice:
             rows = chronological_mouse_sessions(self.results, mouse)
             mouse_values = np.asarray(values[rows, slot], dtype=float)
             if within_env_session:
-                mouse_values = mouse_values[np.isfinite(mouse_values)]
+                support = np.isfinite(mouse_values) if session_support is None else session_support[rows, slot]
+                mouse_values = mouse_values[support]
             if mouse_values.size:
                 curves[str(mouse)] = mouse_values
         return curves
@@ -572,23 +598,31 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         ax.set_ylabel(ylabel, labelpad=-10, fontsize=state["fontsize"])
 
     def _draw_panel(self, ax, values: np.ndarray, state, *, improvement: bool) -> None:
-        if improvement and state["show_zero_line"]:
-            ax.axhline(0.0, color="k", linewidth=0.5, linestyle="--")
-
         extents = []
         visible_values = []
+        if improvement and state["show_zero_line"]:
+            neutral = 1.0 if state["comparison_mode"] == "ratio" else 0.0
+            ax.axhline(neutral, color="k", linewidth=0.5, linestyle="--")
+            visible_values.append(np.array([neutral]))
+
+        # A zero denominator is a missing ratio within an experienced environment; keep
+        # that session's position so later ratios do not shift along the familiarity axis.
+        session_support = None
+        if improvement and state["comparison_mode"] == "ratio":
+            session_support = np.isfinite(self._baseline_scores) & np.isfinite(self._reference_scores)
         for slot in range(min(values.shape[1], len(ENV_SLOT_COLORS))):
             extent, visible = draw_familiarity_series(
                 ax,
-                self._slot_curves(values, slot, state["within_env_session"]),
+                self._slot_curves(values, slot, state["within_env_session"], session_support=session_support),
                 ENV_SLOT_COLORS[slot],
                 f"Env #{slot + 1}",
                 state,
+                statistic=state["statistic"],
             )
             extents.append(extent)
             visible_values.append(visible[np.isfinite(visible)])
 
-            if not improvement and state["show_reference_mean"]:
+            if not improvement and state["reference_mode"] != "just_baseline":
                 stack = _pad_stack(self._slot_curves(self._reference_scores, slot, state["within_env_session"]))
                 length = _supported_length(stack, state["min_mice"])
                 if length:
@@ -600,6 +634,8 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
                         out=np.full(length, np.nan),
                         where=counts > 0,
                     )
+                    if state["statistic"] == "median":
+                        mean = np.nanmedian(supported, axis=0)
                     ax.plot(
                         np.arange(length),
                         mean,
@@ -610,14 +646,36 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
                     )
                     extents.append(length)
                     visible_values.append(mean[np.isfinite(mean)])
+                    if state["reference_mode"] == "reference_mean_error":
+                        spread = np.nanstd(supported, axis=0)
+                        if state["se"]:
+                            spread /= np.sqrt(counts)
+                        lower, upper = mean - spread, mean + spread
+                        ax.fill_between(
+                            np.arange(length),
+                            lower,
+                            upper,
+                            color=ENV_SLOT_COLORS[slot],
+                            alpha=state["fill_alpha"],
+                            linewidth=0,
+                        )
+                        visible_values.extend([lower[np.isfinite(lower)], upper[np.isfinite(upper)]])
 
         finite = np.concatenate(visible_values) if visible_values else np.array([])
+        ylabel = FAMILIARITY_VALUE_LABELS["absolute"]
+        if improvement:
+            baseline = COMPARISON_MODEL_ABBREVIATIONS.get(state["baseline_model"], state["baseline_model"])
+            reference = COMPARISON_MODEL_ABBREVIATIONS.get(state["reference_model"], state["reference_model"])
+            if state["comparison_mode"] == "ratio":
+                ylabel = f"{baseline} R$^2$ / {reference} R$^2$"
+            else:
+                ylabel = f"{reference} R$^2$ - {baseline} R$^2$"
         self._fit_axis(
             ax,
             finite,
             extents,
             state,
-            FAMILIARITY_VALUE_LABELS["improvement" if improvement else "absolute"],
+            ylabel,
         )
         xlabel = "Environment Session #" if state["within_env_session"] else SESSION_XLABEL
         ax.set_xlabel(xlabel, fontsize=state["fontsize"])
@@ -632,7 +690,17 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
             squeeze=False,
         )
         absolute = self._baseline_scores
-        improvement = self._reference_scores - self._baseline_scores
+        if state["comparison_mode"] == "ratio":
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                improvement = np.divide(
+                    self._baseline_scores,
+                    self._reference_scores,
+                    out=np.full_like(self._baseline_scores, np.nan),
+                    where=self._reference_scores != 0,
+                )
+            improvement[~np.isfinite(improvement)] = np.nan
+        else:
+            improvement = self._reference_scores - self._baseline_scores
         self._draw_panel(axes[0, 0], absolute, state, improvement=False)
         self._draw_panel(axes[0, 1], improvement, state, improvement=True)
         return fig

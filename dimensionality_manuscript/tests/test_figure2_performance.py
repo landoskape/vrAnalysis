@@ -32,14 +32,13 @@ def test_performance_placefield_reference(include_external, include_structured, 
         include_structured_additive=include_structured,
     )
     expected_names = list(PERFORMANCE_MODEL_NAMES)
-    expected_labels = ["Placefield", "Global\nGain", "Peer\nPrediction"]
+    expected_labels = ["Int. Pos. PF", "Global\nGain", "Peer\nPrediction"]
     if include_external:
         expected_names.insert(0, "external_placefield_1d")
-        expected_labels[0] = "Internal\nPlacefield"
         expected_labels.insert(0, "Placefield")
     if include_structured:
-        expected_names.insert(-1, "internal_placefield_1d_structured_additive")
-        expected_labels.insert(-1, "Shared\nResidual")
+        expected_names.append("internal_placefield_1d_structured_additive")
+        expected_labels.append("Shared\nResidual")
     assert viewer.model_names == expected_names
     assert viewer.model_labels == expected_labels
     assert "reference_model" not in viewer.parameters

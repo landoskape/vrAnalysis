@@ -1,5 +1,6 @@
 """Observed and predicted activity versus retained time within one trial."""
 
+from matplotlib.transforms import ScaledTranslation
 import numpy as np
 
 from dimensionality_manuscript.figure_scripts import session_cache
@@ -7,6 +8,7 @@ from vrAnalysis.helpers.plotting import format_spines
 from vrAnalysis.processors.placefields import get_frame_behavior
 
 from ._trial_prediction_base import _TrialPredictionBase
+from .model_style import COMPARISON_MODEL_ABBREVIATIONS, ROLE_COLOR
 from .trial_predictions import replay_predictions
 
 
@@ -69,8 +71,7 @@ class TrialTimeFocus(_TrialPredictionBase):
         indices = tuple(results.param_axes[name].index(selection[name]) for name in results._param_names)
         row = results._session_index.get(session.session_uid)
         ref = results._cells.get((row, indices))
-        config = next(cfg for cfg in results._key_to_config.values()
-                      if all(getattr(cfg, name) == value for name, value in selection.items()))
+        config = next(cfg for cfg in results._key_to_config.values() if all(getattr(cfg, name) == value for name, value in selection.items()))
         if config.spks_type != self._example_config.spks_type:
             raise ValueError("Reference and example activity must use the same spks_type")
         if ref is None:
@@ -83,7 +84,12 @@ class TrialTimeFocus(_TrialPredictionBase):
                 raise ValueError("Could not load saved internal-placefield reference result")
             edges = session_cache.get_smp(session).dist_edges
             self._reference_cache[key] = replay_predictions(
-                config, saved, session, edges, temporal=True, reference=True,
+                config,
+                saved,
+                session,
+                edges,
+                temporal=True,
+                reference=True,
             )
         return config, self._reference_cache[key]
 
@@ -106,7 +112,8 @@ class TrialTimeFocus(_TrialPredictionBase):
             key = (session.session_uid, session.params.spks_type)
             if key not in self._temporal_session_cache:
                 self._temporal_session_cache[key] = (
-                    get_frame_behavior(session), np.asarray(session.timestamps),
+                    get_frame_behavior(session),
+                    np.asarray(session.timestamps),
                     session_cache.get_spks(session),
                 )
             behavior, timestamps, activity = self._temporal_session_cache[key]
@@ -137,7 +144,8 @@ class TrialTimeFocus(_TrialPredictionBase):
             if not len(self.frame_indices):
                 self.prediction_notes.append("No trial frames pass the registry mask.")
             self.observed_activity = np.asarray(
-                activity[self.frame_indices, self.state["roi"]], dtype=float,
+                activity[self.frame_indices, self.state["roi"]],
+                dtype=float,
             ).copy()
             raw_roi = int(np.flatnonzero(session.idx_rois)[self.state["roi"]])
             reference_trace = reference.get((raw_roi, self.absolute_trial))
@@ -148,10 +156,7 @@ class TrialTimeFocus(_TrialPredictionBase):
                 indices, external, internal = reference_trace
                 values = internal if state["internal4reference"] else external
                 self.placefield_activity = self._trace_on_trial(indices, values)
-            self.temporal_predictions = {
-                name: self._trace_on_trial(indices, values)
-                for name, (indices, values) in self.prediction_curves.items()
-            }
+            self.temporal_predictions = {name: self._trace_on_trial(indices, values) for name, (indices, values) in self.prediction_curves.items()}
         finally:
             session.params.spks_type = previous_spks_type
 
@@ -160,25 +165,80 @@ class TrialTimeFocus(_TrialPredictionBase):
         fig, ax = self.new_subplots(figsize=self.figsize, layout="constrained")
         if self._empty_target_set:
             ax.set_axis_off()
-            ax.text(.5, .5, "\n".join(self.prediction_notes), transform=ax.transAxes,
-                    ha="center", va="center", wrap=True, fontsize=fontsize)
+            ax.text(0.5, 0.5, "\n".join(self.prediction_notes), transform=ax.transAxes, ha="center", va="center", wrap=True, fontsize=fontsize)
             return fig
-        ax.plot(self.time, self.placefield_activity, color="black", lw=1.5,
-                label=("Training place field at decoded position" if state["internal4reference"]
-                       else "Training place field at true position"))
-        ax.plot(self.time, self.observed_activity, color="#c00000", lw=1.5,
-                label=f"Trial {self._selected_trial}")
+        ax.plot(
+            self.time,
+            self.placefield_activity,
+            color="black",
+            lw=1.0,
+            label=("Int. Pos. PF" if state["internal4reference"] else "Placefield"),
+        )
+        ax.plot(self.time, self.observed_activity, color=ROLE_COLOR["internal"], lw=1.5, label="Single Trial")
         for name, trace in self.temporal_predictions.items():
             label, color = self._prediction_styles[name]
-            ax.plot(self.time, trace, color=color, lw=1.5,
-                    label=label.replace("\n", " ") + " (prediction)")
+            label = COMPARISON_MODEL_ABBREVIATIONS.get(name, label.replace("\n", " "))
+            if not label.lower().endswith("prediction"):
+                label += " Pred."
+            ax.plot(self.time, trace, color=color, lw=1.0, label=label)
         if self.prediction_notes:
-            ax.text(.02, .02, "\n".join(self.prediction_notes), transform=ax.transAxes,
-                    va="bottom", fontsize=max(6, fontsize - 3))
-        ax.set_xlabel("Retained trial time (s)", fontsize=fontsize)
-        ax.set_ylabel(r"Fluorescence ($\sigma$)", fontsize=fontsize)
-        ax.legend(frameon=False, fontsize=fontsize)
-        format_spines(ax, x_pos=-.02, y_pos=-.02, spines_visible=["left", "bottom"],
-                      tick_length=2, tick_fontsize=fontsize)
+            ax.text(0.02, 0.02, "\n".join(self.prediction_notes), transform=ax.transAxes, va="bottom", fontsize=max(6, fontsize - 3))
+        ax.set_xlabel("Trial Time (s)", fontsize=fontsize)
+        ax.set_ylabel("Norm. Fluor.", fontsize=fontsize, labelpad=-2)
+        xbounds = (0, max(1, int(np.ceil(self.time[-1]))) if len(self.time) else 1)
+        finite_amplitudes = np.concatenate([line.get_ydata() for line in ax.lines])
+        finite_amplitudes = finite_amplitudes[np.isfinite(finite_amplitudes)]
+        curve_max = float(np.max(finite_amplitudes)) if finite_amplitudes.size else 0.0
+        ymax = max(1, int(np.ceil(curve_max)))
+        ax.set_xlim(xbounds)
+        ax.set_ylim(-0.05 * ymax, ymax)
+        label = None
+        for line in ax.lines:
+            if label is None:
+                label = ax.text(
+                    0.98,
+                    0.98,
+                    line.get_label(),
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="top",
+                    color=line.get_color(),
+                    fontsize=fontsize,
+                )
+            else:
+                label = ax.annotate(
+                    line.get_label(),
+                    xy=(1, 0),
+                    xycoords=label,
+                    xytext=(0, -2),
+                    textcoords="offset points",
+                    ha="right",
+                    va="top",
+                    color=line.get_color(),
+                    fontsize=fontsize,
+                )
+        format_spines(
+            ax,
+            x_pos=-0.02,
+            y_pos=0,
+            spines_visible=["left", "bottom"],
+            xbounds=xbounds,
+            xticks=xbounds,
+            ybounds=(0, ymax),
+            yticks=[0, ymax],
+            tick_length=2,
+            tick_fontsize=fontsize,
+        )
+        ax.xaxis.set_label_coords(
+            0.5,
+            0,
+            transform=ax.transAxes + ScaledTranslation(0, -(fontsize + 8) / 72, fig.dpi_scale_trans),
+        )
+        ax.xaxis.label.set_verticalalignment("top")
+        ax.yaxis.set_label_coords(
+            0,
+            0.5,
+            transform=ax.transAxes + ScaledTranslation(-(fontsize + 7) / 72, 0, fig.dpi_scale_trans),
+        )
+        ax.yaxis.label.set_verticalalignment("center")
         return fig
-

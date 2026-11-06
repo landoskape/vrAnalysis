@@ -94,7 +94,7 @@ def test_dim_sweep_viewer_each_draws_each_mouse_and_mean_for_every_model():
 
     assert viewer.state["plot_style"] == "each"
     assert len(ax.lines) == 9  # two mouse curves and one mean for each of three models
-    assert [line.get_label() for line in ax.lines if not line.get_label().startswith("_")] == ["PF", "PF+Gain", "Peer"]
+    assert [line.get_label() for line in ax.lines if not line.get_label().startswith("_")] == ["Internal\nPosition\nPlacefield", "Global\nGain", "Peer\nPrediction"]
     plt.close(fig)
 
 
@@ -118,9 +118,9 @@ def test_rank_models_sweep_viewer_selects_one_additive_and_rrr_with_performance_
     fig = viewer.plot(viewer.state)
     ax = fig.axes[0]
 
-    assert results.selected_models == ["internal_placefield_1d_structured_additive", "rrr"]
+    assert results.selected_models == ["rrr", "internal_placefield_1d_structured_additive"]
     mean_lines = [line for line in ax.lines if not line.get_label().startswith("_")]
-    assert [line.get_label() for line in mean_lines] == ["Int. Structured Additive", "Peer"]
+    assert [line.get_label() for line in mean_lines] == ["Peer Prediction", "Shared Residual"]
     assert [line.get_color() for line in mean_lines] == list(RANK_SWEEP_MODEL_COLORS)
     assert all(np.all(np.isin(line.get_xdata(), RANK_VALUES)) for line in ax.lines)
     assert all(not np.any(np.isin(line.get_xdata(), [6.0, 8.0])) for line in ax.lines)

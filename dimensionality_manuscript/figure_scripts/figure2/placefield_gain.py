@@ -280,8 +280,12 @@ def _placefield_selection(results, placefield_split: str) -> dict:
 
 
 def gain_performance_comparison(
-    results: ResultsAggregator, gain_estimator: str, min_trial: int = 10, score_scale: str = "raw",
-    gain_transform: str | None = None, placefield_split: str = "all",
+    results: ResultsAggregator,
+    gain_estimator: str,
+    min_trial: int = 10,
+    score_scale: str = "raw",
+    gain_transform: str | None = None,
+    placefield_split: str = "all",
 ) -> np.ndarray:
     """Return matched R² on the requested gain scale, shaped (session, environment slot, transform, condition).
 
@@ -312,8 +316,12 @@ def gain_performance_comparison(
             if shift == 0:
                 keys.append(f"{score_key}_null")
             selected = results.sel(
-                keys=keys, squeeze_ones=False,
-                gain_estimator=gain_estimator, gain_transform=transform, trial_shift=shift, **pf_selection,
+                keys=keys,
+                squeeze_ones=False,
+                gain_estimator=gain_estimator,
+                gain_transform=transform,
+                trial_shift=shift,
+                **pf_selection,
             )
             score = np.asarray(selected[score_key], dtype=float).copy()
             if score.ndim != 2 or score.shape[0] != len(results.mouse_names):
@@ -353,9 +361,18 @@ class PlacefieldGainPerformanceViewer(FigureViewer):
     """
 
     def __init__(
-        self, results: ResultsAggregator, *, gain_estimator: str = "gaussian", placefield_split: str = "all",
-        avg_by_mouse: bool = True, min_trial: int = 10, mouse: str = "All", score_scale: str = "raw",
-        gain_transform: str = "raw", beewidth: float = 0.2, fontsize: float = 8.0,
+        self,
+        results: ResultsAggregator,
+        *,
+        gain_estimator: str = "gaussian",
+        placefield_split: str = "all",
+        avg_by_mouse: bool = True,
+        min_trial: int = 10,
+        mouse: str = "All",
+        score_scale: str = "raw",
+        gain_transform: str = "raw",
+        beewidth: float = 0.2,
+        fontsize: float = 8.0,
         figsize: tuple[float, float] = (7.0, 4.0),
     ):
         if gain_estimator not in GAIN_ESTIMATORS:
@@ -385,8 +402,12 @@ class PlacefieldGainPerformanceViewer(FigureViewer):
 
     def refresh_data(self, state):
         self.comparison_scores = gain_performance_comparison(
-            self.results, state["gain_estimator"], state["min_trial"], state["score_scale"],
-            gain_transform=state["gain_transform"], placefield_split=state.get("placefield_split", "all"),
+            self.results,
+            state["gain_estimator"],
+            state["min_trial"],
+            state["score_scale"],
+            gain_transform=state["gain_transform"],
+            placefield_split=state.get("placefield_split", "all"),
         )
 
     def subject_scores(self, state) -> tuple[list[str], np.ndarray]:
@@ -410,16 +431,23 @@ class PlacefieldGainPerformanceViewer(FigureViewer):
             values = scores[:, x]
             values = values[np.isfinite(values)]
             offsets = beeswarm(values) if values.size else np.empty(0)
-            ax.plot(x + state["beewidth"] * offsets, values, color=color,
-                    linestyle="none", marker="o", markersize=3, alpha=0.8)
+            ax.plot(x + state["beewidth"] * offsets, values, color=color, linestyle="none", marker="o", markersize=3, alpha=0.8)
             if values.size:
-                ax.plot(x + np.array([-0.25, 0.25]), [np.mean(values)] * 2, color=color, linewidth=2.)
+                ax.plot(x + np.array([-0.25, 0.25]), [np.mean(values)] * 2, color=color, linewidth=2.0)
         ax.axhline(0, color="0.7", linestyle=":", linewidth=0.7, zorder=0)
         ax.set_xlim(-0.5, 2.5)
         ax.set_ylabel(r"Gain Prediction $R^2$" + f" ({state['score_scale']} gain)", fontsize=state["fontsize"])
-        format_spines(ax, x_pos=-0.02, y_pos=-0.02, spines_visible=["left", "bottom"],
-                      xbounds=[0, 2], xticks=np.arange(3), ybounds=ax.get_ylim(),
-                      tick_length=2, tick_fontsize=state["fontsize"])
+        format_spines(
+            ax,
+            x_pos=-0.02,
+            y_pos=-0.02,
+            spines_visible=["left", "bottom"],
+            xbounds=[0, 2],
+            xticks=np.arange(3),
+            ybounds=ax.get_ylim(),
+            tick_length=2,
+            tick_fontsize=state["fontsize"],
+        )
         ax.set_xticks(np.arange(3), labels, rotation=45, ha="right", fontsize=state["fontsize"])
         return fig
 
@@ -661,7 +689,8 @@ class PlacefieldGainViewer(FigureViewer):
         if placefield_split == "train":
             full_trials = self.data["full_trials"]
             folds = split_trials(
-                np.asarray(self.session.trial_environment)[full_trials], self.trial_fractions,
+                np.asarray(self.session.trial_environment)[full_trials],
+                self.trial_fractions,
                 _seed(self.session.session_uid, self.split_seed, "trials"),
             )
             prediction_trials = np.flatnonzero(np.isin(trials, full_trials[folds[0]]))
@@ -741,10 +770,9 @@ class PlacefieldGainViewer(FigureViewer):
                 row._select_summary({**state, "gain_transform": transform})
                 self.transform_summaries[transform] = row
             # Compare identical observations, including the null baselines.
-            matched = np.logical_and.reduce([
-                np.isfinite(row.summary_scores) & np.isfinite(row.summary_null_scores)
-                for row in self.transform_summaries.values()
-            ])
+            matched = np.logical_and.reduce(
+                [np.isfinite(row.summary_scores) & np.isfinite(row.summary_null_scores) for row in self.transform_summaries.values()]
+            )
             for row in self.transform_summaries.values():
                 row.summary_scores[~matched] = np.nan
                 row.summary_null_scores[~matched] = np.nan
@@ -790,10 +818,10 @@ class PlacefieldGainViewer(FigureViewer):
                 self.selected_result = (row, slot, float(self.summary_scores[row, slot]))
 
     @staticmethod
-    def _style_image_axis(ax, title: str, fontsize: float) -> None:
+    def _style_image_axis(ax, title: str, fontsize: float, **title_kwargs) -> None:
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.text(1.0, 1.0, title, transform=ax.transAxes, ha="right", va="top", fontsize=fontsize)
+        ax.text(1.0, 1.0, title, transform=ax.transAxes, ha="right", va="top", fontsize=fontsize, **title_kwargs)
         for spine in ax.spines.values():
             spine.set_visible(False)
 
@@ -967,8 +995,12 @@ class PlacefieldGainViewer(FigureViewer):
         transforms = GAIN_TRANSFORMS if state.get("compare_transforms", False) else (state.get("gain_transform", "raw"),)
         height = self.figsize[1] * len(transforms)
         fig, axes = self.new_subplots(
-            len(transforms), len(width_ratios), figsize=(self.figsize[0], height),
-            layout="constrained", width_ratios=width_ratios, squeeze=False,
+            len(transforms),
+            len(width_ratios),
+            figsize=(self.figsize[0], height),
+            layout="constrained",
+            width_ratios=width_ratios,
+            squeeze=False,
         )
         for transform, ax in zip(transforms, axes):
             row = copy(self.transform_summaries[transform]) if len(transforms) > 1 else copy(self)
@@ -1058,8 +1090,8 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
 
     _SORT_METHODS = ("environment", "rastermap_gain")
     _SORT_TITLES = {
-        "environment": "Place-field position sort",
-        "rastermap_gain": "Rastermap gain sort",
+        "environment": "Sorted by place-field position",
+        "rastermap_gain": "Sorted by Rastermap gain",
     }
 
     def __init__(
@@ -1159,11 +1191,14 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
             2,
             figsize=self.figsize,
             layout="constrained",
-            width_ratios=[1.0, 0.18],
+            width_ratios=[1.0, 0.25],
             sharex="col",
             squeeze=False,
         )
-        position_limits = [0, self.data["session"].env_length[0]]
+        session = self.data["session"]
+        position_limits = [0, session.env_length[0]]
+        position_padding = 0.03 * (position_limits[1] - position_limits[0])
+        reward_position = session.loadone("trials.rewardPosition")[session.trial_environment == state["environment"]][0]
 
         for row, sort_method in enumerate(self._SORT_METHODS):
             gain = self.sorted_gains[sort_method][:, self.trial_order]
@@ -1179,7 +1214,7 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
                 vmin=0.0,
                 vmax=state["gain_vmax"],
             )
-            self._style_image_axis(gain_ax, self._SORT_TITLES[sort_method], state["fontsize"])
+            self._style_image_axis(gain_ax, self._SORT_TITLES[sort_method], state["fontsize"], color="white", fontweight="bold")
             gain_ax.set_ylabel("ROIs", fontsize=state["fontsize"])
 
             if row == 0:
@@ -1218,7 +1253,20 @@ class PlacefieldGainSortViewer(PlacefieldGainViewer):
                 s=state["markersize"] ** 2,
                 linewidths=0,
             )
-            position_ax.set_xlim(*position_limits)
+            position_ax.axvline(reward_position, color="blue", linewidth=0.75)
+            if row == 0:
+                position_ax.text(
+                    0.04,
+                    0.04,
+                    "Rew.\nLoc.",
+                    transform=position_ax.transAxes,
+                    ha="left",
+                    va="bottom",
+                    color="blue",
+                    fontsize=state["fontsize"],
+                )
+            position_ax.set_xlim(position_limits[0] - position_padding, position_limits[1] + position_padding)
+            position_ax.spines["bottom"].set_bounds(*position_limits)
             position_ax.set_ylim(num_rois - 0.5, -0.5)
             position_ax.set_xticks(position_limits)
             position_ax.set_yticks([])

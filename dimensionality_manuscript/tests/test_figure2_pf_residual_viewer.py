@@ -253,7 +253,7 @@ def test_pf_residual_inset_viewer_uses_one_subset_for_within_and_outside():
     np.testing.assert_allclose(viewer._scores["outside"][:, 0], [1.4, 1.45, 1.5])
 
 
-def test_pf_residual_inset_viewer_draws_outside_as_an_always_present_inset():
+def test_pf_residual_inset_viewer_draws_outside_as_an_inset_by_default():
     viewer = ModelPlacefieldResidualInsetViewer(
         _FakeResidualSummaryResults(),
         sharey=True,
@@ -280,6 +280,31 @@ def test_pf_residual_inset_viewer_is_exported_from_figure2():
     assert exported is ModelPlacefieldResidualInsetViewer
 
 
+@pytest.mark.parametrize("sharey", [False, True])
+@pytest.mark.parametrize("relative", [False, True])
+def test_pf_residual_inset_can_be_hidden_and_restored(sharey, relative):
+    viewer = ModelPlacefieldResidualInsetViewer(
+        _FakeResidualSummaryResults(), show_inset=False, sharey=sharey, relative=relative,
+    )
+    # Hidden outside values must not affect the visible main axis, even with shared limits.
+    viewer._scores["outside"] = viewer._scores["within"] + 100
+    fig = viewer.plot(viewer.state)
+    main = fig.axes[0]
+    assert not main.child_axes
+    assert main.get_ylim()[1] < 1
+    np.testing.assert_allclose(
+        main.lines[1 if relative else 0].get_ydata(),
+        [0, 0.05, 0.1] if relative else [0.4, 0.45, 0.5],
+        atol=1e-12,
+    )
+    plt.close(fig)
+    viewer.set_parameter_value("show_inset", True)
+    fig = viewer.plot(viewer.state)
+    assert len(fig.axes[0].child_axes) == 1
+    fig.canvas.draw()
+    plt.close(fig)
+
+
 def test_pf_residual_familiarity_within_only_uses_one_axis_and_compact_labels():
     viewer = ModelPlacefieldResidualFamiliarityViewer(
         _FakeResidualResults(),
@@ -292,8 +317,8 @@ def test_pf_residual_familiarity_within_only_uses_one_axis_and_compact_labels():
     assert len(fig.axes) == 1
     assert fig.axes[0].get_ylabel() == "Within-PF residual RMS"
     assert [text.get_text() for text in fig.axes[0].get_legend().get_texts()] == [
-        "PF",
-        "PF+Gain",
+        "Internal Position Placefield",
+        "Global Gain",
         "Peer Prediction",
     ]
     plt.close(fig)
@@ -437,14 +462,14 @@ def test_explorer_empty_axis_selection_draws_empty_panels():
     plt.close(fig)
 
 
-def test_explorer_model_selection_follows_the_aggregators_order():
+def test_explorer_model_selection_follows_comparison_order():
     results = _FakeResidualMenuResults()
     viewer = ModelPlacefieldResidualExplorer(results, model_names=["rrr", "internal_placefield_1d"])
 
     assert viewer._models == ["internal_placefield_1d", "rrr"]
 
     fig = viewer.plot(viewer.state)
-    assert [label.get_text() for label in fig.axes[0].get_xticklabels()] == ["internal_placefield_1d", "rrr"]
+    assert [label.get_text() for label in fig.axes[0].get_xticklabels()] == ["Internal Position Placefield", "Peer Prediction"]
     plt.close(fig)
 
 
@@ -486,15 +511,14 @@ def test_pf_residual_summary_optional_external_placefield(viewer_class, include_
         relative=relative,
     )
     expected_models = list(supplied_models)
-    expected_labels = ["Placefield", "Global\nGain", "Peer\nPrediction"]
+    expected_labels = ["Internal\nPosition\nPlacefield", "Global\nGain", "Peer\nPrediction"]
     expected_colors = ["#000000", "#c00000", "#0000cd"]
     if include_structured:
-        expected_models.insert(-1, "internal_placefield_1d_structured_additive")
-        expected_labels.insert(-1, "Shared\nResidual")
-        expected_colors.insert(-1, "#c06000")
+        expected_models.append("internal_placefield_1d_structured_additive")
+        expected_labels.append("Shared\nResidual")
+        expected_colors.append("#c06000")
     if include_external:
         expected_models.insert(0, "external_placefield_1d")
-        expected_labels[0] = "Internal\nPlacefield"
         expected_labels.insert(0, "Placefield")
         expected_colors.insert(0, "#666666")
     assert viewer.model_names == expected_models
@@ -528,7 +552,7 @@ def test_pf_residual_external_placefield_already_supplied_is_not_duplicated():
         include_external_placefield=True,
     )
     assert names == [
-        "external_placefield_1d", "internal_placefield_1d", "internal_placefield_1d_structured_additive", "rrr",
+        "external_placefield_1d", "internal_placefield_1d", "rrr", "internal_placefield_1d_structured_additive",
     ]
-    assert labels[:2] == ["Placefield", "Internal\nPlacefield"]
+    assert labels[:2] == ["Placefield", "Internal\nPosition\nPlacefield"]
     assert colors[:2] == ["#666666", "#000000"]

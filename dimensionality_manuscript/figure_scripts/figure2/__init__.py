@@ -15,6 +15,7 @@ Every font size on every panel is a widget; nothing here touches ``plt.rcParams`
 from ._predictions import clear_prediction_cache, get_model_predictions
 from .dim_sweep import DIM_SWEEP_MODEL_NAMES, RankModelsSweepViewer, RegressionDimSweepViewer
 from .familiarity import RegressionFamiliarityByEnvViewer, RegressionFamiliarityViewer
+from .gain_regression import GainRegressionViewer
 
 # Retired with the rrr_to_external_latents analysis. Both viewers in .latents read that config's
 # results, so the module is left unimported rather than partially revived.
@@ -49,6 +50,7 @@ __all__ = [
     "DIM_SWEEP_MODEL_NAMES",
     "MODEL_STYLE",
     "ModelPerformanceViewer",
+    "GainRegressionViewer",
     "TrialModelPerformanceViewer",
     "TrialGainFocus",
     "TrialTimeFocus",

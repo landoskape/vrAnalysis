@@ -48,7 +48,10 @@ def read_results():
         if model not in MODELS:
             continue
         assert (model, session) not in stored, "Ambiguous configuration"
-        stored[model, session] = pickle.loads((store / "blobs" / f"{uid}.pkl").read_bytes())
+        result = pickle.loads((store / "blobs" / f"{uid}.pkl").read_bytes())
+        if model in (NEW, EXT):
+            assert "target_residual_gain_energy_fraction" in result, ("Unrecomputed gain-residual blob", session, model)
+        stored[model, session] = result
         provenance.append(
             dict(result_uid=uid, session=session, model=model, analysis_key=key, configuration=summary, computed_at=computed, snapshot_path=snapshot)
         )
@@ -86,13 +89,39 @@ def read_results():
                 record[f"{prefix}_worst_fold"] = float(scores.min())
                 for index, fold in enumerate(data["cv_test_folds"]):
                     row = dict(base, branch=prefix, test_fold=int(fold))
-                    for key in ("r2", "r2_gain", "r2_residual_component", "r2_gain_component", "delta_r2_gain", "delta_r2_residual"):
+                    for key in (
+                        "r2",
+                        "r2_gain",
+                        "r2_residual_component",
+                        "r2_gain_component",
+                        "delta_r2_gain",
+                        "delta_r2_residual",
+                        "source_residual_gain_energy_fraction",
+                        "target_residual_gain_energy_fraction",
+                        "predicted_residual_gain_energy_fraction",
+                    ):
                         row[key] = float(data[key + "_folds"][slot, index])
                     folds.append(row)
-                # A relative check at 1e98 would misleadingly accept lost increments.
-                if not record[f"{prefix}_any_severe"]:
-                    lhs = data["r2_template_pooled"][slot] + data["delta_r2_gain_pooled"][slot] + data["delta_r2_residual_pooled"][slot]
-                    assert np.isclose(lhs, data["r2_pooled"][slot], rtol=0, atol=1e-12)
+                lhs = data["r2_template_pooled"][slot] + data["delta_r2_gain_pooled"][slot] + data["delta_r2_residual_pooled"][slot]
+                assert np.isclose(lhs, data["r2_pooled"][slot], rtol=0, atol=1e-12)
+                for component in ("source_residual", "target_residual", "predicted_residual"):
+                    energy = data[component + "_energy"][slot]
+                    projection = data[component + "_gain_energy"][slot]
+                    off = data[component + "_off_template_energy"][slot]
+                    assert np.isclose(projection + off, energy, rtol=1e-10)
+                    assert np.isclose(projection / energy, data[component + "_gain_energy_fraction"][slot], rtol=0, atol=1e-12)
+            reference = stored[OLD, session]
+            hp = new["selected_hyperparameters"][slot]
+            old_hp = reference["selected_hyperparameters"][slot]
+            assert all(hp[key] == old_hp[key] for key in ("num_bins", "smooth_width", "alpha", "rank")), (
+                "Gain hyperparameter mismatch",
+                session,
+                slot,
+            )
+            record["gain_reference_score_difference"] = float(new["r2_gain"][slot] - reference["r2"][slot])
+            record["gain_reference_max_fold_difference"] = float(np.max(np.abs(new["r2_gain_folds"][slot] - reference["r2_folds"][slot])))
+            assert np.allclose(new["r2_gain_folds"][slot], reference["r2_folds"][slot], rtol=0, atol=1e-6), ("Gain score mismatch", session, slot)
+            record["gain_hyperparameters_match"] = True
             records.append(record)
     data, fold_data = pd.DataFrame(records), pd.DataFrame(folds)
     assert not data.empty and not data.duplicated(["session", "slot"]).any()
@@ -120,148 +149,211 @@ def save(fig, name):
     print(f"Saved {name}", flush=True)
 
 
-def figure_performance(data, folds):
-    fig = plt.figure(figsize=(14.5, 10.8), layout="constrained")
-    grid = fig.add_gridspec(2, 2)
-    ax = fig.add_subplot(grid[0, :])
-    columns = [MODELS[0], OLD, MODELS[2], "internal_r2_gain", NEW, "rrr"]
-    labels = ["Internal PF", "Existing trial gain", "Existing sqrt gain", "New G only", "New G + E", "Full peer RRR"]
-    colors = ["#53616e", GREEN, PURPLE, ORANGE, RED, BLUE]
-    rng = np.random.default_rng(20261103)
-    low, high, counts = -0.08, 0.36, []
-    for i, (column, color) in enumerate(zip(columns, colors)):
-        y = data[column].to_numpy()
-        visible = (y >= low) & (y <= high)
-        ax.scatter(i + rng.uniform(-0.2, 0.2, visible.sum()), y[visible], s=10, alpha=0.25, color=color, linewidth=0)
-        median = float(np.median(y))
-        ax.plot([i - 0.28, i + 0.28], [median, median], color=color, lw=3)
-        ax.text(i, high - 0.012, f"median {median:.3f}", ha="center", va="top", color=color, fontsize=10)
-        below, above = int(np.sum(y < low)), int(np.sum(y > high))
-        counts.append(dict(model=labels[i], below_window=below, above_window=above, median=median))
-        if below:
-            ax.scatter([i], [low + 0.006], marker="v", color=color, s=38)
-            ax.text(i, low + 0.024, f"{below} below", ha="center", fontsize=9, color=color)
-        if above:
-            ax.scatter([i], [high - 0.003], marker="^", color=color, s=38)
-            ax.text(i, high - 0.045, f"{above} above", ha="center", fontsize=9, color=color)
-    ax.axhline(0, color="#9aa3ad", lw=0.8, ls="--")
-    ax.set(xticks=np.arange(len(columns)), xticklabels=labels, ylim=(low, high), ylabel="Median test-fold R²")
-    panel(
-        ax,
-        "A",
-        "Performance comparison: typical scores and explicit tail counts",
-        f"Same {len(data)} session–environment units in every column. Dots = units; bars = medians of ALL units, not mouse means.",
+def summary_data(data, folds):
+    columns = list(MODELS) + ["internal_r2_gain"]
+    for prefix in ("internal", "external"):
+        columns += [
+            f"{prefix}_{key}"
+            for key in (
+                "r2_pooled",
+                "r2_template_pooled",
+                "delta_r2_gain_pooled",
+                "delta_r2_residual_pooled",
+                "r2_residual_component",
+                "source_residual_gain_energy_fraction",
+                "target_residual_gain_energy_fraction",
+                "predicted_residual_gain_energy_fraction",
+            )
+        ]
+    mouse = mouse_means(data, columns)
+    counts = pd.read_csv(OUT / "session_coverage.csv")
+    gain_mean, combined_mean, peer_mean = (float(mouse[key].mean()) for key in (OLD, NEW, "rrr"))
+    stats = dict(
+        implementation="regularized_measured_gain",
+        schema="v2",
+        configuration=SUFFIX,
+        n_saved_sessions=len(counts),
+        n_sessions=int(data.session.nunique()),
+        n_unscored_sessions=int((counts.n_scored_environments == 0).sum()),
+        n_mice=int(data.mouse.nunique()),
+        n_units=len(data),
+        mouse_mean_trial_gain_r2=gain_mean,
+        mouse_mean_combined_r2=combined_mean,
+        mouse_mean_peer_r2=peer_mean,
+        median_fold_score_increment=combined_mean - gain_mean,
+        mouse_mean_pooled_template_r2=float(mouse.internal_r2_template_pooled.mean()),
+        mouse_mean_pooled_gain_increment=float(mouse.internal_delta_r2_gain_pooled.mean()),
+        mouse_mean_pooled_combined_r2=float(mouse.internal_r2_pooled.mean()),
+        peer_gap_recovered=(combined_mean - gain_mean) / (peer_mean - gain_mean),
+        gain_hyperparameters_match=bool(data.gain_hyperparameters_match.all()),
+        max_gain_reference_fold_difference=float(data.gain_reference_max_fold_difference.max()),
+        max_gain_reference_summary_difference=float(data.gain_reference_score_difference.abs().max()),
+        stability=[],
+        rank_summary=[],
     )
-    ax = fig.add_subplot(grid[1, 0])
-    mice = sorted(data.mouse.unique())
-    x = np.arange(len(mice))
-    for offset, prefix, color in ((-0.19, "internal", RED), (0.19, "external", BLUE)):
-        rates = data.groupby("mouse")[f"{prefix}_any_severe"].mean().reindex(mice)
-        ax.bar(x + offset, rates * 100, width=0.36, color=color, alpha=0.85, label=prefix.capitalize())
-    ax.set(xticks=x, xticklabels=[m.replace("CR_Hippocannula", "HC") for m in mice], ylabel="Units with ≥1 severe fold (%)", ylim=(0, 104))
-    ax.tick_params(axis="x", rotation=60)
-    ax.legend(frameon=False, fontsize=9, loc="upper right")
-    panel(ax, "B", "Failures are distributed across mice", "Severe fold: R² < −1, i.e. SSE > 2 × target SST.")
-    ax = fig.add_subplot(grid[1, 1])
-    for prefix, color in (("internal", RED), ("external", BLUE)):
-        part = folds[(folds.branch == prefix) & (folds.r2 < -1)]
-        severity = np.sort(np.log10(1 - part.r2.to_numpy()))
-        gain_severity = np.sort(np.log10(1 - part.r2_gain.to_numpy()))
-        percentile = np.arange(1, len(part) + 1) / len(part) * 100
-        ax.step(severity, percentile, where="post", color=color, lw=2, label=f"{prefix.capitalize()} G+E ({len(part)} folds)")
-        ax.plot(gain_severity, percentile, color=color, lw=1.1, ls="--", alpha=0.8)
-    ax.set(xlabel="log₁₀(SSE / SST) among severe combined-model folds", ylabel="Cumulative fraction of severe folds (%)", ylim=(0, 102))
-    ax.legend(frameon=False, fontsize=9, loc="lower right")
-    ax.text(
-        0.03,
-        0.94,
-        "Solid: G+E    Dashed: G alone\nNearly overlapping curves: G dominates the failure",
-        transform=ax.transAxes,
-        va="top",
-        fontsize=9,
-        bbox=dict(facecolor="white", edgecolor="none", alpha=0.9),
-    )
-    panel(ax, "C", "The negative tail is enormous, and follows G", "Every severe fold is included; no clipping or winsorization.")
-    fig.suptitle("Trial gain + residual prediction: real-data stability audit", fontsize=17, fontweight="bold")
-    save(fig, "01_performance_and_stability")
-    return counts
-
-
-def figure_structure(data):
-    fig, axes = plt.subplots(2, 2, figsize=(14.5, 11.3), layout="constrained")
-    ax = axes[0, 0]
-    failed = data.internal_any_severe.to_numpy()
-    for mask, color, label in ((~failed, GREEN, "No severe internal fold"), (failed, RED, "≥1 severe internal fold")):
-        ax.scatter(
-            data.loc[mask, "external_r2_residual_component"],
-            data.loc[mask, "internal_r2_residual_component"],
-            color=color,
-            s=22,
-            alpha=0.60,
-            edgecolors="none",
-            label=f"{label} (n={mask.sum()})",
+    for prefix in ("internal", "external"):
+        f = folds.loc[folds.branch == prefix]
+        stats["stability"].append(
+            dict(
+                branch=prefix,
+                total_folds=len(f),
+                severe_folds=int((f.r2 < -1).sum()),
+                severe_gain_folds=int((f.r2_gain < -1).sum()),
+                any_severe_units=int(data[f"{prefix}_any_severe"].sum()),
+                median_severe_units=int(data[f"{prefix}_median_severe"].sum()),
+                worst_fold_r2=float(f.r2.min()),
+                positive_residual_folds=int((f.r2_residual_component > 0).sum()),
+                positive_residual_units=int((data[f"{prefix}_r2_residual_component"] > 0).sum()),
+                positive_residual_increment_units=int((data[f"{prefix}_delta_r2_residual_pooled"] > 0).sum()),
+                mean_mouse_residual_r2=float(mouse[f"{prefix}_r2_residual_component"].mean()),
+                mean_mouse_residual_increment=float(mouse[f"{prefix}_delta_r2_residual_pooled"].mean()),
+                mean_mouse_source_gain_energy_fraction=float(mouse[f"{prefix}_source_residual_gain_energy_fraction"].mean()),
+                mean_mouse_target_gain_energy_fraction=float(mouse[f"{prefix}_target_residual_gain_energy_fraction"].mean()),
+                mean_mouse_predicted_gain_energy_fraction=float(mouse[f"{prefix}_predicted_residual_gain_energy_fraction"].mean()),
+            )
         )
-    bounds = (-0.025, 0.14)
-    ax.plot(bounds, bounds, color="#89939e", ls="--", lw=1)
+    for component, effective, bound in (
+        ("Gain", "internal_structured_gain_effective_rank", "internal_structured_gain_max_trial_rank"),
+        ("Residual", "internal_residual_effective_rank", "internal_residual_max_rank"),
+    ):
+        stats["rank_summary"].append(
+            dict(
+                branch=component,
+                median_rank=float(data[effective].median()),
+                median_bound=float(data[bound].median()),
+                median_fraction=float((data[effective] / data[bound]).median()),
+                at_bound=int(np.isclose(data[effective], data[bound]).sum()),
+            )
+        )
+    return mouse, stats
+
+
+def paired_mouse_plot(ax, frame, columns, labels, colors):
+    for _, row in frame[columns].iterrows():
+        ax.plot(range(len(columns)), row.to_numpy(), color="#b9c3cd", lw=0.8, alpha=0.7, zorder=1)
+        ax.scatter(range(len(columns)), row.to_numpy(), color=colors, s=23, zorder=2)
+    means = frame[columns].mean().to_numpy()
+    ax.plot(range(len(columns)), means, color="#253241", marker="D", lw=2.5, ms=6, zorder=3)
+    for index, value in enumerate(means):
+        ax.annotate(f"{value:.3f}", (index, value), xytext=(0, 12), textcoords="offset points", ha="center", fontsize=10, fontweight="bold")
+    ax.axhline(0, color="#a7afb8", ls="--", lw=0.8)
+    ax.set(xticks=range(len(columns)), xticklabels=labels, xlim=(-0.3, len(columns) - 0.7))
+    ax.margins(y=0.2)
+
+
+def figure_performance(data, mouse, stats):
+    fig, axes = plt.subplots(2, 2, figsize=(14.5, 10.8), layout="constrained")
+    ax = axes[0, 0]
+    columns = [MODELS[0], OLD, MODELS[2], NEW, "rrr"]
+    paired_mouse_plot(
+        ax, mouse, columns, ["Internal\nPF", "Trial\nGain", "Sqrt\nGain", "Gain + E", "Full peer\nRRR"], ["#64717e", ORANGE, PURPLE, GREEN, BLUE]
+    )
+    ax.set_ylabel("Mean R² (stored median-fold scores)")
+    panel(ax, "A", "Predicting E closes part of the peer-prediction gap", f"Lines: {len(mouse)} mice. Black diamonds: equal-mouse means.")
+    ax = axes[0, 1]
+    combined, peer = data[NEW].to_numpy(), data["rrr"].to_numpy()
+    above = combined >= peer
+    for keep, color, label in ((~above, BLUE, "Peer RRR higher"), (above, GREEN, "G+E at least as high")):
+        ax.scatter(combined[keep], peer[keep], color=color, s=17, alpha=0.45, edgecolors="none", label=f"{label} (n={keep.sum()})")
+    bounds = (min(combined.min(), peer.min(), 0) - 0.015, max(combined.max(), peer.max()) + 0.015)
+    ax.plot(bounds, bounds, color="#8d99a6", ls="--", lw=1)
+    ax.scatter(
+        [stats["mouse_mean_combined_r2"]], [stats["mouse_mean_peer_r2"]], marker="D", color="#253241", s=62, zorder=4, label="Equal-mouse mean"
+    )
+    ax.set(xlim=bounds, ylim=bounds, xlabel="Gain + E: R²", ylabel="Full peer RRR: R²")
+    ax.legend(frameon=False, fontsize=8.5, loc="upper left")
+    panel(ax, "B", "Full peer prediction still captures more", f"All {len(data)} matched session–environment units; same held-out trial folds.")
+    ax = axes[1, 0]
+    columns = ["internal_delta_r2_residual_pooled", "external_delta_r2_residual_pooled"]
+    paired_mouse_plot(ax, mouse, columns, ["Internal position", "External position"], [GREEN, BLUE])
+    ax.set_ylabel("Additional original-activity R² from E")
+    panel(ax, "C", "The residual improvement is consistent across mice", "All units included. Improvement = (SSE_G − SSE_G+E) / SST_original.")
+    ax = axes[1, 1]
+    base = float(mouse.internal_r2_template_pooled.mean())
+    gain = float(mouse.internal_delta_r2_gain_pooled.mean())
+    residual = float(mouse.internal_delta_r2_residual_pooled.mean())
+    total = float(mouse.internal_r2_pooled.mean())
+    assert np.isclose(base + gain + residual, total, rtol=0, atol=1e-12)
+    bottoms = [0, base, base + gain, 0]
+    heights = [base, gain, residual, total]
+    for i, (bottom, value, color) in enumerate(zip(bottoms, heights, ["#64717e", ORANGE, GREEN, BLUE])):
+        ax.bar(i, value, bottom=bottom, width=0.65, color=color, alpha=0.9)
+        ax.text(
+            i, bottom + value + 0.003, f"{value:+.3f}" if i in (1, 2) else f"{value:.3f}", ha="center", va="bottom", fontsize=11, fontweight="bold"
+        )
+    for i, height in enumerate((base, base + gain, total)):
+        ax.plot([i + 0.325, i + 0.675], [height, height], color="#a7afb8", lw=1)
+    ax.set(
+        xticks=range(4),
+        xticklabels=["PF template", "+ Gain", "+ Residual E", "G + E total"],
+        ylabel="Original-activity R²",
+        ylim=(min(0, *bottoms) - 0.005, max(total, base, base + gain) * 1.25),
+    )
+    ax.axhline(0, color="#a7afb8", lw=0.8)
+    panel(ax, "D", "Additive pooling exposes the remaining poor folds", "All-fold pooled R² is sensitive to rare failures; A uses median-fold R².")
+    fig.suptitle("Trial gain + residual prediction | recomputed regularized model", fontsize=17, fontweight="bold")
+    save(fig, "01_performance_and_stability")
+
+
+def figure_structure(data, mouse, stats):
+    fig, axes = plt.subplots(2, 2, figsize=(14.5, 11), layout="constrained")
+    ax = axes[0, 0]
+    x, y = data.external_r2_residual_component, data.internal_r2_residual_component
+    ax.scatter(x, y, color=GREEN, s=20, alpha=0.5, linewidth=0)
+    bounds = (min(x.min(), y.min(), 0) - 0.008, max(x.max(), y.max()) + 0.008)
+    ax.plot(bounds, bounds, color="#8d99a6", ls="--", lw=1)
     ax.axhline(0, color="#b4bbc3", lw=0.7)
     ax.axvline(0, color="#b4bbc3", lw=0.7)
     ax.set(xlim=bounds, ylim=bounds, xlabel="External-position model: R² on E", ylabel="Internal-position model: R² on E")
-    ax.legend(frameon=False, fontsize=8.5, loc="upper left")
-    panel(ax, "A", "E carries held-out peer-predictable structure", "All 267 units; each axis scores its model's own measured E.")
+    panel(ax, "A", "E remains peer-predictable on held-out trials", f"All {len(data)} units. Each axis scores its model's own regularized E.")
     ax = axes[0, 1]
-    mouse = mouse_means(data, ["external_r2_residual_component", "internal_r2_residual_component"])
-    for _, row in mouse.iterrows():
-        ax.plot([0, 1], row.to_numpy(), color="#b6bec8", lw=0.9, alpha=0.75)
-        ax.scatter([0, 1], row.to_numpy(), color=[BLUE, GREEN], s=25, zorder=3)
-    means = mouse.mean()
-    ax.plot([0, 1], means.to_numpy(), color="#263441", lw=2.5, marker="D", ms=7, zorder=4)
-    for i, value in enumerate(means):
-        ax.annotate(f"{value:.3f}", (i, value), xytext=(12, -3), textcoords="offset points", fontweight="bold", fontsize=11)
-    ax.axhline(0, color="#a7afb8", lw=0.8, ls="--")
-    ax.set(xticks=[0, 1], xticklabels=["External position", "Internal position"], xlim=(-0.3, 1.45), ylabel="R² predicting measured E")
-    panel(ax, "B", "The signal survives mouse-level averaging", "14 mice; equal environments → sessions → mice. Diamond = mean.")
+    paired_mouse_plot(
+        ax, mouse, ["external_r2_residual_component", "internal_r2_residual_component"], ["External position", "Internal position"], [BLUE, GREEN]
+    )
+    ax.set_ylabel("R² predicting measured E")
+    panel(ax, "B", "The residual signal is present across mice", "Equal environments → sessions → mice; component-specific denominators.")
     ax = axes[1, 0]
-    rng, diagnostic = np.random.default_rng(47), []
-    for x, prefix, color in ((0, "internal", GREEN), (1, "external", BLUE)):
-        selected = data.loc[~data[f"{prefix}_any_severe"]]
-        values = mouse_means(selected, [f"{prefix}_delta_r2_residual_pooled"]).iloc[:, 0].to_numpy()
-        ax.scatter(x + rng.uniform(-0.12, 0.12, len(values)), values, color=color, s=36, alpha=0.8, zorder=3)
-        mean = float(np.mean(values))
-        ax.plot([x - 0.24, x + 0.24], [mean, mean], color=color, lw=3)
-        ax.text(
-            x, 0.96, f"{len(selected)}/{len(data)} units\n{len(values)} mice", ha="center", va="top", transform=ax.get_xaxis_transform(), fontsize=10
-        )
-        diagnostic.append(dict(branch=prefix, n_units=len(selected), n_mice=len(values), mean_mouse_residual_increment=mean))
-    ax.axhline(0, color="#a7afb8", lw=0.8, ls="--")
-    ax.set(xticks=[0, 1], xticklabels=["Internal position", "External position"], xlim=(-0.5, 1.5), ylabel="Additional original-activity R² from E")
-    ax.margins(y=0.35)
-    panel(ax, "C", "Adding E helps on the noncatastrophic subset", "Diagnostic only: every combined-model fold has R² ≥ −1.")
+    rng = np.random.default_rng(27)
+    for offset, prefix, color in ((-0.15, "internal", GREEN), (0.15, "external", BLUE)):
+        means = []
+        for index, component in enumerate(("source_residual", "target_residual", "predicted_residual")):
+            values = mouse[f"{prefix}_{component}_gain_energy_fraction"].to_numpy() * 100
+            assert np.all(values > 0), "Cannot display zero energy fractions on logarithmic axis"
+            ax.scatter(index + offset + rng.uniform(-0.04, 0.04, len(values)), values, s=22, alpha=0.6, color=color, linewidth=0)
+            means.append(float(np.mean(values)))
+        ax.plot(np.arange(3) + offset, means, color=color, marker="D", lw=2, ms=6, label=prefix.capitalize())
+    ax.set(
+        xticks=range(3),
+        xticklabels=["Measured\nsource E", "Measured\ntarget E", "Predicted\ntarget E"],
+        xlim=(-0.5, 2.5),
+        yscale="log",
+        ylabel="Template-shaped energy / E energy (%)",
+    )
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:g}%"))
+    ax.legend(frameon=False, fontsize=9, loc="upper left")
+    panel(ax, "C", "Measured E contains very little leftover gain", "Exact posthoc projection. Log scale; dots = mice, diamonds = means.")
     ax = axes[1, 1]
-    rank_summary = []
-    for x, label, color in ((0, "Gain", ORANGE), (1, "Residual", GREEN)):
-        effective = data["internal_structured_gain_effective_rank" if label == "Gain" else "internal_residual_effective_rank"]
-        maximum = data["internal_structured_gain_max_trial_rank" if label == "Gain" else "internal_residual_max_rank"]
-        ratio = effective / maximum
-        ax.scatter(x + rng.uniform(-0.16, 0.16, len(ratio)), ratio, color=color, alpha=0.22, s=12, linewidth=0)
-        ax.plot([x - 0.24, x + 0.24], [np.median(ratio)] * 2, lw=3, color=color)
+    for index, (row, color, effective, bound) in enumerate(
+        zip(
+            stats["rank_summary"],
+            [ORANGE, GREEN],
+            ["internal_structured_gain_effective_rank", "internal_residual_effective_rank"],
+            ["internal_structured_gain_max_trial_rank", "internal_residual_max_rank"],
+        )
+    ):
+        values = (data[effective] / data[bound]).to_numpy()
+        ax.scatter(index + rng.uniform(-0.16, 0.16, len(values)), values, color=color, alpha=0.23, s=12, linewidth=0)
+        ax.plot([index - 0.24, index + 0.24], [np.median(values)] * 2, lw=3, color=color)
         ax.text(
-            x,
-            0.06,
-            f"Median rank: {np.median(effective):.0f}\nMedian bound: {np.median(maximum):.0f}",
+            index,
+            0.07,
+            f"Median rank: {row['median_rank']:.0f}\nMedian bound: {row['median_bound']:.0f}",
             ha="center",
             va="bottom",
             fontsize=10,
             bbox=dict(facecolor="white", edgecolor="none", alpha=0.85),
         )
-        rank_summary.append(
-            dict(
-                branch=label,
-                median_rank=float(np.median(effective)),
-                median_rank_bound=float(np.median(maximum)),
-                at_bound=int(np.isclose(effective, maximum).sum()),
-            )
-        )
-    ax.axhline(1, lw=0.8, color="#a7afb8", ls="--")
+    ax.axhline(1, color="#a7afb8", lw=0.8, ls="--")
     ax.set(
         xticks=[0, 1],
         xticklabels=["Trial gain RRR", "Framewise residual RRR"],
@@ -269,48 +361,22 @@ def figure_structure(data):
         ylim=(-0.04, 1.12),
         ylabel="Effective rank / available rank",
     )
-    panel(ax, "D", "The branches use very different model capacity", "Internal model; gain bound ≈ trials, residual bound ≈ cells.")
-    fig.suptitle("What can we currently say about the 'everything else' component?", fontsize=17, fontweight="bold")
-    save(fig, "02_residual_structure")
-    return mouse, diagnostic, rank_summary
-
-
-def write_report(store, data, folds, counts, mouse, diagnostic, ranks):
-    stability = []
-    for prefix in ("internal", "external"):
-        part = folds[folds.branch == prefix]
-        stability.append(
-            dict(
-                branch=prefix,
-                any_severe_units=int(data[f"{prefix}_any_severe"].sum()),
-                median_severe_units=int(data[f"{prefix}_median_severe"].sum()),
-                severe_folds=int((part.r2 < -1).sum()),
-                total_folds=len(part),
-                positive_residual_folds=int((part.r2_residual_component > 0).sum()),
-                positive_residual_units=int((data[f"{prefix}_r2_residual_component"] > 0).sum()),
-                median_residual_r2=float(data[f"{prefix}_r2_residual_component"].median()),
-                mouse_mean_residual_r2=float(mouse[f"{prefix}_r2_residual_component"].mean()),
-                worst_fold_r2=float(part.r2.min()),
-            )
-        )
-    coverage = pd.read_csv(OUT / "session_coverage.csv")
-    summary = dict(
-        n_saved_sessions=len(coverage),
-        n_unscored_sessions=int((coverage.n_scored_environments == 0).sum()),
-        n_sessions=int(data.session.nunique()),
-        n_mice=int(data.mouse.nunique()),
-        n_units=len(data),
-        store=str(store),
-        schema="v2",
-        configuration=SUFFIX,
-        plot_window=counts,
-        diagnostic_subset=diagnostic,
-        rank_summary=ranks,
-        stability=stability,
+    panel(
+        ax, "D", "Residual prediction uses substantially more capacity", "Internal model: gain rank is trial-limited; E rank is mostly cell-limited."
     )
-    (OUT / "manifest.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    pd.DataFrame(stability).to_csv(OUT / "stability_summary.csv", index=False)
-    mouse.to_csv(OUT / "mouse_residual_scores.csv")
+    fig.suptitle("What remains in E? | predictability, gain overlap, and model capacity", fontsize=17, fontweight="bold")
+    save(fig, "02_residual_structure")
+
+
+def write_report(store, data, folds, mouse, stats):
+    stats["store"] = str(store)
+    pd.DataFrame(stats["stability"]).to_csv(OUT / "stability_summary.csv", index=False)
+    mouse.to_csv(OUT / "mouse_scores.csv")
+    mouse[["external_r2_residual_component", "internal_r2_residual_component"]].to_csv(OUT / "mouse_residual_scores.csv")
+    folds.loc[folds.r2 < -1].to_csv(OUT / "remaining_poor_folds.csv", index=False)
+    aggregation = mouse[[OLD, NEW, "internal_r2_pooled"]].copy()
+    aggregation["pooled_gain_r2"] = mouse.internal_r2_template_pooled + mouse.internal_delta_r2_gain_pooled
+    aggregation.to_csv(OUT / "mouse_aggregation_comparison.csv")
     data.sort_values("internal_worst_fold").head(12)[
         [
             "session",
@@ -326,75 +392,70 @@ def write_report(store, data, folds, counts, mouse, diagnostic, ranks):
             "internal_hp_rank_residual",
         ]
     ].to_csv(OUT / "worst_internal_results.csv", index=False)
-    internal, external = stability
-    table = pd.DataFrame(stability)[
+    if (OUT / "manifest.json").exists():
+        previous = json.loads((OUT / "manifest.json").read_text())
+        if previous.get("implementation") != stats["implementation"] and not (OUT / "previous_unregularized_manifest.json").exists():
+            (OUT / "previous_unregularized_manifest.json").write_text(json.dumps(previous, indent=2), encoding="utf-8")
+    (OUT / "manifest.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    internal, external = stats["stability"]
+    n, nf = stats["n_units"], internal["total_folds"]
+    table = pd.DataFrame(stats["stability"])[
         [
             "branch",
-            "any_severe_units",
-            "median_severe_units",
             "severe_folds",
+            "severe_gain_folds",
             "positive_residual_folds",
-            "median_residual_r2",
-            "mouse_mean_residual_r2",
+            "positive_residual_increment_units",
+            "mean_mouse_residual_r2",
+            "mean_mouse_residual_increment",
         ]
     ]
     table.columns = [
         "Position",
-        "Any severe fold: units / 267",
-        "Severe median: units / 267",
-        "Severe folds / 801",
-        "E R² > 0: folds / 801",
-        "Median E R²",
-        "Equal-mouse mean E R²",
+        f"G+E R² < −1 / {nf}",
+        f"G R² < −1 / {nf}",
+        f"E-component R² > 0 / {nf}",
+        f"Positive E increment / {n}",
+        "Mouse mean E R²",
+        "Mouse mean E increment",
     ]
+    proj_table = pd.DataFrame(
+        [
+            dict(
+                Position=row["branch"].capitalize(),
+                **{
+                    "Measured source E (%)": 100 * row["mean_mouse_source_gain_energy_fraction"],
+                    "Measured target E (%)": 100 * row["mean_mouse_target_gain_energy_fraction"],
+                    "Predicted target E (%)": 100 * row["mean_mouse_predicted_gain_energy_fraction"],
+                },
+            )
+            for row in stats["stability"]
+        ]
+    )
     caption1 = (
-        "A shows stored median-fold scores, with one dot per session–environment unit: a descriptive distribution, not independent animals. "
-        "The fixed display window is −0.08 to 0.36; out-of-window counts are explicit and medians use all units. "
-        "B exposes failures hidden by median-fold scoring. C includes every severe combined-model fold on a log error-ratio scale. "
-        "Dashed G-only curves use the same folds as the solid combined curves."
+        "A: stored median-of-three-fold R², averaged equally over environments within each session, sessions within mouse, then mice. "
+        "Thin lines are mice; black diamonds are equal-mouse means. Trial Gain and G-only agree to the numerical tolerance reported below. "
+        "B: all matched session–environment units, without score-based exclusion; the dark diamond is the equal-mouse mean. "
+        "C and D use pooled-over-fold SSE/SST rather than median-fold R². C is the incremental benefit of E: "
+        "(SSE_G − SSE_G+E)/SST_original. D telescopes exactly: R²(template) + gain increment + E increment = R²(G+E). "
+        "Three remaining poor internal folds strongly lower the pooled total in D: 0.042 versus 0.125 for the median-fold summary in A. "
+        "All folds are included; the aggregation-comparison and poor-fold tables expose this sensitivity. "
+        "Full peer RRR is a comparison model, not a noise ceiling."
     )
     caption2 = (
-        "A and B predict E on all units, including those with unstable gain prediction. Internal and external E targets differ because "
-        "their template trajectories differ, and their component R² denominators differ. Component scores do not add to original-activity R². "
-        "B averages environments within session, sessions within mouse, then mice equally. C is explicitly restricted to units whose three "
-        "combined-model folds all have R² ≥ −1. It plots (SSE_G − SSE_G+E)/SST_original followed by the same mouse-level averaging. "
-        "That subset is score-selected: this is a diagnostic, not an unbiased population estimate. D shows rank relative to different branch-specific bounds."
+        "A/B score predicted E against the measured residual formed using regularized trial gains. Internal and external E differ because "
+        "their template trajectories differ, and the component R² denominators differ. These component R² values do not add to original-activity R². "
+        "C projects each cell's E onto that cell's template separately on each trial, with an unregularized, numerically normalized projection. "
+        "It reports squared energy fractions, not centered variance or fractions of predictive benefit. Fractions are pooled across folds "
+        "using their energies, then averaged over environments, sessions and mice. No model inputs or predictions are changed. "
+        "D shows session–environment rank distributions, with different branch-specific bounds."
     )
-    prose = f"""
-<h2>What the saved results support</h2><ul>
-<li><strong>There is predictable structure beyond a per-trial template rescaling.</strong>
-Measured E remains after an explicit per-cell, per-trial template projection. Its component R² is positive in
-{internal['positive_residual_units']}/267 internal units and {external['positive_residual_units']}/267 external units.
-These are descriptive counts; folds and units share animals.</li>
-<li><strong>The gain predictor is the current bottleneck.</strong> Failures affect {internal['any_severe_units']}/267 internal units
-and {external['any_severe_units']}/267 external units. G-only and G+E errors track each other in the severe tail.
-The worst internal fold has R² = {internal['worst_fold_r2']:.2e}.</li>
-<li><strong>Median-fold scoring hides some failures.</strong> Only {internal['median_severe_units']} internal units have median R² &lt; −1,
-although {internal['any_severe_units']} have at least one such fold. Pooled increments also lose precision when subtracting enormous,
-nearly equal SSEs, so we do not interpret their numerical values in that tail.</li>
-<li><strong>Residual prediction is not necessarily low dimensional.</strong> The median internal residual rank is {ranks[1]['median_rank']:.0f},
-versus {ranks[0]['median_rank']:.0f} for gain. E has many more observations and a much higher available-rank bound.</li></ul>
-<h2>Interpretation and next step</h2>
-<p>Predictable E can include template mismatch and, for the internal model, position-decoding errors.
-The result establishes structure beyond this chosen trial-gain template; it does not by itself identify a separate physiological process.</p>
-<p>The failure pattern is consistent with ill-conditioned raw gain ratios when a cell's template energy is tiny.
-The new decomposition uses unregularized gains to preserve exact orthogonality; the existing structured-gain model shrinks gain measurements toward 1.
-That is a plausible explanation from the implementation and G-only error pattern, not a direct measurement of failing template energies.</p>
-<p>A useful repair would preserve the explicit measured decomposition while stabilizing the gain features used by the learned predictor
-(for example, with separate regularized source-gain features). The branches should then be reevaluated before claiming a clean additive result.
-This report does not modify the model, delete results, or refit sessions.</p>
-<h2>Data and reproducibility</h2>
-<p>All six compared models match on session, environment identity, exact source/target ROI IDs, and trial-fold membership.
-Every compared model has 149 saved sessions; 140 sessions have at least one finite scored environment (267 scored units in total).
-The other 9 sessions contribute no scored environments and are listed in session_coverage.csv.
-Exact retained prediction-frame masks are absent from cached summaries;
-cross-model frame support cannot be independently audited here. Within the new model, G and E share a frame mask.</p>
-<p>The main comparison uses the median of three held-out trial-fold scores. The validation quarter is fixed and hyperparameters are reused
-across rotations. Place-cell selection uses full-session activity, as in the existing analysis. There is no noise-ceiling correction:
-full peer RRR is a benchmark, not maximum explainable predictability.</p>
-<p>Source store: <code>{html.escape(str(store / 'results.db'))}</code>, opened read-only.
-Configurations and computation timestamps are recorded in provenance.csv.</p>
-"""
+    stability_text = (
+        f"The previous explosive negative tail is absent: the worst internal combined-model fold is now R² = {internal['worst_fold_r2']:.3f}. "
+        f"There are still {internal['severe_folds']}/{nf} internal combined-model folds below −1 "
+        f"({internal['severe_gain_folds']} gain-only folds), and {external['severe_folds']}/{nf} external combined-model folds below −1. "
+        "All remain included in the figures and tables."
+    )
     links = " · ".join(
         f'<a href="{name}">{label}</a>'
         for name, label in (
@@ -402,38 +463,91 @@ Configurations and computation timestamps are recorded in provenance.csv.</p>
             ("02_residual_structure.svg", "Figure 2 SVG"),
             ("session_environment_scores.csv", "Session–environment scores"),
             ("fold_scores.csv", "Fold scores"),
-            ("mouse_residual_scores.csv", "Mouse summaries"),
-            ("worst_internal_results.csv", "Worst results"),
+            ("mouse_scores.csv", "Mouse summaries"),
             ("session_coverage.csv", "Session coverage"),
+            ("mouse_aggregation_comparison.csv", "Aggregation comparison"),
+            ("remaining_poor_folds.csv", "Remaining poor folds"),
             ("provenance.csv", "Provenance"),
             ("manifest.json", "Audit manifest"),
             ("make_report.py", "Reproduction script"),
         )
     )
     document = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trial gain + residual: saved-results report</title><style>
+<title>Trial gain + residual | recomputed results</title><style>
 body{{font:16px/1.6 system-ui,sans-serif;color:#253241;background:#f2f5f8;margin:0}}main{{max-width:1350px;margin:auto;padding:42px 36px}}
 h1{{font-size:34px;line-height:1.2;margin:0 0 12px}}h2{{font-size:24px;margin:36px 0 12px}}.meta,figcaption{{color:#596776;font-size:14px}}
-.warning{{background:#fff1ed;border-left:5px solid #be4d59;padding:18px 24px;border-radius:6px}}.cards{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:24px 0}}
-.card{{background:white;border-radius:8px;padding:18px}}.big{{font-size:30px;font-weight:700;display:block}}figure{{margin:22px 0;background:white;padding:16px;border-radius:10px}}img{{width:100%;height:auto}}
-table{{border-collapse:collapse;width:100%;font-size:14px;background:white}}th,td{{padding:12px 10px;text-align:right;border-bottom:1px solid #dfe5ea}}th:first-child,td:first-child{{text-align:left}}
-code{{font-size:13px}}a{{color:#3569aa}}li{{margin:8px 0}}@media(max-width:700px){{main{{padding:22px 14px}}.cards{{grid-template-columns:1fr}}table{{font-size:11px}}}}</style>
-<main><h1>Trial gain + residual prediction</h1><p class="meta">Saved v2 results · 3 November 2026 · sigrebase / std / preferred / seed 0 · 140 scored sessions out of 149 saved, 14 mice, 267 matched session–environment units.</p>
-<div class="warning"><strong>Archived unregularized run.</strong> The gain-residual model has since been revised to reuse the standalone gain predictor.
-Schema remains v2; adopting the revised implementation requires targeted result invalidation.
-The population figures below have not been recomputed. Two real-data equality checks are saved in <a href="regularized_validation.json">regularized_validation.json</a>.
-<br><strong>The v2 combined model was not numerically reliable.</strong> The residual branch predicts held-out structure in E,
-but catastrophic gain predictions prevent a clean population-level claim that G+E explains the gap to full peer RRR.
-The synthetic implementation tests missed this real-data instability.</div>
-<div class="cards"><div class="card"><span class="big">{internal['any_severe_units']} / 267</span>Internal-model units with at least one R² &lt; −1 fold.</div>
-<div class="card"><span class="big">{internal['positive_residual_folds']} / 801</span>Internal-model folds with positive held-out E-component R².</div>
-<div class="card"><span class="big">{internal['median_residual_r2']:.3f}</span>Median internal E-component R²; equal-mouse mean {internal['mouse_mean_residual_r2']:.3f}.</div></div>
-<h2>1. Predictive performance and stability</h2><figure><img src="01_performance_and_stability.png" alt="Model comparisons, per-mouse failures, and full error tails"><figcaption>{caption1}</figcaption></figure>
-<h2>2. The residual branch carries held-out predictability</h2><figure><img src="02_residual_structure.png" alt="Residual predictability, mouse comparisons, conditional benefit, and rank use"><figcaption>{caption2}</figcaption></figure>
-<h2>Audit summary</h2>{table.to_html(index=False, float_format=lambda x: f'{x:.4f}', border=0)}
-{prose}<p>{links}</p></main></html>"""
+.status{{background:#e8f4ef;border-left:5px solid #248978;padding:18px 24px;border-radius:6px}}
+.aggregation{{background:#fff3dd;border-left:5px solid #d18a30;padding:18px 24px;border-radius:6px;margin-top:20px}}
+.cards{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:24px 0}}.card{{background:white;border-radius:8px;padding:18px}}
+.big{{font-size:30px;font-weight:700;display:block}}figure{{margin:22px 0;background:white;padding:16px;border-radius:10px}}img{{width:100%;height:auto}}
+table{{border-collapse:collapse;width:100%;font-size:14px;background:white}}th,td{{padding:12px 10px;text-align:right;border-bottom:1px solid #dfe5ea}}
+th:first-child,td:first-child{{text-align:left}}code{{font-size:13px}}a{{color:#3569aa}}li{{margin:8px 0}}
+@media(max-width:700px){{main{{padding:22px 14px}}.cards{{grid-template-columns:1fr}}table{{font-size:11px}}}}</style>
+<main><h1>Trial gain + residual prediction</h1>
+<p class="meta">Recomputed regularized model · 3 November 2026 · all configurations retain schema v2 · sigrebase / std / preferred / seed 0.<br>
+{stats['n_sessions']} scored sessions out of {stats['n_saved_sessions']} saved · {stats['n_mice']} mice · {n} matched session–environment units · {nf} test folds per position model.</p>
+<div class="status"><strong>The gain-only control now agrees with standalone Trial Gain.</strong>
+All {n} internal-model gain hyperparameter sets match exactly. The largest cached fold-score difference is
+{stats['max_gain_reference_fold_difference']:.2e} (audit tolerance: 1e−6).
+The recomputed residual branch adds held-out predictability, with very little template-shaped energy remaining in its measured target.</div>
+<div class="cards">
+<div class="card"><span class="big">{stats['mouse_mean_trial_gain_r2']:.3f} → {stats['mouse_mean_combined_r2']:.3f}</span>Trial Gain → G+E; equal-mouse mean median-fold R².</div>
+<div class="card"><span class="big">{100*stats['peer_gap_recovered']:.1f}%</span>Of the mean Trial Gain → full-peer RRR gap recovered. Peer RRR: {stats['mouse_mean_peer_r2']:.3f}.</div>
+<div class="card"><span class="big">{100*internal['mean_mouse_target_gain_energy_fraction']:.3f}%</span>Template-shaped fraction of measured internal target E energy.</div></div>
+<div class="aggregation"><strong>Aggregation matters.</strong> The headline comparison uses the existing median-of-three-fold score.
+When SSE is pooled over all folds, the equal-mouse mean combined R² is {stats['mouse_mean_pooled_combined_r2']:.3f}.
+Three poorly predicted internal folds (also poor in standalone Trial Gain) strongly affect that pooled summary.
+Figure 1D shows this sensitivity explicitly, with no excluded folds. The 28.9% gap-recovery figure applies to the median-fold summary only.</div>
+<h2>1. What does residual prediction add?</h2>
+<figure><img src="01_performance_and_stability.png" alt="Mouse performance comparisons, G+E versus peer RRR, residual benefit, and additive SSE accounting">
+<figcaption>{caption1}</figcaption></figure>
+<h2>2. How much gain remains in E?</h2>
+<figure><img src="02_residual_structure.png" alt="Residual component predictability, mouse summaries, posthoc gain-energy fractions, and rank usage">
+<figcaption>{caption2}</figcaption></figure>
+<h2>Reading the results</h2><ul>
+<li><strong>The robust performance summary and the all-fold additive account answer different questions.</strong>
+The median-fold G+E score averages {stats['mouse_mean_combined_r2']:.4f} across mice; its all-fold pooled counterpart is
+{stats['mouse_mean_pooled_combined_r2']:.4f}. In the pooled account, the gain increment is {stats['mouse_mean_pooled_gain_increment']:+.4f},
+driven downward by rare poor gain predictions. E still adds {internal['mean_mouse_residual_increment']:+.4f} on that same pooled denominator.</li>
+<li><strong>E provides additional prediction beyond the reused gain model.</strong> Its pooled-over-fold original-activity R² increment is
+{internal['mean_mouse_residual_increment']:.4f} internally and {external['mean_mouse_residual_increment']:.4f} externally, using all units and equal-mouse weighting.
+The increment is positive in {internal['positive_residual_increment_units']}/{n} internal units and {external['positive_residual_increment_units']}/{n} external units.</li>
+<li><strong>The combined model still falls short of full peer RRR.</strong> Mean median-fold R² is {stats['mouse_mean_combined_r2']:.4f} for G+E,
+versus {stats['mouse_mean_peer_r2']:.4f} for peer RRR. The {100*stats['peer_gap_recovered']:.1f}% gap recovery is a ratio of these aggregate differences,
+not an estimate of a biological variance fraction or maximum explainable predictability.</li>
+<li><strong>The regularized measured E is nearly off-template, although not constrained to be.</strong>
+Its template-shaped energy fraction averages {100*internal['mean_mouse_target_gain_energy_fraction']:.3f}% internally
+and {100*external['mean_mouse_target_gain_energy_fraction']:.3f}% externally.</li>
+<li><strong>Predicted E contains a larger, but still minority, template-shaped component.</strong>
+The corresponding fractions are {100*internal['mean_mouse_predicted_gain_energy_fraction']:.2f}% and
+{100*external['mean_mouse_predicted_gain_energy_fraction']:.2f}%.
+Energy fractions alone do not tell us what fraction of the incremental predictive improvement is gain-related:
+that would require separately scoring the projected and off-template prediction components.</li>
+<li><strong>The E branch is comparatively high rank.</strong> Median internal gain rank is {stats['rank_summary'][0]['median_rank']:.0f};
+median residual rank is {stats['rank_summary'][1]['median_rank']:.0f}.
+The residual branch has framewise observations and a much higher rank bound.</li></ul>
+<h2>Projection audit: equal-mouse mean fractions</h2>{proj_table.to_html(index=False,float_format=lambda x:f'{x:.3f}',border=0)}
+<p>For each cell/trial, E = P_template E + (I − P_template)E. The two projected pieces are orthogonal and their squared energies sum exactly.
+The model itself still uses regularized measured gains and an unconstrained signed residual predictor.</p>
+<h2>Residual scores and stability</h2>{table.to_html(index=False,float_format=lambda x:f'{x:.4f}',border=0)}
+<p>{stability_text}</p>
+<h2>Matching, weighting, and limits</h2>
+<p>All six compared model results are matched on session, environment identity, source and target ROI IDs, and the exact trial folds.
+Internal G-only also matches the standalone gain model's saved PF/gain hyperparameters and fold scores within numerical tolerance.
+Cached summaries do not include every retained prediction-frame index, so exact cross-model frame support cannot be independently audited here.
+Within the new model G and E share the same scoring frames.</p>
+<p>The {stats['n_unscored_sessions']} saved sessions without a finite scored environment remain listed in session_coverage.csv.
+All scored units and folds are retained, including negative scores. No score-based subset, winsorization, or outlier clipping is used.
+Across-mouse summaries first average environments within a session and sessions within each mouse. No interval treats sessions or folds as independent animals.</p>
+<p>Hyperparameters use a fixed validation quarter and are reused across the three rotations. Place-cell selection uses full-session activity.
+Internal position is decoded from source cells; trial gains use the source trial's frames. E may include template mismatch and position-decoding error
+as well as other shared activity structure. Component R² values have component-specific denominators; only the original-activity SSE increments
+provide the additive account shown in Figure 1D.</p>
+<p>Read-only source: <code>{html.escape(str(store/'results.db'))}</code>. The selected configurations and computation timestamps are in provenance.csv.
+This report reads saved results and does not refit models or modify the results store.</p>
+<p>{links}</p></main></html>"""
     (OUT / "report.html").write_text(document, encoding="utf-8")
-    print(json.dumps(summary, indent=2), flush=True)
+    print(json.dumps(stats, indent=2), flush=True)
 
 
 def main():
@@ -450,9 +564,10 @@ def main():
         }
     )
     store, data, folds = read_results()
-    counts = figure_performance(data, folds)
-    mouse, diagnostic, ranks = figure_structure(data)
-    write_report(store, data, folds, counts, mouse, diagnostic, ranks)
+    mouse, stats = summary_data(data, folds)
+    figure_performance(data, mouse, stats)
+    figure_structure(data, mouse, stats)
+    write_report(store, data, folds, mouse, stats)
 
 
 if __name__ == "__main__":

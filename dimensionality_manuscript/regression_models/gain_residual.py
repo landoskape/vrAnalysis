@@ -76,7 +76,9 @@ class PlaceFieldGainResidualModel(PlaceFieldStructuredGainModel):
     source gains are measured BEFORE target-template frame filtering. E uses measured,
     regularized gains, not predictions, and can retain template-shaped activity.
     Process metrics quantify that activity with an exact posthoc projection.
-    Residual predictions and G+E are signed, unprojected, and unrectified.
+    E-only activity predictions are PF + predicted residual; G+E still uses
+    predicted gain activity + predicted residual. Raw residual predictions and
+    G+E are signed, unprojected, and unrectified.
 
     Implementation revision 2 uses new optimization/score cache keys.
     TrialPlacecellRegressionConfig retains schema v2; old gain-residual DB results
@@ -349,6 +351,8 @@ def gain_residual_scores(report):
     Fractions use squared norm, not centered variance. E uses measured regularized
     gains. Predicted E is audited separately. Energies sum across folds; fractions
     must be pooled using those energies rather than averaged over folds.
+    E-only activity scores use template + predicted E. Component scores and
+    projection audits continue to use raw E.
     """
     metrics = getattr(report, "metrics", {})
     if all(key in metrics for key in GAIN_RESIDUAL_SCORE_NAMES):
@@ -356,9 +360,10 @@ def gain_residual_scores(report):
     target = np.asarray(report.target_data, dtype=np.float64)
     gain, residual = report.extras["gain_prediction"], report.extras["residual_prediction"]
     template, units = report.extras["placefield_prediction"], report.extras["gain_unit_index"]
+    residual_activity = template + residual
     sst = float(np.sum((target - target.mean()) ** 2))
     sse_template, sse_gain = float(np.sum((target - template) ** 2)), float(np.sum((target - gain) ** 2))
-    sse_residual, sse_combined = float(np.sum((target - residual) ** 2)), float(np.sum((target - gain - residual) ** 2))
+    sse_residual, sse_combined = float(np.sum((target - residual_activity) ** 2)), float(np.sum((target - gain - residual) ** 2))
     measured_gains = least_squares_gain(
         target,
         template,
@@ -370,9 +375,9 @@ def gain_residual_scores(report):
     measured_residual = target - measured_gain
     scores = dict(
         mse_gain=float(np.mean((target - gain) ** 2)),
-        mse_residual=float(np.mean((target - residual) ** 2)),
+        mse_residual=float(np.mean((target - residual_activity) ** 2)),
         r2_gain=float(measure_r2(gain, target, dim=None)),
-        r2_residual=float(measure_r2(residual, target, dim=None)),
+        r2_residual=float(measure_r2(residual_activity, target, dim=None)),
         r2_template=float(measure_r2(template, target, dim=None)),
         r2_gain_component=float(measure_r2(gain, measured_gain, dim=None)),
         r2_residual_component=float(measure_r2(residual, measured_residual, dim=None)),

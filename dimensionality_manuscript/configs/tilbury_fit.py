@@ -35,6 +35,7 @@ split / activity-normalisation handling of :mod:`configs.placefield_structure`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Callable, ClassVar, Optional
 
 import numpy as np
@@ -229,6 +230,15 @@ def _curve_spectrum(matrix: npt.NDArray[np.floating]) -> npt.NDArray[np.floating
     """
     t = torch.as_tensor(matrix, dtype=torch.float32)
     return PCA(center=True).fit(t).get_eigenvalues().cpu().numpy().astype(np.float64)
+
+
+def _spatial_curve_spectrum(matrix: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+    """Sample covariance across neurons: center each position, then SVD^2/(N-1)."""
+    matrix = np.asarray(matrix, dtype=np.float64)
+    if min(matrix.shape) < 2:
+        return np.full(min(matrix.shape), np.nan)
+    centered = matrix - matrix.mean(axis=0, keepdims=True)
+    return np.linalg.svd(centered, compute_uv=False) ** 2 / (matrix.shape[0] - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -755,13 +765,16 @@ class TilburyFitConfig(AnalysisConfigBase):
     spks_type : SpksTypes
         Spike type retrieved from the registry.
     activity_parameters_name : str
-        Name of the ``ActivityParameters`` preset used to normalise activity
-        (train-split statistics applied to every split).
+        Activity preset used before building placefields. Default ``std``.
+        Scaling statistics are computed before splitting, without mean subtraction.
+    activity_scaling_scope : {"full_recording", "retained_vr"}
+        Frames defining activity scaling statistics. Default ``full_recording``
+        matches StimSpace; ``retained_vr`` reproduces the historical Tilbury scope.
+    spectrum_smooth_width : float
+        Positive smoothing width (cm) for the matched four-fold cvPCA basis.
+        Scoring folds and model PCA are unsmoothed. Default 5.0.
     num_bins : int
         Number of spatial bins.
-    smooth_width : float or None
-        Gaussian smoothing width (cm) applied to the averaged placefields before
-        fitting; ``None`` for raw (unsmoothed) trial averages.
     reliability_fraction_active_thresholds : tuple of (float or None, float or None)
         Minimum reliability and minimum fraction active for neuron inclusion
         (computed on the train split). ``(None, None)`` keeps all neurons.
@@ -810,10 +823,12 @@ class TilburyFitConfig(AnalysisConfigBase):
     already clamped to near-symmetry, and extending the grid buys little.
     """
 
-    schema_version: str = "v10"
+    schema_version: str = "v11"
     data_config_name: str = "even"
     spks_type: SpksTypes = "sigrebase"
-    activity_parameters_name: str = "raw"
+    activity_parameters_name: str = "std"
+    activity_scaling_scope: str = "full_recording"
+    spectrum_smooth_width: float = 5.0
     num_bins: int = 100
     reliability_fraction_active_thresholds: Optional[tuple[float, float]] = (0.3, 0.1)
 
@@ -836,11 +851,21 @@ class TilburyFitConfig(AnalysisConfigBase):
         "eig_shrinkage": "pad",
         "eig_raw_train": "pad",
         "eig_raw_test": "pad",
+        "eig_spatial_tilbury": "pad",
+        "eig_spatial_control": "pad",
+        "eig_spatial_shrinkage": "pad",
+        "eig_spatial_better": "pad",
+        "eig_spatial_raw_train": "pad",
+        "eig_spatial_raw_test": "pad",
+        "ss_cvpca_matched": "pad",
+        "spectrum_metadata": "skip",
+        "spectrum_roi_indices": "skip",
+        "spectrum_dist_centers": "skip",
     }
 
     @staticmethod
     def _param_grid() -> dict:
-        return {"activity_parameters_name": ["default", "raw"]}
+        return {"activity_parameters_name": ["default", "raw", "std"]}
 
     @property
     def param_names(self) -> list[str]:
@@ -866,6 +891,10 @@ class TilburyFitConfig(AnalysisConfigBase):
         return np.array([(lp, la) for lp in self.lambda_grid_p for la in self.lambda_grid_asym], dtype=float)
 
     def validate(self) -> None:
+        if self.activity_scaling_scope not in ("full_recording", "retained_vr"):
+            raise ValueError("activity_scaling_scope must be 'full_recording' or 'retained_vr'.")
+        if not np.isfinite(self.spectrum_smooth_width) or self.spectrum_smooth_width <= 0:
+            raise ValueError("spectrum_smooth_width must be positive and finite.")
         if self.activity_parameters_name not in ACTIVITY_PARAMETERS_NAMES:
             raise ValueError(f"Unknown activity_parameters_name {self.activity_parameters_name!r}. Available: {list(ACTIVITY_PARAMETERS_NAMES)}")
 
@@ -875,6 +904,8 @@ class TilburyFitConfig(AnalysisConfigBase):
             self.display_name,
             f"spks={self.spks_type}",
             f"ap={self.activity_parameters_name}",
+            f"scaling={self.activity_scaling_scope}",
+            f"spectrum_smooth={self.spectrum_smooth_width}",
             f"bins={self.num_bins}",
             f"rel={rel}",
             f"frac={frac}",
@@ -884,27 +915,32 @@ class TilburyFitConfig(AnalysisConfigBase):
 
     # -- data path ---------------------------------------------------------
 
-    def _get_split_data(self, session: B2Session, registry: PopulationRegistry) -> tuple[dict[str, np.ndarray], dict]:
+    def _get_split_data(self, session: B2Session, registry: PopulationRegistry, *, split_indices=None) -> tuple[dict[str, np.ndarray], dict]:
         """Load ``(frames, rois)`` activity and aligned behaviour for every split.
 
         Scaling is delegated to ``population.apply_split`` (same path as
         ``configs.cvpca``) so the ``ActivityParameters`` ``scale`` / ``scale_type``
         / ``presplit`` semantics are honoured: with ``presplit=True`` the scaling
         statistics are computed on the full (pre-split) data, then each split is
-        selected, rather than recomputed per split.
+        selected, rather than recomputed per split. ``activity_scaling_scope``
+        records whether these statistics use the full recording (StimSpace convention)
+        or retained VR frames (the historical Tilbury/CVPCA convention).
         """
         population, frame_behavior = registry.get_population(session, self.spks_type)
         ap = get_activity_parameters(self.activity_parameters_name)
-        full = population.data[population.idx_neurons][:, population.idx_samples]  # (N, T)
+        prefiltered = self.activity_scaling_scope == "retained_vr"
+        full = population.data[population.idx_neurons]
+        if prefiltered:
+            full = full[:, population.idx_samples]
+        split_indices = {name: registry.time_split[name] for name in _SPLITS} if split_indices is None else split_indices
 
         spks: dict[str, np.ndarray] = {}
         fb: dict = {}
-        for s in _SPLITS:
-            split_idx = registry.time_split[s]
+        for s, split_idx in split_indices.items():
             scaled = population.apply_split(
                 full,
                 time_idx=split_idx,
-                prefiltered=True,
+                prefiltered=prefiltered,
                 scale=ap.scale,
                 scale_type=ap.scale_type,
                 pre_split=ap.presplit,
@@ -931,13 +967,14 @@ class TilburyFitConfig(AnalysisConfigBase):
             )
         return idx_keep
 
-    def _avg_placefield(self, spks, frame_behavior, dist_edges, best_env, session):
+    def _avg_placefield(self, spks, frame_behavior, dist_edges, best_env, session, smooth_width=None):
         """Trial-averaged placefield for ``best_env``: returns ``((N, P), (P,) counts)``."""
         pf = get_placefield(
             spks,
             frame_behavior,
             dist_edges,
             average=True,
+            smooth_width=smooth_width,
             use_fast_sampling=True,
             session=session,
         ).filter_by_environment(best_env)
@@ -1012,6 +1049,76 @@ class TilburyFitConfig(AnalysisConfigBase):
                 raise ValueError(f"NaNs in {s} placefield after dropping empty bins!")
 
         return theta, curves, idx_keep, best_env
+
+    def matched_spectra(self, session, registry, theta, curves, idx_keep, matrices, best_env):
+        """Matched four-fold cvPCA and spatial PCA, with auditable units/support.
+
+        ``matrices`` and ``curves`` already contain only jointly successful neurons.
+        Native eig_* outputs retain their original support and SVD^2/P convention.
+        New spatial outputs share the intersection of the four raw fold supports.
+        """
+        from .stimspace import _cvpca_svd
+
+        population, _ = registry.get_population(session, self.spks_type)
+        if len(population.time_split_indices) != 4:
+            raise ValueError("Matched Tilbury spectra require the four-fold population registry.")
+        spks, behavior = self._get_split_data(session, registry, split_indices={i: i for i in range(4)})
+        edges = np.linspace(0, session.env_length[0], self.num_bins + 1)
+        centers = edge2center(edges)
+        positions = np.searchsorted(centers, theta)
+        if not np.allclose(centers[positions], theta):
+            raise ValueError("Fit positions do not match the configured spatial grid.")
+        raw, smooth, counts = [], [], []
+        for i in range(4):
+            activity = spks[i][:, idx_keep]
+            pf, count = self._avg_placefield(activity, behavior[i], edges, best_env, session)
+            sm, _ = self._avg_placefield(activity, behavior[i], edges, best_env, session,
+                                         smooth_width=self.spectrum_smooth_width)
+            raw.append(pf[:, positions])
+            smooth.append(sm[:, positions])
+            counts.append(count[positions])
+        good = np.all(np.asarray(counts) > 0, axis=0)
+        good &= np.logical_and.reduce([np.isfinite(x).all(axis=0) for x in raw + smooth])
+        if np.count_nonzero(good) < 2:
+            raise ValueError("Fewer than two positions have observations in every matched spectrum fold.")
+        raw = [torch.as_tensor(x[:, good], dtype=torch.float64) for x in raw]
+        smooth = [torch.as_tensor(x[:, good], dtype=torch.float64) for x in smooth]
+        triples = list(combinations(range(4), 3))
+        cv = np.mean([_cvpca_svd(smooth[i], raw[j], raw[k]).numpy() for i, j, k in triples], axis=0)
+        outputs = {"ss_cvpca_matched": cv}
+        for name, matrix in matrices.items():
+            outputs[name.replace("eig_", "eig_spatial_", 1)] = _spatial_curve_spectrum(matrix[:, good])
+        for split in ("train", "test"):
+            outputs[f"eig_spatial_raw_{split}"] = _spatial_curve_spectrum(curves[split][:, good])
+        n = raw[0].shape[0]
+        outputs.update(
+            spectrum_roi_indices=np.asarray(population.idx_neurons)[idx_keep],
+            spectrum_dist_centers=theta[good],
+            spectrum_metadata={
+                "activity_parameters_name": self.activity_parameters_name,
+                "activity_scaling_scope": self.activity_scaling_scope,
+                "activity_centered": False,
+                "activity_scale_type": get_activity_parameters(self.activity_parameters_name).scale_type,
+                "activity_scale_enabled": get_activity_parameters(self.activity_parameters_name).scale,
+                "scaling_presplit": get_activity_parameters(self.activity_parameters_name).presplit,
+                "scaling_n_frames": int(population.data.shape[1] if self.activity_scaling_scope == "full_recording"
+                                        else len(population.idx_samples)),
+                "spks_type": self.spks_type,
+                "environment": int(best_env),
+                "n_neurons": int(n),
+                "native": {"center_axis": "positions", "denominator": int(len(theta)),
+                           "n_positions": int(len(theta)), "position_key": "dist_centers"},
+                "spatial": {"center_axis": "neurons", "denominator": int(n - 1),
+                            "n_positions": int(good.sum()), "position_key": "spectrum_dist_centers"},
+                "matched_data": {"estimator": "ss_cvpca", "folds": 4,
+                                 "assignments": [list(t) for t in triples],
+                                 "basis_smooth_width_cm": self.spectrum_smooth_width,
+                                 "scoring_smooth_width_cm": None,
+                                 "selection": "train-selected and successful under all three models"},
+                "activity_split_indices": {key: np.asarray(registry.time_split[key]).tolist() for key in _SPLITS},
+            },
+        )
+        return outputs
 
     # -- main --------------------------------------------------------------
 
@@ -1092,9 +1199,7 @@ class TilburyFitConfig(AnalysisConfigBase):
         sweep_se = np.full((len(lambda_combos), n_neurons), np.nan)
         r2_init_s = None
         for i, (lam_p, lam_asym) in enumerate(lambda_combos):
-            fit_s = _fit_all_neurons(
-                theta, curves["train"], curves["validation"], _SPEC_SHRINKAGE, lam=(float(lam_p), float(lam_asym)), **fit_kwargs
-            )
+            fit_s = _fit_all_neurons(theta, curves["train"], curves["validation"], _SPEC_SHRINKAGE, lam=(float(lam_p), float(lam_asym)), **fit_kwargs)
             sweep_params[i], sweep_err[i], sweep_se[i] = fit_s.params, fit_s.val_err, fit_s.val_se
             # The analytic seed ignores the penalty, so r2_init is the same for
             # every combination; keeping the last is keeping all of them.
@@ -1165,8 +1270,17 @@ class TilburyFitConfig(AnalysisConfigBase):
         eig_better = _curve_spectrum(mat_better)
         eig_raw_train = _curve_spectrum(curves["train"][ok_all])
         eig_raw_test = _curve_spectrum(curves["test"][ok_all])
+        # Restrict all four raw folds to exactly the same successful original ROIs.
+        spectrum_keep = np.asarray(idx_keep, dtype=bool).copy()
+        spectrum_keep[np.flatnonzero(spectrum_keep)] = ok_all
+        matched = self.matched_spectra(
+            session, registry, theta, {s: curves[s][ok_all] for s in _SPLITS}, spectrum_keep,
+            {"eig_tilbury": mat_tilbury, "eig_control": mat_control,
+             "eig_shrinkage": mat_shrinkage, "eig_better": mat_better}, best_env,
+        )
 
         return {
+            **matched,
             "params": params,
             "r2_init": r2_init,
             "r2_train": r2["train"],

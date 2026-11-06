@@ -70,8 +70,8 @@ class _FakeByEnvRegressionResults(_FakeRegressionResults):
 @pytest.mark.parametrize(
     ("value_mode", "ylabel", "legend_labels"),
     [
-        ("absolute", r"R$^2$", ["PF", "PF+Gain", "Peer Prediction"]),
-        ("improvement", r"$\Delta$ R$^2$", ["PF+Gain", "Peer Prediction"]),
+        ("absolute", r"R$^2$", ["Internal Position Placefield", "Global Gain", "Peer Prediction"]),
+        ("improvement", r"$\Delta$ R$^2$", ["Global Gain", "Peer Prediction"]),
     ],
 )
 def test_regression_familiarity_single_modes_keep_one_axis(value_mode, ylabel, legend_labels):
@@ -105,12 +105,12 @@ def test_regression_familiarity_both_composes_the_two_single_mode_axes():
     assert fig.get_size_inches() == pytest.approx((7.0, 2.5))
     assert [absolute_ax.get_ylabel(), improvement_ax.get_ylabel()] == [r"R$^2$", r"$\Delta$ R$^2$"]
     assert [text.get_text() for text in absolute_ax.get_legend().get_texts()] == [
-        "PF",
-        "PF+Gain",
+        "Internal Position Placefield",
+        "Global Gain",
         "Peer Prediction",
     ]
     assert [text.get_text() for text in improvement_ax.get_legend().get_texts()] == [
-        "PF+Gain",
+        "Global Gain",
         "Peer Prediction",
     ]
     assert not any(line.get_linestyle() == "--" for line in absolute_ax.lines)
@@ -121,8 +121,8 @@ def test_regression_familiarity_both_composes_the_two_single_mode_axes():
 @pytest.mark.parametrize(
     ("value_mode", "legend_labels"),
     [
-        ("absolute", ["PF", "PF+Gain", "Peer Residual", "Peer Prediction"]),
-        ("improvement", ["PF+Gain", "Peer Residual", "Peer Prediction"]),
+        ("absolute", ["Internal Position Placefield", "Global Gain", "Peer Prediction", "Shared Residual"]),
+        ("improvement", ["Global Gain", "Peer Prediction", "Shared Residual"]),
     ],
 )
 def test_regression_familiarity_structured_additive_respects_value_mode(value_mode, legend_labels):
@@ -136,8 +136,8 @@ def test_regression_familiarity_structured_additive_respects_value_mode(value_mo
     assert list(viewer._scores) == [
         "internal_placefield_1d",
         "internal_placefield_1d_gain",
-        "internal_placefield_1d_structured_additive",
         "rrr",
+        "internal_placefield_1d_structured_additive",
     ]
     fig = viewer.plot(viewer.state)
     assert [text.get_text() for text in fig.axes[0].get_legend().get_texts()] == legend_labels
@@ -174,6 +174,7 @@ def test_regression_familiarity_by_env_alignment_and_improvement(
     assert np.asarray(improvement_lines["Env #1"].get_ydata()) == pytest.approx([0.10, 0.10])
     baseline_line = next(line for line in absolute_ax.lines if line.get_label() == "Env #1")
     assert baseline_line.get_ydata() == pytest.approx([0.125, 0.225])
+    assert improvement_ax.get_ylabel() == r"Peer R$^2$ - PF R$^2$"
     assert [baseline_line.get_color(), env2_line.get_color()] == ["k", "blue"]
     assert [text.get_text() for text in absolute_ax.get_legend().get_texts()] == ["Env #1", "Env #2"]
     assert any(line.get_linestyle() == "--" for line in improvement_ax.lines)
@@ -193,6 +194,7 @@ def test_regression_familiarity_by_env_model_selection():
     delta_line = next(line for line in fig.axes[1].lines if line.get_label() == "Env #1")
     assert baseline_line.get_ydata() == pytest.approx([0.225, 0.325])
     assert delta_line.get_ydata() == pytest.approx([-0.05, -0.05])
+    assert fig.axes[1].get_ylabel() == r"Gain R$^2$ - Peer R$^2$"
     plt.close(fig)
 
     viewer.set_parameter_value("reference_model", "rrr")
@@ -210,8 +212,8 @@ def test_regression_familiarity_by_env_model_selection():
     plt.close(fig)
 
 
-@pytest.mark.parametrize("parameter", ["baseline_model", "reference_model"])
-def test_regression_familiarity_by_env_rejects_missing_model(parameter):
+@pytest.mark.parametrize("parameter", ["baseline_model", "reference_model", "reference_mode", "comparison_mode", "statistic"])
+def test_regression_familiarity_by_env_rejects_invalid_selection(parameter):
     with pytest.raises(ValueError, match=parameter):
         RegressionFamiliarityByEnvViewer(_FakeByEnvRegressionResults(), **{parameter: "missing"})
 
@@ -226,11 +228,14 @@ def test_regression_familiarity_by_env_requires_per_environment_results():
 
 @pytest.mark.parametrize("style", ["all", "errorPlot"])
 @pytest.mark.parametrize("within_env_session", [True, False])
-def test_regression_familiarity_by_env_reference_mean(style, within_env_session):
+@pytest.mark.parametrize("reference_mode", ["reference_mean", "reference_mean_error"])
+@pytest.mark.parametrize("se", [True, False])
+def test_regression_familiarity_by_env_reference_mean(style, within_env_session, reference_mode, se):
     viewer = RegressionFamiliarityByEnvViewer(
         _FakeByEnvRegressionResults(),
         style=style,
         within_env_session=within_env_session,
+        se=se,
         min_mice=1,
     )
     fig = viewer.plot(viewer.state)
@@ -238,7 +243,7 @@ def test_regression_familiarity_by_env_reference_mean(style, within_env_session)
     delta_lines = len(fig.axes[1].lines)
     assert not any(line.get_label().endswith(" reference") for line in fig.axes[0].lines)
 
-    viewer.set_parameter_value("show_reference_mean", True)
+    viewer.set_parameter_value("reference_mode", reference_mode)
     fig = viewer.plot(viewer.state)
     absolute_ax, delta_ax = fig.axes
     reference_lines = [line for line in absolute_ax.lines if line.get_label().endswith(" reference")]
@@ -249,13 +254,118 @@ def test_regression_familiarity_by_env_reference_mean(style, within_env_session)
     assert [line.get_color() for line in reference_lines] == ["k", "blue"]
     assert all(line.get_linestyle() == "--" for line in reference_lines)
     assert all(line.get_linewidth() == 0.5 * viewer.state["linewidth"] for line in reference_lines)
-    assert len(absolute_ax.collections) == collection_count
+    with_error = reference_mode == "reference_mean_error"
+    assert len(absolute_ax.collections) == collection_count + (2 if with_error else 0)
     assert len(delta_ax.lines) == delta_lines
     assert not any(line.get_label().endswith(" reference") for line in delta_ax.lines)
     assert absolute_ax.get_ylim()[1] > 0.425
+    if with_error:
+        spread = 0.025 / (np.sqrt(2) if se else 1)
+        vertices = absolute_ax.collections[-1].get_paths()[0].vertices[:, 1]
+        assert vertices.min() == pytest.approx(0.425 - spread)
+        assert vertices.max() == pytest.approx(0.425 + spread)
+        assert absolute_ax.get_ylim()[1] > 0.425 + spread
 
     viewer._reference_scores[2:] = np.nan
     viewer.set_parameter_value("min_mice", 2)
     fig = viewer.plot(viewer.state)
     assert not any(line.get_label().endswith(" reference") for line in fig.axes[0].lines)
     plt.close(fig)
+
+
+@pytest.mark.parametrize("within_env_session", [True, False])
+def test_regression_familiarity_by_env_ratio(within_env_session):
+    viewer = RegressionFamiliarityByEnvViewer(
+        _FakeByEnvRegressionResults(),
+        comparison_mode="ratio",
+        within_env_session=within_env_session,
+        min_mice=1,
+    )
+    fig = viewer.plot(viewer.state)
+    ax = fig.axes[1]
+    lines = {line.get_label(): line for line in ax.lines if line.get_label().startswith("Env #")}
+    assert ax.get_ylabel() == r"PF R$^2$ / Peer R$^2$"
+    # Divide paired session scores before averaging across mice.
+    np.testing.assert_allclose(lines["Env #1"].get_ydata(), [(0.10 / 0.20 + 0.15 / 0.25) / 2, (0.20 / 0.30 + 0.25 / 0.35) / 2])
+    expected_env2 = [(0.30 / 0.40 + 0.35 / 0.45) / 2]
+    if not within_env_session:
+        expected_env2.insert(0, np.nan)
+    np.testing.assert_allclose(lines["Env #2"].get_ydata(), expected_env2, equal_nan=True)
+    neutral = next(line for line in ax.lines if line.get_linestyle() == "--")
+    np.testing.assert_allclose(neutral.get_ydata(), [1, 1])
+    assert ax.get_ylim()[0] < 1 < ax.get_ylim()[1]
+    fig.canvas.draw()
+    plt.close(fig)
+
+    viewer.set_parameter_value("comparison_mode", "delta")
+    fig = viewer.plot(viewer.state)
+    assert fig.axes[1].get_ylabel() == r"Peer R$^2$ - PF R$^2$"
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("within_env_session", [True, False])
+def test_regression_familiarity_by_env_ratio_zero_reference(within_env_session):
+    viewer = RegressionFamiliarityByEnvViewer(
+        _FakeByEnvRegressionResults(), comparison_mode="ratio", within_env_session=within_env_session, min_mice=1,
+    )
+    viewer._reference_scores[:, 0] = [0, 0.3, 0.25, 0.35]
+    fig = viewer.plot(viewer.state)
+    line = next(line for line in fig.axes[1].lines if line.get_label() == "Env #1")
+    np.testing.assert_allclose(line.get_ydata(), [0.15 / 0.25, (0.2 / 0.3 + 0.25 / 0.35) / 2])
+    assert np.all(np.isfinite(fig.axes[1].get_ylim()))
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("model", "abbreviation"),
+    [
+        ("external_placefield_1d", "PF"),
+        ("internal_placefield_1d", "Int. PF"),
+        ("internal_placefield_1d_gain", "Gain"),
+        ("rrr", "Peer"),
+        ("internal_placefield_1d_structured_additive", "Residual"),
+    ],
+)
+def test_regression_familiarity_by_env_model_abbreviations(model, abbreviation):
+    results = _FakeByEnvRegressionResults()
+    results.param_axes = {"model_name": ["external_placefield_1d", *_FakeStructuredRegressionResults.param_axes["model_name"]]}
+    viewer = RegressionFamiliarityByEnvViewer(results, baseline_model=model, comparison_mode="ratio", min_mice=1)
+    fig = viewer.plot(viewer.state)
+    assert fig.axes[1].get_ylabel() == f"{abbreviation} R$^2$ / Peer R$^2$"
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("style", ["all", "errorPlot"])
+@pytest.mark.parametrize("comparison_mode", ["delta", "ratio"])
+def test_regression_familiarity_by_env_statistic(style, comparison_mode):
+    class OutlierResults(_FakeByEnvRegressionResults):
+        unique_mice = np.array(["m1", "m2", "m3"])
+        mouse_names = np.array(["m1", "m2", "m3"])
+        sessions = [_FakeByEnvRegressionResults.sessions[0]] * 3
+
+        def sel(self, *, model_name, avg_by_mouse, **selection):
+            scores = [0.1, 0.2, 0.9] if model_name == "external_placefield_1d" else [0.4, 0.6, 1.0]
+            return {"r2_env": np.array(scores)[:, None]}
+
+    viewer = RegressionFamiliarityByEnvViewer(
+        OutlierResults(), style=style, comparison_mode=comparison_mode,
+        reference_mode="reference_mean_error", min_mice=1,
+    )
+    baseline = np.array([0.1, 0.2, 0.9])
+    reference = np.array([0.4, 0.6, 1.0])
+    comparison = reference - baseline if comparison_mode == "delta" else baseline / reference
+    for statistic, reducer in (("mean", np.mean), ("median", np.median)):
+        viewer.set_parameter_value("statistic", statistic)
+        fig = viewer.plot(viewer.state)
+        left, right = fig.axes
+        base_line = next(line for line in left.lines if line.get_label() == "Env #1")
+        reference_line = next(line for line in left.lines if line.get_label() == "Env #1 reference")
+        comparison_line = next(line for line in right.lines if line.get_label() == "Env #1")
+        assert base_line.get_ydata() == pytest.approx([reducer(baseline)])
+        assert reference_line.get_ydata() == pytest.approx([reducer(reference)])
+        assert comparison_line.get_ydata() == pytest.approx([reducer(comparison)])
+        band_y = left.collections[-1].get_paths()[0].vertices[:, 1]
+        spread = np.std(reference) / np.sqrt(3)
+        assert band_y.min() == pytest.approx(reducer(reference) - spread)
+        assert band_y.max() == pytest.approx(reducer(reference) + spread)
+        plt.close(fig)

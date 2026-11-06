@@ -27,7 +27,7 @@ Choose an available Python module compatible with the project (prefer Python
 `python/3.11.4` name is not assumed to exist in this stack.
 
 ```bash
-export VRANALYSIS_PYTHON_MODULE='REPLACE_WITH_AVAILABLE_PYTHON_MODULE'
+export VRANALYSIS_PYTHON_MODULE='python/3.11.6/gcc-12.3.0'
 module load "$VRANALYSIS_PYTHON_MODULE"
 export VRANALYSIS_VENV="$HOME/Scratch/envs/vrAnalysis-ng"
 uv venv "$VRANALYSIS_VENV" --python "$(command -v python)"

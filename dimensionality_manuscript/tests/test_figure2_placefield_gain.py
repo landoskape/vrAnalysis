@@ -158,7 +158,11 @@ def test_sort_viewer_draws_two_fixed_orderings_with_aligned_positions():
     viewer.figsize = (5.0, 3.0)
     viewer.data = {
         "positions": np.linspace(0.0, 100.0, 11),
-        "session": SimpleNamespace(env_length=np.array([100.0])),
+        "session": SimpleNamespace(
+            env_length=np.array([100.0]),
+            trial_environment=np.array([1, 2, 1]),
+            loadone=lambda key: np.array([60.0, 30.0, 60.0]),
+        ),
     }
     viewer.sorted_gains = {
         "environment": np.arange(12, dtype=float).reshape(3, 4),
@@ -170,11 +174,11 @@ def test_sort_viewer_draws_two_fixed_orderings_with_aligned_positions():
     }
     viewer._refresh_trial_order({"sort_trials": False})
 
-    fig = viewer.plot({"gain_vmax": 4.0, "interpolation": "bilinear", "markersize": 4.0, "fontsize": 8.0, "sort_trials": False})
+    fig = viewer.plot({"environment": 1, "gain_vmax": 4.0, "interpolation": "bilinear", "markersize": 4.0, "fontsize": 8.0, "sort_trials": False})
     try:
         assert len(fig.axes) == 4
-        assert [text.get_text() for text in fig.axes[0].texts] == ["Place-field position sort"]
-        assert [text.get_text() for text in fig.axes[2].texts] == ["Rastermap gain sort"]
+        assert [text.get_text() for text in fig.axes[0].texts] == ["Sorted by place-field position"]
+        assert [text.get_text() for text in fig.axes[2].texts] == ["Sorted by Rastermap gain"]
         np.testing.assert_allclose(fig.axes[1].collections[0].get_offsets(), [[10.0, 0.0], [40.0, 1.0], [80.0, 2.0]])
         np.testing.assert_allclose(fig.axes[3].collections[0].get_offsets(), [[80.0, 0.0], [10.0, 1.0], [40.0, 2.0]])
         assert len(fig.axes[0].images) == 4

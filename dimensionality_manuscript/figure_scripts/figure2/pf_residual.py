@@ -30,7 +30,7 @@ from ._scores import (
     draw_subject_traces,
     mouse_session_curves,
 )
-from .model_style import ROLE_COLOR
+from .model_style import COMPARISON_MODEL_LABELS, ROLE_COLOR, ordered_comparison_models
 from .performance import (
     PERFORMANCE_MODEL_COLORS,
     PERFORMANCE_MODEL_LABELS,
@@ -87,15 +87,13 @@ PF_RESIDUAL_METRIC_SHORT_LABELS = {
 # The familiarity panel names its three curves by role rather than by the models' own roles: the
 # two placefield variants are the comparison, so the plain one takes the external color.
 PF_RESIDUAL_FAMILIARITY_COLORS = {
+    "external_placefield_1d": "#666666",
     "internal_placefield_1d": ROLE_COLOR["external"],
     "internal_placefield_1d_gain": ROLE_COLOR["internal"],
     "rrr": ROLE_COLOR["neural"],
+    "internal_placefield_1d_structured_additive": STRUCTURED_ADDITIVE_MODEL_COLOR,
 }
-PF_RESIDUAL_FAMILIARITY_LABELS = {
-    "internal_placefield_1d": "PF",
-    "internal_placefield_1d_gain": "PF+Gain",
-    "rrr": "Peer Prediction",
-}
+PF_RESIDUAL_FAMILIARITY_LABELS = COMPARISON_MODEL_LABELS
 
 
 def _residual_key_prefix(subset: bool | str, fold: str, statistic: str = "mean") -> str:
@@ -154,8 +152,7 @@ def _residual_model_styles(
     labels_by_name[STRUCTURED_ADDITIVE_MODEL_NAME] = STRUCTURED_ADDITIVE_MODEL_LABEL
     colors_by_name[STRUCTURED_ADDITIVE_MODEL_NAME] = STRUCTURED_ADDITIVE_MODEL_COLOR
     if include_structured_additive and STRUCTURED_ADDITIVE_MODEL_NAME not in names:
-        insert_at = names.index("rrr") if "rrr" in names else len(names)
-        names.insert(insert_at, STRUCTURED_ADDITIVE_MODEL_NAME)
+        names.append(STRUCTURED_ADDITIVE_MODEL_NAME)
     if include_external_placefield:
         if "external_placefield_1d" in names:
             names.remove("external_placefield_1d")
@@ -163,7 +160,7 @@ def _residual_model_styles(
     if "external_placefield_1d" in names:
         labels_by_name["external_placefield_1d"] = "Placefield"
         colors_by_name["external_placefield_1d"] = "#666666"
-        labels_by_name["internal_placefield_1d"] = "Internal\nPlacefield"
+    names = ordered_comparison_models(names)
     return names, [labels_by_name[name] for name in names], [colors_by_name[name] for name in names]
 
 
@@ -195,9 +192,9 @@ class ModelPlacefieldResidualViewer(FigureViewer):
     model_names : list[ModelName]
         Models to draw, in x order.
     include_structured_additive : bool
-        Insert the internal structured-additive model between PF+Gain and Peer.
+        Append Shared Residual after Peer Prediction.
     include_external_placefield : bool
-        Prepend external PF in gray and label internal PF "Internal Placefield".
+        Prepend external PF ("Placefield") in gray; internal PF is "Int. Pos. PF".
         In relative mode, external PF becomes the baseline; otherwise the first supplied
         model (internal PF by default) is the baseline.
     fold : {"xval", "infold"}
@@ -471,7 +468,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
 
     This is the single-axis counterpart of :class:`ModelPlacefieldResidualViewer`. The two
     regions use the same ROI subset, y-axis sharing, and relative-mode settings; the outside-PF
-    axis is always inset into the within-PF axis.
+    axis is inset into the within-PF axis when ``show_inset`` is enabled.
 
     Parameters
     ----------
@@ -480,9 +477,9 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
     model_names : list[ModelName]
         Models to draw, in x order.
     include_structured_additive : bool
-        Insert the internal structured-additive model between PF+Gain and Peer.
+        Append Shared Residual after Peer Prediction.
     include_external_placefield : bool
-        Prepend external PF in gray and label internal PF "Internal Placefield".
+        Prepend external PF ("Placefield") in gray; internal PF is "Int. Pos. PF".
         In relative mode, external PF becomes the baseline; otherwise the first supplied
         model (internal PF by default) is the baseline.
     fold, metric, statistic
@@ -491,6 +488,8 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         ROI subset displayed in both regions.
     sharey : bool
         Give the main and inset axes a common y-axis scale.
+    show_inset : bool
+        Include the outside-PF inset (default True).
     relative : bool
         Subtract each mouse's first-model value from all values in both regions.
     fontsize, markersize, mean_linewidth, subject_linewidth, subject_alpha : float
@@ -529,6 +528,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         within_text_y: float = 0.9,
         outside_text_x: float = 0.05,
         outside_text_y: float = 0.9,
+        show_inset: bool = True,
         inset_x: float = 0.6,
         inset_y: float = 0.55,
         inset_width: float = 0.35,
@@ -564,6 +564,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         self.add_float("within_text_y", value=within_text_y, min=0.0, max=1.0, step=0.01)
         self.add_float("outside_text_x", value=outside_text_x, min=0.0, max=1.0, step=0.01)
         self.add_float("outside_text_y", value=outside_text_y, min=0.0, max=1.0, step=0.01)
+        self.add_boolean("show_inset", value=show_inset)
         self.add_float("inset_x", value=inset_x, min=0.0, max=1.0, step=0.01)
         self.add_float("inset_y", value=inset_y, min=0.0, max=1.0, step=0.01)
         self.add_float("inset_width", value=inset_width, min=0.05, max=1.0, step=0.01)
@@ -590,12 +591,14 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         inset = axis.inset_axes(
             [state["inset_x"], state["inset_y"], state["inset_width"], state["inset_height"]],
             sharey=axis if state["sharey"] else None,
-        )
+        ) if state["show_inset"] else None
 
         for region_axis, region, text, text_x, text_y, trace_markersize in (
             (axis, "within", "Within PF", state["within_text_x"], state["within_text_y"], None),
             (inset, "outside", "Outside PF", state["outside_text_x"], state["outside_text_y"], 3.0),
         ):
+            if region_axis is None:
+                continue
             values = self._scores[region]
             if state["relative"]:
                 values = values - values[0]
@@ -619,7 +622,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
             )
 
         # Both axes must contribute before shared limits and offset spines are finalized.
-        limit_axes = (axis,) if state["sharey"] else (axis, inset)
+        limit_axes = (axis,) if state["sharey"] or inset is None else (axis, inset)
         for region_axis in limit_axes:
             ymin, ymax = region_axis.get_ylim()
             region_axis.set_ylim(min(ymin, 0.0), max(ymax, 0.0))
@@ -643,6 +646,8 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
             ylabel = rf"$\Delta$ {ylabel}"
         axis.set_ylabel(ylabel, fontsize=fontsize)
 
+        if inset is None:
+            return fig
         inset_ymin, inset_ymax = inset.get_ylim()
         style_model_axis(
             inset,
@@ -729,7 +734,7 @@ class ModelPlacefieldResidualFamiliarityViewer(FigureViewer):
     ):
         self.results = results
         self.figsize = figsize
-        self.model_names = list(model_names)
+        self.model_names = ordered_comparison_models(model_names)
         self._scores: dict[str, np.ndarray] = {}
 
         curve_kwargs = {name: curve_and_selection.pop(name) for name in self._CURVE_KNOBS if name in curve_and_selection}
@@ -1063,7 +1068,7 @@ class ModelPlacefieldResidualExplorer(FigureViewer):
         self.selection_names = add_data_selection_widgets(self, results, skip=("model_name",), defaults=selection_defaults)
         # Models are a selectable axis here rather than a fixed list, so the explorer can reach
         # every model the results were run over -- but only those, hence the intersection.
-        self.model_options = list(results.param_axes.get("model_name", model_names))
+        self.model_options = ordered_comparison_models(results.param_axes.get("model_name", model_names))
         selected_models = [name for name in self.model_options if name in set(model_names)]
         self.add_multiple_selection("models", value=selected_models or self.model_options, options=self.model_options)
         requested = {"fold": folds, "statistic": statistics, "subset": subsets, "metric": metrics}
@@ -1148,7 +1153,7 @@ class ModelPlacefieldResidualExplorer(FigureViewer):
                 axis,
                 fontsize=fontsize,
                 xvals=xvals,
-                labels=self._models,
+                labels=[COMPARISON_MODEL_LABELS.get(name, name) for name in self._models],
                 # A single model would give the bottom spine zero length, so let it span the axis.
                 xbounds=[xvals[0], xvals[-1]] if len(xvals) > 1 else None,
                 spines_visible=("bottom",) if shared_secondary else ("left", "bottom"),

@@ -8,6 +8,7 @@ from rastermap import Rastermap
 from vrAnalysis.helpers.plotting import format_spines
 from vrAnalysis.sessions import B2Session, SpksTypes
 from dimensionality_manuscript.configs.regression import VALID_SPKS_TYPES
+from dimensionality_manuscript.env_order import ENV_SLOT_COLORS
 from dimensionality_manuscript.pipeline import ResultsAggregator
 from dimensionality_manuscript.registry import ACTIVITY_PARAMETERS_NAMES, ModelName, PopulationRegistry, short_model_name
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer, add_data_selection_widgets
@@ -21,6 +22,8 @@ from ._predictions import (
     transform_raster_rows,
 )
 from .zoo import ModelZooUltraCondensed, ModelZooUltraCondensedConfig
+from . import model_style
+from .model_style import ordered_comparison_models
 
 SORT_METHODS = ["environment", "rastermap", "activity"]
 
@@ -42,12 +45,15 @@ def compute_row_sort(method: str, target: np.ndarray, session: B2Session, regist
     raise ValueError(f"Unknown sort_method {method!r}. Options: {SORT_METHODS}")
 
 
-def _hide_raster_frame(ax, title: str | None, fontsize: float) -> None:
+def _hide_raster_frame(ax, title: str | None, fontsize: float, *, title_color: str = "black", title_fontweight: str = "normal") -> None:
     """Strip ticks and spines from a raster axis, with an optional top-right title."""
     ax.set_xticks([])
     ax.set_yticks([])
     if title:
-        ax.text(1.0, 1.0, title, transform=ax.transAxes, ha="right", va="top", color="black", fontsize=fontsize)
+        ax.text(
+            1.0, 1.0, title, transform=ax.transAxes, ha="right", va="top",
+            color=title_color, fontweight=title_fontweight, fontsize=fontsize,
+        )
     for spine in ax.spines.values():
         spine.set_visible(False)
 
@@ -283,7 +289,7 @@ class ModelRasterFocus(FigureViewer):
 
         split_options = list(dict.fromkeys([train_split, test_split, "train", "test"]))
         self.add_selection("spks_type", value=spks_type, options=list(VALID_SPKS_TYPES))
-        self.add_multiple_selection("model_names", value=list(model_names), options=list(model_names))
+        self.add_multiple_selection("model_names", value=ordered_comparison_models(model_names), options=ordered_comparison_models(model_names))
         self.add_selection(
             "activity_parameters_name",
             value=activity_parameters_name,
@@ -402,7 +408,7 @@ class ModelRasterFocus(FigureViewer):
 
     def plot(self, state):
         target, predictions = self._get_data(state)
-        model_names = list(state["model_names"])
+        model_names = ordered_comparison_models(state["model_names"])
         include_error = state["include_error_column"]
         metric = state["sample_fit_metric"]
         fontsize = state["fontsize"]
@@ -448,7 +454,9 @@ class ModelRasterFocus(FigureViewer):
                 fit_min, fit_max = np.inf, -np.inf
                 for name in model_names:
                     fit = per_sample_fit(predictions[name][:, xslice], target[:, xslice], metric)
-                    ax.plot(xvals, fit, color=model_colors[name], linewidth=1, label=short_model_name(name))
+                    ax.plot(
+                        xvals, fit, color=model_colors[name], linewidth=1, label=model_style.COMPARISON_MODEL_LABELS.get(name, short_model_name(name))
+                    )
                     finite = fit[np.isfinite(fit)]
                     if finite.size:
                         fit_min = min(fit_min, float(np.min(finite)))
@@ -476,7 +484,7 @@ class ModelRasterFocus(FigureViewer):
                 title = "Data"
             else:
                 data = disp(model_name)[:, xslice][idx_sort]
-                title = short_model_name(model_name)
+                title = model_style.COMPARISON_MODEL_LABELS.get(model_name, short_model_name(model_name))
 
             ax = fig.add_subplot(gs[irow, 0])
             ax.imshow(data, **raster_kwargs)
@@ -520,24 +528,18 @@ def _bounded_raster_window(window: slice | None, start: int, stop: int) -> tuple
 # Data, internal place-field, and RRR prediction rasters
 # ======================================================================================
 
-PREDICTION_FIGURE_MODELS: tuple[ModelName, ModelName, ModelName] = (
+PREDICTION_FIGURE_MODELS: tuple[ModelName, ...] = (
+    "internal_placefield_1d",
     "internal_placefield_1d_gain",
-    "internal_placefield_1d_structured_additive",
     "rrr",
+    "internal_placefield_1d_structured_additive",
 )
-
-_PREDICTION_FIGURE_TITLES = {
-    "external_placefield_1d": "External Placefield",
-    "internal_placefield_1d_gain": "Global Gain",
-    "internal_placefield_1d_structured_additive": "Residual",
-    "rrr": "Peer Prediction",
-}
 
 
 class ModelPredictionsFigureViewer(FigureViewer):
     """Two-row comparison of held-out data with gain, residual, and peer predictions.
 
-    The top row contains data, Global Gain, optional Shared Residual, and Peer Prediction. The
+    The top row contains data, internal PF, Global Gain, Peer Prediction, and optional Shared Residual. The
     bottom row keeps the ultra-condensed four-model schematic followed by the corresponding
     residuals (data - prediction).
     ``model_name`` is therefore consumed as a fixed comparison axis; the other axes of a
@@ -571,7 +573,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
     fontsize : float
         Font size for the panel titles, axis labels, and scale-bar label.
     include_structured_additive : bool
-        Show the Shared Residual prediction and residual between Global Gain and Peer Prediction.
+        Show the Shared Residual prediction and residual after Peer Prediction.
         The ultra-condensed schematic remains unchanged when this raster column is hidden.
     include_external_pf : bool
         Include ``external_placefield_1d`` immediately after Target Data.
@@ -618,7 +620,9 @@ class ModelPredictionsFigureViewer(FigureViewer):
 
         self.include_structured_additive = include_structured_additive
         self.include_external_pf = include_external_pf
-        self.model_names = PREDICTION_FIGURE_MODELS if include_structured_additive else (PREDICTION_FIGURE_MODELS[0], PREDICTION_FIGURE_MODELS[-1])
+        self.model_names = tuple(
+            name for name in PREDICTION_FIGURE_MODELS if include_structured_additive or name != "internal_placefield_1d_structured_additive"
+        )
         if include_external_pf:
             self.model_names = ("external_placefield_1d", *self.model_names)
 
@@ -701,13 +705,8 @@ class ModelPredictionsFigureViewer(FigureViewer):
     def _session(self, state) -> B2Session:
         return self.results.sessions[self._session_rows[state["mouse"]][state["session"]]]
 
-    def _update_sessions(self, state) -> None:
-        options = list(self._session_rows[state["mouse"]])
-        selected = state["session"] if state["session"] in options else options[0]
-        self.update_selection("session", value=selected, options=options)
-        self._update_frame_bounds({**state, "session": selected})
-
-    def _update_frame_bounds(self, state) -> None:
+    def _get_target(self, state) -> np.ndarray:
+        """Get shared raster bounds without fitting every comparison model."""
         target, _ = get_model_predictions(
             self.model_names[0],
             self._session(state),
@@ -715,6 +714,16 @@ class ModelPredictionsFigureViewer(FigureViewer):
             state["spks_type"],
             activity_parameters_name=state["activity_parameters_name"],
         )
+        return target
+
+    def _update_sessions(self, state) -> None:
+        options = list(self._session_rows[state["mouse"]])
+        selected = state["session"] if state["session"] in options else options[0]
+        self.update_selection("session", value=selected, options=options)
+        self._update_frame_bounds({**state, "session": selected})
+
+    def _update_frame_bounds(self, state) -> None:
+        target = self._get_target(state)
         num_frames = target.shape[1]
         start = min(state["xslice_start"], max(num_frames - 1, 0))
         self.update_integer(
@@ -784,7 +793,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
         residual_kwargs = dict(aspect="auto", cmap="bwr", vmin=-vmax, vmax=vmax)
 
         top_data = [data_display, *(prediction_display[name] for name in self.model_names)]
-        top_titles = ["Target Data", *(_PREDICTION_FIGURE_TITLES[name] for name in self.model_names)]
+        top_titles = ["Target Data", *(model_style.COMPARISON_MODEL_LABELS[name] for name in self.model_names)]
         for axis, raster, title in zip(ax[0], top_data, top_titles):
             axis.imshow(raster[:, xslice][idx_sort], **raster_kwargs)
             _hide_raster_frame(axis, title, fontsize)
@@ -840,8 +849,8 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
 
     Shares data selection, display transforms, sorting, figure sizing, color inset,
     and joint scale-bar controls with :class:`ModelPredictionsFigureViewer`.
-    Global Gain and Peer Prediction are always included; ``include_structured_additive``
-    optionally adds the third model. ``include_external_pf`` adds ``external_placefield_1d``
+    Int. Pos. PF, Global Gain, and Peer Prediction are always included;
+    ``include_structured_additive`` appends Shared Residual. ``include_external_pf`` adds ``external_placefield_1d``
     immediately after Target Data. There are no residual panels or schematic controls.
 
     ``zoom_xslice`` uses absolute frame indices within ``xslice`` (both half-open).
@@ -853,6 +862,9 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
     ``x_ratio`` sets the overview/zoom column widths (default ``(1, 0.3)``).
     The Syd ``x_ratio`` slider controls zoom width relative to overview width,
     so its default value is 0.3; a scalar constructor value uses the same convention.
+    ``show_position`` adds overview and zoom position traces above the rasters,
+    using figure1's black/blue/green environment bands. ``position_height`` sets
+    their row height relative to a raster row (0.1 to 1.0, default 0.5).
     """
 
     def __init__(
@@ -869,6 +881,8 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
         zoom_xslice: slice | None = None,
         zoom_yslice: slice | None = None,
         x_ratio: tuple[float, float] | float = (1.0, 0.3),
+        show_position: bool = False,
+        position_height: float = 0.5,
         vmax: float = 6,
         scale_bar_seconds: float = 10.0,
         scale_bar_x: float = 0.05,
@@ -882,14 +896,25 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
         **selection_defaults,
     ):
         super().__init__(
-            results, registry, mouse=mouse, session=session, sort_method=sort_method,
-            zscore=zscore, subtract_median=subtract_median, xslice=xslice, vmax=vmax,
-            scale_bar_seconds=scale_bar_seconds, scale_bar_x=scale_bar_x,
-            scale_bar_y=scale_bar_y, scale_bar_num_rois=scale_bar_num_rois,
-            figsize=figsize, fontsize=fontsize,
+            results,
+            registry,
+            mouse=mouse,
+            session=session,
+            sort_method=sort_method,
+            zscore=zscore,
+            subtract_median=subtract_median,
+            xslice=xslice,
+            vmax=vmax,
+            scale_bar_seconds=scale_bar_seconds,
+            scale_bar_x=scale_bar_x,
+            scale_bar_y=scale_bar_y,
+            scale_bar_num_rois=scale_bar_num_rois,
+            figsize=figsize,
+            fontsize=fontsize,
             include_structured_additive=include_structured_additive,
             include_external_pf=include_external_pf,
-            colorscale_inset_rect=colorscale_inset_rect, **selection_defaults,
+            colorscale_inset_rect=colorscale_inset_rect,
+            **selection_defaults,
         )
         if np.isscalar(x_ratio):
             zoom_width = float(x_ratio)
@@ -901,7 +926,9 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
         if not np.isfinite(zoom_width) or zoom_width <= 0:
             raise ValueError("x_ratio must be finite and positive")
         self.add_float("x_ratio", value=zoom_width, min=min(0.01, zoom_width), max=max(5.0, zoom_width), step=0.01)
-        target, _ = self._get_data(self.state)
+        self.add_boolean("show_position", value=show_position)
+        self.add_float("position_height", value=position_height, min=0.1, max=1.0, step=0.01)
+        target = self._get_target(self.state)
         start, stop = self.state["xslice_start"], self.state["xslice_stop"]
         if zoom_xslice is None:
             width = stop - start
@@ -932,56 +959,129 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
         return xwindow, _bounded_raster_window(yslice, 0, num_rois)
 
     def _update_zoom_bounds(self, state) -> None:
-        target, _ = self._get_data(state)
+        target = self._get_target(state)
         (xstart, xstop), _ = self._zoom_windows(state, target.shape[0])
         start, stop = state["xslice_start"], max(state["xslice_start"] + 1, state["xslice_stop"])
         self.update_integer("zoom_xslice_start", value=xstart, min=start, max=stop - 1)
         self.update_integer("zoom_xslice_stop", value=xstop, min=start + 1, max=stop)
         ystart, ystop = _bounded_raster_window(
-            slice(state["zoom_yslice_start"], state["zoom_yslice_stop"]), 0, target.shape[0],
+            slice(state["zoom_yslice_start"], state["zoom_yslice_stop"]),
+            0,
+            target.shape[0],
         )
         self.update_integer("zoom_yslice_start", value=ystart, max=target.shape[0] - 1)
         self.update_integer("zoom_yslice_stop", value=ystop, max=target.shape[0])
+
+    def _draw_position_panels(self, axes, state, start, stop, xstart, xstop):
+        """Align behavior to the same held-out frame grid as the model rasters."""
+        session = self._session(state)
+        population, behavior = self.registry.get_population(session, state["spks_type"])
+        indices = np.asarray(population.get_split_times(self.registry.time_split["test"], within_idx_samples=False))
+        behavior = behavior.filter(indices)
+        position = np.asarray(behavior.position, dtype=float)
+        environment = np.asarray(behavior.environment)
+        environments = np.unique(environment[np.isfinite(environment) & (environment >= 0)])
+        track_length = float(session.env_length[0])
+        # Match figure1's 20% gap and break the trace at lap resets. Also break
+        # between held-out chunks so disconnected recording times are not joined.
+        breaks = np.flatnonzero((np.diff(position) < -track_length / 2) | (np.diff(indices) != 1)) + 1
+        x = np.insert(np.arange(len(position), dtype=float), breaks, np.nan)
+        for slot, env in enumerate(environments):
+            y = np.where(environment == env, position + slot * 1.2 * track_length, np.nan)
+            y = np.insert(y, breaks, np.nan)
+            for axis in axes:
+                axis.plot(x, y, color=ENV_SLOT_COLORS[slot % len(ENV_SLOT_COLORS)], linewidth=1)
+        for axis, bounds in zip(axes, ((start, stop), (xstart, xstop))):
+            _hide_raster_frame(axis, None, state["fontsize"])
+            axis.set_xlim(bounds[0] - 0.5, bounds[1] - 0.5)
+            axis.set_ylim(max(1, len(environments)) * 1.2 * track_length - 0.2 * track_length, 0)
+        axes[0].set_ylabel("Pos.", fontsize=state["fontsize"])
 
     def plot(self, state):
         target, predictions = self._get_data(state)
         idx_sort = self._get_sort(state, target)
         start, stop = _bounded_raster_window(slice(state["xslice_start"], state["xslice_stop"]), 0, target.shape[1])
         (xstart, xstop), (ystart, ystop) = self._zoom_windows(
-            {**state, "xslice_start": start, "xslice_stop": stop}, target.shape[0],
+            {**state, "xslice_start": start, "xslice_stop": stop},
+            target.shape[0],
         )
+        raster_rows = 1 + len(self.model_names)
+        show_position = state["show_position"]
         fig, axes = self.new_subplots(
-            1 + len(self.model_names), 2, width_ratios=[1, state["x_ratio"]],
-            figsize=(state["figsize_width"], state["figsize_height"]), layout="constrained",
+            raster_rows + int(show_position),
+            2,
+            width_ratios=[1, state["x_ratio"]],
+            height_ratios=([state["position_height"]] if show_position else []) + [1] * raster_rows,
+            figsize=(state["figsize_width"], state["figsize_height"]),
+            layout="constrained",
         )
+        if show_position:
+            self._draw_position_panels(axes[0], state, start, stop, xstart, xstop)
+            axes = axes[1:]
         names = ["data", *self.model_names]
-        titles = ["Target Data", *(_PREDICTION_FIGURE_TITLES[name] for name in self.model_names)]
+        titles = ["Target Data", *(model_style.COMPARISON_MODEL_LABELS[name] for name in self.model_names)]
         for row, (name, title) in enumerate(zip(names, titles)):
             raw = target if name == "data" else predictions[name]
             raster = self._display(name, raw, state)[idx_sort, start:stop]
-            for column in range(2):
+            # Crop before imshow: axis limits alone still copy and process the entire
+            # overview array for each zoom, even when only a tiny window is visible.
+            zoom = raster[ystart:ystop, xstart - start : xstop - start]
+            extents = (
+                (start - 0.5, stop - 0.5, target.shape[0] - 0.5, -0.5),
+                (xstart - 0.5, xstop - 0.5, ystop - 0.5, ystart - 0.5),
+            )
+            for column, (image, extent) in enumerate(zip((raster, zoom), extents)):
                 axis = axes[row, column]
                 axis.imshow(
-                    raster, aspect="auto", cmap="gray_r", vmin=0, vmax=state["vmax"],
-                    extent=(start - 0.5, stop - 0.5, target.shape[0] - 0.5, -0.5),
+                    image,
+                    aspect="auto",
+                    cmap="gray_r",
+                    vmin=0,
+                    vmax=state["vmax"],
+                    extent=extent,
                 )
-                _hide_raster_frame(axis, title if column == 0 else None, state["fontsize"])
-            axes[row, 0].add_patch(Rectangle(
-                (xstart - 0.5, ystart - 0.5), xstop - xstart, ystop - ystart,
-                fill=False, edgecolor="black", linewidth=1, clip_on=False,
-            ))
+                _hide_raster_frame(
+                    axis, title if column == 0 else None, state["fontsize"],
+                    title_color="black" if name == "data" else model_style.COMPARISON_MODEL_COLORS[name],
+                    title_fontweight="normal" if name == "data" else "bold",
+                )
+            axes[row, 0].add_patch(
+                Rectangle(
+                    (xstart - 0.5, ystart - 0.5),
+                    xstop - xstart,
+                    ystop - ystart,
+                    fill=False,
+                    edgecolor="black",
+                    linewidth=1,
+                    clip_on=False,
+                )
+            )
             axes[row, 1].set_xlim(xstart - 0.5, xstop - 0.5)
             axes[row, 1].set_ylim(ystop - 0.5, ystart - 0.5)
+            for spine in axes[row, 1].spines.values():
+                spine.set_visible(True)
+                spine.set_edgecolor("black")
+                spine.set_linewidth(0.25)
         _draw_colorscale_inset(
-            axes[1, 0], "gray_r", left_label=None, right_label=rf"${state['vmax']:g}\,\sigma$",
-            left_color="black", right_color="white", fontsize=state["fontsize"],
+            axes[1, 0],
+            "gray_r",
+            left_label=None,
+            right_label=rf"${state['vmax']:g}\,\sigma$",
+            left_color="black",
+            right_color="white",
+            fontsize=state["fontsize"],
             rect=_colorscale_inset_rect(state),
         )
         times = self._session(state).loadone("mpci.times")
         _draw_joint_scale_bar(
-            axes[0, 0], seconds=state["scale_bar_seconds"], num_rois=state["scale_bar_num_rois"],
-            frame_duration=float(np.median(np.diff(times))), num_shown_frames=stop - start,
-            total_rois=target.shape[0], x=state["scale_bar_x"], y=state["scale_bar_y"],
+            axes[0, 0],
+            seconds=state["scale_bar_seconds"],
+            num_rois=state["scale_bar_num_rois"],
+            frame_duration=float(np.median(np.diff(times))),
+            num_shown_frames=stop - start,
+            total_rois=target.shape[0],
+            x=state["scale_bar_x"],
+            y=state["scale_bar_y"],
             fontsize=state["fontsize"],
         )
         return fig
