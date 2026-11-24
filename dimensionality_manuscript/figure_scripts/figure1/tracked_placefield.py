@@ -1,4 +1,4 @@
-"""Find tracked examples of changes in spatial and amplitude reliability."""
+"""Compare placefield panels for the same tracked neuron across sessions."""
 
 from collections.abc import Mapping
 
@@ -7,65 +7,49 @@ import pandas as pd
 
 from vrAnalysis.tracking import Tracker
 
+from dimensionality_manuscript.configs.pfpred_quality import TRIAL_ACTIVITY_METRICS, TRIAL_ACTIVITY_STATISTICS
 from dimensionality_manuscript.env_order import _session_sort_key
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer, add_data_selection_widgets, data_selection
 
-from .placefield import PF_RMS_COMPARISONS, PlaceFieldPredictionFocus, _transform_amplitude
+from .placefield import PF_RMS_COMPARISONS, PlaceFieldPredictionFocus, _AMPLITUDE_TRANSFORMS, _transform_amplitude
+from .placefield_breakdown import PlacefieldBreakdownFocus, _add_breakdown_widgets
 
 
-class TrackedPlaceFieldPredictionFocus(FigureViewer):
-    """Two stacked PlaceFieldPredictionFocus panels for the same tracked neuron.
-
-    Pass the same schema-v11 ``pfpred_quality`` ResultsAggregator as the single-session
-    viewer. ``msm`` optionally supplies a MultiSessionSpkmaps instance or a mapping
-    of mouse names to instances; otherwise Trackers are loaded lazily per mouse.
-    Tracking is matched to result sessions by identity, never by list position.
-
-    ``environment`` is the actual environment ID (not its slot/index). Session
-    selectors offer only tracked sessions in that environment. Either session order
-    is accepted: the panels and late-minus-early changes always use chronological
-    order. Session and quality filters must pass in BOTH sessions. Quality uses
-    strict > cutoffs, matching HolisticPlacefieldFamiliarityViewer.
-
-    Amplitude reliability is always 1 / (1 + trial_rms_cv**2). The default ordering
-    is the largest late-minus-early change first. ``candidate`` is a zero-based rank
-    in this ordering; ``candidate_table()`` returns the full sorted list, including
-    tracking cluster IDs, original and filtered ROI indices, and both sessions'
-    measurements. Missing measurements are excluded. Threshold/order changes reset
-    the rank to zero. No-match selections produce an explanatory empty figure.
-
-    Example::
-
-        viewer = TrackedPlaceFieldPredictionFocus(
-            quality_results, msm=msm, environment=1,
-            early_session="ATL027/2022-01-01/1",
-            late_session="ATL027/2022-01-10/1",
-            reliability_threshold=0.3, fraction_active_threshold=0.1,
-        )
-        viewer.show()
-        candidates = viewer.candidate_table()
-        fig = viewer.plot(viewer.state)
-
-    As with PlaceFieldPredictionFocus, spike maps must be available locally and
-    must use the ROI filters with which the quality results were computed.
-    ``show_correlation=True`` displays PF-Var Alignment above both position curves,
-    with an underlined label and the value on the next line.
-    """
+class _TrackedPlacefieldFocus(FigureViewer):
+    """Shared session matching, candidate ranking, and two-session layout."""
 
     _SORT_METRICS = (
-        "amplitude_change", "spatial_change", "amplitude_reliability_early",
-        "amplitude_reliability_late", "spatial_reliability_early",
-        "spatial_reliability_late", "cluster_id",
+        "amplitude_change",
+        "spatial_change",
+        "amplitude_reliability_early",
+        "amplitude_reliability_late",
+        "spatial_reliability_early",
+        "spatial_reliability_late",
+        "cluster_id",
     )
 
     def __init__(
-        self, results, *, msm=None, mouse=None, environment=None,
-        early_session=None, late_session=None, reliability_threshold=0.3,
-        fraction_active_threshold=0.1, sort_by="amplitude_change", descending=True,
-        candidate=0, vmax=5.0, pf_rms_comparison="f2_from_f1", show_correlation=False,
-        fontsize=10.0, show_consistency=True, show_prediction=False,
-        include_amplitude_summary=True, nbins=10, row_ratio=2.0,
-        use_trial_weights=True, figsize=(10.0, 10.0), **selection_defaults,
+        self,
+        results,
+        *,
+        msm=None,
+        mouse=None,
+        environment=None,
+        early_session=None,
+        late_session=None,
+        reliability_threshold=0.3,
+        fraction_active_threshold=0.1,
+        sort_by="amplitude_change",
+        descending=True,
+        candidate=None,
+        vmax=5.0,
+        fontsize=10.0,
+        amplitude_metric="trial_gain_least_squares",
+        amplitude_statistic="cv",
+        amplitude_transform="bounded",
+        use_trial_weights=True,
+        figsize=(10.0, 10.0),
+        **selection_defaults,
     ):
         self.results = results
         self.figsize = figsize
@@ -88,11 +72,13 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
 
         # Keep quality cutoffs independent of the stored result configuration.
         self.selection_names = add_data_selection_widgets(
-            self, results, skip=("reliability_threshold", "fraction_active_threshold"), defaults=selection_defaults,
+            self,
+            results,
+            skip=("reliability_threshold", "fraction_active_threshold"),
+            defaults=selection_defaults,
         )
         self._stored_thresholds = {
-            name: getattr(results.config_class, name, values[0])
-            if getattr(results.config_class, name, None) in values else values[0]
+            name: getattr(results.config_class, name, values[0]) if getattr(results.config_class, name, None) in values else values[0]
             for name, values in results.param_axes.items()
             if name in ("reliability_threshold", "fraction_active_threshold")
         }
@@ -109,25 +95,33 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
         self.add_float("fraction_active_threshold", value=fraction_active_threshold, min=0.0, max=1.0, step=0.01)
         self.add_selection("sort_by", value=sort_by, options=list(self._SORT_METRICS))
         self.add_boolean("descending", value=descending)
-        self.add_integer("candidate", value=candidate, min=0, max=max(candidate, 0))
+        self.add_selection("candidate", value="No matching ROIs", options=["No matching ROIs"])
         self.add_float("vmax", value=vmax, min=1.0, max=20.0)
-        self.add_selection("pf_rms_comparison", value=pf_rms_comparison, options=list(PF_RMS_COMPARISONS))
-        self.add_boolean("show_correlation", value=show_correlation)
         self.add_float("fontsize", value=fontsize, min=4.0, max=30.0)
-        self.add_boolean("show_consistency", value=show_consistency)
-        self.add_boolean("show_prediction", value=show_prediction)
-        self.add_boolean("include_amplitude_summary", value=include_amplitude_summary)
-        self.add_integer("nbins", value=nbins, min=1, max=100)
-        self.add_float("row_ratio", value=row_ratio, min=0.25, max=10.0)
+        self.add_selection("amplitude_metric", value=amplitude_metric, options=list(TRIAL_ACTIVITY_METRICS))
+        self.add_selection("amplitude_statistic", value=amplitude_statistic, options=list(TRIAL_ACTIVITY_STATISTICS))
+        self.add_selection("amplitude_transform", value=amplitude_transform, options=list(_AMPLITUDE_TRANSFORMS))
         self.add_boolean("use_trial_weights", value=use_trial_weights)
         self.on_change("mouse", self.update_mouse)
         self.on_change("environment", self.update_environment)
         self.on_change(
-            ["early_session", "late_session", "reliability_threshold", "fraction_active_threshold",
-             "sort_by", "descending", *self.selection_names], self.refresh_candidates,
+            [
+                "early_session",
+                "late_session",
+                "reliability_threshold",
+                "fraction_active_threshold",
+                "sort_by",
+                "descending",
+                "amplitude_metric",
+                "amplitude_statistic",
+                "amplitude_transform",
+                *self.selection_names,
+            ],
+            self.refresh_candidates,
         )
         table = self.candidate_table()
-        self.update_integer("candidate", value=min(candidate, max(len(table) - 1, 0)), max=max(len(table) - 1, 0))
+        options = self._candidate_options(table)
+        self.update_selection("candidate", value=candidate if candidate in options else options[0], options=options)
 
     def _tracker(self, mouse):
         if mouse not in self._trackers:
@@ -166,9 +160,16 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
         self.update_selection("late_session", value=late, options=labels)
         self.refresh_candidates({**state, "early_session": early, "late_session": late})
 
+    @staticmethod
+    def _candidate_options(table):
+        """Identify each tracked pair by its filtered early/late ROI numbers."""
+        return [f"ROI {int(row.roi_early)} → ROI {int(row.roi_late)}" for row in table.itertuples()] or ["No matching ROIs"]
+
     def refresh_candidates(self, state):
         table = self.candidate_table(state)
-        self.update_integer("candidate", value=0, max=max(len(table) - 1, 0))
+        options = self._candidate_options(table)
+        candidate = state["candidate"]
+        self.update_selection("candidate", value=candidate if candidate in options else options[0], options=options)
 
     def _config(self, state):
         params = data_selection(state, self.results, self.selection_names)
@@ -190,7 +191,8 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
         tracker = self._tracker(state["mouse"])
         indices = {s.session_uid: i for i, s in enumerate(tracker.sessions)}
         tracked, extras = tracker.get_tracked_idx(
-            idx_ses=[indices[s.session_uid] for s in sessions], use_session_filters=False,
+            idx_ses=[indices[s.session_uid] for s in sessions],
+            use_session_filters=False,
         )
         table = {"cluster_id": extras["cluster_ids"]}
         selected_results = []
@@ -209,7 +211,7 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
             selected = self.results.store.get(session.session_uid, config)
             if selected is None:
                 raise KeyError(f"No pfpred_quality result for {session.session_print()} -- rerun the schema v11 sweep.")
-            keys = ("env_slot_ids", "reliability_slot", "fraction_active_slot", "trial_rms_cv")
+            keys = ("env_slot_ids", "reliability_slot", "fraction_active_slot")
             missing = [name for name in keys if name not in selected]
             if missing:
                 raise KeyError(f"Missing {missing} for {session.session_print()} -- schema v11 results required.")
@@ -238,8 +240,15 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
             roi = table[f"roi_{suffix}"].to_numpy(dtype=int)
             for column, name in (("spatial_reliability", "reliability_slot"), ("fraction_active", "fraction_active_slot")):
                 table[f"{column}_{suffix}"] = np.asarray(selected[name])[slot, roi]
+            amplitude_key = f"{state['amplitude_metric']}_{state['amplitude_statistic']}"
+            if amplitude_key not in selected:
+                raise KeyError(f"Missing {amplitude_key} -- schema v11 results required.")
+            values = np.asarray(selected[amplitude_key])
+            if values.shape != np.asarray(selected["reliability_slot"]).shape:
+                raise ValueError("ROI filters for the amplitude summary differ from the saved quality results.")
             table[f"amplitude_reliability_{suffix}"] = _transform_amplitude(
-                np.asarray(selected["trial_rms_cv"])[slot, roi], "bounded",
+                values[slot, roi],
+                state["amplitude_transform"],
             )
         valid = np.ones(len(table), dtype=bool)
         for suffix in ("early", "late"):
@@ -258,13 +267,15 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
         if table.empty:
             ax = fig.add_subplot()
             ax.set_axis_off()
-            reason = "Choose two different sessions." if state["early_session"] == state["late_session"] else (
-                "No tracked neurons pass both quality thresholds in both sessions.\nTry lowering the thresholds or choosing another pair."
+            reason = (
+                "Choose two different sessions."
+                if state["early_session"] == state["late_session"]
+                else ("No tracked neurons pass both quality thresholds in both sessions.\nTry lowering the thresholds or choosing another pair.")
             )
             ax.text(0.5, 0.5, reason, ha="center", va="center", transform=ax.transAxes, fontsize=state["fontsize"])
             return fig
-        rank = min(state["candidate"], len(table) - 1)
-        selected = table.iloc[rank]
+        options = self._candidate_options(table)
+        selected = table.iloc[options.index(state["candidate"]) if state["candidate"] in options else 0]
         config = self._config(state)
         outer = fig.add_gridspec(2, 1)
         for row, (session, suffix) in enumerate(zip(self._ordered_pair(state), ("early", "late"))):
@@ -275,16 +286,19 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
             if cached is None or cached[0] != panel_key:
                 params = data_selection(state, self.results, self.selection_names)
                 params.update(self._stored_thresholds)
-                panel = PlaceFieldPredictionFocus(
-                    self.results, mouse=state["mouse"], example_session=session.session_print(), roi=roi, **params,
+                panel = self._panel_class(
+                    self.results,
+                    mouse=state["mouse"],
+                    example_session=session.session_print(),
+                    roi=roi,
+                    **params,
                 )
                 self._focus_panels[suffix] = (panel_key, panel)
             else:
                 panel = cached[1]
             env_maps = panel._get_env_maps(panel.state)
             env = int(np.flatnonzero(np.asarray(env_maps.environments) == state["environment"])[0])
-            panel_state = {**panel.state, **state, "roi": roi, "env": env, "example_session": session.session_print(),
-                           "amplitude_metric": "trial_rms", "amplitude_transform": "bounded", **self._stored_thresholds}
+            panel_state = {**panel.state, **state, "roi": roi, "env": env, "example_session": session.session_print(), **self._stored_thresholds}
             panel.refresh_data(panel_state)
             first_axis = len(fig.axes)
             panel.draw(panel_state, fig, outer[row])
@@ -294,3 +308,188 @@ class TrackedPlaceFieldPredictionFocus(FigureViewer):
                 elif ax.get_subplotspec().rowspan.start == 0:
                     ax.set_title("")
         return fig
+
+
+class TrackedPlaceFieldPredictionFocus(_TrackedPlacefieldFocus):
+    """Two stacked PlaceFieldPredictionFocus panels for the same tracked neuron.
+
+    Pass the same schema-v11 ``pfpred_quality`` ResultsAggregator as the single-session
+    viewer. ``msm`` optionally supplies a MultiSessionSpkmaps instance or a mapping
+    of mouse names to instances; otherwise Trackers are loaded lazily per mouse.
+    Tracking is matched to result sessions by identity, never by list position.
+
+    ``environment`` is the actual environment ID (not its slot/index). Session
+    selectors offer only tracked sessions in that environment. Either session order
+    is accepted: the panels and late-minus-early changes always use chronological
+    order. Session and quality filters must pass in BOTH sessions. Quality uses
+    strict > cutoffs, matching HolisticPlacefieldFamiliarityViewer.
+
+    ``amplitude_metric``, ``amplitude_statistic``, and ``amplitude_transform`` control
+    both candidate ranking and plotted summaries. Defaults are least-squares trial
+    gain, CV, and the bounded transform: 1 / (1 + CV**2). The default ordering
+    is the largest late-minus-early change first. ``candidate`` selects a label
+    ``ROI early → ROI late`` using session-filtered ROI indices, in preference order; ``candidate_table()`` returns the full sorted list, including
+    tracking cluster IDs, original and filtered ROI indices, and both sessions'
+    measurements. Missing measurements are excluded. The selected pair is kept when
+    it remains eligible after a filter or sort change. If it drops out, the first
+    eligible pair is selected. No-match selections produce an explanatory empty figure.
+
+    Example::
+
+        viewer = TrackedPlaceFieldPredictionFocus(
+            quality_results, msm=msm, environment=1,
+            early_session="ATL027/2022-01-01/1",
+            late_session="ATL027/2022-01-10/1",
+            reliability_threshold=0.3, fraction_active_threshold=0.1,
+        )
+        viewer.show()
+        candidates = viewer.candidate_table()
+        fig = viewer.plot(viewer.state)
+
+    As with PlaceFieldPredictionFocus, spike maps must be available locally and
+    must use the ROI filters with which the quality results were computed.
+    ``show_correlation=True`` displays r(M,S) inside both position panels.
+    ``colorbar_x/y/width/height`` set inset bounds in axes coordinates, and
+    ``bottom_text_location`` selects "upper left" or "upper right" for lower-panel text.
+    """
+
+    _panel_class = PlaceFieldPredictionFocus
+
+    def __init__(
+        self,
+        results,
+        *,
+        msm=None,
+        mouse=None,
+        environment=None,
+        early_session=None,
+        late_session=None,
+        reliability_threshold=0.3,
+        fraction_active_threshold=0.1,
+        sort_by="amplitude_change",
+        descending=True,
+        candidate=None,
+        vmax=5.0,
+        pf_rms_comparison="f2_from_f1",
+        show_correlation=False,
+        fontsize=10.0,
+        show_consistency=True,
+        show_prediction=False,
+        include_amplitude_summary=True,
+        amplitude_metric="trial_gain_least_squares",
+        amplitude_statistic="cv",
+        amplitude_transform="bounded",
+        nbins=10,
+        row_ratio=2.0,
+        colorbar_x=0.225,
+        colorbar_y=0.15,
+        colorbar_width=0.125,
+        colorbar_height=0.7,
+        bottom_text_location="upper left",
+        use_trial_weights=True,
+        figsize=(10.0, 10.0),
+        **selection_defaults,
+    ):
+        super().__init__(
+            results,
+            msm=msm,
+            mouse=mouse,
+            environment=environment,
+            early_session=early_session,
+            late_session=late_session,
+            reliability_threshold=reliability_threshold,
+            fraction_active_threshold=fraction_active_threshold,
+            sort_by=sort_by,
+            descending=descending,
+            candidate=candidate,
+            vmax=vmax,
+            fontsize=fontsize,
+            amplitude_metric=amplitude_metric,
+            amplitude_statistic=amplitude_statistic,
+            amplitude_transform=amplitude_transform,
+            use_trial_weights=use_trial_weights,
+            figsize=figsize,
+            **selection_defaults,
+        )
+        self.add_selection("pf_rms_comparison", value=pf_rms_comparison, options=list(PF_RMS_COMPARISONS))
+        self.add_boolean("show_correlation", value=show_correlation)
+        self.add_boolean("show_consistency", value=show_consistency)
+        self.add_boolean("show_prediction", value=show_prediction)
+        self.add_boolean("include_amplitude_summary", value=include_amplitude_summary)
+        self.add_integer("nbins", value=nbins, min=1, max=100)
+        self.add_float("row_ratio", value=row_ratio, min=0.25, max=10.0)
+        PlaceFieldPredictionFocus._add_layout_controls(
+            self,
+            colorbar_x,
+            colorbar_y,
+            colorbar_width,
+            colorbar_height,
+            bottom_text_location,
+        )
+
+
+class TrackedPlacefieldBreakdownFocus(_TrackedPlacefieldFocus):
+    """Stack two PlacefieldBreakdownFocus rows for the same tracked neuron.
+
+    Tracking, quality cutoffs, and candidate ranking follow
+    :class:`TrackedPlaceFieldPredictionFocus`: pass the same quality results and
+    select an environment ID and two sessions. The earlier session appears on
+    top. The amplitude controls rank the candidates; each row still displays
+    the all-trial least-squares gain used in its prediction.
+
+    The map and summary controls follow :class:`PlacefieldBreakdownFocus`.
+    Each session shows activity, gain × place field, and the signed residual.
+    The spatial similarity, trial gain, and residual summaries are optional.
+
+    Example::
+
+        viewer = TrackedPlacefieldBreakdownFocus(
+            quality_results, msm=msm, environment=1,
+            include_trial_gain=True, include_residual_rms=True,
+            residual_metric="unexplained_fraction",
+        )
+        viewer.show()
+    """
+
+    _panel_class = PlacefieldBreakdownFocus
+
+    def __init__(
+        self,
+        results,
+        *,
+        fontsize=12.0,
+        figsize=(12.0, 8.0),
+        include_spatial_reliability=False,
+        include_trial_gain=False,
+        include_residual_rms=False,
+        residual_metric="rms",
+        summary_width=0.5,
+        markersize=1.75,
+        colorbar_x=0.82,
+        colorbar_y=0.12,
+        colorbar_width=0.045,
+        colorbar_height=0.32,
+        legend_x=0.02,
+        legend_y=0.98,
+        legend_ha="left",
+        legend_va="top",
+        **tracking_defaults,
+    ):
+        super().__init__(results, fontsize=fontsize, figsize=figsize, **tracking_defaults)
+        _add_breakdown_widgets(
+            self,
+            include_spatial_reliability=include_spatial_reliability,
+            include_trial_gain=include_trial_gain,
+            include_residual_rms=include_residual_rms,
+            residual_metric=residual_metric,
+            summary_width=summary_width,
+            markersize=markersize,
+            colorbar_x=colorbar_x,
+            colorbar_y=colorbar_y,
+            colorbar_width=colorbar_width,
+            colorbar_height=colorbar_height,
+            legend_x=legend_x,
+            legend_y=legend_y,
+            legend_ha=legend_ha,
+            legend_va=legend_va,
+        )

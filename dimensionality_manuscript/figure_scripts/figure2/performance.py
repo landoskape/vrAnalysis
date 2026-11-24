@@ -66,7 +66,7 @@ class ModelPerformanceViewer(FigureViewer):
         Prepend external PF as "Placefield"; internal PF is "Int. Pos. PF".
         External PF becomes the reference when included; otherwise internal PF is used.
     include_structured_additive : bool
-        Append Shared Residual after Peer Prediction.
+        Insert Shared Residual before Peer Prediction.
     fontsize : float
         Font size for the main axis's tick labels and y label.
     xtick_rotation : float
@@ -146,7 +146,7 @@ class ModelPerformanceViewer(FigureViewer):
                 internal_index = self.model_names.index("internal_placefield_1d")
                 self.model_labels[internal_index] = "Int.Pos.\nPF"
         if include_structured_additive:
-            insert_at = len(self.model_names) if self.use_comparison_order else len(self.model_names) - 1
+            insert_at = self.model_names.index("rrr")
             self.model_names.insert(insert_at, self.structured_additive_model_name)
             self.model_labels.insert(insert_at, self.structured_additive_model_label)
             self.model_colors.insert(insert_at, self.structured_additive_model_color)

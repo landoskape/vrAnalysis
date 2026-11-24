@@ -26,7 +26,13 @@ from .behavior_decoding import SpeedEnvironmentDecoding
 from .crossval import CrossValidatedPlacefieldFocus, CrossValidatedPlacefields
 from .familiarity import R2Familiarity, ReliabilityPredictionSummary
 from .holistic_placefield_familiarity import HolisticPlacefieldFamiliarityViewer
+from .placefield_breakdown_familiarity import PlacefieldBreakdownFamiliarityViewer
+from .placefield_breakdown import PlacefieldBreakdownFocus
+from .placefield_breakdown_scatter import PlacefieldBreakdownGammaScatter, PlacefieldBreakdownScatter
+from .placefield_regional import PlacefieldRegionalFamiliarityViewer, PlacefieldRegionalScatter
 from .pf_amplitude import PlacefieldPeakAmplitude
+from .pf_variance import PlacefieldVarianceFocus, PlacefieldVarianceSummary, PlacefieldVarianceFamiliarity
+from .pf_variance import PlacefieldVarianceTrialFocus, PlacefieldVarianceDistributions
 from .placefield import (
     PlaceFieldFocus,
     PlaceFieldPopulationDistributions,
@@ -47,7 +53,7 @@ from .schematic import (
 )
 from .speed import MouseSpeedFocus, env_speed_mixedlm, format_speed_stats
 from .timeline import ExperimentTimeline
-from .tracked_placefield import TrackedPlaceFieldPredictionFocus
+from .tracked_placefield import TrackedPlaceFieldPredictionFocus, TrackedPlacefieldBreakdownFocus
 from .traversal import TraversalFocus
 
 __all__ = [
@@ -56,6 +62,12 @@ __all__ = [
     "DataOverviewViewer",
     "ExperimentTimeline",
     "HolisticPlacefieldFamiliarityViewer",
+    "PlacefieldBreakdownFamiliarityViewer",
+    "PlacefieldBreakdownFocus",
+    "PlacefieldBreakdownScatter",
+    "PlacefieldBreakdownGammaScatter",
+    "PlacefieldRegionalFamiliarityViewer",
+    "PlacefieldRegionalScatter",
     "MouseSpeedFocus",
     "PlaceFieldFocus",
     "PlaceFieldPopulationDistributions",
@@ -63,6 +75,11 @@ __all__ = [
     "PlaceFieldReliabilityRelationships",
     "SpatialAmplitudeReliability",
     "PlacefieldPeakAmplitude",
+    "PlacefieldVarianceFocus",
+    "PlacefieldVarianceTrialFocus",
+    "PlacefieldVarianceDistributions",
+    "PlacefieldVarianceSummary",
+    "PlacefieldVarianceFamiliarity",
     "R2Familiarity",
     "R2PlacefieldFocus",
     "ReliabilityHistogramViewer",
@@ -74,6 +91,7 @@ __all__ = [
     "PlacefieldActivityFocus",
     "TraversalFocus",
     "TrackedPlaceFieldPredictionFocus",
+    "TrackedPlacefieldBreakdownFocus",
     "VREnvironmentSchematic",
     "VR_REWARD_ZONE_WIDTH_CM",
     "VR_SCHEMATIC_ENVS",

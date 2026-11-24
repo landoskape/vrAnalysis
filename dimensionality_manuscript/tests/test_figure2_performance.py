@@ -37,8 +37,8 @@ def test_performance_placefield_reference(include_external, include_structured, 
         expected_names.insert(0, "external_placefield_1d")
         expected_labels.insert(0, "Placefield")
     if include_structured:
-        expected_names.append("internal_placefield_1d_structured_additive")
-        expected_labels.append("Shared\nResidual")
+        expected_names.insert(-1, "internal_placefield_1d_structured_additive")
+        expected_labels.insert(-1, "Shared\nResidual")
     assert viewer.model_names == expected_names
     assert viewer.model_labels == expected_labels
     assert "reference_model" not in viewer.parameters

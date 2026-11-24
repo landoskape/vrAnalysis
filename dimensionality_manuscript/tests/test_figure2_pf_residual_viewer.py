@@ -514,9 +514,9 @@ def test_pf_residual_summary_optional_external_placefield(viewer_class, include_
     expected_labels = ["Internal\nPosition\nPlacefield", "Global\nGain", "Peer\nPrediction"]
     expected_colors = ["#000000", "#c00000", "#0000cd"]
     if include_structured:
-        expected_models.append("internal_placefield_1d_structured_additive")
-        expected_labels.append("Shared\nResidual")
-        expected_colors.append("#c06000")
+        expected_models.insert(-1, "internal_placefield_1d_structured_additive")
+        expected_labels.insert(-1, "Shared\nResidual")
+        expected_colors.insert(-1, "#c06000")
     if include_external:
         expected_models.insert(0, "external_placefield_1d")
         expected_labels.insert(0, "Placefield")
@@ -552,7 +552,7 @@ def test_pf_residual_external_placefield_already_supplied_is_not_duplicated():
         include_external_placefield=True,
     )
     assert names == [
-        "external_placefield_1d", "internal_placefield_1d", "rrr", "internal_placefield_1d_structured_additive",
+        "external_placefield_1d", "internal_placefield_1d", "internal_placefield_1d_structured_additive", "rrr",
     ]
     assert labels[:2] == ["Placefield", "Internal\nPosition\nPlacefield"]
     assert colors[:2] == ["#666666", "#000000"]

@@ -1,0 +1,9 @@
+{
+  "session_key": "ATL020_2023-04-04_701",
+  "role": "sham_control",
+  "cut": 63,
+  "reference": "ATL020_2023-04-11_701",
+  "n_rois": 5830,
+  "n_trials": 135,
+  "position_bins": 194
+}

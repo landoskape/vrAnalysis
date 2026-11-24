@@ -20,7 +20,10 @@ if package_name not in sys.modules:
 
 from dimensionality_manuscript.configs.pfpred_quality import PFPredQualityConfig, _placefield_rms_maps
 from dimensionality_manuscript.figure_scripts.figure1 import placefield, tracked_placefield
-from dimensionality_manuscript.figure_scripts.figure1.tracked_placefield import TrackedPlaceFieldPredictionFocus
+from dimensionality_manuscript.figure_scripts.figure1.tracked_placefield import (
+    TrackedPlaceFieldPredictionFocus,
+    TrackedPlacefieldBreakdownFocus,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +84,7 @@ def example(monkeypatch):
         else:
             values["trial_rms_cv"][slot] = [1, 2, 0, 1, 1, 1]
             values["fraction_active_slot"][slot, 0] = 0.1
+        values["trial_gain_least_squares_cv"] = values["trial_rms_cv"].copy()
         stored[s.session_uid] = values
     loads = []
 
@@ -105,7 +109,8 @@ def test_identity_mapping_and_both_session_quality(example):
     np.testing.assert_array_equal(table.roi_early, [1, 0, 5])
     np.testing.assert_array_equal(table.roi_late, [2, 1, 5])
     np.testing.assert_allclose(table.amplitude_change, [0.8, -0.3, -0.5])
-    assert example.viewer.parameters["candidate"].max == 2
+    assert example.viewer.parameters["candidate"].options == ["ROI 1 → ROI 2", "ROI 0 → ROI 1", "ROI 5 → ROI 5"]
+    assert example.viewer.state["candidate"] == "ROI 1 → ROI 2"
     assert example.early.params.spks_type == example.late.params.spks_type == "oasis"
 
 
@@ -122,10 +127,10 @@ def test_sorting_thresholds_and_rank_bounds(example):
     np.testing.assert_array_equal(viewer.candidate_table({**viewer.state, "descending": False}).cluster_id, [60, 20, 10])
     # Spatial-reliability sorting has deterministic ties.
     np.testing.assert_array_equal(viewer.candidate_table({**viewer.state, "sort_by": "spatial_change"}).cluster_id, [10, 20, 60])
-    viewer.set_parameter_value("candidate", 2)
+    viewer.set_parameter_value("candidate", "ROI 5 → ROI 5")
     viewer.set_parameter_value("fraction_active_threshold", 0.5)
-    assert viewer.state["candidate"] == 0
-    assert viewer.parameters["candidate"].max == 0
+    assert viewer.state["candidate"] == "No matching ROIs"
+    assert viewer.parameters["candidate"].options == ["No matching ROIs"]
     assert len(example.calls) == 1
     assert len(example.loads) == 2
 
@@ -153,8 +158,8 @@ def test_stack_uses_same_cluster_correct_environment_and_bounded_summaries(examp
     np.testing.assert_allclose(images[1], example.maps[example.late.session_uid].spkmap[0][2])
     titles = [ax.get_title() for ax in fig.axes]
     summaries = [artist.get_label() for ax in fig.axes for artist in ax.artists]
-    assert "AmpRel\n=0.20" in summaries
-    assert "AmpRel\n=1.00" in summaries
+    assert "GR=0.20" in summaries
+    assert "GR=1.00" in summaries
     overlays = [ax for ax in fig.axes if ax.get_ylabel() == "N.Fluor"]
     assert len(overlays) == 2
     for overlay, suffix in zip(overlays, ("early", "late")):
@@ -162,27 +167,24 @@ def test_stack_uses_same_cluster_correct_environment_and_bounded_summaries(examp
             panel = viewer._focus_panels[suffix][1]
             r = panel.session_pf_rms[f"pf_rms_r_{viewer.state['pf_rms_comparison']}"][panel.state["roi"]]
             title, = overlay.artists
-            assert title.get_label() == f"PF-Var Alignment\n={r:.2f}"
-            label, value = title.offsetbox.get_children()
-            assert isinstance(label, placefield._UnderlinedTextArea)
+            assert title.get_label() == f"Mean\nSTD\nr(M,S)={r:.2f}"
             renderer = fig.canvas.get_renderer()
-            assert value.get_window_extent(renderer).y1 < label.get_window_extent(renderer).y0
-            assert title.get_window_extent(renderer).y0 > overlay.bbox.y1
+            box = title.get_window_extent(renderer)
+            assert box.y1 <= overlay.bbox.y1
+            assert box.y0 >= overlay.bbox.y0
         else:
-            assert not overlay.artists
-    for title in ("Placefield\nStructure", "Spatial\nReliability", "Amplitude\nReliability"):
-        assert titles.count(title) == 1
-        assert title not in titles[6:]
+            assert overlay.artists[0].get_label() == "Mean\nSTD"
+    assert all(title == "" for title in titles)
     assert fig._suptitle is None
     assert not any(text.get_text().startswith(("Early:", "Late:")) for ax in fig.axes for text in ax.texts)
     assert len(fig.axes) == 12
     assert all(not ax.get_xlabel() for ax in fig.axes[:6])
     assert [ax.get_xlabel() for ax in fig.axes[6:] if ax.get_xlabel()] == [
-        "Position (cm)", "Trial\nSimilarity", "Trial\nRMS",
+        "Position (cm)", "Trial\nSimilarity", "Trial\nGain",
     ]
     fig.savefig(tmp_path / "tracked_focus.png", dpi=100)
     # Moving rank must select the corresponding original neuron in both sessions.
-    fig2 = viewer.plot({**viewer.state, "candidate": 1, "show_prediction": True})
+    fig2 = viewer.plot({**viewer.state, "candidate": "ROI 0 → ROI 1", "show_prediction": True})
     fig2.canvas.draw()
     image_axes = [ax for ax in fig2.axes if ax.images]
     assert len(image_axes) == 4
@@ -191,7 +193,7 @@ def test_stack_uses_same_cluster_correct_environment_and_bounded_summaries(examp
     assert fig2._suptitle is None
     assert all(not ax.get_xlabel() for ax in fig2.axes[:8])
     assert [ax.get_xlabel() for ax in fig2.axes[8:] if ax.get_xlabel()] == [
-        "Position (cm)", "Trial\nSimilarity", "Trial\nRMS", "Position (cm)",
+        "Position (cm)", "Trial\nSimilarity", "Trial\nGain", "Position (cm)",
     ]
 
 
@@ -206,15 +208,15 @@ def test_environment_change_updates_session_options(example):
     viewer.set_parameter_value("environment", 3)
     table = viewer.candidate_table()
     assert len(table) == 6
-    assert viewer.state["candidate"] == 0
+    assert viewer.state["candidate"] == "ROI 1 → ROI 2"
 
 
 def test_missing_results_and_filter_mismatch_are_explicit(example):
-    example.stored[example.early.session_uid]["trial_rms_cv"] = np.ones((2, 5))
+    example.stored[example.early.session_uid]["trial_gain_least_squares_cv"] = np.ones((2, 5))
     example.viewer._pair_cache = None
     with pytest.raises(ValueError, match="ROI filters"):
         example.viewer.candidate_table()
-    example.stored[example.early.session_uid].pop("trial_rms_cv")
+    example.stored[example.early.session_uid].pop("trial_gain_least_squares_cv")
     with pytest.raises(KeyError, match="schema v11"):
         example.viewer.candidate_table()
 
@@ -261,3 +263,130 @@ def test_quality_cutoffs_do_not_select_different_stored_results(example):
     for _, config in example.loads[-4:]:
         assert config.reliability_threshold == 0.9
         assert config.fraction_active_threshold == 0.2
+
+
+def test_tracked_layout_controls_reach_both_sessions(example):
+    viewer = example.viewer
+    viewer.set_parameter_value("bottom_text_location", "upper right")
+    viewer.set_parameter_value("colorbar_width", 0.05)
+    viewer.set_parameter_value("colorbar_height", 0.4)
+    fig = viewer.plot(viewer.state)
+    fig.canvas.draw()
+    for ax in fig.axes:
+        for inset in ax.child_axes:
+            bounds = ax.transAxes.inverted().transform_bbox(inset.bbox).bounds
+            np.testing.assert_allclose(bounds, [.225, .15, .05, .4])
+        for text in ax.artists:
+            box = text.get_window_extent(fig.canvas.get_renderer())
+            assert box.x1 == pytest.approx(ax.bbox.x1 - .02 * ax.bbox.width)
+
+
+def test_amplitude_defaults_and_controls_update_ranking_and_both_panels(example):
+    viewer = example.viewer
+    assert viewer.state["amplitude_metric"] == "trial_gain_least_squares"
+    assert viewer.state["amplitude_statistic"] == "cv"
+    assert viewer.state["amplitude_transform"] == "bounded"
+    # Change measurement and statistic after the pair cache has already been populated.
+    for session, values in ((example.early, [2, 4, 6, 8, 10, 12]),
+                            (example.late, [10, 20, 30, 40, 50, 60])):
+        slot = list(session.environments).index(7)
+        example.stored[session.session_uid]["trial_mean_mean"][slot] = values
+    viewer.set_parameter_value("candidate", "ROI 5 → ROI 5")
+    viewer.set_parameter_value("amplitude_metric", "trial_mean")
+    assert viewer.state["candidate"] == "ROI 5 → ROI 5"
+    viewer.set_parameter_value("amplitude_statistic", "mean")
+    viewer.set_parameter_value("amplitude_transform", "raw")
+    table = viewer.candidate_table()
+    np.testing.assert_array_equal(table.cluster_id, [60, 50, 10, 20])
+    np.testing.assert_allclose(table.amplitude_change, [48, 30, 26, 18])
+    assert len(example.calls) == 1
+    fig = viewer.plot(viewer.state)
+    summaries = [artist.get_label() for ax in fig.axes for artist in ax.artists]
+    assert "Mean=12.00" in summaries
+    assert "Mean=60.00" in summaries
+    assert any(ax.get_xlabel() == "Trial\nMean" for ax in fig.axes)
+    viewer.set_parameter_value("candidate", "ROI 1 → ROI 2")
+    viewer.set_parameter_value("amplitude_transform", "inverse")
+    assert viewer.state["candidate"] == "ROI 1 → ROI 2"
+    table = viewer.candidate_table()
+    expected_early = {20: 2, 10: 4, 50: 10, 60: 12}
+    np.testing.assert_allclose(table.amplitude_reliability_early,
+                               [1 / expected_early[cluster] for cluster in table.cluster_id])
+
+
+def test_default_plot_uses_least_squares_gain(example):
+    viewer = example.viewer
+    fig = viewer.plot(viewer.state)
+    amplitude_axes = [ax for ax in fig.axes if ax.collections and ax.get_xlim()[0] == 0]
+    assert len(amplitude_axes) == 2
+    for ax, suffix in zip(amplitude_axes, ("early", "late")):
+        panel = viewer._focus_panels[suffix][1]
+        values = panel.trial_activity["trial_gain_least_squares"]
+        np.testing.assert_allclose(ax.collections[0].get_offsets()[:, 0], values[np.isfinite(values)])
+    assert any(ax.get_xlabel() == "Trial\nGain" for ax in fig.axes)
+
+
+def test_roi_dropdown_follows_preference_and_preserves_selected_identity(example):
+    viewer = example.viewer
+    viewer.set_parameter_value("descending", False)
+    assert viewer.parameters["candidate"].options == ["ROI 5 → ROI 5", "ROI 0 → ROI 1", "ROI 1 → ROI 2"]
+    assert viewer.state["candidate"] == "ROI 1 → ROI 2"
+    fig = viewer.plot(viewer.state)
+    images = [ax.images[0].get_array() for ax in fig.axes if ax.images]
+    np.testing.assert_allclose(images[0], example.maps[example.early.session_uid].spkmap[1][1])
+    np.testing.assert_allclose(images[1], example.maps[example.late.session_uid].spkmap[0][2])
+
+
+def test_constructor_accepts_roi_pair_selection(example):
+    viewer = TrackedPlaceFieldPredictionFocus(
+        example.results, msm=example.msm, environment=7, candidate="ROI 0 → ROI 1",
+    )
+    assert viewer.state["candidate"] == "ROI 0 → ROI 1"
+
+
+def test_tracked_breakdown_draws_the_selected_pair_in_chronological_order(example):
+    for stored in example.stored.values():
+        # Ranking needs quality summaries; the decomposition is fit from local maps.
+        for key in list(stored):
+            if key not in {"env_slot_ids", "reliability_slot", "fraction_active_slot", "trial_gain_least_squares_cv"}:
+                del stored[key]
+    viewer = TrackedPlacefieldBreakdownFocus(
+        example.results,
+        msm=example.msm,
+        environment=7,
+        early_session=example.late.session_print(),
+        late_session=example.early.session_print(),
+        candidate="ROI 0 → ROI 1",
+        include_spatial_reliability=True,
+        include_trial_gain=True,
+        include_residual_rms=True,
+        residual_metric="unexplained_fraction",
+    )
+    assert viewer.candidate_table().cluster_id.tolist() == [10, 20, 60]
+    viewer.set_parameter_value("descending", False)
+    assert viewer.candidate_table().cluster_id.tolist() == [60, 20, 10]
+    assert viewer.state["candidate"] == "ROI 0 → ROI 1"
+    fig = viewer.plot(viewer.state)
+    fig.canvas.draw()
+    assert len(fig.axes) == 12
+    for axes, session, env_index, roi in (
+        (fig.axes[:6], example.early, 1, 0),
+        (fig.axes[6:], example.late, 0, 1),
+    ):
+        activity, prediction, residual = [ax.images[0].get_array() for ax in axes if ax.images]
+        expected = example.maps[session.session_uid].spkmap[env_index][roi]
+        template = expected.mean(axis=0)
+        gains = (expected @ template) / (template @ template)
+        np.testing.assert_allclose(activity, expected)
+        np.testing.assert_allclose(prediction, gains[:, None] * template)
+        np.testing.assert_allclose(residual, expected - prediction)
+        np.testing.assert_allclose(axes[3].collections[0].get_offsets()[:, 0], gains)
+        np.testing.assert_allclose(axes[5].collections[0].get_offsets()[:, 0],
+                                   np.sum(residual**2, axis=1) / np.sum((expected - expected.mean(axis=1, keepdims=True))**2, axis=1))
+    assert all(not ax.get_xlabel() for ax in fig.axes[:6])
+    assert fig.axes[-1].get_xlabel() == r"$1-R^2$"
+
+    # Removing the selected ROI pair still picks the first eligible one.
+    example.stored[example.early.session_uid]["fraction_active_slot"][1, 0] = 0.2
+    viewer.set_parameter_value("fraction_active_threshold", 0.3)
+    assert viewer.state["candidate"] == "ROI 5 → ROI 5"

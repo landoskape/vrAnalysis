@@ -2,6 +2,7 @@
 
 import numpy as np
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 
 from vrAnalysis.helpers import edge2center
 from vrAnalysis.helpers.plotting import beeswarm
@@ -289,7 +290,7 @@ class DataOverviewViewer(FigureViewer):
             self.num_place_cells = np.asarray(session_place_cells, dtype=float)
 
     @staticmethod
-    def _draw_pooled_swarm(ax, values: np.ndarray, ylabel: str, state) -> None:
+    def _draw_pooled_swarm(ax, values: np.ndarray, ylabel: str, state, *, ceiling_step: float | None = None) -> None:
         """Draw one pooled swarm with a horizontal across-mouse mean."""
         finite = np.isfinite(values)
         offsets = np.zeros_like(values, dtype=float)
@@ -309,19 +310,29 @@ class DataOverviewViewer(FigureViewer):
 
         ymax = float(np.max(values[finite])) if finite.any() else 1.0
         upper = max(ymax * 1.05, 1.0)
+        if ceiling_step is not None:
+            upper = max(ceiling_step, np.ceil(ymax / ceiling_step) * ceiling_step)
         ax.set_xlim(-0.5, 0.5)
         ax.set_ylim(0, upper)
         ax.set_ylabel(ylabel, fontsize=state["fontsize"])
         style_axis(ax, fontsize=state["fontsize"], xbounds=(0, 0), ybounds=(0, upper))
         ax.set_xticks([])
+        if ceiling_step is not None:
+            ticks = MaxNLocator(nbins=5, integer=True).tick_values(0, upper)
+            ticks = np.concatenate(([0], ticks[(ticks > 0) & (ticks < upper)], [upper]))
+            ax.set_yticks(ticks, labels=[f"{tick:g}" if tick in (0, upper) else "" for tick in ticks])
 
     def plot(self, state):
         fig, ax = self.new_subplots(1, 3, figsize=self.figsize, layout="constrained")
         self._draw_pooled_swarm(ax[0], self.num_sessions, "# Sessions / Mouse", state)
-        self._draw_pooled_swarm(ax[1], self.num_rois, "# ROIs / Session", state)
+        self._draw_pooled_swarm(ax[1], self.num_rois, "# ROIs / Session", state, ceiling_step=1000)
 
         if state["fraction_place_cells"]:
-            self._draw_pooled_swarm(ax[2], 100 * self.num_place_cells / self.num_rois, "Place Cells %", state)
+            self._draw_pooled_swarm(ax[2], 100 * self.num_place_cells / self.num_rois, "Place Cells %", state, ceiling_step=5)
         else:
-            self._draw_pooled_swarm(ax[2], self.num_place_cells, "# Place Cells / Session", state)
+            self._draw_pooled_swarm(ax[2], self.num_place_cells, "# Place Cells / Session", state, ceiling_step=5)
+
+        ax[1].yaxis.set_label_coords(-0.5, 0.5)
+        ax[2].yaxis.set_label_coords(-0.5, 0.5)
+
         return fig

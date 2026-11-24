@@ -1,0 +1,4 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status
+ATL022_2023-04-26_701,1,4,18,0,sham_control,34,insufficient_disjoint_calibration_or_evaluation_trials
+ATL022_2023-04-26_701,3,9,20,4,sham_control,34,insufficient_disjoint_calibration_or_evaluation_trials
+ATL022_2023-04-26_701,4,6,22,1,sham_control,34,insufficient_disjoint_calibration_or_evaluation_trials

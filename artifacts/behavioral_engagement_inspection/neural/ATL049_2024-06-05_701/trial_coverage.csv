@@ -1,0 +1,4 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status,calibration_trials,speed_matched_trials,pre_mean_speed,post_mean_speed
+ATL049_2024-06-05_701,1,29,26,20,screen_positive,80,ok,9,20,21.99187750816345,22.23800916671753
+ATL049_2024-06-05_701,3,27,17,17,screen_positive,80,ok,10,17,22.285738215726965,23.198833353379193
+ATL049_2024-06-05_701,4,24,22,16,screen_positive,80,ok,8,19,25.777329683303833,25.26980209350586

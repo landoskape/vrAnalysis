@@ -274,9 +274,10 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
             for axis in ax:
                 axis.text(0.5, 0.5, "No neurons pass\nthresholds", transform=axis.transAxes, ha="center", va="center")
 
-        for axis, label, spines_visible in zip(
+        for axis, label, label_color, spines_visible in zip(
             ax,
-            ("Pos Mean", "Pos STD"),
+            ("Mean", "STD"),
+            ("Black", "Red"),
             (("left", "bottom"), ("bottom",)),
         ):
             axis.text(
@@ -286,6 +287,7 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
                 transform=axis.transAxes,
                 ha="right",
                 va="top",
+                color=label_color,
                 fontsize=state["fontsize"],
             )
             axis.set_xlim(0, REFERENCE_ENV_LENGTH_CM)
@@ -320,7 +322,7 @@ class CrossValidatedPlacefieldFocus(FigureViewer):
                     linewidth=state["reward_linewidth"],
                     linestyle=state["reward_linestyle"],
                     alpha=state["reward_alpha"],
-                    label="Reward zone" if index == 0 else None,
+                    label="Rew.\nLoc." if index == 0 else None,
                 )
             if state["show_reward_legend"]:
                 ax[0].legend(loc="lower right", frameon=True, fontsize=state["fontsize"])

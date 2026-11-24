@@ -1,13 +1,16 @@
 from types import SimpleNamespace
+import warnings
 
 import numpy as np
 import pytest
+from scipy.stats import ConstantInputWarning
 
 from dimensionality_manuscript.configs import pfpred_quality
 from dimensionality_manuscript.configs.pfpred_quality import (
     _binned_rms,
     _kde_rms,
     _normalized_rms_error,
+    _per_roi_stats,
     _r2_by_slot,
     _rms_error,
     _summarize_trial_activity,
@@ -19,6 +22,35 @@ from dimensionality_manuscript.configs.pfpred_quality import (
     trial_activity_population_summary_keys,
     trial_activity_summary_keys,
 )
+
+
+@pytest.mark.parametrize("n_frames", [1, 4])
+def test_per_roi_spearman_leaves_flat_inputs_nan_without_constant_warnings(n_frames):
+    ramp = np.arange(float(n_frames))
+    activity = np.column_stack((np.zeros(n_frames), ramp, np.zeros(n_frames), ramp, ramp))
+    prediction = np.column_stack((ramp, np.zeros(n_frames), np.zeros(n_frames), ramp**2, ramp[::-1]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConstantInputWarning)
+        result = _per_roi_stats(activity, prediction, np.zeros(5), np.zeros(5), 5.)
+
+    assert np.all(np.isnan(result["spearman_r"][:3]))
+    if n_frames >= 2:
+        np.testing.assert_allclose(result["spearman_r"][3:], [1., -1.])
+    else:
+        assert np.all(np.isnan(result["spearman_r"]))
+    # Other summaries remain available for the flat cells and keep their ROI alignment.
+    np.testing.assert_allclose(result["act_std"], np.std(activity, axis=0))
+    np.testing.assert_allclose(result["pred_std"], np.std(prediction, axis=0))
+    assert result["frac_accurate"].shape == (5,)
+
+
+def test_per_roi_spearman_preserves_nan_for_incomplete_inputs():
+    activity = np.array([[np.nan, 0.], [1., 1.], [2., 2.], [3., 3.]])
+    prediction = np.array([[0., 0.], [1., np.nan], [2., 2.], [3., 3.]])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConstantInputWarning)
+        result = _per_roi_stats(activity, prediction, np.zeros(2), np.zeros(2), 5.)
+    assert np.all(np.isnan(result["spearman_r"]))
 
 
 def test_rms_error_is_computed_per_roi():
@@ -202,7 +234,8 @@ def test_trial_activity_population_summaries_match_quality_naming_and_ignore_nan
 def test_pfpred_quality_defaults_and_threshold_validation():
     config = PFPredQualityConfig()
 
-    assert config.schema_version == "v11"
+    assert config.schema_version == "v16"
+    assert config.n_gamma_runs == 20
     assert config.reliability_threshold == pytest.approx(0.3)
     assert config.fraction_active_threshold == pytest.approx(0.1)
     assert "rel=0.3_fa=0.1" in config.summary()
@@ -227,7 +260,16 @@ def test_trial_activity_by_slot_stores_fraction_active_masks_and_subset_summarie
         def filter_by_environment(self, environment):
             return SimpleNamespace(placefield=self.placefield[self.environment == environment], trials=np.array([9, 3]))
 
-    monkeypatch.setattr(pfpred_quality, "get_frame_behavior", lambda session: object())
+    behavior = SimpleNamespace(
+        position=np.tile(np.arange(4.0) + 0.5, 3)[:10],
+        speed=np.r_[0., np.ones(9)],
+        trial=np.array([3] * 4 + [9] * 4 + [3] * 2),
+        environment=np.array([11] * 8 + [22] * 2),
+    )
+    behavior.filter = lambda rows: None
+    gamma_key = "gamma_mean_pf_frac_unexplained_cv"
+    monkeypatch.setattr(pfpred_quality, "_gamma_reference", lambda *args: {gamma_key: np.array([0.2, 0.4])})
+    monkeypatch.setattr(pfpred_quality, "get_frame_behavior", lambda session: behavior)
     monkeypatch.setattr(pfpred_quality, "get_placefield", lambda *args, **kwargs: FakePlacefields())
     monkeypatch.setattr(pfpred_quality, "load_env_order", lambda: {"mouse": [11, 22]})
     monkeypatch.setattr(
@@ -247,15 +289,19 @@ def test_trial_activity_by_slot_stores_fraction_active_masks_and_subset_summarie
 
     result = _trial_activity_by_slot(
         session,
-        np.zeros((10, 2)),
+        np.column_stack((np.arange(10.), np.arange(10.)**2)),
         smp,
         reliability,
         env_maps,
         best_env=0,
         reliability_threshold=0.3,
         fraction_active_threshold=0.1,
+        n_gamma_runs=2,
     )
 
+    np.testing.assert_allclose(result[f"{gamma_key}_slot"][:2], [[0.2, 0.4], [0.2, 0.4]])
+    assert result[f"mean_{gamma_key}"][0] == pytest.approx(0.3)
+    assert np.isnan(result[f"mean_{gamma_key}"][1])  # No observed CV score for this slot.
     np.testing.assert_allclose(result["fraction_active_slot"][:2], [[0.2, 0.05], [0.2, 0.05]])
     np.testing.assert_array_equal(result["quality_filtered_roi_mask_slot"][:2], [[True, False], [False, False]])
     np.testing.assert_array_equal(result["quality_filtered_roi_mask"], [True, False])
@@ -277,6 +323,29 @@ def test_trial_activity_by_slot_stores_fraction_active_masks_and_subset_summarie
         np.testing.assert_allclose(result[f"{key}_slot"][0], expected, equal_nan=True)
         assert np.all(np.isnan(result[f"{key}_slot"][2:]))
     np.testing.assert_allclose(result["pf_rms_distcenters"], [0.5, 1.5, 2.5, 3.5])
+    expected_residual = pfpred_quality._trial_residual_rms_summaries(
+        np.transpose(FakePlacefields.placefield[:2][::-1], (2, 0, 1)))
+    for key, expected in expected_residual.items():
+        np.testing.assert_allclose(result[key][0], expected)
+        assert np.isnan(result[key][2:]).all()
+        np.testing.assert_allclose(result[f"mean_quality_filtered_{key}"][0], expected[0])
+        assert np.isnan(result[f"mean_quality_filtered_{key}"][1])
+    for key in pfpred_quality.pf_variance_keys():
+        assert result[key].shape == (2,)
+        np.testing.assert_allclose(result[key], result[f"{key}_slot"][0], equal_nan=True)
+        assert np.all(np.isnan(result[f"{key}_slot"][2:]))
+    key = "pf_var_template_all_from_all"
+    assert result[f"mean_quality_filtered_{key}"][0] == pytest.approx(result[key][0])
+    assert result[f"median_notquality_filtered_{key}"][0] == pytest.approx(result[key][1])
+    assert np.isnan(result[f"mean_quality_filtered_{key}"][1])
+    np.testing.assert_allclose(result["pf_var_n_frames_all_from_all"], 7)
+    np.testing.assert_allclose(result["pf_var_n_frames_f1_from_f1"], 3)
+    np.testing.assert_allclose(result["pf_var_n_frames_cv"], 7)
+    np.testing.assert_allclose(result["pf_var_n_frames_all_from_all_slot"][1], 2)
+    np.testing.assert_allclose(result["pf_var_total_all_from_all"],
+                               [np.var(np.arange(1., 8.)), np.var(np.arange(1., 8.)**2)])
+    np.testing.assert_allclose(sum(result[f"pf_frac_var_{component}_all_from_all"]
+                                   for component in ("template", "gain", "additive", "covariance")), 1)
 
 
 def test_spatial_pf_rms_maps_include_every_fold_pair_and_both_cv_correlations():

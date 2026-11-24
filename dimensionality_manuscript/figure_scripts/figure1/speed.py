@@ -13,7 +13,6 @@ from statsmodels.regression.mixed_linear_model import MixedLM
 from vrAnalysis.helpers.plotting import errorPlot
 
 from dimensionality_manuscript.configs.behavior_speed_env import ENV_REWARD_MAP, REFERENCE_ENV_LENGTH_CM
-from dimensionality_manuscript.env_order import ENV_NUM_COLORS
 from dimensionality_manuscript.figure_scripts.panels import (
     FigureViewer,
     add_data_selection_widgets,
@@ -21,7 +20,7 @@ from dimensionality_manuscript.figure_scripts.panels import (
 )
 from dimensionality_manuscript.pipeline import ResultsAggregator
 
-from ._shared import draw_reward_location, style_axis
+from ._shared import VR_ENV_COLORS, draw_reward_location, style_axis
 
 # Result keys of BehaviorSpeedEnvConfig this panel draws, and the human-readable name of each
 # trial set for the printed statistics report.
@@ -30,10 +29,16 @@ SPEED_TRIAL_SET_LABELS: dict[str, str] = {"all": "all trials", "first": "1st tri
 
 
 def _reward_legend_arrow(legend, orig_handle, xdescent, ydescent, width, height, fontsize):
-    return FancyArrowPatch((width / 2 - xdescent, -ydescent),
-                           (width / 2 - xdescent, height - ydescent),
-                           arrowstyle="-|>", mutation_scale=fontsize * 0.8,
-                           linewidth=1.2, color="black", shrinkA=0, shrinkB=0)
+    return FancyArrowPatch(
+        (width / 2 - xdescent, -ydescent),
+        (width / 2 - xdescent, height - ydescent),
+        arrowstyle="-|>",
+        mutation_scale=fontsize * 0.8,
+        linewidth=1.2,
+        color="black",
+        shrinkA=0,
+        shrinkB=0,
+    )
 
 
 def _significance_label(pvalue: float) -> str:
@@ -231,9 +236,6 @@ class MouseSpeedFocus(FigureViewer):
         show_first: bool = True,
         split_speed: bool = False,
         show_reward: bool = True,
-        reward_style: str = "arrow",
-        reward_width_cm: float = 20.0,
-        reward_alpha: float = 0.2,
         show_legend: bool = True,
         show_env_legend: bool = False,
         extra_y_space: bool = False,
@@ -388,17 +390,17 @@ class MouseSpeedFocus(FigureViewer):
         for e, env in enumerate(self.env_list):
             if env not in selected:
                 continue
-            color = ENV_NUM_COLORS[env]
+            color = VR_ENV_COLORS[env]
             # All trials: mouse-average with a shaded ±SE band (average over the mouse axis).
             errorPlot(xvals, self.speed[all_key][:, e, :], axis=0, se=True, ax=ax, color=color, alpha=state["alpha_band"], linewidth=lw)
             if state["show_first"]:
                 if split:
-                    errorPlot(xvals, self.speed[first_key][:, e, :], axis=0, se=True, ax=ax_first,
-                              color=color, alpha=state["alpha_band"], linewidth=lw)
+                    errorPlot(
+                        xvals, self.speed[first_key][:, e, :], axis=0, se=True, ax=ax_first, color=color, alpha=state["alpha_band"], linewidth=lw
+                    )
                 else:
                     # Keep the overlaid first-trial curves dashed without a band.
-                    ax.plot(xvals, np.nanmean(self.speed[first_key][:, e, :], axis=0),
-                            color=color, linewidth=lw, linestyle="--")
+                    ax.plot(xvals, np.nanmean(self.speed[first_key][:, e, :], axis=0), color=color, linewidth=lw, linestyle="--")
         xticks = np.arange(0, env_length + 1, 50)
         for row, axis in enumerate(axes):
             axis.set_xlabel("Position (cm)" if row == len(axes) - 1 else "", fontsize=fontsize)
@@ -413,26 +415,38 @@ class MouseSpeedFocus(FigureViewer):
                 stats = self.compute_stats(state)[trial_set]
                 window_center = 0.5 * (float(state["stat_window_start"]) + float(state["stat_window_end"]))
                 if stats is not None:
-                    axis.text(window_center, ymax, _significance_label(stats["lr_pvalue"]), ha="center", va="top", fontsize=fontsize)
+                    axis.text(
+                        window_center,
+                        ymax,
+                        _significance_label(stats["lr_pvalue"]),
+                        ha="center",
+                        va="top",
+                        fontsize=fontsize,
+                    )
             axis.set_ylim(-10 if state["extra_y_space"] else 0, ymax)
             if state["show_reward"]:
                 for env in drawn_envs:
-                    draw_reward_location(axis, self.reward_position[env], 0.0, 0.14,
-                                         color=ENV_NUM_COLORS[env], fontsize=fontsize,
-                                         transform=axis.get_xaxis_transform())
+                    draw_reward_location(
+                        axis, self.reward_position[env], 0.0, 0.14, color=VR_ENV_COLORS[env], fontsize=fontsize, transform=axis.get_xaxis_transform()
+                    )
             yticks = [t for t in axis.get_yticks() if 0 <= t <= ymax]
             style_axis(axis, fontsize=fontsize, xbounds=[0, env_length], ybounds=[0, ymax], xticks=xticks, yticks=yticks)
             if split:
-                axis.annotate("All Trials" if row == 0 else "1st in Block",
-                              xy=(0, 0.98), xycoords=axis.get_xaxis_transform(),
-                              xytext=(4, 0), textcoords="offset points",
-                              ha="left", va="top", fontsize=fontsize)
+                axis.annotate(
+                    "All Trials" if (row == 0 and state["show_first"]) else "1st in Block",
+                    xy=(0, 0.98),
+                    xycoords=axis.get_xaxis_transform(),
+                    xytext=(4, 0),
+                    textcoords="offset points",
+                    ha="left",
+                    va="top",
+                    fontsize=fontsize,
+                )
         if split:
             ax.spines["bottom"].set_visible(False)
             ax.tick_params(axis="x", bottom=False, labelbottom=False)
             if show_reward_label and state["show_reward"]:
-                ax_first.text(0.98, 0.04, "reward location", transform=ax_first.transAxes,
-                              ha="right", va="bottom", fontsize=fontsize)
+                ax_first.text(0.98, 0.04, "reward location", transform=ax_first.transAxes, ha="right", va="bottom", fontsize=fontsize)
         else:
             self._draw_legend(ax, state, drawn_envs, lw, fontsize, show_reward_label=show_reward_label)
 
@@ -448,10 +462,11 @@ class MouseSpeedFocus(FigureViewer):
         """
         handles, labels = [], []
         if state["show_env_legend"] and drawn_envs:
-            handles.append(tuple(Line2D([0], [0], color=ENV_NUM_COLORS[env], linewidth=lw) for env in drawn_envs))
+            handles.append(tuple(Line2D([0], [0], color=VR_ENV_COLORS[env], linewidth=lw) for env in drawn_envs))
             labels.append("Envs")
         handles.append(Line2D([0], [0], color="0.3", linewidth=lw))
-        labels.append("All Trials")
+        if state["show_first"]:
+            labels.append("All Trials")
         if state["show_first"]:
             handles.append(Line2D([0], [0], color="0.3", linewidth=lw, linestyle="--"))
             labels.append("1st in Block")
@@ -463,8 +478,7 @@ class MouseSpeedFocus(FigureViewer):
             ax.legend(
                 handles,
                 labels,
-                handler_map={tuple: HandlerTuple(ndivide=None, pad=0),
-                             FancyArrowPatch: HandlerPatch(patch_func=_reward_legend_arrow)},
+                handler_map={tuple: HandlerTuple(ndivide=None, pad=0), FancyArrowPatch: HandlerPatch(patch_func=_reward_legend_arrow)},
                 loc="lower right",
                 frameon=True,
                 fontsize=fontsize,

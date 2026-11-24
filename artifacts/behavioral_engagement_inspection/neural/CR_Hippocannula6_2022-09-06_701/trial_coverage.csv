@@ -1,0 +1,3 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status,calibration_trials,speed_matched_trials,pre_mean_speed,post_mean_speed
+CR_Hippocannula6_2022-09-06_701,1,20,0,0,borderline_exploratory,58,insufficient_disjoint_calibration_or_evaluation_trials,,,,
+CR_Hippocannula6_2022-09-06_701,2,38,14,14,borderline_exploratory,58,ok,24.0,12.0,47.47610201154436,41.65572697775705

@@ -168,14 +168,24 @@ def test_relationship_layout_and_mouse_histograms(association, row_ratio):
         assert fig.axes[2].get_ylabel() == "Mice"
 
 
-def test_distribution_layout_and_band_uses_mouse_std():
+@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
+def test_distribution_layout_and_band_uses_mouse_std(orientation):
     results, _, _ = _results()
-    viewer = PlaceFieldPopulationDistributions(results, nbins=2)
+    figsize = (2.5, 7.5) if orientation == "vertical" else (7.5, 2.5)
+    viewer = PlaceFieldPopulationDistributions(results, nbins=2, orientation=orientation, figsize=figsize)
     fig = viewer.plot(viewer.state)
     fig.canvas.draw()
     assert len(fig.axes) == 3
-    assert [ax.get_xlabel() for ax in fig.axes] == ["PF-Var\nAlignment", "Spatial\nReliability", "Amplitude\nReliability"]
+    assert [ax.get_xlabel() for ax in fig.axes] == ["r(M,S)", "Spatial\nReliability", "Amplitude\nReliability"]
     assert fig.axes[0].get_ylabel() == "prob. density"
+    np.testing.assert_allclose(fig.get_size_inches(), figsize)
+    if orientation == "vertical":
+        assert all(ax.get_ylabel() == "prob. density" for ax in fig.axes)
+        assert fig.axes[0].get_position().y0 > fig.axes[1].get_position().y1
+        assert fig.axes[1].get_position().y0 > fig.axes[2].get_position().y1
+    else:
+        assert fig.axes[0].get_position().x1 < fig.axes[1].get_position().x0
+        assert fig.axes[1].get_position().x1 < fig.axes[2].get_position().x0
     for ax in fig.axes:
         assert ax.get_title() == ""
         ticks = ax.get_yticks()

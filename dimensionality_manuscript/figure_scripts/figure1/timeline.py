@@ -242,19 +242,31 @@ class ExperimentTimeline(FigureViewer):
             cumulative += height
         return edges
 
-    def draw(self, ax, state, *, session_xlim=None) -> None:
+    def draw(self, ax, state, *, session_xlim=None, relative_env_ranges=None) -> None:
         """Draw the timeline into an existing axes.
 
         Keeping the renderer separate from :meth:`plot` lets summary viewers embed the same
         timeline panel without copying its layout logic or creating a temporary figure.
         ``session_xlim`` optionally aligns the viewport to imaging-session centers (1-based),
         so an embedded schematic can share the horizontal range of summary curves.
+        ``relative_env_ranges`` optionally maps experience-order slots to first/last
+        plotted exposure centers (1-based). It replaces the selected mouse's bars,
+        includes only supported slots, and retains internal gaps within each range.
         """
         fontsize = state["fontsize"]
         num_training = state["num_training"]
-        num_envs = len(self.env_order)
         relative = state.get("mode", "absolute") == "relative"
-        imaging_length = int(self.env_present.sum(axis=1).max()) if relative and num_envs else self.num_imaging
+        if relative_env_ranges is not None and not relative:
+            raise ValueError("relative_env_ranges requires relative mode.")
+        env_entries = list(enumerate(self.env_order)) if relative_env_ranges is None else [
+            (slot, self.env_order[slot] if slot < len(self.env_order) else None)
+            for slot in sorted(relative_env_ranges)
+        ]
+        num_envs = len(env_entries)
+        if relative_env_ranges is not None:
+            imaging_length = max((last for _, last in relative_env_ranges.values()), default=1)
+        else:
+            imaging_length = int(self.env_present.sum(axis=1).max()) if relative and num_envs else self.num_imaging
         num_sessions = max(1, num_training + imaging_length)
         edges = self._band_edges(state, num_envs)
 
@@ -306,17 +318,20 @@ class ExperimentTimeline(FigureViewer):
                 )
 
         # ------------------------------------------------------------------- env bars --
-        for slot, env in enumerate(self.env_order):
-            top, bottom = edges[f"env{slot}"]
-            present = self.env_present[slot]
-            if relative:
-                runs = [(0, int(present.sum()))]
+        for band, (slot, env) in enumerate(env_entries):
+            top, bottom = edges[f"env{band}"]
+            if relative_env_ranges is not None:
+                first, last = relative_env_ranges[slot]
+                runs = [(first - 0.5, last - 0.5)]
+            elif relative:
+                runs = [(0, int(self.env_present[slot].sum()))]
             elif state["merge_gaps"]:
                 # First appearance -> last appearance, ignoring any dropout in between; the
                 # un-merged form draws one rectangle per contiguous run instead.
+                present = self.env_present[slot]
                 runs = [(int(present.argmax()), int(self.num_imaging - present[::-1].argmax()))]
             else:
-                runs = _boolean_runs(present)
+                runs = _boolean_runs(self.env_present[slot])
 
             for start, stop in runs:
                 left = num_training + start
@@ -324,11 +339,14 @@ class ExperimentTimeline(FigureViewer):
                 # the training block too.
                 if slot == 0 and start == 0 and state["train_in_first_env"]:
                     left = 0.0
-                bar(left, num_training + stop, edges[f"env{slot}"], env_slot_color(slot))
+                bar(left, num_training + stop, edges[f"env{band}"], env_slot_color(slot))
 
             if state["show_env_labels"]:
-                label = f"Env {env}" if state["label_by_env_id"] else f"{ordinal(slot + 1)} Env"
-                label_right = num_training + (int(present.sum()) if relative else self.num_imaging)
+                label = f"Env {env}" if state["label_by_env_id"] and env is not None else f"{ordinal(slot + 1)} Env"
+                label_right = num_training + (
+                    relative_env_ranges[slot][1] - 0.5 if relative_env_ranges is not None
+                    else int(self.env_present[slot].sum()) if relative else self.num_imaging
+                )
                 if session_xlim is not None:
                     label_right = min(label_right, view_right)
                 ax.text(

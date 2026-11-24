@@ -1,9 +1,8 @@
 """Place-field examples and mouse-balanced population distributions and reliability relationships."""
 
 import numpy as np
-from matplotlib.lines import Line2D
-from matplotlib.offsetbox import AnnotationBbox, TextArea, VPacker
-from matplotlib.transforms import Bbox, IdentityTransform, ScaledTranslation
+from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea, VPacker
+from matplotlib.transforms import ScaledTranslation
 from scipy.stats import pearsonr, spearmanr
 
 from vrAnalysis.helpers.vrsupport import _jit_reliability_loo
@@ -73,40 +72,24 @@ def _finite_column_summary(values):
     return mean, np.sqrt(variance), count
 
 
-class _UnderlinedTextArea(TextArea):
-    """Text with a matching-width underline, without requiring a TeX installation."""
-
-    def get_bbox(self, renderer):
-        bbox = super().get_bbox(renderer)
-        return Bbox.from_extents(bbox.x0, bbox.y0 - renderer.points_to_pixels(2), bbox.x1, bbox.y1)
-
-    def draw(self, renderer):
-        super().draw(renderer)
-        bbox = self.get_window_extent(renderer)
-        y = bbox.y0 + renderer.points_to_pixels(0.75)
-        line = Line2D(
-            [bbox.x0, bbox.x1], [y, y], linewidth=0.6,
-            color=self._text.get_color(), transform=IdentityTransform(),
-        )
-        line.set_figure(self.get_figure())
-        line.draw(renderer)
-
-
-def _add_summary_title(ax, label, value, fontsize):
-    """Add an underlined label above a centered '=value'."""
-    title = AnnotationBbox(
-        VPacker(
-            children=[
-                _UnderlinedTextArea(label, textprops={"fontsize": fontsize}),
-                TextArea(f"=${value:.2f}$", textprops={"fontsize": fontsize}),
-            ],
-            align="center", pad=0, sep=1,
-        ),
-        (0.5, 1), xycoords="axes fraction", xybox=(0, 3), boxcoords="offset points",
-        box_alignment=(0.5, 0), frameon=False, pad=0, annotation_clip=False,
+def _add_panel_text(ax, rows, fontsize, location):
+    """Stack text rows inside an upper corner, with independently colored pieces."""
+    right = location == "upper right"
+    lines = [
+        HPacker(children=[TextArea(text, textprops={"fontsize": fontsize, "color": color}) for text, color in row], align="baseline", pad=0, sep=0)
+        for row in rows
+    ]
+    annotation = AnnotationBbox(
+        VPacker(children=lines, align="right" if right else "left", pad=0, sep=2),
+        (0.98 if right else 0.02, 0.98),
+        xycoords="axes fraction",
+        box_alignment=(1 if right else 0, 1),
+        frameon=False,
+        pad=0,
     )
-    title.set_label(f"{label}\n={value:.2f}")
-    ax.add_artist(title)
+    annotation.set_label("\n".join("".join(text for text, _ in row) for row in rows))
+    ax.add_artist(annotation)
+    return annotation
 
 
 class _PlaceFieldPopulationViewer(FigureViewer):
@@ -255,6 +238,8 @@ class PlaceFieldPopulationDistributions(_PlaceFieldPopulationViewer):
     bounded maps zero to one, and both exclude nonfinite inputs from amplitude calculations.
     Bounded distributions always span [0, 1].
     ``nbins`` controls all three histograms; ``show_mouse_curves`` toggles thin mouse lines.
+    ``orientation="vertical"`` stacks the three panels from top to bottom; the default
+    ``"horizontal"`` places them side by side. ``figsize`` sets the overall figure size.
     Additional keyword arguments seed the aggregator's data-selection controls.
     """
 
@@ -270,6 +255,7 @@ class PlaceFieldPopulationDistributions(_PlaceFieldPopulationViewer):
         nbins: int = 40,
         fontsize: float = 8.0,
         figsize: tuple[float, float] = (7.5, 2.5),
+        orientation: str = "horizontal",
         **selection_defaults,
     ):
         super().__init__(
@@ -284,6 +270,7 @@ class PlaceFieldPopulationDistributions(_PlaceFieldPopulationViewer):
             figsize=figsize,
             selection_defaults=selection_defaults,
         )
+        self.add_selection("orientation", value=orientation, options=["horizontal", "vertical"])
 
     def distributions(self, state):
         """Return (edges, mouse-by-bin densities) for the three selected measurements."""
@@ -308,8 +295,11 @@ class PlaceFieldPopulationDistributions(_PlaceFieldPopulationViewer):
         return output
 
     def plot(self, state):
-        fig, axes = self.new_subplots(1, 3, figsize=self.figsize, layout="constrained")
-        labels = ["PF-Var\nAlignment", "Spatial\nReliability", "Amplitude\nReliability"]
+        vertical = state["orientation"] == "vertical"
+        nrows, ncols = (3, 1) if vertical else (1, 3)
+        fig, axes = self.new_subplots(nrows, ncols, figsize=self.figsize, layout="constrained")
+        amplitude_label = "Gain Reliability" if state["amplitude_metric"] in ("trial_gain", "trial_gain_least_squares") else "Amplitude\nReliability"
+        labels = ["r(M,S)", "Spatial\nReliability" if state["orientation"] == "horizontal" else "Spatial Reliability", amplitude_label]
         for ax, (key, (edges, curves)), xlabel in zip(axes, self.distributions(state).items(), labels):
             self._draw_mouse_curves(ax, (edges[:-1] + edges[1:]) / 2, curves, state)
             if key != "amplitude":
@@ -320,10 +310,33 @@ class PlaceFieldPopulationDistributions(_PlaceFieldPopulationViewer):
                 state,
                 xbounds=(edges[0], edges[-1]),
                 xlabel=xlabel,
-                ylabel="prob. density" if ax is axes[0] else "",
+                ylabel="prob. density" if vertical or ax is axes[0] else "",
                 ybounds=ybounds,
                 xticks=[-1, 0, 1] if key != "amplitude" else None,
             )
+        # Keep the native label's layout space and anchor the colored text to it.
+        label = axes[0].xaxis.label
+        pieces = HPacker(
+            children=[
+                TextArea(text, textprops={"fontproperties": label.get_fontproperties(), "color": color})
+                for text, color in [("r(M,", label.get_color()), ("S", "red"), (")", label.get_color())]
+            ],
+            align="baseline",
+            pad=0,
+            sep=0,
+        )
+        colored_label = AnnotationBbox(
+            pieces,
+            (0.5, 0.5),
+            xycoords=label,
+            box_alignment=(0.5, 0.5),
+            frameon=False,
+            pad=0,
+            annotation_clip=False,
+        )
+        colored_label.set_in_layout(False)
+        label.set_alpha(0)
+        axes[0].add_artist(colored_label)
         return fig
 
 
@@ -999,7 +1012,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
     pf_rms_comparison : str
         Which all-trial, within-fold, held-out, or independent-fold PF/RMS pairing to show.
     show_correlation : bool
-        Show PF-Var Alignment (position mean/STD Pearson r) above the position curves.
+        Show r(M,S), the position mean/STD Pearson r, inside the position panel.
     fontsize : float
         Single font size for the whole panel: axis labels, tick labels, in-axes annotations, and
         colorscale labels.
@@ -1011,15 +1024,19 @@ class PlaceFieldPredictionFocus(FigureViewer):
         Draw the trial-amplitude column immediately after spatial reliability.
     amplitude_metric : {"trial_rms", "trial_mean", "trial_pf_dot", "trial_gain", "trial_gain_least_squares"}
         Trial-wise measurement drawn in the top row.
-    amplitude_statistic : str
-        Accepted for compatibility with existing notebooks; the summary uses CoV before transformation.
+    amplitude_statistic : {"mean", "variance", "cv"}
+        Summary of the selected trial metric, before applying amplitude_transform.
     amplitude_transform : {"raw", "inverse", "bounded"}
-        Transform the CoV summary: raw shows CoV, inverse (1 / CoV) and bounded
-        (1 / (1 + CoV²)) show AmpRel. Trial amplitudes and their histogram retain their units.
+        Transform the selected summary: raw shows its statistic label, inverse (1 / value)
+        and bounded (1 / (1 + value²)) show GR. The default statistic is CV. Trial amplitudes and their histogram retain their units.
     nbins : int
         Number of bins in the example cell's trial-correlation and amplitude histograms.
     row_ratio : float
         Top-row height divided by bottom-row height; larger values give the top row more room.
+    colorbar_x, colorbar_y, colorbar_width, colorbar_height : float
+        Inset colorscale bounds (xywh) in activity-panel axes coordinates.
+    bottom_text_location : {"upper left", "upper right"}
+        Corner for all bottom-row legends and equations.
     use_trial_weights : bool
         Weight the trial-consistency scatter by each trial's RMS activity, so silent trials
         don't show up in the plot.
@@ -1050,6 +1067,11 @@ class PlaceFieldPredictionFocus(FigureViewer):
         amplitude_transform: str = "raw",
         nbins: int = 10,
         row_ratio: float = 2.0,
+        colorbar_x: float = 0.225,
+        colorbar_y: float = 0.15,
+        colorbar_width: float = 0.125,
+        colorbar_height: float = 0.7,
+        bottom_text_location: str = "upper left",
         use_trial_weights: bool = True,
         figsize: tuple[float, float] = (12.0, 6.0),
         **selection_defaults,
@@ -1090,10 +1112,11 @@ class PlaceFieldPredictionFocus(FigureViewer):
         self.add_boolean("show_prediction", value=show_prediction)
         self.add_boolean("include_amplitude_summary", value=include_amplitude_summary)
         self.add_selection("amplitude_metric", value=amplitude_metric, options=list(TRIAL_ACTIVITY_METRICS))
-        # Retain amplitude_statistic for existing notebooks; the summary is derived from CoV.
+        self.add_selection("amplitude_statistic", value=amplitude_statistic, options=list(TRIAL_ACTIVITY_STATISTICS))
         self.add_selection("amplitude_transform", value=amplitude_transform, options=list(_AMPLITUDE_TRANSFORMS))
         self.add_integer("nbins", value=nbins, min=1, max=100)
         self.add_float("row_ratio", value=row_ratio, min=0.25, max=10.0)
+        self._add_layout_controls(self, colorbar_x, colorbar_y, colorbar_width, colorbar_height, bottom_text_location)
         self.add_boolean("use_trial_weights", value=use_trial_weights)
 
         self.on_change("mouse", self.update_example_session)
@@ -1101,6 +1124,12 @@ class PlaceFieldPredictionFocus(FigureViewer):
         self.on_change(["roi", "env"], self.refresh_data)
         self.on_change(list(self.selection_names), self.refresh_data)
         self.update_example_session(self.state)
+
+    @staticmethod
+    def _add_layout_controls(viewer, x, y, width, height, location):
+        for name, value in (("x", x), ("y", y), ("width", width), ("height", height)):
+            viewer.add_float(f"colorbar_{name}", value=value, min=0.001 if name in ("width", "height") else -1.0, max=2.0, step=0.001)
+        viewer.add_selection("bottom_text_location", value=location, options=["upper left", "upper right"])
 
     def update_example_session(self, state):
         """Offer the selected mouse's sessions, in chronological order."""
@@ -1242,12 +1271,11 @@ class PlaceFieldPredictionFocus(FigureViewer):
         def draw_curve(ax, values, label, ylabel=None, include_left_spine=False, positions=None, ymax=ymax_pf):
             """One position-axis curve below a map, labeled in-axes."""
             ax.plot(distcenters if positions is None else positions, values, color="k", linewidth=1.5)
-            ax.set_facecolor(("black", 0.04))
             ax.set_xlabel("Position (cm)", labelpad=-10, fontsize=fontsize)
             ax.set_xlim(xlims_clean)
             ax.set_ylim(0, ymax)
             if label:
-                ax.text(0.02, 0.98, label, transform=ax.transAxes, ha="left", va="top", color="k", fontsize=fontsize)
+                _add_panel_text(ax, [[(label, "k")]], fontsize, state["bottom_text_location"])
             ax.set_ylabel(ylabel, fontsize=fontsize, labelpad=-2)
 
             if include_left_spine:
@@ -1273,18 +1301,15 @@ class PlaceFieldPredictionFocus(FigureViewer):
 
         # ------------------------------------------------------------- col 1: activity --
         draw_map(ax_spkmap, spkmap, "gray_r", 0, vmax, ["left"])
-        ax_spkmap.set_title("Placefield\nStructure", ha="center", fontsize=fontsize)
         ax_spkmap.set_ylabel("Trials", fontsize=fontsize)
         ax_spkmap.set_yticks([0, spkmap.shape[0]])
         ax_spkmap.spines["left"].set_bounds(0, spkmap.shape[0])
         draw_curve(ax_placefield, pf, None, "N.Fluor", include_left_spine=True, positions=self.pf_rms_distcenters)
         ax_placefield.plot(self.pf_rms_distcenters, rms, color="tab:red", linewidth=1.5)
-        label = ax_placefield.text(0.02, 0.98, "Pos Mean", transform=ax_placefield.transAxes, ha="left", va="top", color="k", fontsize=fontsize)
-        label = ax_placefield.annotate(
-            "Pos STD", xy=(0, 0), xycoords=label, xytext=(0, -2), textcoords="offset points", ha="left", va="top", color="tab:red", fontsize=fontsize
-        )
+        rows = [[("Mean", "k")], [("STD", "tab:red")]]
         if state["show_correlation"]:
-            _add_summary_title(ax_placefield, "PF-Var Alignment", r, fontsize)
+            rows.append([("r(M,", "k"), ("S", "tab:red"), (f")={r:.2f}", "k")])
+        _add_panel_text(ax_placefield, rows, fontsize, state["bottom_text_location"])
 
         # ---------------------------------------------------------- col 2: consistency --
         if show_consistency:
@@ -1303,7 +1328,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
 
         # --------------------------------------------------------- inset colorscales --
         draw_vertical_colorscale(
-            ax_spkmap.inset_axes([0.225, 0.15, 0.125, 0.7]),
+            ax_spkmap.inset_axes([state[f"colorbar_{name}"] for name in ("x", "y", "width", "height")]),
             "gray_r",
             low_label="0",
             high_label=f"{int(vmax)}",
@@ -1342,15 +1367,16 @@ class PlaceFieldPredictionFocus(FigureViewer):
         return (0.0, float(max(1, np.ceil(np.max(finite)))))
 
     def _draw_amplitude_summary(self, fig, gs, icol, state, ylims, fontsize):
-        """Selected per-trial amplitude, its histogram, and optionally transformed CoV."""
+        """Selected per-trial amplitude, its histogram, and transformed summary statistic."""
         metric = state["amplitude_metric"]
         trial_values = self.trial_activity[metric]
-        summary_value = float(_transform_amplitude(self.trial_activity_summary[f"{metric}_cv"], state["amplitude_transform"]))
-        summary_label = "CoV" if state["amplitude_transform"] == "raw" else "AmpRel"
+        statistic = state["amplitude_statistic"]
+        summary_value = float(_transform_amplitude(self.trial_activity_summary[f"{metric}_{statistic}"], state["amplitude_transform"]))
+        raw_label = "CoV" if statistic == "cv" else _AMPLITUDE_STATISTIC_LABELS[statistic]
+        summary_label = raw_label if state["amplitude_transform"] == "raw" else "GR"
         trial_numbers = np.arange(trial_values.size)
 
         ax_trials = fig.add_subplot(gs[0, icol])
-        ax_trials.set_title("Amplitude\nReliability", ha="center", rotation=0, fontsize=fontsize)
         finite = np.isfinite(trial_values)
         ax_trials.scatter(trial_values[finite], trial_numbers[finite], color="k", s=1.75)
         ax_trials.set_facecolor(("black", 0.04))
@@ -1367,7 +1393,7 @@ class PlaceFieldPredictionFocus(FigureViewer):
         )
 
         ax_summary = fig.add_subplot(gs[1, icol])
-        metric_label = _AMPLITUDE_METRIC_LABELS[metric].removeprefix("Trial ")
+        metric_label = "Gain" if metric in ("trial_gain", "trial_gain_least_squares") else _AMPLITUDE_METRIC_LABELS[metric].removeprefix("Trial ")
         ax_summary.set_xlabel(f"Trial\n{metric_label}", fontsize=fontsize)
         self._draw_trial_histogram(
             ax_summary,
@@ -1377,12 +1403,12 @@ class PlaceFieldPredictionFocus(FigureViewer):
             summary_label,
             summary_value,
             fontsize,
+            location=state["bottom_text_location"],
         )
 
     def _draw_consistency(self, fig, gs, icol, state, ylims, fontsize):
         """Column 2: per-trial consistency and this cell's distribution of correlations."""
         ax_consistency = fig.add_subplot(gs[0, icol])
-        ax_consistency.set_title("Spatial\nReliability", ha="center", rotation=0, fontsize=fontsize)
         ax_reliability = fig.add_subplot(gs[1, icol])
         trial_numbers, trial_weights, trial_consistency, reliability = self.consistency
 
@@ -1399,20 +1425,21 @@ class PlaceFieldPredictionFocus(FigureViewer):
             trial_consistency,
             state["nbins"],
             (-1, 1),
-            "SpRel",
+            "SR",
             reliability,
             fontsize,
             xlim=(-1.1, 1.1),
+            location=state["bottom_text_location"],
         )
 
     @staticmethod
-    def _draw_trial_histogram(ax, values, nbins, bounds, summary_label, summary_value, fontsize, *, xlim=None):
-        """Finite trial values with an underlined label above a centered '=value'."""
+    def _draw_trial_histogram(ax, values, nbins, bounds, summary_label, summary_value, fontsize, *, xlim=None, location="upper left"):
+        """Finite trial values with a summary equation inside the selected upper corner."""
         finite = np.asarray(values, dtype=float)
         finite = finite[np.isfinite(finite)]
         counts, _, _ = ax.hist(finite, bins=nbins, range=bounds, color="0.75", edgecolor="none")
         tallest = max(1.0, float(np.max(counts)))
         ax.set_ylim(0, tallest * 1.1)
         ax.set_xlim(bounds if xlim is None else xlim)
-        _add_summary_title(ax, summary_label, summary_value, fontsize)
+        _add_panel_text(ax, [[(f"{summary_label}={summary_value:.2f}", "k")]], fontsize, location)
         style_axis(ax, fontsize=fontsize, xbounds=bounds, xticks=list(bounds), yticks=[], spines_visible=["bottom"])

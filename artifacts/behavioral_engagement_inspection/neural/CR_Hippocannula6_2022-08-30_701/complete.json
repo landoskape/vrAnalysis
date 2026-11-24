@@ -1,0 +1,9 @@
+{
+  "session_key": "CR_Hippocannula6_2022-08-30_701",
+  "role": "sham_control",
+  "cut": 59,
+  "reference": "CR_Hippocannula6_2022-09-06_701",
+  "n_rois": 6960,
+  "n_trials": 85,
+  "position_bins": 243
+}

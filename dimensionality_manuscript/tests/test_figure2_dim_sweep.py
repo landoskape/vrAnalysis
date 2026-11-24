@@ -118,9 +118,9 @@ def test_rank_models_sweep_viewer_selects_one_additive_and_rrr_with_performance_
     fig = viewer.plot(viewer.state)
     ax = fig.axes[0]
 
-    assert results.selected_models == ["rrr", "internal_placefield_1d_structured_additive"]
+    assert results.selected_models == ["internal_placefield_1d_structured_additive", "rrr"]
     mean_lines = [line for line in ax.lines if not line.get_label().startswith("_")]
-    assert [line.get_label() for line in mean_lines] == ["Peer Prediction", "Shared Residual"]
+    assert [line.get_label() for line in mean_lines] == ["Shared Residual", "Peer Prediction"]
     assert [line.get_color() for line in mean_lines] == list(RANK_SWEEP_MODEL_COLORS)
     assert all(np.all(np.isin(line.get_xdata(), RANK_VALUES)) for line in ax.lines)
     assert all(not np.any(np.isin(line.get_xdata(), [6.0, 8.0])) for line in ax.lines)

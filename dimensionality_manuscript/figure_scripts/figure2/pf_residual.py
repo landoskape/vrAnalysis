@@ -192,7 +192,7 @@ class ModelPlacefieldResidualViewer(FigureViewer):
     model_names : list[ModelName]
         Models to draw, in x order.
     include_structured_additive : bool
-        Append Shared Residual after Peer Prediction.
+        Insert Shared Residual before Peer Prediction.
     include_external_placefield : bool
         Prepend external PF ("Placefield") in gray; internal PF is "Int. Pos. PF".
         In relative mode, external PF becomes the baseline; otherwise the first supplied
@@ -477,7 +477,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
     model_names : list[ModelName]
         Models to draw, in x order.
     include_structured_additive : bool
-        Append Shared Residual after Peer Prediction.
+        Insert Shared Residual before Peer Prediction.
     include_external_placefield : bool
         Prepend external PF ("Placefield") in gray; internal PF is "Int. Pos. PF".
         In relative mode, external PF becomes the baseline; otherwise the first supplied
@@ -505,6 +505,9 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
     **selection_defaults
         Starting values for data-selection widgets built from the aggregator's param axes.
     """
+
+    _model_styles = staticmethod(_residual_model_styles)
+    _roi_subsets = PF_RESIDUAL_SUBSETS
 
     def __init__(
         self,
@@ -540,7 +543,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         self.results = results
         self.figsize = figsize
         self.include_external_placefield = include_external_placefield
-        self.model_names, self.model_labels, self.model_colors = _residual_model_styles(
+        self.model_names, self.model_labels, self.model_colors = self._model_styles(
             model_names, include_structured_additive, include_external_placefield
         )
         self._scores: dict[str, np.ndarray] = {}
@@ -549,7 +552,7 @@ class ModelPlacefieldResidualInsetViewer(FigureViewer):
         self.add_selection("fold", value=fold, options=list(PF_RESIDUAL_FOLDS))
         self.add_selection("metric", value=metric, options=list(PF_RESIDUAL_METRIC_OPTIONS))
         self.add_selection("statistic", value=statistic, options=list(PF_RESIDUAL_STATISTICS))
-        self.add_selection("show", value=show, options=list(PF_RESIDUAL_SUBSETS))
+        self.add_selection("show", value=show, options=list(self._roi_subsets))
         self.add_boolean("sharey", value=sharey)
         self.add_boolean("relative", value=relative)
         self.add_float("fontsize", value=fontsize, min=4.0, max=24.0)

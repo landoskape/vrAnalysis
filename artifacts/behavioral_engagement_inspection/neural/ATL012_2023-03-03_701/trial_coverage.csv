@@ -1,0 +1,4 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status,calibration_trials,speed_matched_trials,pre_mean_speed,post_mean_speed
+ATL012_2023-03-03_701,1,18,7,7,sham_control,127,insufficient_disjoint_calibration_or_evaluation_trials,,,,
+ATL012_2023-03-03_701,3,20,11,11,sham_control,127,ok,9.0,11.0,43.58520923961293,43.61319004405629
+ATL012_2023-03-03_701,4,62,44,20,sham_control,127,ok,42.0,20.0,46.57071037292481,45.17870779037476

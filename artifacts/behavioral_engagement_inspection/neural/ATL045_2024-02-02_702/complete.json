@@ -1,0 +1,9 @@
+{
+  "session_key": "ATL045_2024-02-02_702",
+  "role": "sham_control",
+  "cut": 125,
+  "reference": "ATL045_2024-02-01_701",
+  "n_rois": 6555,
+  "n_trials": 158,
+  "position_bins": 194
+}

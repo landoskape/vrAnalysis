@@ -156,7 +156,7 @@ class RegressionFamiliarityViewer(FigureViewer):
         self.include_structured_additive = include_structured_additive
         self.comparison_model_names = [FAMILIARITY_PF_GAIN_MODEL, FAMILIARITY_PEER_MODEL]
         if include_structured_additive:
-            self.comparison_model_names.append(FAMILIARITY_STRUCTURED_ADDITIVE_MODEL)
+            self.comparison_model_names.insert(1, FAMILIARITY_STRUCTURED_ADDITIVE_MODEL)
 
         # PF is loaded even in improvement mode because it is the subtraction baseline. Whether
         # it is displayed is decided per value mode in _plot_value_mode(), which also lets the
@@ -469,6 +469,9 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
     """
 
     _CURVE_KNOBS = RegressionFamiliarityViewer._CURVE_KNOBS
+    _score_key = "r2_env"
+    _score_source = "RegressionConfig schema v4 or newer"
+    _ylabel_pad = -10
 
     def __init__(
         self,
@@ -542,16 +545,18 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         selected = self.results.sel(
             model_name=model_name,
             avg_by_mouse=False,
+            squeeze_ones=False,
+            keys=[self._score_key],
             **selection,
         )
-        if "r2_env" not in selected:
+        if self._score_key not in selected:
             raise ValueError(
-                "RegressionFamiliarityByEnvViewer requires r2_env results from "
-                "RegressionConfig schema v4 or newer; recompute or load current results."
+                f"{type(self).__name__} requires {self._score_key} results from "
+                f"{self._score_source}; recompute or load current results."
             )
-        scores = np.asarray(selected["r2_env"], dtype=float)
+        scores = np.asarray(selected[self._score_key], dtype=float)
         if scores.ndim != 2:
-            raise ValueError(f"Expected r2_env with shape (sessions, environment slots), got {scores.shape}")
+            raise ValueError(f"Expected {self._score_key} with shape (sessions, environment slots), got {scores.shape}")
         return scores
 
     def refresh_data(self, state):
@@ -560,7 +565,7 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
         self._baseline_scores = self._select_scores(state["baseline_model"], selection)
         self._reference_scores = self._select_scores(state["reference_model"], selection)
         if self._baseline_scores.shape != self._reference_scores.shape:
-            raise ValueError("Baseline and reference r2_env arrays must have matching shapes")
+            raise ValueError(f"Baseline and reference {self._score_key} arrays must have matching shapes")
 
     def _slot_curves(
         self, values: np.ndarray, slot: int, within_env_session: bool, *, session_support: np.ndarray | None = None,
@@ -577,8 +582,8 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
                 curves[str(mouse)] = mouse_values
         return curves
 
-    @staticmethod
-    def _fit_axis(ax, finite: np.ndarray, extents: list[int], state, ylabel: str) -> None:
+    @classmethod
+    def _fit_axis(cls, ax, finite: np.ndarray, extents: list[int], state, ylabel: str) -> None:
         if state["auto_ylim"] and finite.size:
             low, high = min(float(finite.min()), 0.0), float(finite.max())
             pad = 0.05 * (high - low) if high > low else 0.05
@@ -595,7 +600,7 @@ class RegressionFamiliarityByEnvViewer(FigureViewer):
             ybounds=ylim,
             yticks=[0, ytick_max],
         )
-        ax.set_ylabel(ylabel, labelpad=-10, fontsize=state["fontsize"])
+        ax.set_ylabel(ylabel, labelpad=cls._ylabel_pad, fontsize=state["fontsize"])
 
     def _draw_panel(self, ax, values: np.ndarray, state, *, improvement: bool) -> None:
         extents = []

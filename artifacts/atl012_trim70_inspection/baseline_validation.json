@@ -1,0 +1,11 @@
+{
+  "reliability_max_abs_error": 0.7259929111779517,
+  "reliability_nan_masks_match": true,
+  "reliability_eligible_max_abs_error": 7.135179763695376e-08,
+  "reliability_low_activity_discrepancy_count": 763,
+  "fraction_active_max_abs_error": 2.384185791015625e-07,
+  "fraction_active_nan_masks_match": true,
+  "fraction_active_eligible_max_abs_error": 2.384185791015625e-07,
+  "fraction_active_low_activity_discrepancy_count": 0,
+  "quality_membership_matches": true
+}

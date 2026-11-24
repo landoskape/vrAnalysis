@@ -23,9 +23,12 @@ from dimensionality_manuscript.figure_scripts.panels import (
 # Axes-fraction rectangle (x0, y0, width, height) of a horizontal colorscale inset.
 COLORSCALE_INSET_RECT: tuple[float, float, float, float] = (0.72, 0.10, 0.25, 0.2)
 
+# Fixed VR environment identities (A, B, C): purple, pink, teal.
+VR_ENV_COLORS: dict[int, str] = {1: "#6942A6", 3: "#C04482", 4: "#007D83"}
+
 
 def env_slot_color(slot: int):
-    """Experience-slot color, shared by the VR schematic, the timeline, and the ``by_env`` panels.
+    """Experience-slot color, shared by the timeline and the ``by_env`` panels.
 
     Environments are indexed by the order the mouse first saw them, not by environment id: the
     two cohorts run disjoint environment indices, so only the slot is comparable across them.
@@ -460,6 +463,37 @@ def draw_session_curve_groups(ax, xvals: np.ndarray, by_session: np.ndarray, sta
 # ======================================================================================
 # Per-slot experience curves
 # ======================================================================================
+
+
+def load_placefield_cell_arrays(results, selection, metric_keys, *, schema_version):
+    """Load aligned session/slot/ROI arrays and mark the sessions that ran each environment."""
+    array_keys = {**metric_keys, "reliability": "reliability_slot", "fraction_active": "fraction_active_slot"}
+    keys = [*array_keys.values(), "env_slot_ids"]
+    out = results.sel(keys=keys, squeeze_ones=False, **selection)
+    missing = [key for key in keys if key not in out]
+    if missing:
+        raise KeyError(f"Missing {missing}; rerun the pfpred_quality schema {schema_version} sweep.")
+    arrays = [np.asarray(out[key], dtype=float) for key in keys[:-1]]
+    if any(array.ndim != 3 for array in arrays) or len({array.shape[:2] for array in arrays}) != 1:
+        raise ValueError("Per-cell arrays must have matching session and environment-slot dimensions.")
+    # Lazy aggregation can retain different amounts of trailing ROI padding per key.
+    width = min(array.shape[-1] for array in arrays)
+    if any(not np.isnan(array[..., width:]).all() for array in arrays):
+        raise ValueError("Per-cell arrays have incompatible ROI dimensions beyond NaN padding.")
+    aligned = dict(zip(array_keys, (array[..., :width] for array in arrays)))
+    env_slot_ids = np.asarray(out["env_slot_ids"], dtype=float)
+    if env_slot_ids.shape != arrays[0].shape[:2] or arrays[0].shape[0] != len(results.sessions):
+        raise ValueError("env_slot_ids and per-cell arrays must match the aggregator's sessions and slots.")
+    # Slot IDs describe the mouse's complete environment order, even in sessions
+    # before an environment was introduced. Only session metadata records exposure.
+    env_present = np.array(
+        [
+            [np.isfinite(env) and env in session.environments for env in slot_ids]
+            for session, slot_ids in zip(results.sessions, env_slot_ids)
+        ],
+        dtype=bool,
+    )
+    return aligned, env_slot_ids, env_present
 
 
 def pad_stack(curves: list[np.ndarray]) -> np.ndarray:

@@ -105,10 +105,12 @@ class ModelZooUltraCondensedConfig:
     row_gap: float = 0.5
     lane_gap: float = 0.3
     group_gap: float = 1.1
-    structured_bypass_offset: float = 0.45  # horizontal gap from PF/target to the residual column
+    structured_bypass_offset: float = 0.45  # horizontal gap from gain to the residual column
     label_column_width: float = 3.5
     label_gap: float = 0.6
     label_line_spacing: float = 0.62
+    vertical_offset: float = 20.0  # percent of box_height above/below the source center
+    gain_push: float = 0.0  # data units: pull residual/peer columns left; gain stays fixed relative to source
 
     # --- Colors -----------------------------------------------------------------------
     placefield_color: str = "#666666"  # external PF, matching ModelPerformanceViewer
@@ -124,7 +126,7 @@ class ModelZooUltraCondensedConfig:
     arrow_linewidth: float = 2.2
     arrow_mutation_scale: float = 10.0
     junction_dot_size: float = 4.0
-    junction_dot_offset: float = 0.15  # leftward from PF -> target, as a fraction of box_width
+    junction_dot_offset: float = 0.15  # rightward from PF -> target, as a fraction of box_width
     horizontal_connections_as_lines: bool = False  # pos-PF and source/target-residual connections
     vertical_connections_as_lines: bool = False  # PF backbone, source-gain, residual, and peer paths
     label_residuals_by_population: bool = True  # source\nresidual / target\nresidual, else residual twice
@@ -641,6 +643,8 @@ class ModelZooCondensed(ModelZooSchematic):
 # ======================================================================================
 
 _ZOO_ULTRA_CONDENSED_LIMITS = {
+    "vertical_offset": (0.0, 50.0),
+    "gain_push": (0.0, 2.0),
     "box_width": (0.5, 4.0),
     "box_height": (0.5, 3.0),
     "latent_height_scale": (1.0, 2.5),
@@ -674,17 +678,17 @@ _ZOO_ULTRA_CONDENSED_LABELS = (
     "Placefield",
     "Int. Pos. PF",
     "Global Gain",
-    "Peer Pred.",
     "Shared Res.",
+    "Peer Pred.",
 )
 
 
 class ModelZooUltraCondensed(FigureViewer):
     """Two-group schematic overlaying the four PF-family models beside peer prediction.
 
-    The first group has black source/position and gray PF/target boxes. A red gain box
-    branches from source and modulates PF -> target; orange source/target residual boxes
-    sit in a column to their right. The peer group is a direct blue source -> target path.
+    The first group has gray PF/target, black source/position, then red gain columns.
+    Gain branches from source and modulates PF -> target inside the orange source/target
+    residual loop to their right. The peer group is a direct blue source -> target path.
     W markers identify the fitted residual and peer regression weights.
     """
 
@@ -761,8 +765,8 @@ class ModelZooUltraCondensed(FigureViewer):
             cfg.placefield_color,
             cfg.internal_placefield_color,
             cfg.gain_color,
-            cfg.peer_color,
             cfg.structured_additive_color,
+            cfg.peer_color,
         )
         for y, label, color in zip(label_ys, _ZOO_ULTRA_CONDENSED_LABELS, label_colors):
             ax.text(
@@ -778,9 +782,11 @@ class ModelZooUltraCondensed(FigureViewer):
 
         # Internal position inference is black; the shared PF lookup/target is gray.
         family_left = cfg.label_column_width + cfg.label_gap
-        gain_cx = family_left + cfg.gain_width / 2
-        pos_cx = family_left + cfg.gain_width + cfg.lane_gap + bw / 2
-        pf_cx = pos_cx + bw + cfg.lane_gap
+        pf_cx = family_left + bw / 2
+        pos_cx = pf_cx + bw + cfg.lane_gap
+        gain_cx = pos_cx + bw / 2 + cfg.lane_gap + cfg.gain_width / 2
+        # Compact the loop while keeping gain fixed relative to the source column.
+        residual_cx = gain_cx + cfg.gain_width / 2 + cfg.structured_bypass_offset + bw / 2 - cfg.gain_push
         _zoo_box(ax, pos_cx, y_source, bw, h, "source", cfg.internal_placefield_color, cfg)
         _zoo_box(ax, pos_cx, y_model, bw, hm, "pos", cfg.internal_placefield_color, cfg)
         _zoo_box(ax, pf_cx, y_model, bw, hm, "PF", cfg.placefield_color, cfg)
@@ -794,9 +800,9 @@ class ModelZooUltraCondensed(FigureViewer):
             as_line=cfg.vertical_connections_as_lines,
         )
         connection(
-            pos_cx + bw / 2,
+            pos_cx - bw / 2,
             y_model,
-            pf_cx - bw / 2,
+            pf_cx + bw / 2,
             y_model,
             cfg.placefield_color,
             as_line=cfg.horizontal_connections_as_lines,
@@ -810,25 +816,26 @@ class ModelZooUltraCondensed(FigureViewer):
             as_line=cfg.vertical_connections_as_lines,
         )
 
-        # Red global-gain overlay: leave the source to the left, then turn down into gain
-        # with a single bend. Gain comes down and right to the left side of PF -> target.
+        # Nest the red gain path inside the orange residual loop, with separate source ports.
+        offset = cfg.vertical_offset / 100 * h
+        y_gain_source = y_source - offset
+        y_residual_source = y_source + offset
         _zoo_box(ax, gain_cx, y_model, cfg.gain_width, hm, "gain", cfg.gain_color, cfg)
-        _zoo_line(ax, [pos_cx - bw / 2, gain_cx], [y_source, y_source], cfg.gain_color, cfg)
+        _zoo_line(ax, [pos_cx + bw / 2, gain_cx], [y_gain_source, y_gain_source], cfg.gain_color, cfg)
         connection(
             gain_cx,
-            y_source,
+            y_gain_source,
             gain_cx,
             mid_top,
             cfg.gain_color,
             as_line=cfg.vertical_connections_as_lines,
         )
         y_junction = (mid_bot + tgt_top) / 2
-        dot_x = pf_cx - cfg.junction_dot_offset * bw
+        dot_x = pf_cx + cfg.junction_dot_offset * bw
         _zoo_line(ax, [gain_cx, gain_cx, dot_x], [mid_bot, y_junction, y_junction], cfg.gain_color, cfg)
         ax.plot(dot_x, y_junction, marker="o", markersize=cfg.junction_dot_size, color=cfg.gain_color, zorder=4)
 
         # The residual column aligns with the source/target rows and learns a vertical map.
-        residual_cx = pf_cx + bw + cfg.structured_bypass_offset
         source_residual_label = "source\nresidual" if cfg.label_residuals_by_population else "residual"
         target_residual_label = "target\nresidual" if cfg.label_residuals_by_population else "residual"
         _zoo_box(
@@ -843,9 +850,9 @@ class ModelZooUltraCondensed(FigureViewer):
         )
         connection(
             pos_cx + bw / 2,
-            y_source,
+            y_residual_source,
             residual_cx - bw / 2,
-            y_source,
+            y_residual_source,
             cfg.structured_additive_color,
             as_line=cfg.horizontal_connections_as_lines,
         )

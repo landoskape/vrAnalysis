@@ -65,6 +65,69 @@ def test_quality_partition_and_exposure_index_survive_empty_selected_sessions():
     assert np.isnan(viewer.metric_stacks["relative"]["quality"]["correlation"][0]).all()
 
 
+def test_gamma_controls_use_paired_cells_transforms_and_dotted_curves():
+    results = Results()
+    results.arrays["gamma_mean_pf_rms_r_f2_from_f1_slot"] = np.tile([0.1, 0.3, 0.5], (6, 2, 1))
+    results.arrays["gamma_mean_trial_rms_cv_slot"] = np.tile([1., 2., 4.], (6, 2, 1))
+    results.arrays["trial_residual_rms_mean_all_from_all"] = np.tile([1., np.nan, 4.], (6, 2, 1))
+    results.arrays["gamma_mean_trial_residual_rms_mean_all_from_all_slot"] = np.tile([2., 100., 4.], (6, 2, 1))
+    viewer = HolisticPlacefieldFamiliarityViewer(
+        results, include_gamma_control=True, include_residual_rms=True,
+        residual_rms_transform="inverse", show_schematic=False,
+    )
+    stacks = viewer.metric_stacks["relative"]["all"]
+    np.testing.assert_allclose(stacks["gamma_amplitude"][0], np.mean(1 / (1 + np.array([1., 2., 4.])**2)))
+    np.testing.assert_allclose(stacks["gamma_residual_rms"][0], np.mean([0.5, 0.25]))
+    assert "gamma_reliability" not in stacks
+    fig = viewer.plot(viewer.state)
+    try:
+        for ax in fig.axes[:3] + fig.axes[6:]:
+            gamma = [line for line in ax.lines if "(Gamma)" in line.get_label()]
+            assert gamma
+            assert all(line.get_linestyle() == ":" for line in gamma)
+        assert all("(Gamma)" not in line.get_label() for ax in fig.axes[3:6] for line in ax.lines)
+    finally:
+        from matplotlib import pyplot as plt
+        plt.close(fig)
+    viewer.update_boolean("relative_values", value=True)
+    viewer.refresh_summary_data(viewer.state)
+    for metric in ("gamma_amplitude", "gamma_residual_rms", "gamma_correlation"):
+        np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"][metric][0], 1.)
+
+
+def test_gamma_controls_are_suppressed_for_split_and_reload_when_cells_change():
+    results = Results()
+    viewer = HolisticPlacefieldFamiliarityViewer(results, include_gamma_control=True, cells="split")
+    assert not any(key.startswith("gamma_") for key in viewer.arrays)
+    results.arrays["gamma_mean_pf_rms_r_f2_from_f1_slot"] = results.arrays["pf_rms_r_f2_from_f1_slot"]
+    results.arrays["gamma_mean_trial_rms_cv_slot"] = results.arrays["trial_rms_cv"]
+    viewer.update_selection("cells", value="all")
+    viewer.reload_arrays(viewer.state)
+    assert "gamma_amplitude" in viewer.metric_stacks["relative"]["all"]
+    viewer.update_selection("cells", value="split")
+    viewer.reload_arrays(viewer.state)
+    assert not any(key.startswith("gamma_") for key in viewer.arrays)
+    viewer.update_boolean("include_gamma_control", value=False)
+    viewer.update_selection("cells", value="all")
+    viewer.reload_arrays(viewer.state)
+    assert not any(key.startswith("gamma_") for key in viewer.arrays)
+
+
+def test_gamma_fraction_uses_the_selected_fold_and_missing_controls_require_v15():
+    with pytest.raises(KeyError, match="schema v15"):
+        HolisticPlacefieldFamiliarityViewer(Results(), include_gamma_control=True)
+    results = Results()
+    results.arrays["gamma_mean_pf_rms_r_f2_from_f1_slot"] = results.arrays["pf_rms_r_f2_from_f1_slot"]
+    results.arrays["gamma_mean_trial_rms_cv_slot"] = results.arrays["trial_rms_cv"]
+    results.arrays["pf_frac_unexplained_cv_slot"] = np.full((6, 2, 3), 1.5)
+    results.arrays["gamma_mean_pf_frac_unexplained_cv_slot"] = np.full((6, 2, 3), 0.5)
+    viewer = HolisticPlacefieldFamiliarityViewer(
+        results, include_gamma_control=True, include_residual_rms=True,
+        residual_metric="unexplained_fraction", residual_rms_fold="cv",
+    )
+    np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"]["gamma_unexplained_fraction"][0], 0.5)
+
+
 def test_metric_switches_and_transform_before_cell_summary():
     viewer = HolisticPlacefieldFamiliarityViewer(Results())
     np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"]["amplitude"][0], [[1.7 / 3] * 3] * 2)
@@ -75,6 +138,93 @@ def test_metric_switches_and_transform_before_cell_summary():
     viewer.reload_arrays(state)
     np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"]["amplitude"][0], [[4.0] * 3] * 2)
     np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"]["correlation"][0], [[-0.4] * 3] * 2)
+
+
+@pytest.mark.parametrize("statistic", ["mean", "variance", "cv"])
+@pytest.mark.parametrize("transform", ["raw", "inverse", "bounded", "inv"])
+def test_residual_rms_independent_controls_transform_before_cell_summary(statistic, transform):
+    from dimensionality_manuscript.configs.pfpred_quality import PF_VARIANCE_COMPARISONS
+    results = Results()
+    for index, fold in enumerate(PF_VARIANCE_COMPARISONS, 1):
+        results.arrays[f"trial_residual_rms_{statistic}_{fold}"] = np.tile(np.array([1., 2., 4.]) * index, (6, 2, 1))
+    viewer = HolisticPlacefieldFamiliarityViewer(
+        results, include_residual_rms=True, residual_rms_statistic=statistic, residual_rms_transform=transform)
+    for index, fold in enumerate(PF_VARIANCE_COMPARISONS, 1):
+        state = {**viewer.state, "residual_rms_fold": fold}
+        viewer.reload_arrays(state)
+        values = np.array([1., 2., 4.]) * index
+        expected = {"raw": values, "inverse": 1 / values, "inv": 1 / values,
+                    "bounded": 1 / (1 + values**2)}[transform]
+        np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"]["residual_rms"][0], expected.mean())
+        # Amplitude settings and values remain independent of residual settings.
+        np.testing.assert_allclose(viewer.metric_stacks["relative"]["all"]["amplitude"][0], 1.7 / 3)
+
+
+@pytest.mark.parametrize("include_mean_std,show_schematic", [(True, True), (False, False)])
+def test_residual_rms_is_bottom_row_with_session_labels(include_mean_std, show_schematic):
+    results = Results()
+    results.arrays["trial_residual_rms_mean_all_from_all"] = np.tile([1., 2., 4.], (6, 2, 1))
+    viewer = HolisticPlacefieldFamiliarityViewer(
+        results, include_residual_rms=True, residual_rms_transform="bounded",
+        include_mean_std=include_mean_std, show_schematic=show_schematic, cells="split")
+    fig = viewer.plot(viewer.state)
+    fig.canvas.draw()
+    assert len(fig.axes) == (3 + int(include_mean_std) + int(show_schematic)) * 3
+    assert fig.axes[-3].get_ylabel() == "Bounded Residual RMS Mean"
+    assert fig.axes[-3].get_xlabel() == "Overall session #"
+    assert fig.axes[-2].get_xlabel() == fig.axes[-1].get_xlabel() == "Env session #"
+    assert all(ax.get_xlabel() == "" for ax in fig.axes[:-3])
+    np.testing.assert_allclose(fig.axes[-3].get_ylim(), [0, 1])
+    assert set(viewer.metric_stacks["relative"]) == {"quality", "not quality"}
+    viewer.reload_arrays({**viewer.state, "include_residual_rms": False})
+    assert "residual_rms" not in viewer.arrays
+    assert "residual_rms" not in viewer.metric_stacks["relative"]["quality"]
+
+
+def test_residual_rms_requires_new_results_only_when_enabled():
+    HolisticPlacefieldFamiliarityViewer(Results())
+    with pytest.raises(KeyError, match="schema v13"):
+        HolisticPlacefieldFamiliarityViewer(Results(), include_residual_rms=True)
+
+
+def test_unexplained_fraction_uses_selected_fold_and_shows_negative_r2():
+    results = Results()
+    results.arrays["pf_frac_unexplained_cv_slot"] = np.tile([0.5, 1.5, 2.5], (6, 2, 1))
+    viewer = HolisticPlacefieldFamiliarityViewer(
+        results, include_residual_rms=True, residual_metric="unexplained_fraction", residual_rms_fold="cv",
+        show_schematic=False,
+    )
+    fig = viewer.plot(viewer.state)
+    try:
+        axis = fig.axes[-3]
+        assert axis.get_xlabel() == "Overall session #"
+        assert axis.get_ylabel() == r"PF × Gain $1-R^2$"
+        assert axis.get_ylim()[1] > 1.5
+        line = next(line for line in axis.lines if line.get_label() == "1st Env")
+        np.testing.assert_allclose(line.get_ydata(), 1.5)
+    finally:
+        from matplotlib import pyplot as plt
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot_style", ["each", "errorPlot"])
+def test_mouse_selection_controls_example_columns_without_changing_average(plot_style):
+    results = Results()
+    results.arrays["pf_rms_r_f2_from_f1_slot"][3:] *= 2
+    # Only M1 contributes to the final chronological / relative exposure.
+    results.arrays["pf_rms_r_f2_from_f1_slot"][3] = np.nan
+    viewer = HolisticPlacefieldFamiliarityViewer(results, plot_style=plot_style)
+    for mouse, expected in (("M1", [1.4 / 3] * 3), ("M2", [2.8 / 3, 2.8 / 3, np.nan])):
+        fig = viewer.plot({**viewer.state, "mouse": mouse})
+        for ax in fig.axes[3:5]:
+            line = next(line for line in ax.lines if line.get_label() == "1st Env")
+            np.testing.assert_allclose(line.get_ydata(), expected)
+            assert not ax.collections  # Single mouse curves have no across-mouse band.
+            assert ax.get_xlim() == (1, 3)  # Other metrics still support exposure 3.
+        line = next(line for line in fig.axes[5].lines if line.get_label() == "1st Env")
+        np.testing.assert_allclose(line.get_ydata(), [0.7, 0.7, np.nan])
+        assert fig.axes[5].get_xlim() == (1, 3)  # Other metrics still support exposure 3.
+        assert all(ax.get_title() == "" for ax in fig.axes[:3])
 
 
 def test_metric_nan_retains_exposure_but_absent_environment_does_not():
@@ -96,11 +246,11 @@ def test_timeline_snapshot_and_both_column_geometries(tmp_path):
     source.update_integer("num_training", value=8)
     fig = viewer.plot(viewer.state)
     fig.canvas.draw()
-    assert len(fig.axes) == 8
+    assert len(fig.axes) == 12
     assert viewer.timeline.state["num_training"] == 2
     assert source.state["mode"] == source_state["mode"]
-    absolute, relative = fig.axes[:2]
-    # Phase bars precede the environment rectangles. The second env starts later only
+    absolute, relative, average = fig.axes[:3]
+    # Only environment rectangles remain. The second env starts later only
     # in absolute order and has two imaging exposures in both representations.
     abs_env = absolute.patches[-1]
     rel_env = relative.patches[-1]
@@ -110,36 +260,38 @@ def test_timeline_snapshot_and_both_column_geometries(tmp_path):
     assert rel_env.get_width() == pytest.approx(2 / 3)
     np.testing.assert_allclose(absolute.get_xlim(), [1 / 6, 5 / 6])
     np.testing.assert_allclose(relative.get_xlim(), [1 / 6, 5 / 6])
-    assert [text.get_text() for text in absolute.texts] == ["Imaging Timeline", "1st Env", "2nd Env"]
-    assert [text.get_text() for text in relative.texts] == ["Relative Timeline", "1st Env", "2nd Env"]
-    assert absolute.get_title() == relative.get_title() == ""
-    for ax in fig.axes[2:6]:
+    assert [text.get_text() for text in absolute.texts] == ["Chronological Time", "1st Env", "2nd Env"]
+    assert [text.get_text() for text in relative.texts] == ["Relative Time", "1st Env", "2nd Env"]
+    assert [text.get_text() for text in average.texts] == ["Relative Time", "1st Env", "2nd Env"]
+    assert all(len(ax.patches) == 2 for ax in fig.axes[:3])
+    assert absolute.get_title() == relative.get_title() == average.get_title() == ""
+    for ax in fig.axes[3:9]:
         assert ax.get_xlabel() == ""
         assert not ax.spines["bottom"].get_visible()
         assert not ax.get_xticklabels()
-    assert fig.axes[6].get_xlabel() == "Overall session #"
-    assert fig.axes[7].get_xlabel() == "Env session #"
-    assert fig.axes[6].get_ylabel() == "Amplitude Reliability"
-    assert all(ax.spines["bottom"].get_visible() for ax in fig.axes[6:])
-    for ax in fig.axes[3::2]:
+    assert fig.axes[9].get_xlabel() == "Overall session #"
+    assert fig.axes[10].get_xlabel() == fig.axes[11].get_xlabel() == "Env session #"
+    assert fig.axes[9].get_ylabel() == "Amplitude Reliability"
+    assert all(ax.spines["bottom"].get_visible() for ax in fig.axes[9:])
+    for ax in [ax for index, ax in enumerate(fig.axes[3:], start=3) if index % 3]:
         assert not ax.spines["left"].get_visible()
         assert not ax.get_yticklabels()
         assert all(not tick.tick1line.get_visible() and not tick.tick2line.get_visible()
                    for tick in ax.yaxis.get_major_ticks())
-    assert all(ax.spines["left"].get_visible() for ax in fig.axes[2::2])
-    for ax in fig.axes[2:4]:
+    assert all(ax.spines["left"].get_visible() for ax in fig.axes[3::3])
+    for ax in fig.axes[3:6]:
         np.testing.assert_allclose(ax.get_ylim(), [-1, 1])
-    for ax in fig.axes[4:]:
+    for ax in fig.axes[6:]:
         np.testing.assert_allclose(ax.get_ylim(), [0, 1])
-    assert fig.axes[2].get_ylabel() == "PF-Var Alignment"
-    assert fig.axes[2].yaxis.label.get_color() != "none"
-    absolute_env = next(line for line in fig.axes[2].lines if line.get_label() == "2nd Env (not quality)")
-    relative_env = next(line for line in fig.axes[3].lines if line.get_label() == "2nd Env (not quality)")
+    assert fig.axes[3].get_ylabel() == "PF-Var Alignment"
+    assert fig.axes[3].yaxis.label.get_color() != "none"
+    absolute_env = next(line for line in fig.axes[3].lines if line.get_label() == "2nd Env (not quality)")
+    relative_env = next(line for line in fig.axes[4].lines if line.get_label() == "2nd Env (not quality)")
     np.testing.assert_array_equal(absolute_env.get_xdata(), [1, 2, 3])
     np.testing.assert_array_equal(relative_env.get_xdata(), [1, 2])
-    assert any(line.get_linestyle() == "--" for line in fig.axes[2].lines)
-    assert any(line.get_marker() == "." for line in fig.axes[2].lines)
-    assert len(fig.axes[2].get_legend().get_texts()) == 4
+    assert any(line.get_linestyle() == "--" for line in fig.axes[3].lines)
+    assert any(line.get_marker() == "." for line in fig.axes[3].lines)
+    assert len(fig.axes[3].get_legend().get_texts()) == 4
     fig.savefig(tmp_path / "holistic.png")
 
 
@@ -165,7 +317,7 @@ def test_curves_require_two_mice_at_each_xvalue(plot_style, hide_error):
             for metric in metrics:
                 metrics[metric] = {0: supported if group == "quality" else unsupported}
     fig = viewer.plot(viewer.state)
-    for ax in fig.axes[2:]:
+    for ax in fig.axes[5::3]:
         # Mask the single-mouse point in individual curves as well as the mean/band.
         assert all(np.isnan(line.get_ydata()[1]) for line in ax.lines if line.get_linestyle() != ":")
         assert not any("not quality" in line.get_label() for line in ax.lines)
@@ -183,25 +335,40 @@ def test_full_row_limits_and_autoscaling(transform):
     for groups in viewer.metric_stacks.values():
         groups["all"]["amplitude"] = {0: values}
     full = viewer.plot(viewer.state)
-    for ax in full.axes[6:]:
+    for ax in full.axes[9:]:
         if transform == "bounded":
             np.testing.assert_allclose(ax.get_ylim(), [0, 1])
         else:
             assert ax.get_ylim()[0] < 2 and ax.get_ylim()[1] > 4
     state = {**viewer.state, "ylim_full_correlation": False, "ylim_full_reliability": False, "ylim_full_amplitude": False}
     auto = viewer.plot(state)
-    for ax in auto.axes[2:4]:
+    for ax in auto.axes[3:6]:
         low, high = ax.get_ylim()
         assert -1 < low < high < 1
-    for ax in auto.axes[4:6]:
+    for ax in auto.axes[6:9]:
         low, high = ax.get_ylim()
         assert 0 < low < high < 1
-    for ax in auto.axes[6:]:
+    for ax in auto.axes[9:]:
         if transform == "bounded":
             low, high = ax.get_ylim()
             assert 0 < low < high < 1
         else:
             assert ax.get_ylim()[0] < 2 and ax.get_ylim()[1] > 4
+
+
+@pytest.mark.parametrize("include_mean_std", [True, False])
+def test_bottom_spines_stay_below_panels_when_later_columns_expand_shared_limits(include_mean_std):
+    viewer = HolisticPlacefieldFamiliarityViewer(Results(), include_mean_std=include_mean_std,
+                                                ylim_full_amplitude=False)
+    for groups in viewer.metric_stacks.values():
+        groups["all"]["amplitude"] = {0: np.array([[0.2, 0.3, 0.4], [0.1, 0.5, 0.9]])}
+    fig = viewer.plot(viewer.state)
+    fig.canvas.draw()
+    for ax in fig.axes[-3:]:
+        assert ax.get_ylim()[0] < 0.1 and ax.get_ylim()[1] > 0.9
+        spine = ax.spines["bottom"]
+        vertices = ax.transAxes.inverted().transform(spine.get_transform().transform(spine.get_path().vertices))
+        np.testing.assert_allclose(vertices[:, 1], -0.02)
 
 
 def test_min_mice_control_trims_unsupported_tails_with_shared_column_limits():
@@ -212,10 +379,13 @@ def test_min_mice_control_trims_unsupported_tails_with_shared_column_limits():
             for metric in metrics:
                 metrics[metric] = {0: stack}
     fig = viewer.plot(viewer.state)
-    assert all(ax.get_xlim() == (2, 3) for ax in fig.axes[2:])
+    assert all(ax.get_xlim() == (2, 3) for ax in fig.axes[5::3])
+    assert all(ax.get_xlim() == (1, 5) for ax in fig.axes[3::3] + fig.axes[4::3])
+    selected = viewer.plot({**viewer.state, "mouse": "M2"})
+    assert all(ax.get_xlim() == (2, 3) for ax in selected.axes[3:])
     viewer.update_integer("min_mice", value=1)
     fig = viewer.plot(viewer.state)
-    for ax in fig.axes[2:]:
+    for ax in fig.axes[5::3]:
         assert ax.get_xlim() == (1, 5)
         line = next(line for line in ax.lines if line.get_label() == "1st Env")
         np.testing.assert_allclose(line.get_ydata(), [0.1, 0.3, 0.4, np.nan, 0.5])
@@ -227,21 +397,21 @@ def test_optional_mean_std_row_is_removed_and_excluded_from_column_limits():
         groups["all"]["correlation"] = {0: np.ones((2, 8))}
     fig = viewer.plot(viewer.state)
     fig.canvas.draw()
-    assert len(fig.axes) == 6
-    assert [ax.get_ylabel() for ax in fig.axes[2:]] == ["Spatial Reliability", "", "Amplitude Reliability", ""]
-    assert all(ax.get_xlim() == (1, 3) for ax in fig.axes[2:])
-    assert not fig.axes[2].spines["bottom"].get_visible()
-    assert not fig.axes[3].spines["left"].get_visible()
-    assert not fig.axes[5].spines["left"].get_visible()
-    assert fig.axes[4].get_xlabel() == "Overall session #"
-    assert fig.axes[5].get_xlabel() == "Env session #"
-    assert fig.axes[2].get_legend() is not None
+    assert len(fig.axes) == 9
+    assert [ax.get_ylabel() for ax in fig.axes[3:]] == ["Spatial Reliability", "", "", "Amplitude Reliability", "", ""]
+    assert all(ax.get_xlim() == (1, 3) for ax in fig.axes[3:])
+    assert not fig.axes[3].spines["bottom"].get_visible()
+    assert not fig.axes[4].spines["left"].get_visible()
+    assert not fig.axes[8].spines["left"].get_visible()
+    assert fig.axes[6].get_xlabel() == "Overall session #"
+    assert fig.axes[7].get_xlabel() == fig.axes[8].get_xlabel() == "Env session #"
+    assert fig.axes[3].get_legend() is not None
 
     state = {**viewer.state, "include_mean_std": True}
     fig = viewer.plot(state)
-    assert len(fig.axes) == 8
-    assert fig.axes[2].get_ylabel() == "PF-Var Alignment"
-    assert all(ax.get_xlim() == (1, 8) for ax in fig.axes[2:])
+    assert len(fig.axes) == 12
+    assert fig.axes[3].get_ylabel() == "PF-Var Alignment"
+    assert all(ax.get_xlim() == (1, 8) for ax in fig.axes[3:])
 
 
 @pytest.mark.parametrize("include_mean_std", [True, False])
@@ -251,10 +421,10 @@ def test_spatial_reliability_quality_threshold_line(include_mean_std, cells):
     for threshold in (0.7, 0.4):
         fig = viewer.plot({**viewer.state, "reliability_threshold": threshold})
         row = 2 if include_mean_std else 1
-        for index, ax in enumerate(fig.axes[2:], start=2):
+        for index, ax in enumerate(fig.axes[3:], start=3):
             reference = [line for line in ax.lines if line.get_linestyle() == ":"]
             labels = [text for text in ax.texts if text.get_text() == "Placecell Cutoff"]
-            if cells == "split" and index in (2 * row, 2 * row + 1):
+            if cells == "split" and index // 3 == row:
                 assert len(reference) == 1
                 np.testing.assert_allclose(reference[0].get_ydata(), [threshold, threshold])
                 np.testing.assert_allclose(reference[0].get_xdata(), [0, 1])
@@ -307,7 +477,7 @@ def test_invalid_baselines_keep_gaps_and_normalized_plots_autoscale():
     fig = viewer.plot(viewer.state)
     assert not any(text.get_text() == "Placecell Cutoff" for ax in fig.axes for text in ax.texts)
     assert not any(line.get_linestyle() == ":" for ax in fig.axes for line in ax.lines)
-    assert fig.axes[6].get_ylim()[1] > 1  # Full-limit toggles don't clip ratios.
+    assert fig.axes[9].get_ylim()[1] > 1  # Full-limit toggles don't clip ratios.
     viewer.update_integer("baseline_sessions", value=2)
     viewer.refresh_summary_data(viewer.state)
     # Missing first exposure doesn't extend the window into the third exposure.

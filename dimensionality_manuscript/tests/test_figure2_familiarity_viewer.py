@@ -121,8 +121,8 @@ def test_regression_familiarity_both_composes_the_two_single_mode_axes():
 @pytest.mark.parametrize(
     ("value_mode", "legend_labels"),
     [
-        ("absolute", ["Internal Position Placefield", "Global Gain", "Peer Prediction", "Shared Residual"]),
-        ("improvement", ["Global Gain", "Peer Prediction", "Shared Residual"]),
+        ("absolute", ["Internal Position Placefield", "Global Gain", "Shared Residual", "Peer Prediction"]),
+        ("improvement", ["Global Gain", "Shared Residual", "Peer Prediction"]),
     ],
 )
 def test_regression_familiarity_structured_additive_respects_value_mode(value_mode, legend_labels):
@@ -136,8 +136,8 @@ def test_regression_familiarity_structured_additive_respects_value_mode(value_mo
     assert list(viewer._scores) == [
         "internal_placefield_1d",
         "internal_placefield_1d_gain",
-        "rrr",
         "internal_placefield_1d_structured_additive",
+        "rrr",
     ]
     fig = viewer.plot(viewer.state)
     assert [text.get_text() for text in fig.axes[0].get_legend().get_texts()] == legend_labels

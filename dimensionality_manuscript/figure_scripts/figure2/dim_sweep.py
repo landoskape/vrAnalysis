@@ -40,7 +40,7 @@ RANK_SWEEP_STRUCTURED_ADDITIVE_LABELS = {
 }
 RANK_SWEEP_RRR_MODEL: ModelName = "rrr"
 RANK_SWEEP_RRR_LABEL = "Peer Prediction"
-RANK_SWEEP_MODEL_COLORS = (PERFORMANCE_MODEL_COLORS[2], STRUCTURED_ADDITIVE_MODEL_COLOR)
+RANK_SWEEP_MODEL_COLORS = (STRUCTURED_ADDITIVE_MODEL_COLOR, PERFORMANCE_MODEL_COLORS[2])
 
 
 def dim_sweep_curve(
@@ -376,12 +376,12 @@ class RankModelsSweepViewer(FigureViewer):
     def plot(self, state):
         structured_additive = state["structured_additive"]
         model_names = (
-            RANK_SWEEP_RRR_MODEL,
             RANK_SWEEP_STRUCTURED_ADDITIVE_MODELS[structured_additive],
+            RANK_SWEEP_RRR_MODEL,
         )
         model_labels = (
-            RANK_SWEEP_RRR_LABEL,
             RANK_SWEEP_STRUCTURED_ADDITIVE_LABELS[structured_additive],
+            RANK_SWEEP_RRR_LABEL,
         )
         fig, ax = self.new_subplots(figsize=self.figsize, layout="constrained")
         draw_dim_sweep_panel(

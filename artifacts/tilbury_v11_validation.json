@@ -1,0 +1,69 @@
+{
+  "session": "ATL057.2024-07-08.701",
+  "schema": "v11",
+  "optimizer_steps": 2,
+  "scientific_result": false,
+  "temporary_store_roundtrip": "passed",
+  "stored_viewer_roundtrip": "passed",
+  "metadata": {
+    "activity_parameters_name": "std",
+    "activity_scaling_scope": "full_recording",
+    "activity_centered": false,
+    "activity_scale_type": "std",
+    "activity_scale_enabled": true,
+    "scaling_presplit": true,
+    "scaling_n_frames": 12452,
+    "spks_type": "sigrebase",
+    "environment": 1,
+    "n_neurons": 682,
+    "native": {
+      "center_axis": "positions",
+      "denominator": 100,
+      "n_positions": 100,
+      "position_key": "dist_centers"
+    },
+    "spatial": {
+      "center_axis": "neurons",
+      "denominator": 681,
+      "n_positions": 100,
+      "position_key": "spectrum_dist_centers"
+    },
+    "matched_data": {
+      "estimator": "ss_cvpca",
+      "folds": 4,
+      "assignments": [
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          3
+        ],
+        [
+          0,
+          2,
+          3
+        ],
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "basis_smooth_width_cm": 5.0,
+      "scoring_smooth_width_cm": null,
+      "selection": "train-selected and successful under all three models"
+    },
+    "activity_split_indices": {
+      "train": [
+        0,
+        1
+      ],
+      "validation": 2,
+      "test": 3
+    }
+  }
+}

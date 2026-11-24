@@ -16,8 +16,8 @@ COMPARISON_MODEL_NAMES = (
     "external_placefield_1d",
     "internal_placefield_1d",
     "internal_placefield_1d_gain",
-    "rrr",
     "internal_placefield_1d_structured_additive",
+    "rrr",
 )
 COMPARISON_MODEL_LABELS = {
     "external_placefield_1d": "Placefield",

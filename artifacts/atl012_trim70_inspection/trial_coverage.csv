@@ -1,0 +1,7 @@
+condition,environment,raw_trials,retained_full_trials,position_bins
+full,1,58,52,194
+full,3,53,51,194
+full,4,157,154,194
+trim70,1,46,41,194
+trim70,3,40,38,194
+trim70,4,112,110,194

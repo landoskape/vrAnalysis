@@ -1,0 +1,4 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status
+ATL022_2023-04-24_701,1,8,19,3,borderline_exploratory,36,insufficient_disjoint_calibration_or_evaluation_trials
+ATL022_2023-04-24_701,3,11,19,6,borderline_exploratory,36,insufficient_disjoint_calibration_or_evaluation_trials
+ATL022_2023-04-24_701,4,11,22,6,borderline_exploratory,36,insufficient_disjoint_calibration_or_evaluation_trials

@@ -23,8 +23,15 @@ from dimensionality_manuscript.figure_scripts.figure1 import placefield
 from dimensionality_manuscript.figure_scripts.figure1.placefield import PlaceFieldPredictionFocus
 
 
+@pytest.fixture(autouse=True)
+def close_figures():
+    yield
+    from matplotlib import pyplot as plt
+    plt.close("all")
+
+
 def _summary_title(axis):
-    return next(artist for artist in axis.artists if artist.get_label().startswith(("SpRel\n=", "AmpRel\n=", "CoV\n=", "PF-Var Alignment\n=")))
+    return next(artist for artist in axis.artists if artist.get_label().startswith(("SR=", "GR=", "CoV=", "Mean\nSTD")))
 
 
 def _summary_axis(fig, label):
@@ -33,14 +40,11 @@ def _summary_axis(fig, label):
 
 def _assert_summary_layout(axis, renderer):
     title = _summary_title(axis)
-    label, value = title.offsetbox.get_children()
-    label_box = label.get_window_extent(renderer)
-    value_box = value.get_window_extent(renderer)
-    center = (axis.bbox.x0 + axis.bbox.x1) / 2
-    assert (label_box.x0 + label_box.x1) / 2 == pytest.approx(center, abs=0.5)
-    assert (value_box.x0 + value_box.x1) / 2 == pytest.approx(center, abs=0.5)
-    assert value_box.y1 < label_box.y0
-    assert title.get_window_extent(renderer).y0 > axis.bbox.y1
+    box = title.get_window_extent(renderer)
+    assert box.x0 >= axis.bbox.x0
+    assert box.x1 <= axis.bbox.x1
+    assert box.y0 >= axis.bbox.y0
+    assert box.y1 <= axis.bbox.y1
 
 
 def _viewer(monkeypatch, *, include_amplitude_summary=True):
@@ -111,15 +115,15 @@ def test_amplitude_column_uses_v9_metrics_and_dropdown_defaults(monkeypatch):
     assert viewer.trial_activity_summary["trial_rms_mean"] == np.mean(viewer.trial_activity["trial_rms"])
 
 
-def test_amplitude_column_draws_after_reliability_with_centered_cov(monkeypatch):
+def test_amplitude_column_draws_after_reliability_with_in_panel_cov(monkeypatch):
     viewer = _viewer(monkeypatch)
     state = {**viewer.state, "amplitude_metric": "trial_mean"}
 
     fig = viewer.plot(state)
-    amplitude_axis = next(axis for axis in fig.axes if axis.get_title() == "Amplitude\nReliability")
+    amplitude_axis = next(axis for axis in fig.axes if len(axis.collections) == 1 and axis.get_xlim()[0] == 0.0)
     expected = viewer.trial_activity_summary["trial_mean_cv"]
-    summary_axis = _summary_axis(fig, "CoV\n=")
-    consistency_axis = next(axis for axis in fig.axes if axis.get_title() == "Spatial\nReliability")
+    summary_axis = _summary_axis(fig, "CoV=")
+    consistency_axis = next(axis for axis in fig.axes if len(axis.collections) == 1 and axis.get_xlim() == (-1.1, 1.1))
 
     assert consistency_axis.get_position().x0 < amplitude_axis.get_position().x0
     assert consistency_axis.get_xlim() == (-1.1, 1.1)
@@ -136,15 +140,15 @@ def test_amplitude_column_draws_after_reliability_with_centered_cov(monkeypatch)
     np.testing.assert_array_equal([patch.get_height() for patch in summary_axis.patches], counts)
     assert not summary_axis.texts
     text = _summary_title(summary_axis)
-    assert text.get_label() == f"CoV\n={expected:.2f}"
+    assert text.get_label() == f"CoV={expected:.2f}"
     fig.canvas.draw()
     _assert_summary_layout(summary_axis, fig.canvas.get_renderer())
 
 
 @pytest.mark.parametrize("transform,expected_text", [
-    ("raw", "CoV\n=2.00"),
-    ("inverse", "AmpRel\n=0.50"),
-    ("bounded", "AmpRel\n=0.20"),
+    ("raw", "CoV=2.00"),
+    ("inverse", "GR=0.50"),
+    ("bounded", "GR=0.20"),
 ])
 def test_cov_transform_changes_summary_without_transforming_trials(monkeypatch, transform, expected_text):
     viewer = _viewer(monkeypatch)
@@ -153,7 +157,7 @@ def test_cov_transform_changes_summary_without_transforming_trials(monkeypatch, 
     fig = viewer.plot({**viewer.state, "amplitude_transform": transform})
     summary = _summary_axis(fig, expected_text)
     assert not summary.texts
-    trials = next(axis for axis in fig.axes if axis.get_title() == "Amplitude\nReliability")
+    trials = next(axis for axis in fig.axes if len(axis.collections) == 1 and axis.get_xlim()[0] == 0.0)
     np.testing.assert_allclose(trials.collections[0].get_offsets()[:, 0], values)
     counts, _ = np.histogram(values, bins=viewer.state["nbins"], range=trials.get_xlim())
     np.testing.assert_array_equal([patch.get_height() for patch in summary.patches], counts)
@@ -161,7 +165,7 @@ def test_cov_transform_changes_summary_without_transforming_trials(monkeypatch, 
 
 
 @pytest.mark.parametrize("transform,expected_text", [
-    ("inverse", "AmpRel\n=nan"), ("bounded", "AmpRel\n=1.00"),
+    ("inverse", "GR=nan"), ("bounded", "GR=1.00"),
 ])
 def test_zero_cov_transform_summary(monkeypatch, transform, expected_text):
     viewer = _viewer(monkeypatch)
@@ -185,7 +189,7 @@ def test_reliability_histogram_uses_example_trials_not_session_rois(monkeypatch)
     assert not reliability_axis.lines
     assert not reliability_axis.texts
     text = _summary_title(reliability_axis)
-    assert text.get_label() == f"SpRel\n={viewer.consistency[3]:.2f}"
+    assert text.get_label() == f"SR={viewer.consistency[3]:.2f}"
     fig.canvas.draw()
     _assert_summary_layout(reliability_axis, fig.canvas.get_renderer())
 
@@ -195,7 +199,7 @@ def test_amplitude_column_is_absent_when_disabled(monkeypatch):
 
     fig = viewer.plot(viewer.state)
 
-    assert not any(axis.get_title() == "Amplitude\nReliability" for axis in fig.axes)
+    assert not any(len(axis.collections) == 1 and axis.get_xlim()[0] == 0.0 for axis in fig.axes)
 
 
 @pytest.mark.parametrize("figsize,fontsize", [((12, 6), 12), ((3.5, 2.25), 7)])
@@ -216,15 +220,12 @@ def test_overlay_and_optional_correlation_follow_comparison_without_extra_column
     np.testing.assert_allclose(overlay.lines[1].get_ydata(), rms)
     assert sum(len(axis.images) for axis in fig.axes) == 1
     assert len(fig.axes) == (6 if include_amplitude_summary else 4)
-    assert [text.get_text() for text in overlay.texts] == ["Pos Mean", "Pos STD"]
     title = overlay.artists[0]
-    assert title.get_label() == f"PF-Var Alignment\n={r:.2f}"
-    pieces = title.offsetbox.get_children()
-    assert isinstance(pieces[0], placefield._UnderlinedTextArea)
-    assert pieces[0].get_text() == "PF-Var Alignment"
-    assert pieces[1].get_text() == f"=${r:.2f}$"
+    assert title.get_label() == f"Mean\nSTD\nr(M,S)={r:.2f}"
+    pieces = title.offsetbox.get_children()[-1].get_children()
+    assert pieces[1].get_text() == "S"
+    assert pieces[1]._text.get_color() == "tab:red"
     _assert_summary_layout(overlay, fig.canvas.get_renderer())
-    assert title.get_window_extent(fig.canvas.get_renderer()).y0 > overlay.bbox.y1
     assert overlay.get_xlabel() == "Position (cm)"
     ymax = overlay.get_ylim()[1]
     assert ymax == np.ceil(max(pf.max(), rms.max()) * 1.25)
@@ -232,10 +233,6 @@ def test_overlay_and_optional_correlation_follow_comparison_without_extra_column
     np.testing.assert_allclose(overlay.get_ylim(), [0, ymax])
     np.testing.assert_allclose(overlay.get_yticks(), [0, ymax])
     np.testing.assert_allclose(overlay.spines["left"].get_bounds(), [0, ymax])
-    renderer = fig.canvas.get_renderer()
-    boxes = [text.get_window_extent(renderer) for text in overlay.texts]
-    assert boxes[0].y0 > boxes[1].y1
-    assert boxes[-1].y0 > overlay.bbox.y0
     assert overlay.get_yticklabels()[-1].get_text() == str(int(ymax))
 
 
@@ -243,21 +240,17 @@ def test_labels_and_trial_end_ticks_without_correlation(monkeypatch):
     viewer = _viewer(monkeypatch)
     fig = viewer.plot(viewer.state)
     overlay = next(axis for axis in fig.axes if axis.get_ylabel() == "N.Fluor")
-    assert [text.get_text() for text in overlay.texts] == ["Pos Mean", "Pos STD"]
+    assert overlay.artists[0].get_label() == "Mean\nSTD"
+    assert overlay.get_facecolor() == (1.0, 1.0, 1.0, 1.0)
     ymax = np.ceil(max(np.max(line.get_ydata()) for line in overlay.lines) * 1.25)
     np.testing.assert_allclose(overlay.get_ylim(), [0, ymax])
     np.testing.assert_allclose(overlay.get_yticks(), [0, ymax])
     trials = next(axis for axis in fig.axes if axis.get_ylabel() == "Trials")
-    assert trials.get_title() == "Placefield\nStructure"
-    consistency = next(axis for axis in fig.axes if axis.get_title() == "Spatial\nReliability")
+    assert all(axis.get_title() == "" for axis in fig.axes)
+    consistency = next(axis for axis in fig.axes if len(axis.collections) == 1 and axis.get_xlim() == (-1.1, 1.1))
     assert not consistency.texts
-    assert not overlay.artists
     np.testing.assert_array_equal(trials.get_yticks(), [0, viewer.spkmap.shape[0]])
     assert any(axis.get_ylabel() == "Norm. Fluor." for axis in trials.child_axes)
-    for axis in fig.axes:
-        if "Reliability" in axis.get_title():
-            assert axis.title.get_ha() == "center"
-            assert axis.title.get_rotation() == 0
 
 
 def test_optional_prediction_has_no_pf_rms_comparison_column(monkeypatch):
@@ -268,7 +261,7 @@ def test_optional_prediction_has_no_pf_rms_comparison_column(monkeypatch):
     assert sum(len(axis.images) for axis in fig.axes) == 2
     overlay = next(axis for axis in fig.axes if axis.get_ylabel() == "N.Fluor")
     assert overlay.get_ylim()[1] == np.ceil(max(np.max(line.get_ydata()) for line in overlay.lines) * 1.25)
-    prediction = next(axis for axis in fig.axes if any(text.get_text() == "PF Prediction" for text in axis.texts))
+    prediction = next(axis for axis in fig.axes if any(artist.get_label() == "PF Prediction" for artist in axis.artists))
     assert prediction.get_ylim()[1] == 125.0
 
 
@@ -328,3 +321,47 @@ def test_lower_spines_and_label_tops_align_at_manuscript_size(monkeypatch, dpi):
         left = [axis for axis in fig.axes if axis.get_ylabel() in ("Trials", "N.Fluor")]
         label_centers = [axis.yaxis.label.get_window_extent(renderer).x0 for axis in left]
         np.testing.assert_allclose(label_centers, label_centers[0], atol=0.5)
+
+
+@pytest.mark.parametrize("location", ["upper left", "upper right"])
+def test_layout_controls_move_all_lower_annotations_and_colorbar(monkeypatch, location):
+    viewer = _viewer(monkeypatch)
+    bounds = (0.4, 0.2, 0.06, 0.5)
+    state = {**viewer.state, "bottom_text_location": location, "show_correlation": True,
+             **dict(zip(("colorbar_x", "colorbar_y", "colorbar_width", "colorbar_height"), bounds))}
+    fig = viewer.plot(state)
+    fig.canvas.draw()
+    top = next(ax for ax in fig.axes if ax.get_ylabel() == "Trials")
+    inset, = top.child_axes
+    actual = top.transAxes.inverted().transform_bbox(inset.bbox).bounds
+    np.testing.assert_allclose(actual, bounds)
+    for axis in fig.axes:
+        for annotation in axis.artists:
+            box = annotation.get_window_extent(fig.canvas.get_renderer())
+            if location == "upper left":
+                assert box.x0 == pytest.approx(axis.bbox.x0 + .02 * axis.bbox.width)
+            else:
+                assert box.x1 == pytest.approx(axis.bbox.x1 - .02 * axis.bbox.width)
+            assert box.y1 == pytest.approx(axis.bbox.y1 - .02 * axis.bbox.height)
+
+
+@pytest.mark.parametrize("metric", ["trial_gain", "trial_gain_least_squares"])
+def test_both_gain_metrics_use_trial_gain_label(monkeypatch, metric):
+    viewer = _viewer(monkeypatch)
+    fig = viewer.plot({**viewer.state, "amplitude_metric": metric})
+    assert any(ax.get_xlabel() == "Trial\nGain" for ax in fig.axes)
+
+
+@pytest.mark.parametrize("statistic,label", [("mean", "Mean"), ("variance", "Variance"), ("cv", "CoV")])
+@pytest.mark.parametrize("transform", ["raw", "bounded"])
+def test_summary_uses_selected_statistic(monkeypatch, statistic, label, transform):
+    viewer = _viewer(monkeypatch)
+    viewer.trial_activity_summary["trial_rms_mean"] = 2.0
+    viewer.trial_activity_summary["trial_rms_variance"] = 3.0
+    viewer.trial_activity_summary["trial_rms_cv"] = 4.0
+    value = viewer.trial_activity_summary[f"trial_rms_{statistic}"]
+    if transform == "bounded":
+        value = 1 / (1 + value**2)
+        label = "GR"
+    fig = viewer.plot({**viewer.state, "amplitude_statistic": statistic, "amplitude_transform": transform})
+    assert _summary_axis(fig, f"{label}={value:.2f}") is not None

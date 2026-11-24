@@ -1,0 +1,3 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status,calibration_trials,speed_matched_trials,pre_mean_speed,post_mean_speed
+ATL012_2023-02-06_701,1,9,26,4,screen_positive,25,insufficient_disjoint_calibration_or_evaluation_trials,,,,
+ATL012_2023-02-06_701,3,16,49,11,screen_positive,25,ok,5.0,11.0,25.333160920576617,22.00083420493386

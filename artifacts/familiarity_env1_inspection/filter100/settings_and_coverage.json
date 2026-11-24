@@ -1,0 +1,248 @@
+{
+  "notebook": "C:\\Users\\Andrew\\Documents\\GitHub\\vrAnalysis\\dimensionality_manuscript\\dim_regression_figures_refactor.ipynb",
+  "threshold": 100,
+  "sessions": 140,
+  "viewers": {
+    "ModelPerformanceViewer": {
+      "notebook_cell": 4,
+      "constructor_kwargs": {
+        "spks_type": "sigrebase",
+        "activity_parameters_name": "std",
+        "metric": "r2",
+        "avg_by_mouse": true,
+        "include_external_placefield": true,
+        "include_structured_additive": true,
+        "ylim": [
+          -0.01,
+          0.081
+        ],
+        "ytick_max": 0.07,
+        "legend_x": 5.0,
+        "legend_y": 0.085,
+        "legend_dy": -0.01,
+        "show_inset": true,
+        "figsize": [
+          2.75,
+          1.75
+        ],
+        "fontsize": 7,
+        "inset_fontsize": 7,
+        "inset_x": 0.15,
+        "inset_y": 0.45,
+        "inset_width": 0.3,
+        "inset_height": 0.45,
+        "inset_ytick_max": 0.12,
+        "inset_ylim": [
+          -0.02,
+          0.15
+        ],
+        "zero_line_pad": 0.25
+      },
+      "resolved_state": {
+        "metric": "r2",
+        "avg_by_mouse": true,
+        "fontsize": 7.0,
+        "ytick_max": 0.07,
+        "ylim": [
+          -0.01,
+          0.081
+        ],
+        "show_zero_line": true,
+        "zero_line_pad": 0.25,
+        "markersize": 5.0,
+        "mean_linewidth": 1.5,
+        "subject_linewidth": 0.5,
+        "subject_alpha": 0.3,
+        "show_inset": true,
+        "inset_x": 0.15,
+        "inset_y": 0.45,
+        "inset_width": 0.3,
+        "inset_height": 0.45,
+        "inset_markersize": 3.0,
+        "inset_fontsize": 7.0,
+        "inset_ytick_max": 0.12,
+        "inset_ylim": [
+          -0.02,
+          0.15
+        ]
+      },
+      "filter_scope": "session",
+      "coverage": {
+        "external_placefield_1d": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "internal_placefield_1d": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "internal_placefield_1d_gain": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "rrr": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "internal_placefield_1d_structured_additive": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        }
+      },
+      "unchanged_scores": true
+    },
+    "ModelPlacefieldResidualInsetViewer": {
+      "notebook_cell": 5,
+      "constructor_kwargs": {
+        "include_external_placefield": true,
+        "include_structured_additive": true,
+        "spks_type": "sigrebase",
+        "activity_parameters_name": "std",
+        "metric": "r2_weighted",
+        "statistic": "median",
+        "fold": "infold",
+        "sharey": true,
+        "relative": true,
+        "within_text_x": 0.05,
+        "outside_text_x": 0.05,
+        "within_text_y": 0.875,
+        "outside_text_y": 0.875,
+        "inset_x": 0.475,
+        "inset_y": 0.075,
+        "inset_width": 0.5,
+        "inset_height": 0.35,
+        "figsize": [
+          2.75,
+          2.0
+        ],
+        "fontsize": 7
+      },
+      "resolved_state": {
+        "fold": "infold",
+        "metric": "r2_weighted",
+        "statistic": "median",
+        "show": "all",
+        "sharey": true,
+        "relative": true,
+        "fontsize": 7.0,
+        "markersize": 5.0,
+        "mean_linewidth": 1.5,
+        "subject_linewidth": 0.5,
+        "subject_alpha": 0.3,
+        "within_text_x": 0.05,
+        "within_text_y": 0.88,
+        "outside_text_x": 0.05,
+        "outside_text_y": 0.88,
+        "show_inset": true,
+        "inset_x": 0.48,
+        "inset_y": 0.08,
+        "inset_width": 0.5,
+        "inset_height": 0.35000000000000003,
+        "inset_ylabel_fontsize_scale": 1.0
+      },
+      "filter_scope": "session",
+      "coverage": {
+        "external_placefield_1d": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "internal_placefield_1d": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "internal_placefield_1d_gain": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "rrr": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        },
+        "internal_placefield_1d_structured_additive": {
+          "retained_sessions": 140,
+          "sessions": 140,
+          "minimum_known_environment_frames_per_session": 182.0
+        }
+      },
+      "unchanged_scores": true
+    },
+    "RegressionFamiliarityByEnvViewer": {
+      "notebook_cell": 9,
+      "constructor_kwargs": {
+        "baseline_model": "external_placefield_1d",
+        "reference_model": "internal_placefield_1d_structured_additive",
+        "reference_mode": "reference_mean_error",
+        "comparison_mode": "ratio",
+        "spks_type": "sigrebase",
+        "min_mice": 3,
+        "activity_parameters_name": "std",
+        "style": "errorPlot",
+        "auto_ylim": true,
+        "legend_options": {
+          "visible": false
+        },
+        "show_zero_line": true,
+        "show_reference_mean": true,
+        "figsize": [
+          4.5,
+          1.75
+        ],
+        "fontsize": 7
+      },
+      "resolved_state": {
+        "baseline_model": "external_placefield_1d",
+        "reference_model": "internal_placefield_1d_structured_additive",
+        "reference_mode": "reference_mean_error",
+        "comparison_mode": "ratio",
+        "statistic": "mean",
+        "within_env_session": true,
+        "style": "errorPlot",
+        "se": true,
+        "min_mice": 3,
+        "linewidth": 1.5,
+        "subject_linewidth": 0.5,
+        "subject_alpha": 0.3,
+        "fill_alpha": 0.2,
+        "fontsize": 7.0,
+        "auto_ylim": true,
+        "ylim": [
+          0.0,
+          0.3
+        ],
+        "ytick_max": 0.3,
+        "show_zero_line": true,
+        "legend_loc": "auto",
+        "legend_ncols": 1,
+        "legend_fontsize_scale": 1.0,
+        "legend_handlelength": 2.0,
+        "legend_handletextpad": 0.8,
+        "legend_labelspacing": 0.5,
+        "legend_borderpad": 0.4,
+        "legend_borderaxespad": 0.5,
+        "legend_markerfirst": true,
+        "legend_frameon": false,
+        "legend_visible": false
+      },
+      "filter_scope": "environment",
+      "coverage": {
+        "external_placefield_1d": {
+          "retained_environment_scores": 251
+        },
+        "internal_placefield_1d_structured_additive": {
+          "retained_environment_scores": 251
+        }
+      },
+      "unchanged_scores": false
+    }
+  },
+  "viewer_source_unchanged": true
+}

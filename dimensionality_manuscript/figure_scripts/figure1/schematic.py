@@ -9,7 +9,7 @@ from dimensionality_manuscript.blender import RIG_HFOV_DEG, RenderParams, load_v
 from dimensionality_manuscript.configs.behavior_speed_env import ENV_REWARD_MAP, REFERENCE_ENV_LENGTH_CM
 from dimensionality_manuscript.figure_scripts.panels import FigureViewer
 
-from ._shared import draw_reward_location, env_slot_color
+from ._shared import VR_ENV_COLORS, draw_reward_location
 from .speed import MouseSpeedFocus
 
 # Environments shown, top row first. These are the ATL cohort's three environments, ordered so
@@ -41,8 +41,8 @@ class VREnvironmentSchematic(FigureViewer):
     """The VR environments as rendered room stills, stacked with reward-zone tracks.
 
     One row per environment: four panels showing what the mouse sees standing at the entrance of
-    each room, and below them a track arrow with the reward zone marked. Arrow and zone take the
-    environment's experience-slot color, the same palette the ``by_env`` panels of figure 3 use.
+    each room, and below them a track arrow with the reward zone marked. Labels, tracks, and
+    reward arrows use the same environment identity colors as the speed panel.
     The whole thing is drawn into a single axes in units of one panel height. Those relative
     units are converted to inches from the requested ``figsize``, so every gap, arrow, and swatch
     keeps its proportion under any scaling.
@@ -239,10 +239,6 @@ class VREnvironmentSchematic(FigureViewer):
             raise RuntimeError(f"Environments returned different room counts: {room_counts}. Every environment should have four rooms.")
         self.num_rooms = next(iter(room_counts.values()))
 
-    def _env_color(self, env: int):
-        """Experience-slot color of an environment, by its position in ``envs``."""
-        return env_slot_color(self.envs.index(env))
-
     def layout_metrics(self, state) -> dict[str, float]:
         """Layout geometry in panel-height units, ahead of any ``panel_height_in`` scaling.
 
@@ -374,8 +370,8 @@ class VREnvironmentSchematic(FigureViewer):
         ax.set_axis_off()
 
         for env, panel_top, arrow_y in zip(self.envs, metrics["panel_tops"], metrics["arrow_ys"]):
-            color = self._env_color(env)
-            ax.text(-0.12, panel_top - 0.5, f"Env {chr(65 + self.envs.index(env))}",
+            color = VR_ENV_COLORS[env]
+            ax.text(-0.12, panel_top - 0.5, f"Env {chr(65 + VR_SCHEMATIC_ENVS.index(env))}",
                     ha="right", va="center", rotation=0, fontsize=fontsize, color=color)
 
             for room, image in enumerate(self.images[env]):

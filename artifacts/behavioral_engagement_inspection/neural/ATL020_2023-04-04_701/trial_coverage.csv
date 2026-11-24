@@ -1,0 +1,2 @@
+session_key,environment,n_before,n_after,matched_trials,role,cut,status,calibration_trials,speed_matched_trials,pre_mean_speed,post_mean_speed
+ATL020_2023-04-04_701,3,62,66,20,sham_control,63,ok,42,20,24.550984573364257,24.6553635597229

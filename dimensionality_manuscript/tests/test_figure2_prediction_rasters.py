@@ -26,7 +26,7 @@ class _FakeResults:
     config_class = SimpleNamespace(spks_type="oasis", activity_parameters_name="default")
 
 
-def test_prediction_figure_adds_structured_additive_after_peer(monkeypatch):
+def test_prediction_figure_adds_structured_additive_before_peer(monkeypatch):
     calls = []
 
     def fake_predictions(model_name, *args, **kwargs):
@@ -51,16 +51,16 @@ def test_prediction_figure_adds_structured_additive_after_peer(monkeypatch):
     assert rasters.PREDICTION_FIGURE_MODELS == (
         "internal_placefield_1d",
         "internal_placefield_1d_gain",
-        "rrr",
         "internal_placefield_1d_structured_additive",
+        "rrr",
     )
     assert len(main_axes) == 10
     assert [[text.get_text() for text in axis.texts] for axis in main_axes[:5]] == [
         ["Target Data"],
         ["Int. Pos. PF"],
         ["Global Gain"],
-        ["Peer Prediction"],
         ["Shared Residual"],
+        ["Peer Prediction"],
     ]
     assert set(rasters.PREDICTION_FIGURE_MODELS).issubset(calls)
     plt.close(fig)
@@ -268,7 +268,7 @@ def test_zoom_matches_performance_models(monkeypatch, include_structured_additiv
     if include_external_pf:
         expected.insert(1, "Placefield")
     if include_structured_additive:
-        expected.append("Shared Residual")
+        expected.insert(-1, "Shared Residual")
     assert [axis.texts[0].get_text() for axis in fig.axes[::2]] == expected
     assert list(viewer.model_names) == performance.model_names
     assert expected[1:] == [label.replace("\n", " ") for label in performance.model_labels]

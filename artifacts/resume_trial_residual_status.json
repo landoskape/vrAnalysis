@@ -1,0 +1,16 @@
+{
+  "complete": true,
+  "models": {
+    "external_placefield_1d_structured_gain_residual": {
+      "results": 149,
+      "expected": 149,
+      "errors": 0
+    },
+    "internal_placefield_1d_structured_gain_residual": {
+      "results": 149,
+      "expected": 149,
+      "errors": 0
+    }
+  },
+  "unrelated_results_unchanged": true
+}

@@ -367,16 +367,18 @@ def test_spectrum_indicator_uses_leading_dimension_label():
     plt.close(fig)
 
 
+@pytest.mark.parametrize("source_key, source_label", [("sf_cv", "PFxFull"), ("ss_cv", "PFxPF")])
 @pytest.mark.parametrize("pr_pre_smooth", [True, False])
 @pytest.mark.parametrize("clip_negative", [True, False])
 @pytest.mark.parametrize("include_beeswarm", [True, False])
 def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
-    monkeypatch, pr_pre_smooth, clip_negative, include_beeswarm,
+    monkeypatch, pr_pre_smooth, clip_negative, include_beeswarm, source_key, source_label,
 ):
     arrays = {
         "sf_cv": np.array([[4., 1., -0.2, 0.5], [2., 1., 0.4, 0.2], [3., 2., 1., 0.5]]),
         "ff": np.array([[8., 4., 1., -0.5], [6., 2., 1., 0.5], [8., 3., 2., 1.]]),
     }
+    arrays["ss_cv"] = arrays["sf_cv"] * np.array([1., 2., 3., 4.])
     results = _FakeAggregator(arrays, ["a", "a", "b"])
     results.param_axes = {}
     def unexpected_env_curves(*args, **kwargs):
@@ -384,7 +386,7 @@ def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
 
     monkeypatch.setattr(ConciseSpectrumDimensionalityViewer, "_env_curves", unexpected_env_curves)
     viewer = ConciseSpectrumDimensionalityViewer(
-        results, show_slope_panel=False, include_beeswarm=include_beeswarm,
+        results, source_key=source_key, show_slope_panel=False, include_beeswarm=include_beeswarm,
         pr_pre_smooth=pr_pre_smooth, clip_negative=clip_negative,
         pf_smooth_method="gaussian", full_smooth_method="gaussian",
         pf_smooth_width=1.0, full_smooth_width=1.0,
@@ -394,6 +396,9 @@ def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
     viewer.refresh_data(viewer.state)  # Removed Head controls must not break later callbacks.
     fig = viewer.plot(viewer.state)
     spectrum_axis, pr_axis = fig.axes[:2]
+    assert viewer.state["source_key"] == source_label
+    assert spectrum_axis.get_legend_handles_labels()[1][0] == source_label
+    np.testing.assert_allclose(viewer._ratios_arrays["_sf_cv_sessions_raw"], arrays[source_key])
     expected = spectrum_display_arrays(
         viewer._ratios_arrays, "none" if pr_pre_smooth else "gaussian", 1.0,
         "none" if pr_pre_smooth else "gaussian", 1.0,
@@ -423,4 +428,24 @@ def test_dimensionality_viewer_matches_mouse_spectra_and_full_only_svr(
         assert svr_bounds.y0 == pytest.approx(spectrum_bounds.y0)
         assert svr_bounds.y1 == pytest.approx(spectrum_bounds.y1)
         assert svr_bounds.width == pytest.approx(0.3 * spectrum_bounds.width)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("spectrum_mode", ["all", "avg_env"])
+def test_dimensionality_source_switch_refreshes_selected_spectra(spectrum_mode):
+    arrays = _mode_arrays()
+    arrays["ss_cv"] = 2 * arrays["sf_cv"]
+    arrays["ss_cv_env"] = 3 * arrays["sf_cv_env_full1"]
+    results = _FakeAggregator(arrays, ["a", "a", "b"])
+    results.param_axes = {}
+    viewer = ConciseSpectrumDimensionalityViewer(results, spectrum_mode=spectrum_mode)
+    initial = viewer._ratios_arrays["_sf_cv_sessions_raw"].copy()
+    state = dict(viewer.state, source_key="PFxPF")
+    viewer.refresh_data(state)
+    np.testing.assert_allclose(
+        viewer._ratios_arrays["_sf_cv_sessions_raw"],
+        initial * (3 if spectrum_mode == "avg_env" else 2),
+    )
+    fig = viewer.plot(state)
+    assert fig.axes[0].get_legend_handles_labels()[1][0] == "PFxPF"
     plt.close(fig)

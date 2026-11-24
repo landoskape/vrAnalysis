@@ -94,7 +94,7 @@ def test_cvpca_tuple_selection_and_ignored_env_mode(mode):
     fig = viewer.plot(viewer.state)
     fig.canvas.draw()
     assert fig.axes[0].get_ylabel() == "Session"
-    assert " | all | " in fig.axes[0].get_title()
+    assert fig.axes[0].get_title() == ""
 
 
 def test_single_mouse_sem_and_missing_rank_are_undefined():
@@ -111,7 +111,24 @@ def test_plot_renders_binary_heatmap_and_mean_curve(mode, xscale):
     viewer = SpectrumNegativeViewer(agg, source_mode=mode, xscale=xscale)
     fig = viewer.plot(viewer.state)
     fig.canvas.draw()
-    assert len(fig.axes) == 3  # heatmap, curve, and binary colorbar
+    assert len(fig.axes) == 2
+    heat, curve = fig.axes
+    assert heat.get_shared_x_axes().joined(heat, curve)
+    assert not heat.spines["bottom"].get_visible()
+    for ax in (heat, curve):
+        assert ax.spines["left"].get_visible()
+        assert not ax.spines["top"].get_visible()
+        assert not ax.spines["right"].get_visible()
+        assert ax.get_title() == ""
+    np.testing.assert_array_equal(heat.get_yticks(), [1, len(viewer._heatmap)])
+    assert not heat.lines  # no mouse/session separators
+    assert heat.get_legend().get_texts()[0].get_text() == "negative\nvariance"
+    assert curve.get_legend() is None
+    assert curve.get_xlabel() == "Dimension"
+    assert curve.get_ylabel() == "Fraction < 0"
+    assert curve.lines[2].get_color() == "black"
+    assert curve.get_ylim()[0] < 0 and curve.get_ylim()[1] > 1
+    assert curve.spines["left"].get_bounds() == (0, 1)
     assert fig.axes[1].get_xscale() == xscale
     np.testing.assert_allclose(fig.axes[1].lines[2].get_ydata(), viewer._mean)
 
@@ -121,3 +138,18 @@ def test_empty_selection_can_render_without_counting_missing_as_nonnegative():
     assert viewer._heatmap.shape == (0, 2)
     assert np.isnan(viewer._mean).all()
     viewer.plot(viewer.state).canvas.draw()
+
+
+@pytest.mark.parametrize("mode", ["all", "avg_env"])
+def test_session_average_and_sem_weight_sessions_equally(mode):
+    spectra = np.array([[[100.0], [-1.0]], [[-1.0], [np.nan]], [[1.0], [1.0]]])
+    agg = _Aggregator({"ss_cv": spectra[:, 0], "ss_cv_env": spectra}, ["a", "a", "b"])
+    viewer = SpectrumNegativeViewer(agg, source_mode=mode, average_by="session")
+    session_values = np.array([0.5, 1, 0]) if mode == "avg_env" else np.array([0, 1, 0])
+    np.testing.assert_allclose(viewer._mean, [session_values.mean()])
+    np.testing.assert_allclose(viewer._sem, [session_values.std(ddof=1) / np.sqrt(3)])
+    # The widget must refresh the summary when switching the averaging unit.
+    viewer.set_parameter_value("average_by", "mouse")
+    expected_mean, expected_sem = _mouse_summary(viewer._mouse_probabilities)
+    np.testing.assert_allclose(viewer._mean, expected_mean)
+    np.testing.assert_allclose(viewer._sem, expected_sem)

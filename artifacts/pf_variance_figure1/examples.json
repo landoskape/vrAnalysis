@@ -1,0 +1,23 @@
+{
+  "session": "ATL027/2023-08-07/701",
+  "environment": 4,
+  "n_sessions": 149,
+  "reliability_threshold": 0.7,
+  "fraction_active_threshold": 0.2,
+  "examples": [
+    {
+      "name": "gain_example",
+      "roi": 1808,
+      "env_slot": 2,
+      "gain_ratio": 1.0027031118823515,
+      "additive_ratio": 0.08923047509824816
+    },
+    {
+      "name": "residual_example",
+      "roi": 662,
+      "env_slot": 2,
+      "gain_ratio": 0.3268068774030546,
+      "additive_ratio": 0.6246625974805595
+    }
+  ]
+}

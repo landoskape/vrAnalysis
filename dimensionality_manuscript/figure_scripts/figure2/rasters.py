@@ -531,15 +531,15 @@ def _bounded_raster_window(window: slice | None, start: int, stop: int) -> tuple
 PREDICTION_FIGURE_MODELS: tuple[ModelName, ...] = (
     "internal_placefield_1d",
     "internal_placefield_1d_gain",
-    "rrr",
     "internal_placefield_1d_structured_additive",
+    "rrr",
 )
 
 
 class ModelPredictionsFigureViewer(FigureViewer):
     """Two-row comparison of held-out data with gain, residual, and peer predictions.
 
-    The top row contains data, internal PF, Global Gain, Peer Prediction, and optional Shared Residual. The
+    The top row contains data, internal PF, Global Gain, optional Shared Residual, and Peer Prediction. The
     bottom row keeps the ultra-condensed four-model schematic followed by the corresponding
     residuals (data - prediction).
     ``model_name`` is therefore consumed as a fixed comparison axis; the other axes of a
@@ -573,7 +573,7 @@ class ModelPredictionsFigureViewer(FigureViewer):
     fontsize : float
         Font size for the panel titles, axis labels, and scale-bar label.
     include_structured_additive : bool
-        Show the Shared Residual prediction and residual after Peer Prediction.
+        Show the Shared Residual prediction and residual before Peer Prediction.
         The ultra-condensed schematic remains unchanged when this raster column is hidden.
     include_external_pf : bool
         Include ``external_placefield_1d`` immediately after Target Data.
@@ -850,7 +850,7 @@ class ModelPredictionsZoomFigureViewer(ModelPredictionsFigureViewer):
     Shares data selection, display transforms, sorting, figure sizing, color inset,
     and joint scale-bar controls with :class:`ModelPredictionsFigureViewer`.
     Int. Pos. PF, Global Gain, and Peer Prediction are always included;
-    ``include_structured_additive`` appends Shared Residual. ``include_external_pf`` adds ``external_placefield_1d``
+    ``include_structured_additive`` inserts Shared Residual before Peer Prediction. ``include_external_pf`` adds ``external_placefield_1d``
     immediately after Target Data. There are no residual panels or schematic controls.
 
     ``zoom_xslice`` uses absolute frame indices within ``xslice`` (both half-open).

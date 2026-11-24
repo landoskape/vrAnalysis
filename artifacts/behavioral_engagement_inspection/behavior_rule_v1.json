@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "feature": "(control_speed - prereward_speed)/(control_speed + prereward_speed)",
+  "prereward_window_track_fraction": [
+    -0.1,
+    0
+  ],
+  "control_window_track_fraction": [
+    -0.225,
+    -0.125
+  ],
+  "minimum_trials": 60,
+  "minimum_segment_trials": 20,
+  "minimum_segment_fraction": 0.2,
+  "minimum_drop": 0.08,
+  "minimum_before_slowdown": 0.1,
+  "maximum_after_to_before_ratio": 0.5,
+  "null_block_trials": 10,
+  "permutations": 1999,
+  "seed": 20261109,
+  "fdr": 0.05,
+  "discovery_sessions": [
+    "ATL012_2023-02-27_701",
+    "ATL012_2023-02-28_701",
+    "ATL012_2023-03-01_701",
+    "ATL012_2023-03-03_701"
+  ],
+  "notes": "Behavior-only exploratory screen, not a validated engagement classifier. No neural outcomes used."
+}

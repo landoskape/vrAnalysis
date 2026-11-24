@@ -1,0 +1,49 @@
+{
+  "session": "ATL057.2024-07-08.701",
+  "seed": 731,
+  "n_neurons": 682,
+  "n_positions": 100,
+  "environment": 1,
+  "units": "full-recording frame-SD units; no spectrum sum normalization",
+  "residual_noise_rms": 0.26322400563045883,
+  "signal_rms": 0.30645857771074764,
+  "metrics": {
+    "ss_cvpca": {
+      "truth_sum": 6.90042636061875,
+      "pca_library_sum": 6.890308433403765,
+      "clean_sum_ratio": 1.0000000000000016,
+      "clean_max_relative_error": 1.3810613763102984e-14,
+      "clean_smoothed_sum_ratio": 1.0000000000000013,
+      "s1_sum_ratio": 0.7996437552033175,
+      "balanced_sum_ratio": 1.0000000000000007,
+      "s1_rank10_50_signed_sum_ratio": 0.5305457316420586,
+      "balanced_rank10_50_signed_sum_ratio": 1.09504625048493,
+      "s1_negative_count": 68
+    },
+    "reg_covariances_fixed": {
+      "truth_sum": 6.90042636061875,
+      "pca_library_sum": 6.890308433403765,
+      "clean_sum_ratio": 1.0000000000000002,
+      "clean_max_relative_error": 6.628749569319296e-15,
+      "clean_smoothed_sum_ratio": 1.0000000000000009,
+      "s1_sum_ratio": 0.7996437552033177,
+      "balanced_sum_ratio": 1.000000000000001,
+      "s1_rank10_50_signed_sum_ratio": 0.5522230393324535,
+      "balanced_rank10_50_signed_sum_ratio": 1.1132048549944016,
+      "s1_negative_count": 68
+    },
+    "ss_cv": {
+      "truth_sum": 43.239185856693425,
+      "pca_library_sum": 42.806793998126494,
+      "clean_sum_ratio": 0.9999999999999997,
+      "clean_max_relative_error": 7.331530199514713e-13,
+      "clean_smoothed_sum_ratio": 0.9864056744379753,
+      "s1_sum_ratio": 0.8097400291490368,
+      "balanced_sum_ratio": 0.965375493197663,
+      "s1_rank10_50_signed_sum_ratio": 0.36365653082596167,
+      "balanced_rank10_50_signed_sum_ratio": 0.7647413341957151,
+      "s1_negative_count": 28
+    }
+  },
+  "expected_residual_trace_bias": 1.3825435138664268
+}
